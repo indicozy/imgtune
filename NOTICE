@@ -1,6 +1,6 @@
 imgtune
 
-The SSIM quality measurement (src/quality.ts, once ported) is adapted from Optiq:
+The SSIM quality measurement (src/ssim.ts) is adapted from Optiq:
 
   Optiq
   Copyright 2026 Optiq contributors
