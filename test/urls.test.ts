@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,6 +132,16 @@ describe("resolveUrls", () => {
     expect(result.get("/[store]/[...plpPath]")?.paths).toEqual(["/ae-en/a", "/ae-en/b"]);
   });
 
+  it("gives a sitemap path to a static pattern over a catch-all that also matches it", () => {
+    const result = resolveUrls(
+      ["/[...slug]", "/cart"],
+      ["/cart", "/ae-en/eyeglasses"],
+      CONFIG,
+    );
+    expect(result.get("/cart")).toEqual({ paths: ["/cart"], source: "static" });
+    expect(result.get("/[...slug]")).toEqual({ paths: ["/ae-en/eyeglasses"], source: "sitemap" });
+  });
+
   it("lets config entries win over the sitemap", () => {
     const result = resolveUrls(["/[store]/[...plpPath]"], ["/ae-en/eyeglasses"], {
       ...CONFIG,
@@ -218,6 +228,27 @@ describe("fetchSitemapUrls", () => {
     expect(paths).toHaveLength(50);
   });
 
+  it("keeps at most 4 child sitemap fetches in flight", async () => {
+    const children = Array.from({ length: 12 }, (_, i) => `https://shop.test/c${i}.xml`);
+    const pages: Record<string, string> = {
+      "https://shop.test/sitemap.xml": sitemapIndex(...children),
+    };
+    for (const child of children) pages[child] = urlset(child.replace(/\.xml$/, ""));
+    const { fetchImpl: inner } = stubFetch(pages);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return inner(input, init);
+    }) as unknown as typeof fetch;
+    const paths = await fetchSitemapUrls("https://shop.test/sitemap.xml", fetchImpl);
+    expect(maxInFlight).toBe(4);
+    expect(paths).toEqual(children.map((c) => c.replace(/\.xml$/, "").replace("https://shop.test", "")));
+  });
+
   it("throws when the top-level sitemap is missing", async () => {
     const { fetchImpl } = stubFetch({});
     await expect(fetchSitemapUrls("https://shop.test/sitemap.xml", fetchImpl)).rejects.toThrow();
@@ -243,7 +274,6 @@ describe("sitemapCandidates", () => {
       "# local overrides\nexport NEXT_PUBLIC_DOMAIN_BASE_URL=\"https://staging.example.com/\"\n",
     );
     writeFileSync(join(dir, ".env"), "NEXT_PUBLIC_DOMAIN_BASE_URL=https://prod.example.com\n");
-    mkdirSync(join(emptyDir, "nested"));
   });
 
   afterAll(async () => {
@@ -252,8 +282,7 @@ describe("sitemapCandidates", () => {
   });
 
   it("lists the domain sitemap from .env.local, then the local server", () => {
-    const local = join(dir);
-    expect(sitemapCandidates(local, {}, "http://localhost:3999")).toEqual([
+    expect(sitemapCandidates(dir, {}, "http://localhost:3999")).toEqual([
       "https://staging.example.com/sitemap.xml",
       "http://localhost:3999/sitemap.xml",
     ]);
@@ -267,6 +296,19 @@ describe("sitemapCandidates", () => {
       "https://staging.example.com/sitemap.xml",
       "http://localhost:3999/sitemap.xml",
     ]);
+  });
+
+  it("ends a quoted env value at its closing quote, ignoring a trailing comment", async () => {
+    const quoted = mkdtempSync(join(tmpdir(), "imgtune-urls-quoted-"));
+    try {
+      writeFileSync(join(quoted, ".env.local"), 'NEXT_PUBLIC_DOMAIN_BASE_URL="https://x.com" # prod\n');
+      expect(sitemapCandidates(quoted, {}, "http://localhost:3999")).toEqual([
+        "https://x.com/sitemap.xml",
+        "http://localhost:3999/sitemap.xml",
+      ]);
+    } finally {
+      await rm(quoted, { recursive: true, force: true });
+    }
   });
 
   it("skips the domain entry when no env file defines it", () => {

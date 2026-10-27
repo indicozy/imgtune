@@ -13,6 +13,7 @@ export interface ResolvedUrls {
 /** Sitemap indexes are followed this many levels deep (the top-level index is level 0). */
 const MAX_INDEX_DEPTH = 2;
 const MAX_CHILD_SITEMAPS = 50;
+const CHILD_CONCURRENCY = 4;
 const SITEMAP_TIMEOUT_MS = 15_000;
 const ENV_FILES = [".env.local", ".env.development.local", ".env.development", ".env"];
 const DOMAIN_KEY = "NEXT_PUBLIC_DOMAIN_BASE_URL";
@@ -104,8 +105,9 @@ export function resolveUrls(
     }
   }
 
-  // Most specific first; ties: fewer dynamic segments, then pattern text for determinism.
-  const ranked = [...dynamic].sort(
+  // Static and dynamic patterns compete. Most specific first; ties: fewer dynamic segments, then
+  // pattern text for determinism. A path whose owner is static belongs to nobody else.
+  const ranked = [...patterns].sort(
     (a, b) =>
       specificity(b) - specificity(a) ||
       dynamicCount(a) - dynamicCount(b) ||
@@ -115,7 +117,7 @@ export function resolveUrls(
   const claimed = new Map<string, string[]>();
   for (const raw of unique(sitemapPaths.flatMap((p) => toPathname(p) ?? []))) {
     const owner = ranked.find((p) => regexps.get(p)!.test(raw));
-    if (!owner) continue;
+    if (!owner || !dynamic.includes(owner)) continue;
     const list = claimed.get(owner) ?? [];
     list.push(raw);
     claimed.set(owner, list);
@@ -189,15 +191,31 @@ export async function fetchSitemapUrls(
       return;
     }
     if (depth >= MAX_INDEX_DEPTH) return;
-    for (const child of doc.locs) {
-      if (remainingChildren === 0) break;
-      remainingChildren--;
-      const childDoc = await loadChild(child, fetchImpl);
+    const children = doc.locs.slice(0, remainingChildren);
+    remainingChildren -= children.length;
+    const childDocs = await mapWithConcurrency(children, CHILD_CONCURRENCY, (child) =>
+      loadChild(child, fetchImpl),
+    );
+    for (const childDoc of childDocs) {
       if (childDoc) await visit(childDoc, depth + 1);
     }
   };
   await visit(top, 0);
   return paths;
+}
+
+/** Maps `items` with at most `limit` calls in flight; results keep the input order. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 async function loadChild(url: string, fetchImpl: typeof fetch): Promise<SitemapDocument | undefined> {
@@ -223,10 +241,12 @@ function envValue(text: string, key: string): string | undefined {
   return found;
 }
 
+/** A quoted value ends at its matching quote (anything after it is ignored); otherwise a ` #` starts a comment. */
 function unquote(value: string): string {
   const quote = value[0];
-  if ((quote === '"' || quote === "'") && value.length >= 2 && value.endsWith(quote)) {
-    return value.slice(1, -1);
+  if (quote === '"' || quote === "'") {
+    const close = value.indexOf(quote, 1);
+    return close === -1 ? value.slice(1) : value.slice(1, close);
   }
   return value.replace(/\s+#.*$/, "").trim();
 }
