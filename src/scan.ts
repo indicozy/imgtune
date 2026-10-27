@@ -67,14 +67,38 @@ function nextImageBindings(sf: ts.SourceFile): Set<string> {
   return names;
 }
 
-/** Nearest enclosing function declaration, or variable bound to a function, or class name. */
+const WRAPPER_NAMES = new Set(["memo", "forwardRef"]);
+
+/** `memo` / `forwardRef`, bare or as `React.memo` / `React.forwardRef`. */
+function isWrapperCallee(callee: ts.Expression): boolean {
+  if (ts.isIdentifier(callee)) return WRAPPER_NAMES.has(callee.text);
+  return ts.isPropertyAccessExpression(callee) && WRAPPER_NAMES.has(callee.name.text);
+}
+
+/** True when `expr` is a function, or a memo/forwardRef chain whose first argument is one. */
+function isComponentInit(expr: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(expr)) return isComponentInit(expr.expression);
+  if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) return true;
+  if (ts.isCallExpression(expr) && isWrapperCallee(expr.expression) && expr.arguments.length > 0) {
+    return isComponentInit(expr.arguments[0]);
+  }
+  return false;
+}
+
+/**
+ * Nearest enclosing function declaration, class, or variable whose initializer is the
+ * component function (directly or via memo/forwardRef). Other variables are skipped.
+ */
 function componentName(node: ts.Node): string {
-  let sawFunction = false;
   for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
     if (ts.isFunctionDeclaration(n)) return n.name?.text ?? "anonymous";
     if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return n.name?.text ?? "anonymous";
-    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) sawFunction = true;
-    if (sawFunction && ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
+    if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.initializer &&
+      isComponentInit(n.initializer)
+    ) {
       return n.name.text;
     }
   }
@@ -171,10 +195,17 @@ function scanElement(
   return usage;
 }
 
+/** `.ts` parses as TypeScript (no JSX, so `<T>x` is a cast); `.tsx` as TSX; `.js`/`.jsx` as JSX. */
+function scriptKind(file: string): ts.ScriptKind {
+  if (file.endsWith(".ts")) return ts.ScriptKind.TS;
+  if (file.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  return ts.ScriptKind.JSX;
+}
+
 /** Every next/image (`Image`) and plain `<img>` JSX element in one source file. */
 export function scanFile(file: string, projectDir: string): ImageUsage[] {
   const text = readFileSync(file, "utf8");
-  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
   const relFile = relative(projectDir, file).split(sep).join("/");
   const imageNames = nextImageBindings(sf);
   const usages: ImageUsage[] = [];

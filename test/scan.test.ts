@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { listSourceFiles, scanFile } from "../src/scan.js";
 
 const PROJECT = resolve(import.meta.dirname, "fixtures/scan");
@@ -89,6 +90,24 @@ describe("scanFile", () => {
   });
 });
 
+describe("component attribution", () => {
+  it("ignores variables that merely hold a JSX-producing call", () => {
+    const usages = scanFile(fixture("attribution.tsx"), PROJECT);
+    expect(usages.map((u) => [u.component, u.srcExpressionText])).toEqual([
+      ["Grid", "i.url"],
+      ["Grid", "/m.png"],
+      ["Nested", "/n.png"],
+      ["Wrapped", "/w.png"],
+    ]);
+  });
+});
+
+describe("script kind", () => {
+  it("parses .ts files without JSX, so angle-bracket casts do not throw or match", () => {
+    expect(scanFile(fixture("angle-cast.ts"), PROJECT)).toEqual([]);
+  });
+});
+
 describe("literal prop forms", () => {
   it("reads string, numeric, boolean and template literals inside braces", () => {
     const [first, second] = scanFile(fixture("literal-forms.tsx"), PROJECT);
@@ -105,7 +124,6 @@ describe("literal prop forms", () => {
 });
 
 describe("listSourceFiles", () => {
-  const TREE = join(tmpdir(), "imgtune-scan-tree");
   const TREE_FILES = [
     "app/page.tsx",
     "app/page.test.tsx",
@@ -119,26 +137,34 @@ describe("listSourceFiles", () => {
     "storybook-static/x.js",
     ".imgtune/cache.js",
   ];
+  let tree: string;
 
-  // Generated at runtime: node_modules/dist/build are git-ignored, so they cannot be fixtures.
-  for (const rel of TREE_FILES) {
-    const abs = join(TREE, rel);
-    mkdirSync(join(abs, ".."), { recursive: true });
-    writeFileSync(abs, "export {};\n");
-  }
+  // Built per run: node_modules/dist/build are git-ignored, so they cannot be fixtures.
+  beforeAll(() => {
+    tree = mkdtempSync(join(tmpdir(), "imgtune-scan-tree-"));
+    for (const rel of TREE_FILES) {
+      const abs = join(tree, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, "export {};\n");
+    }
+  });
+
+  afterAll(async () => {
+    await rm(tree, { recursive: true, force: true });
+  });
 
   it("returns source files and skips build, vendor and test/story files", async () => {
-    const files = await listSourceFiles(TREE, ["."]);
-    expect(files.map((f) => f.slice(TREE.length + 1)).sort()).toEqual([
+    const files = await listSourceFiles(tree, ["."]);
+    expect(files.map((f) => f.slice(tree.length + 1)).sort()).toEqual([
       "app/page.tsx",
       "components/util.ts",
       "lib/helper.jsx",
     ]);
-    expect(files.every((f) => f.startsWith(TREE))).toBe(true);
+    expect(files.every((f) => f.startsWith(tree))).toBe(true);
   });
 
   it("accepts absolute paths", async () => {
-    const files = await listSourceFiles(TREE, [join(TREE, "app")]);
-    expect(files.map((f) => f.slice(TREE.length + 1))).toEqual(["app/page.tsx"]);
+    const files = await listSourceFiles(tree, [join(tree, "app")]);
+    expect(files.map((f) => f.slice(tree.length + 1))).toEqual(["app/page.tsx"]);
   });
 });
