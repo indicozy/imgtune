@@ -196,7 +196,7 @@ function scanElement(
 }
 
 /** `.ts` parses as TypeScript (no JSX, so `<T>x` is a cast); `.tsx` as TSX; `.js`/`.jsx` as JSX. */
-function scriptKind(file: string): ts.ScriptKind {
+export function scriptKind(file: string): ts.ScriptKind {
   if (file.endsWith(".ts")) return ts.ScriptKind.TS;
   if (file.endsWith(".tsx")) return ts.ScriptKind.TSX;
   return ts.ScriptKind.JSX;
