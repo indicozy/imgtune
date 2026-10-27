@@ -49,7 +49,7 @@ export async function saveState(projectDir: string, entries: StateEntry[]): Prom
   for (const entry of await loadState(projectDir)) merged.set(entry.usageId, entry);
   for (const entry of entries) merged.set(entry.usageId, entry);
   const file: StateFile = { version: 1, entries: [...merged.values()] };
-  await writeFileAtomic(join(projectDir, STATE_FILE), `${JSON.stringify(file, null, 2)}\n`);
+  await writeFileAtomic(join(projectDir, STATE_FILE), `${JSON.stringify(file, null, 2)}\n`, { root: projectDir });
 }
 
 /** True when the entry was recorded against the file content as it is now. */

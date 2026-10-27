@@ -249,7 +249,7 @@ export async function applyResults(
   const now = new Date().toISOString();
   try {
     if (configEdit) {
-      await writeFileAtomic(configEdit.file, configEdit.text);
+      await writeFileAtomic(configEdit.file, configEdit.text, { root: projectDir, followSymlink: true });
       edited.push(configEdit.relFile);
     }
 
@@ -273,7 +273,7 @@ export async function applyResults(
 
       const next = spliceText(text, splices);
       if (next === text) continue;
-      await writeFileAtomic(file, next);
+      await writeFileAtomic(file, next, { root: projectDir, followSymlink: true });
       edited.push(relFile);
       const fileHash = sha1(next);
       for (const planUse of applied) {

@@ -105,7 +105,7 @@ export async function writeReport(projectDir: string, results: ComponentResult[]
   };
   const dir = join(projectDir, REPORT_DIR);
   await mkdir(dir, { recursive: true });
-  await writeFileAtomic(join(dir, REPORT_FILE), `${JSON.stringify(report, null, 2)}\n`);
+  await writeFileAtomic(join(dir, REPORT_FILE), `${JSON.stringify(report, null, 2)}\n`, { root: projectDir });
 }
 
 export async function readReport(projectDir: string): Promise<Report> {

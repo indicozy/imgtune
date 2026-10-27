@@ -96,12 +96,28 @@ export async function startNext(
   });
 
   const pid = child.pid;
+  if (pid === undefined) throw new Error(`could not start ${bin}`);
+
+  // Registered before any await: a process exit (SIGINT and uncaught errors go through process.exit) during the
+  // readiness wait still takes the group down. Removed once the group is stopped.
+  const killGroupOnExit = (): void => {
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // The group is already gone.
+    }
+  };
+  process.on("exit", killGroupOnExit);
+
   const stop = async (): Promise<void> => {
-    if (pid === undefined) return;
-    signalGroup(pid, "SIGTERM");
-    if (await waitFor(() => exit.done && !groupAlive(pid), KILL_GRACE_MS)) return;
-    signalGroup(pid, "SIGKILL");
-    await waitFor(() => exit.done && !groupAlive(pid), KILL_GRACE_MS);
+    try {
+      signalGroup(pid, "SIGTERM");
+      if (await waitFor(() => exit.done && !groupAlive(pid), KILL_GRACE_MS)) return;
+      signalGroup(pid, "SIGKILL");
+      await waitFor(() => exit.done && !groupAlive(pid), KILL_GRACE_MS);
+    } finally {
+      process.off("exit", killGroupOnExit);
+    }
   };
   const fail = async (reason: string): Promise<never> => {
     await stop();
@@ -126,7 +142,7 @@ export async function startNext(
       if (exit.done) {
         return fail(`dev command exited before the server was ready (${exit.description})`);
       }
-      return { baseUrl, pid: pid!, stop };
+      return { baseUrl, pid, stop };
     }
     await sleep(POLL_INTERVAL_MS);
   }
@@ -215,8 +231,11 @@ async function respondsOverHttp(url: string, timeoutMs: number): Promise<boolean
 /** Keeps the last `max` complete lines of a process's output. */
 class LineTail {
   private readonly buffer: string[] = [];
+  private readonly max: number;
 
-  constructor(private readonly max: number) {}
+  constructor(max: number) {
+    this.max = max;
+  }
 
   push(line: string): void {
     this.buffer.push(line);

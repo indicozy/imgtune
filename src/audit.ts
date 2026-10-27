@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { analyse, type ComponentResult } from "./analyse.js";
 import { applyResults, type ApplyResult } from "./apply.js";
@@ -190,9 +189,7 @@ export function makeFetchOriginal(
 
     await ensureToolDir(projectDir);
     await mkdir(dir, { recursive: true });
-    const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
-    await writeFile(tmp, bytes);
-    await rename(tmp, file);
+    await writeFileAtomic(file, bytes, { root: projectDir });
     return bytes;
   };
 }
@@ -202,7 +199,7 @@ export async function ensureToolDir(projectDir: string): Promise<void> {
   const dir = join(projectDir, TOOL_DIR);
   await mkdir(dir, { recursive: true });
   const ignore = join(dir, ".gitignore");
-  if (!existsSync(ignore)) await writeFile(ignore, "*\n");
+  if (!existsSync(ignore)) await writeFileAtomic(ignore, "*\n", { root: projectDir });
 }
 
 /** Project-relative paths of the report's files whose content no longer matches the audit-time hash. */
@@ -248,19 +245,6 @@ interface ServerHandle {
   stop(): Promise<void>;
 }
 
-/** A dev server the tool started is killed synchronously on process exit, so no path leaves it running. */
-function killGroupOnExit(pid: number): () => void {
-  const onExit = () => {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      // The group is already gone.
-    }
-  };
-  process.on("exit", onExit);
-  return () => process.off("exit", onExit);
-}
-
 async function startServer(config: ImgtuneConfig, log: Log): Promise<ServerHandle> {
   if (config.url) {
     log(`using server ${config.url}`);
@@ -271,17 +255,7 @@ async function startServer(config: ImgtuneConfig, log: Log): Promise<ServerHandl
 
   log("starting server");
   const started = await startNext(config.projectDir, config.port, detectDevCommand(config.projectDir, config.devCommand));
-  const detach = killGroupOnExit(started.pid);
-  let stopped = false;
-  return {
-    baseUrl: started.baseUrl,
-    stop: async () => {
-      if (stopped) return;
-      stopped = true;
-      detach();
-      await started.stop();
-    },
-  };
+  return { baseUrl: started.baseUrl, stop: started.stop };
 }
 
 /**
@@ -318,9 +292,9 @@ export async function measureUsages(
     if (pages.length === 0) return measured;
 
     const instrumented = usages.filter((usage) => pagesFor(patternsOf.get(usage.id) ?? [], resolved).length > 0);
-    log(`instrumenting ${instrumented.length} usages`);
-    await instrument(projectDir, instrumented);
     try {
+      log(`instrumenting ${instrumented.length} usages`);
+      await instrument(projectDir, instrumented);
       log(`measuring ${pages.length} pages × ${config.viewports.length} viewports`);
       measured.observations = await measurePages(server.baseUrl, pages, config.viewports, {
         webpPass: profileOf(imageConfig) === "cdn",
@@ -347,7 +321,7 @@ function confirmDepsFor(projectDir: string, baseUrl: string, imageConfigFile: st
 
       await backupFiles(projectDir, [imageConfigFile]);
       try {
-        await writeFileAtomic(imageConfigFile, edited);
+        await writeFileAtomic(imageConfigFile, edited, { root: projectDir, followSymlink: true });
         if (!(await waitForQuality(baseUrl, probe, q))) return undefined;
         return await body();
       } finally {
@@ -365,7 +339,7 @@ async function waitForQuality(baseUrl: string, probe: { src: string; width: numb
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
       await res.arrayBuffer().catch(() => undefined);
-      if (res.status !== 400) return true;
+      if (res.ok) return true;
     } catch {
       // The server may still be restarting; keep polling.
     }
