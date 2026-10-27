@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import ts from "typescript";
 import type { ComponentResult } from "./analyse.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
 import { withQuality } from "./calibrate.js";
 import { readImageConfig } from "./nextconfig.js";
-import { scanFile, scriptKind } from "./scan.js";
+import { scanText, scriptKind } from "./scan.js";
 import { saveState, type StateEntry } from "./state.js";
 import type { ImageUsage } from "./types.js";
 
@@ -17,6 +17,7 @@ export interface ApplyResult {
 
 const NEXT_DEFAULT_QUALITY = 75;
 const REASON_CHANGED = "file changed since audit";
+const REASON_EDITED_SINCE_AUDIT = "file changed since audit; re-run imgtune audit";
 const REASON_IMG = "plain <img> is report-only";
 const REASON_SIZES_MANUAL = "manual change needed: sizes is an expression";
 const REASON_QUALITY_MANUAL = "manual change needed: quality is an expression";
@@ -159,18 +160,26 @@ function spliceText(text: string, splices: Splice[]): string {
   return out;
 }
 
+/** Options for `applyResults`. */
+export interface ApplyOptions {
+  /** relFile -> sha1 from the audit report. A file whose current content hashes differently is not edited. */
+  expectedHashes?: Record<string, string>;
+}
+
 /**
- * Edits the source files of the audited usages in place. Every file is re-scanned first: a usage that no longer exists
- * at its audited id is skipped. Only the `sizes` and `quality` attribute text and `images.qualities` change. Records a
- * state entry for each usage that was edited.
+ * Edits the source files of the audited usages in place. Every file is read once and scanned from that exact text, and
+ * the same text is spliced. Only the `sizes` and `quality` attribute text and `images.qualities` change. next.config is
+ * written before the sources; state is saved for every file written, even when a later write throws.
  */
 export async function applyResults(
   projectDir: string,
   results: ComponentResult[],
   usages: ImageUsage[],
+  opts: ApplyOptions = {},
 ): Promise<ApplyResult> {
   const skipped: ApplyResult["skipped"] = [];
   const edited: string[] = [];
+  const expected = opts.expectedHashes;
   const byId = new Map(usages.map((u) => [u.id, u]));
 
   // Group the results that have a proposal by the file of their audited usage.
@@ -187,11 +196,16 @@ export async function applyResults(
     else byFile.set(audited.file, [result]);
   }
 
-  // Plan every file against a fresh scan. Nothing is written until the next.config decision is made.
-  const planned = new Map<string, { text: string; usages: PlannedUsage[] }>();
+  // Plan every file from the one text that is read. Nothing is written until the next.config decision is made.
+  const planned = new Map<string, { relFile: string; text: string; usages: PlannedUsage[] }>();
   for (const [file, fileResults] of byFile) {
+    const relFile = toPosix(relative(projectDir, file));
     const text = await readFile(file, "utf8");
-    const fresh = scanFile(file, projectDir);
+    if (expected && expected[relFile] !== sha1(text)) {
+      for (const result of fileResults) skipped.push({ usageId: result.usageId, reason: REASON_EDITED_SINCE_AUDIT });
+      continue;
+    }
+    const fresh = scanText(text, file, projectDir);
     const usagesInFile: PlannedUsage[] = [];
     for (const result of fileResults) {
       const usage = fresh.find((u) => u.id === result.usageId);
@@ -201,77 +215,86 @@ export async function applyResults(
       }
       usagesInFile.push({ result, usage, edits: planUsage(result, usage, skipped) });
     }
-    planned.set(file, { text, usages: usagesInFile });
+    planned.set(file, { relFile, text, usages: usagesInFile });
   }
 
-  // images.qualities: every quality that is about to be applied must be listed in next.config.
+  // images.qualities: every quality about to be applied must be listed in next.config.
   const allPlanned = [...planned.values()].flatMap((p) => p.usages);
-  const wanted = [...new Set(allPlanned.flatMap((p) => p.edits).filter((e) => e.field === "quality").map((e) => e.value as number))].sort((a, b) => a - b);
+  const wanted = [
+    ...new Set(allPlanned.flatMap((p) => p.edits).filter((e) => e.field === "quality").map((e) => e.value as number)),
+  ].sort((a, b) => a - b);
   let configEdit: { relFile: string; file: string; text: string } | undefined;
+  let configBlocked = false;
   let failed = new Set<number>();
   if (wanted.length > 0) {
     const imageConfig = readImageConfig(projectDir);
     if (!imageConfig.file) {
       failed = new Set(wanted);
     } else {
+      const configRel = toPosix(relative(projectDir, imageConfig.file));
       const original = await readFile(imageConfig.file, "utf8");
-      const outcome = planConfigQualities(original, imageConfig.file, wanted);
-      failed = outcome.failed;
-      if (outcome.text !== original) {
-        configEdit = { relFile: toPosix(relative(projectDir, imageConfig.file)), file: imageConfig.file, text: outcome.text };
+      if (expected && expected[configRel] !== sha1(original)) {
+        configBlocked = true;
+        failed = new Set(wanted);
+      } else {
+        const outcome = planConfigQualities(original, imageConfig.file, wanted);
+        failed = outcome.failed;
+        if (outcome.text !== original) configEdit = { relFile: configRel, file: imageConfig.file, text: outcome.text };
       }
     }
   }
+  const reasonFor = (q: number): string => (configBlocked ? REASON_EDITED_SINCE_AUDIT : reasonQualityNotListed(q));
 
-  // Drop quality edits whose value could not be listed, then write the source files.
   const entries: StateEntry[] = [];
   const now = new Date().toISOString();
-  for (const [file, { text, usages: usagesInFile }] of planned) {
-    const splices: Splice[] = [];
-    const applied: PlannedUsage[] = [];
-    for (const planUse of usagesInFile) {
-      const kept: Edit[] = [];
-      for (const edit of planUse.edits) {
-        if (edit.field === "quality" && failed.has(edit.value as number)) {
-          skipped.push({ usageId: planUse.usage.id, reason: reasonQualityNotListed(edit.value as number) });
-        } else {
-          kept.push(edit);
+  try {
+    if (configEdit) {
+      await writeFileAtomic(configEdit.file, configEdit.text);
+      edited.push(configEdit.relFile);
+    }
+
+    for (const [file, { relFile, text, usages: usagesInFile }] of planned) {
+      const splices: Splice[] = [];
+      const applied: PlannedUsage[] = [];
+      for (const planUse of usagesInFile) {
+        const kept: Edit[] = [];
+        for (const edit of planUse.edits) {
+          if (edit.field === "quality" && failed.has(edit.value as number)) {
+            skipped.push({ usageId: planUse.usage.id, reason: reasonFor(edit.value as number) });
+          } else {
+            kept.push(edit);
+          }
         }
+        planUse.edits = kept;
+        if (kept.length > 0) applied.push(planUse);
+        for (const edit of kept) splices.push(edit.splice);
       }
-      planUse.edits = kept;
-      if (kept.length > 0) applied.push(planUse);
-      for (const edit of kept) splices.push(edit.splice);
-    }
-    if (splices.length === 0) continue;
+      if (splices.length === 0) continue;
 
-    const next = spliceText(text, splices);
-    if (next === text) continue;
-    const relFile = toPosix(relative(projectDir, file));
-    await writeFileAtomic(file, next);
-    edited.push(relFile);
-    const fileHash = sha1(next);
-    for (const planUse of applied) {
-      const sizes = planUse.edits.find((e) => e.field === "sizes");
-      const quality = planUse.edits.find((e) => e.field === "quality");
-      entries.push({
-        usageId: planUse.usage.id,
-        relFile,
-        component: planUse.usage.component,
-        fileHash,
-        applied: {
-          ...(sizes ? { sizes: sizes.value as string } : {}),
-          ...(quality ? { quality: quality.value as number } : {}),
-        },
-        at: now,
-      });
+      const next = spliceText(text, splices);
+      if (next === text) continue;
+      await writeFileAtomic(file, next);
+      edited.push(relFile);
+      const fileHash = sha1(next);
+      for (const planUse of applied) {
+        const sizes = planUse.edits.find((e) => e.field === "sizes");
+        const quality = planUse.edits.find((e) => e.field === "quality");
+        entries.push({
+          usageId: planUse.usage.id,
+          relFile,
+          component: planUse.usage.component,
+          fileHash,
+          applied: {
+            ...(sizes ? { sizes: sizes.value as string } : {}),
+            ...(quality ? { quality: quality.value as number } : {}),
+          },
+          at: now,
+        });
+      }
     }
+  } finally {
+    if (entries.length > 0) await saveState(projectDir, entries);
   }
-
-  if (configEdit) {
-    await writeFileAtomic(configEdit.file, configEdit.text);
-    edited.push(configEdit.relFile);
-  }
-  if (entries.length > 0) await saveState(projectDir, entries);
   return { edited, skipped };
 }
 

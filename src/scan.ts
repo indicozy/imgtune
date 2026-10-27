@@ -204,7 +204,11 @@ export function scriptKind(file: string): ts.ScriptKind {
 
 /** Every next/image (`Image`) and plain `<img>` JSX element in one source file. */
 export function scanFile(file: string, projectDir: string): ImageUsage[] {
-  const text = readFileSync(file, "utf8");
+  return scanText(readFileSync(file, "utf8"), file, projectDir);
+}
+
+/** As `scanFile`, for source text that is already in memory (offsets refer to `text`). */
+export function scanText(text: string, file: string, projectDir: string): ImageUsage[] {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
   const relFile = relative(projectDir, file).split(sep).join("/");
   const imageNames = nextImageBindings(sf);
