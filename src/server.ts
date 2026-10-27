@@ -77,7 +77,9 @@ export async function startNext(
 
   const child = spawn(bin, [...args, "-p", String(port)], {
     cwd: projectDir,
-    env: { ...process.env, PORT: String(port) },
+    // `next dev` rewrites tsconfig.json when NODE_ENV is something else (e.g. "test" under vitest); the tool must not
+    // edit the project, so the server it starts always runs in development.
+    env: { ...process.env, NODE_ENV: "development", PORT: String(port) },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
