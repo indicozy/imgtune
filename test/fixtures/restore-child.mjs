@@ -1,7 +1,9 @@
 // Child process for test/instrument.test.ts. Usage: node restore-child.mjs <mode> <projectDir> <file>
-// Node 24 strips the types of the .ts sources directly; no loader is needed.
-import { instrument, installRestoreHandlers } from "../../src/instrument.ts";
-import { scanFile } from "../../src/scan.ts";
+import { register } from "node:module";
+
+register("./ts-js-hook.mjs", import.meta.url);
+const { instrument, installRestoreHandlers } = await import("../../src/instrument.ts");
+const { scanFile } = await import("../../src/scan.ts");
 
 const [mode, projectDir, file] = process.argv.slice(2);
 

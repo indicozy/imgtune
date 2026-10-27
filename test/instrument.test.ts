@@ -1,6 +1,13 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,9 +18,12 @@ import { scanFile } from "../src/scan.js";
 const CHILD = resolve(import.meta.dirname, "fixtures/restore-child.mjs");
 const created: string[] = [];
 
+/** Creates `<base>/project` with the given files and returns the project dir. */
 function makeProject(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "imgtune-instrument-"));
-  created.push(dir);
+  const base = mkdtempSync(join(tmpdir(), "imgtune-instrument-"));
+  created.push(base);
+  const dir = join(base, "project");
+  mkdirSync(dir);
   for (const [rel, content] of Object.entries(files)) {
     const abs = join(dir, rel);
     mkdirSync(dirname(abs), { recursive: true });
@@ -55,7 +65,7 @@ describe("instrument and restore", () => {
 
     const edited = readFileSync(file, "utf8");
     expect(edited).toContain(`data-imgtune="src/Card.tsx:3:12"`);
-    expect(edited).toContain(`data-imgtune-src={${UNWRAP}(p.url)}`);
+    expect(edited).toContain(`data-imgtune-src={${UNWRAP}((p.url))}`);
     const { diagnostics } = ts.transpileModule(edited, {
       fileName: "Card.tsx",
       reportDiagnostics: true,
@@ -123,6 +133,8 @@ describe("instrument and restore", () => {
     await restore(dir);
     expect(readFileSync(join(dir, "next-env.d.ts"), "utf8")).toBe(nextEnv);
     expect(readFileSync(join(dir, "tsconfig.json"), "utf8")).toBe(tsconfig);
+    // Side files carry no hash, so they never count as user edits.
+    expect(existsSync(join(dir, ".imgtune/backup/conflicts"))).toBe(false);
   });
 
   it("static import src: unwraps .src for the recorded attribute", async () => {
@@ -131,10 +143,26 @@ describe("instrument and restore", () => {
     const original = readFileSync(file);
 
     await instrument(dir, scanFile(file, dir));
-    expect(readFileSync(file, "utf8")).toContain(`data-imgtune-src={${UNWRAP}(hero)}`);
+    expect(readFileSync(file, "utf8")).toContain(`data-imgtune-src={${UNWRAP}((hero))}`);
 
     await restore(dir);
     expect(readFileSync(file).equals(original)).toBe(true);
+  });
+
+  it("comma expression src: the unwrap wraps the whole expression, so the last value is recorded", async () => {
+    const src = [
+      `import Image from "next/image";`,
+      `import hero from "./hero.png";`,
+      `export const C = () => <Image src={cfg, hero} width={1} height={1} alt="" />;`,
+      ``,
+    ].join("\n");
+    const dir = makeProject({ "src/Comma.tsx": src });
+    const file = join(dir, "src/Comma.tsx");
+
+    await instrument(dir, scanFile(file, dir));
+    expect(readFileSync(file, "utf8")).toContain(`data-imgtune-src={${UNWRAP}((cfg, hero))}`);
+
+    await restore(dir);
   });
 
   it("literal src: records the value, escaping quotes and ampersands", async () => {
@@ -157,6 +185,91 @@ describe("instrument and restore", () => {
     expect(edited).toContain(` data-imgtune-src="/a&quot;b&amp;c.png"`);
 
     await restore(dir);
+  });
+
+  it("raw entity text in a string attribute is recorded as written", async () => {
+    const src = [
+      `import Image from "next/image";`,
+      `export const E = () => <Image src="/x&amp;y.png" width={1} height={1} alt="" />;`,
+      ``,
+    ].join("\n");
+    const dir = makeProject({ "src/Entity.tsx": src });
+    const file = join(dir, "src/Entity.tsx");
+
+    await instrument(dir, scanFile(file, dir));
+    expect(readFileSync(file, "utf8")).toContain(` data-imgtune-src="/x&amp;y.png"`);
+
+    await restore(dir);
+  });
+
+  it("file changed since scan: refuses before any file is backed up or written", async () => {
+    const dir = makeProject({ "src/Card.tsx": CARD, "src/Hero.tsx": HERO });
+    const card = join(dir, "src/Card.tsx");
+    const hero = join(dir, "src/Hero.tsx");
+    const usages = [...scanFile(card, dir), ...scanFile(hero, dir)];
+    const shifted = `// added after the scan\n${HERO}`;
+    writeFileSync(hero, shifted);
+
+    await expect(instrument(dir, usages)).rejects.toThrow("file changed since scan: src/Hero.tsx");
+
+    expect(readFileSync(card, "utf8")).toBe(CARD);
+    expect(readFileSync(hero, "utf8")).toBe(shifted);
+    expect(existsSync(join(dir, ".imgtune/backup/manifest.json"))).toBe(false);
+  });
+
+  it("refuses a symlinked .imgtune directory before touching anything", async () => {
+    const dir = makeProject({ "src/Card.tsx": CARD });
+    const file = join(dir, "src/Card.tsx");
+    const elsewhere = makeProject({});
+    symlinkSync(elsewhere, join(dir, ".imgtune"));
+
+    await expect(instrument(dir, scanFile(file, dir))).rejects.toThrow(/symlink/);
+    expect(readFileSync(file, "utf8")).toBe(CARD);
+  });
+
+  it("refuses a manifest entry that points outside the project and leaves that file alone", async () => {
+    const dir = makeProject({ "src/Card.tsx": CARD });
+    const outside = join(dir, "..", "outside.txt");
+    writeFileSync(outside, "keep me");
+    mkdirSync(join(dir, ".imgtune/backup"), { recursive: true });
+    writeFileSync(
+      join(dir, ".imgtune/backup/manifest.json"),
+      JSON.stringify({
+        version: 1,
+        createdAt: "2026-10-28T00:00:00.000Z",
+        entries: [{ file: "../outside.txt", backup: "../outside.txt", existed: true }],
+      }),
+    );
+
+    await expect(restore(dir)).rejects.toThrow("invalid imgtune manifest");
+    expect(readFileSync(outside, "utf8")).toBe("keep me");
+  });
+
+  it("user edit during the run is saved to conflicts, reported, and the original restored", async () => {
+    const dir = makeProject({ "src/Card.tsx": CARD });
+    const file = join(dir, "src/Card.tsx");
+    const original = readFileSync(file);
+
+    await instrument(dir, scanFile(file, dir));
+    const userEdit = `export const saved = true;\n`;
+    writeFileSync(file, userEdit);
+
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let printed = "";
+    try {
+      await restore(dir);
+    } finally {
+      printed = stderr.mock.calls.map((c) => String(c[0])).join("");
+      stderr.mockRestore();
+    }
+
+    expect(readFileSync(file).equals(original)).toBe(true);
+    expect(readFileSync(join(dir, ".imgtune/backup/conflicts/src/Card.tsx"), "utf8")).toBe(
+      userEdit,
+    );
+    expect(printed).toContain(
+      "imgtune: src/Card.tsx was edited during the run; your version is saved at .imgtune/backup/conflicts/src/Card.tsx",
+    );
   });
 
   it("backupFiles keeps the first copy when a file is backed up twice", async () => {
