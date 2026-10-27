@@ -11,6 +11,8 @@ export interface StateEntry {
   /** sha1 of the file content right after `apply` wrote it. */
   fileHash: string;
   applied: { sizes?: string; quality?: number };
+  /** The values the usage had before the apply (quality as the audit read it). */
+  before?: { sizes?: string; quality?: number };
   /** ISO time of the apply. */
   at: string;
   verification?: {

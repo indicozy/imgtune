@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 import { applyCommand, audit, restoreCommand } from "./audit.js";
 import { type Command, loadConfig } from "./config.js";
+import { verify } from "./verify.js";
 import type { ImgtuneConfig } from "./types.js";
 
 type Handler = (config: ImgtuneConfig) => Promise<void>;
-
-// Placeholder until Task 13b wires the verify command.
-const notImplemented = (command: Command): Handler => async () => {
-  throw new Error(`${command} is not implemented yet`);
-};
 
 const handlers: Record<Command, Handler> = {
   audit: async (config) => {
@@ -17,7 +13,9 @@ const handlers: Record<Command, Handler> = {
   apply: async (config) => {
     await applyCommand(config.projectDir);
   },
-  verify: notImplemented("verify"),
+  verify: async (config) => {
+    await verify(config);
+  },
   restore: async (config) => {
     await restoreCommand(config.projectDir);
   },

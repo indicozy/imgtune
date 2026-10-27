@@ -258,6 +258,7 @@ describe("applyResults", () => {
     const text = readFileSync(join(dir, "src/A.tsx"), "utf8");
     expect(entry.usageId).toBe(usages[0].id);
     expect(entry.applied).toEqual({ sizes: "50vw" });
+    expect(entry.before?.quality).toBe(75);
     expect(entry.fileHash).toBe(sha1(text));
     expect(isDone(entry, sha1(text))).toBe(true);
 
