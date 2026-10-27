@@ -31,6 +31,7 @@ const MAX_SCROLL_STEPS = 30;
 const SCROLL_STEP_WAIT_MS = 250;
 const NETWORK_IDLE_TIMEOUT_MS = 10_000;
 const IMAGES_COMPLETE_TIMEOUT_MS = 5_000;
+const BODY_READ_TIMEOUT_MS = 5_000;
 
 type Accept = ImageObservation["accept"];
 
@@ -123,33 +124,33 @@ async function measureOne(
       });
     }
 
-    const page = await context.newPage();
+    let collected: CollectedImage[];
     try {
+      const page = await context.newPage();
       await page.goto(baseUrl + pagePath, { waitUntil: "load", timeout: PAGE_LOAD_TIMEOUT_MS });
+      await scrollThrough(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page
+        .waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS })
+        .catch(() => {});
+      await page
+        .waitForFunction(
+          () =>
+            Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]")).every(
+              (img) => !img.currentSrc || img.complete,
+            ),
+          undefined,
+          { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
+        )
+        .catch(() => {});
+      collected = await collectImages(page);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`imgtune: failed to load ${pagePath} at ${viewport.name}: ${message}`);
       return [];
     }
 
-    await scrollThrough(page);
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page
-      .waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS })
-      .catch(() => {});
-    await page
-      .waitForFunction(
-        () =>
-          Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]")).every(
-            (img) => !img.currentSrc || img.complete,
-          ),
-        undefined,
-        { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
-      )
-      .catch(() => {});
-    await Promise.all(bodyReads);
-
-    const collected = await collectImages(page);
+    await settleWithin(bodyReads, BODY_READ_TIMEOUT_MS);
     return collected.map((img) => {
       const fetched = img.currentSrc ? images.get(img.currentSrc) : undefined;
       return {
@@ -176,6 +177,16 @@ async function measureOne(
   }
 }
 
+/** Waits for the promises to settle, but never longer than `ms`. */
+async function settleWithin(promises: Promise<void>[], ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  await Promise.race([Promise.all(promises), timeout]);
+  clearTimeout(timer);
+}
+
 /** Scrolls one viewport height at a time until the bottom, so lazy images start loading. */
 async function scrollThrough(page: Page): Promise<void> {
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
@@ -193,7 +204,7 @@ async function collectImages(page: Page): Promise<CollectedImage[]> {
     Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]"), (img) => {
       const rect = img.getBoundingClientRect();
       const srcsetWidths: number[] = [];
-      for (const candidate of (img.getAttribute("srcset") ?? "").split(",")) {
+      for (const candidate of (img.getAttribute("srcset") ?? "").split(/,\s+/)) {
         const descriptor = candidate.trim().split(/\s+/)[1];
         const match = descriptor ? /^(\d+)w$/.exec(descriptor) : null;
         if (match) srcsetWidths.push(Number(match[1]));

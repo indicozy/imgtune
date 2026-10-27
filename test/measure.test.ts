@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import sharp from "sharp";
@@ -21,12 +21,25 @@ const PAGE_HTML = `<!doctype html>
     <img data-imgtune="a" data-imgtune-src="/o.jpg"
          srcset="/i-375.jpg 375w, /i-640.jpg 640w" sizes="33vw"
          style="width:100%;height:auto;display:block">
+    <img data-imgtune="cdn" data-imgtune-src="/o.jpg"
+         srcset="/cdn-cgi/image/width=375,quality=85,format=auto/o.jpg 375w, /cdn-cgi/image/width=640,quality=85,format=auto/o.jpg 640w"
+         sizes="33vw" style="width:100%;height:auto;display:block">
   </div>
   <div style="height:3000px"></div>
   <img data-imgtune="lazy" data-imgtune-src="/lazy.jpg" src="/lazy.jpg" loading="lazy"
        style="width:100%;height:auto;display:block">
 </body>
 </html>`;
+
+const CDN_375 = "/cdn-cgi/image/width=375,quality=85,format=auto/o.jpg";
+const CDN_640 = "/cdn-cgi/image/width=640,quality=85,format=auto/o.jpg";
+
+/** Pages whose scripts make the measurement's in-page calls throw. */
+function brokenHtml(script: string): string {
+  return `<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0"><div style="height:3000px"></div><script>${script}</script></body></html>`;
+}
 
 interface ServedFile {
   body: Buffer;
@@ -53,6 +66,18 @@ beforeAll(async () => {
   files.set("/i-375.jpg", { body: await makeJpeg(375, 281), type: "image/jpeg" });
   files.set("/i-640.jpg", { body: await makeJpeg(640, 480), type: "image/jpeg" });
   files.set("/lazy.jpg", { body: await makeJpeg(800, 600), type: "image/jpeg" });
+  files.set(CDN_375, { body: await makeJpeg(375, 281), type: "image/jpeg" });
+  files.set(CDN_640, { body: await makeJpeg(640, 480), type: "image/jpeg" });
+  files.set("/broken-scroll", {
+    body: Buffer.from(brokenHtml('window.scrollBy = () => { throw new Error("scroll broke"); };')),
+    type: "text/html; charset=utf-8",
+  });
+  files.set("/broken-collect", {
+    body: Buffer.from(
+      brokenHtml('Document.prototype.querySelectorAll = () => { throw new Error("collect broke"); };'),
+    ),
+    type: "text/html; charset=utf-8",
+  });
 
   server = createServer((req, res) => {
     const path = req.url ?? "";
@@ -102,6 +127,51 @@ describe("measurePages", () => {
       expect(lazy!.renderedWidth).toBeGreaterThan(0);
       expect(lazy!.originalSrc).toBe("/lazy.jpg");
       expect(lazy!.bytes).toBe(files.get("/lazy.jpg")!.body.length);
+    },
+    120_000,
+  );
+
+  it(
+    "parses srcset candidates whose URLs contain commas",
+    async () => {
+      const observations = await measurePages(baseUrl, ["/page"], [iphone15!]);
+
+      const cdn = observations.find((o) => o.usageId === "cdn");
+      expect(cdn).toBeDefined();
+      expect(cdn!.srcsetWidths).toEqual([375, 640]);
+      expect(cdn!.currentSrc).toBe(`${baseUrl}${CDN_640}`);
+      expect(cdn!.bytes).toBe(files.get(CDN_640)!.body.length);
+    },
+    120_000,
+  );
+
+  it(
+    "keeps observations from other pages when a page fails during scroll or collect",
+    async () => {
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const observations = await measurePages(
+          baseUrl,
+          ["/broken-scroll", "/page", "/broken-collect"],
+          [iphone15!],
+        );
+
+        expect(observations.filter((o) => o.page.startsWith("/broken"))).toEqual([]);
+        const fromPage = observations.filter((o) => o.page === "/page");
+        expect(fromPage.map((o) => o.usageId).sort()).toEqual(["a", "cdn", "lazy"]);
+        expect(fromPage.find((o) => o.usageId === "lazy")!.bytes).toBe(
+          files.get("/lazy.jpg")!.body.length,
+        );
+        const logged = errors.mock.calls.map((args) => String(args[0]));
+        expect(
+          logged.some((m) => m.includes("/broken-scroll at iphone-15") && m.includes("scroll broke")),
+        ).toBe(true);
+        expect(
+          logged.some((m) => m.includes("/broken-collect at iphone-15") && m.includes("collect broke")),
+        ).toBe(true);
+      } finally {
+        errors.mockRestore();
+      }
     },
     120_000,
   );
