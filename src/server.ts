@@ -28,6 +28,8 @@ export type DevServerStatus = RunningDevServer | { running: false };
 
 export interface StartedNext {
   baseUrl: string;
+  /** Process id of the dev command, which leads its own process group. */
+  pid: number;
   stop(): Promise<void>;
 }
 
@@ -124,7 +126,7 @@ export async function startNext(
       if (exit.done) {
         return fail(`dev command exited before the server was ready (${exit.description})`);
       }
-      return { baseUrl, stop };
+      return { baseUrl, pid: pid!, stop };
     }
     await sleep(POLL_INTERVAL_MS);
   }
