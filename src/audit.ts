@@ -39,7 +39,8 @@ export const progress: Log = (message) => {
   process.stderr.write(`imgtune: ${message}\n`);
 };
 
-const unique = <T>(items: Iterable<T>): T[] => [...new Set(items)];
+/** Distinct items in first-seen order. */
+export const unique = <T>(items: Iterable<T>): T[] => [...new Set(items)];
 
 /** A route pattern with a dynamic segment (`[x]`, `[...x]`, `[[...x]]`). */
 const isDynamicPattern = (pattern: string): boolean => pattern.includes("[");

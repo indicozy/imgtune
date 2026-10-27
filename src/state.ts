@@ -20,6 +20,8 @@ export interface StateEntry {
     at: string;
     bytes: Record<string, number>;
     ssim: { avif?: number; webp?: number };
+    /** Usable and passing sample counts per judged format. */
+    counts: { avif?: { usable: number; passing: number }; webp?: { usable: number; passing: number } };
     raiseTo?: number;
   };
 }

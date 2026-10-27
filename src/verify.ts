@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import { makeFetchOriginal, measureUsages, progress, restoreAndReport, type Log } from "./audit.js";
+import { makeFetchOriginal, measureUsages, progress, restoreAndReport, unique, type Log } from "./audit.js";
 import { sha1 } from "./atomic.js";
 import { loadReference } from "./encode.js";
 import { readImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
 import { originalUrlFor } from "./analyse.js";
 import { installRestoreHandlers } from "./instrument.js";
+import { readReport } from "./report.js";
 import { scanFile } from "./scan.js";
 import { loadState, saveState, type StateEntry } from "./state.js";
 import { ssim, type RawImage } from "./ssim.js";
@@ -32,10 +33,21 @@ export interface VerifySample {
   ssim?: number;
 }
 
+export interface FormatCounts {
+  /** Samples that could be scored. */
+  usable: number;
+  /** Usable samples at or above the threshold. */
+  passing: number;
+}
+
 export interface Judgement {
   status: "verified" | "regressed" | "unmeasured";
-  /** Median SSIM of the usable samples per format. */
+  /** Set when `status` is unmeasured. */
+  reason?: string;
+  /** Median SSIM of the usable samples per judged format. */
   ssim: { avif?: number; webp?: number };
+  /** Usable and passing counts per judged format. */
+  counts: { avif?: FormatCounts; webp?: FormatCounts };
   /** Set for a regression when a quality raise can help: applied quality + tolerance, capped at the pre-apply quality. */
   raiseTo?: number;
 }
@@ -47,12 +59,12 @@ export interface VerifyRow {
   line: number;
   /** Median observed bytes per viewport name (default pass). */
   bytes: Record<string, number>;
+  /** Audit-time median bytes at the reference viewport, when the usage is in the audit report. */
+  beforeBytes?: number;
   judgement: Judgement;
 }
 
-const unique = <T>(items: Iterable<T>): T[] => [...new Set(items)];
-
-function median(values: number[]): number | undefined {
+export function median(values: number[]): number | undefined {
   if (values.length === 0) return undefined;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length / 2;
@@ -71,32 +83,55 @@ function raiseTarget(
   return target > applied.quality ? target : undefined;
 }
 
+/** Fewest usable samples a served format needs before it can be judged. */
+export const MIN_USABLE_SAMPLES = 5;
+
+export interface JudgeInput {
+  samples: VerifySample[];
+  /** Formats the page actually served for this usage (from the observed content-types). */
+  served: Format[];
+  /** Samples taken per format (`samplesPerComponent`); the minimum is the lesser of this and MIN_USABLE_SAMPLES. */
+  samplesPerComponent: number;
+  threshold: number;
+  tolerance: number;
+  applied: { sizes?: string; quality?: number };
+  before: { sizes?: string; quality?: number } | undefined;
+}
+
 /**
- * Decides an applied usage from its scored samples. A format is judged when it has at least one usable sample; the
- * usage is verified when every judged format has at least 95% of its usable samples at or above `threshold`, otherwise
- * regressed. With no usable sample in any format the usage is unmeasured and nothing is decided.
+ * Decides an applied usage from its scored samples. Every format the page served for the usage is judged, and each
+ * needs at least min(MIN_USABLE_SAMPLES, samplesPerComponent) usable samples, else the usage is unmeasured. It is
+ * verified when every judged format has at least 95% of its usable samples at or above `threshold`, otherwise
+ * regressed. Unusable samples never count against a format.
  */
-export function judgeVerification(
-  samples: VerifySample[],
-  threshold: number,
-  tolerance: number,
-  applied: { sizes?: string; quality?: number },
-  before: { sizes?: string; quality?: number } | undefined,
-): Judgement {
-  const medians: Judgement["ssim"] = {};
-  let judged = 0;
+export function judgeVerification(input: JudgeInput): Judgement {
+  const { samples, served, threshold } = input;
+  const minimum = Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent);
+  const formats = FORMATS.filter((format) => served.includes(format));
+  const judgement: Judgement = { status: "verified", ssim: {}, counts: {} };
+  if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
+
   let failed = false;
-  for (const format of FORMATS) {
+  for (const format of formats) {
     const usable = samples.flatMap((s) => (s.format === format && s.ssim !== undefined ? [s.ssim] : []));
-    if (usable.length === 0) continue;
-    judged++;
-    medians[format] = median(usable);
+    if (usable.length < minimum) {
+      return {
+        ...judgement,
+        status: "unmeasured",
+        reason: `insufficient ${format} samples: ${usable.length}`,
+      };
+    }
     const passing = usable.filter((value) => value >= threshold).length;
+    judgement.counts[format] = { usable: usable.length, passing };
+    judgement.ssim[format] = median(usable);
     if (passing * 100 < PASS_PERCENT * usable.length) failed = true;
   }
-  if (judged === 0) return { status: "unmeasured", ssim: medians };
-  if (!failed) return { status: "verified", ssim: medians };
-  return { status: "regressed", ssim: medians, raiseTo: raiseTarget(applied, before, tolerance) };
+  if (!failed) return judgement;
+  return {
+    ...judgement,
+    status: "regressed",
+    raiseTo: raiseTarget(input.applied, input.before, input.tolerance),
+  };
 }
 
 /** The format a served image is in, from its response content-type. */
@@ -225,23 +260,28 @@ const fmtBytes = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
 const fmtSsim = (value: number | undefined): string => (value === undefined ? "-" : value.toFixed(4));
 
 function statusOf(judgement: Judgement): string {
-  if (judgement.status === "unmeasured") return "not measured";
+  if (judgement.status === "unmeasured") return `not measured (${judgement.reason})`;
   if (judgement.status === "verified") return "verified";
   return judgement.raiseTo === undefined ? "regressed" : `regressed (raise quality to ${judgement.raiseTo})`;
 }
 
-/** Aligned text table: component, location, bytes now per viewport, SSIM per format, status. */
+/**
+ * Aligned text table: component, location, bytes before and now (reference viewport before, every viewport now), SSIM
+ * per format, status.
+ */
 export function renderVerifyTable(rows: VerifyRow[]): string {
-  const header = ["component", "location", "bytes now", "SSIM avif", "SSIM webp", "status"];
+  const header = ["component", "location", `bytes before (${REFERENCE_VIEWPORT})`, "bytes now", "SSIM avif", "SSIM webp", "status"];
   const body = rows.map((row) => {
     const viewports = Object.keys(row.bytes).sort((a, b) =>
       a === REFERENCE_VIEWPORT ? -1 : b === REFERENCE_VIEWPORT ? 1 : 0,
     );
-    const bytes = viewports.map((name) => `${name} ${fmtBytes(row.bytes[name])}`).join(", ") || "-";
+    const now = viewports.map((name) => `${name} ${fmtBytes(row.bytes[name])}`).join(", ") || "-";
+    const before = row.beforeBytes === undefined ? "-" : fmtBytes(row.beforeBytes);
     return [
       row.component,
       `${row.relFile}:${row.line}`,
-      bytes,
+      before,
+      now,
       fmtSsim(row.judgement.ssim.avif),
       fmtSsim(row.judgement.ssim.webp),
       statusOf(row.judgement),
@@ -255,6 +295,23 @@ export function renderVerifyTable(rows: VerifyRow[]): string {
 export interface VerifyOptions {
   log?: Log;
   fetchImpl?: typeof fetch;
+}
+
+/** Audit-time median bytes at the reference viewport, keyed by usage id; empty when there is no readable report. */
+async function auditBytes(projectDir: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const report = await readReport(projectDir).catch(() => undefined);
+  for (const result of report?.results ?? []) {
+    const bytes = result.current.bytesByViewport[REFERENCE_VIEWPORT];
+    if (bytes !== undefined) out.set(result.usageId, bytes);
+  }
+  return out;
+}
+
+/** Formats the page served for a usage, from the content-types of all its observations. */
+function servedFormats(observations: ImageObservation[]): Format[] {
+  const seen = new Set(observations.map((obs) => formatOfContentType(obs.contentType)));
+  return FORMATS.filter((format) => seen.has(format));
 }
 
 /**
@@ -299,9 +356,11 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
     return [];
   }
 
+  const beforeBytes = await auditBytes(projectDir);
   const imageConfig = readImageConfig(projectDir);
   const measured = await measureUsages(config, applied.map((a) => a.usage), imageConfig, log);
   const rows: VerifyRow[] = [];
+  const judged = new Map<string, { entry: StateEntry; judgement: Judgement; bytes: Record<string, number> }>();
   try {
     log(`checking ${applied.length} components`);
     const fetchOriginal = makeFetchOriginal(projectDir);
@@ -319,13 +378,24 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
           }
         }
       }
-      const judgement = judgeVerification(samples, config.threshold, config.tolerance, entry.applied, entry.before);
+      const judgement = judgeVerification({
+        samples,
+        served: servedFormats(observations),
+        samplesPerComponent: config.samplesPerComponent,
+        threshold: config.threshold,
+        tolerance: config.tolerance,
+        applied: entry.applied,
+        before: entry.before,
+      });
+      const bytes = bytesByViewport(observations);
+      judged.set(usage.id, { entry, judgement, bytes });
       rows.push({
         usageId: usage.id,
         component: usage.component,
         relFile: usage.relFile,
         line: usage.line,
-        bytes: bytesByViewport(observations),
+        bytes,
+        beforeBytes: beforeBytes.get(usage.id),
         judgement,
       });
     }
@@ -333,19 +403,26 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
     await measured.stop();
   }
 
+  // Judged entries get the new verdict; unmeasured ones lose any old verdict so the file never shows a stale one.
   const now = new Date().toISOString();
   const updated: StateEntry[] = [];
-  for (const row of rows) {
-    if (row.judgement.status === "unmeasured") continue;
-    const entry = applied.find((a) => a.usage.id === row.usageId)!.entry;
+  for (const { entry, judgement, bytes } of judged.values()) {
+    if (judgement.status === "unmeasured") {
+      if (entry.verification !== undefined) {
+        const { verification: _stale, ...withoutVerdict } = entry;
+        updated.push(withoutVerdict);
+      }
+      continue;
+    }
     updated.push({
       ...entry,
       verification: {
-        status: row.judgement.status,
+        status: judgement.status,
         at: now,
-        bytes: row.bytes,
-        ssim: row.judgement.ssim,
-        ...(row.judgement.raiseTo !== undefined ? { raiseTo: row.judgement.raiseTo } : {}),
+        bytes,
+        ssim: judgement.ssim,
+        counts: judgement.counts,
+        ...(judgement.raiseTo !== undefined ? { raiseTo: judgement.raiseTo } : {}),
       },
     });
   }

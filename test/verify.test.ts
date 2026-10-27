@@ -15,71 +15,100 @@ import type { StateEntry } from "../src/state.js";
 import type { ImageUsage } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
-const samples = (format: "avif" | "webp", values: (number | undefined)[]): VerifySample[] =>
-  values.map((ssim) => ({ format, ssim }));
-
 describe("judgeVerification", () => {
   const applied = { sizes: "33vw", quality: 70 };
   const before = { sizes: "100vw", quality: 90 };
+  const judge = (
+    list: VerifySample[],
+    served: ("avif" | "webp")[],
+    overrides: Partial<Parameters<typeof judgeVerification>[0]> = {},
+  ) =>
+    judgeVerification({
+      samples: list,
+      served,
+      samplesPerComponent: 20,
+      threshold: 0.975,
+      tolerance: 5,
+      applied,
+      before,
+      ...overrides,
+    });
+  const passing = (format: "avif" | "webp", count: number, ssim = 0.99) =>
+    Array.from({ length: count }, () => ({ format, ssim }));
 
-  it("verifies when at least 95% of the usable samples pass in every judged format", () => {
-    const passing = Array.from({ length: 19 }, () => 0.99);
-    const verdict = judgeVerification([...samples("webp", [...passing, 0.9])], 0.975, 5, applied, before);
+  it("verifies when at least 95% of the usable samples pass in the served format", () => {
+    const verdict = judge([...passing("webp", 19), { format: "webp", ssim: 0.9 }], ["webp"]);
     expect(verdict.status).toBe("verified");
     expect(verdict.ssim.webp).toBeCloseTo(0.99, 5);
     expect(verdict.ssim.avif).toBeUndefined();
+    expect(verdict.counts).toEqual({ webp: { usable: 20, passing: 19 } });
   });
 
   it("regresses when fewer than 95% of the usable samples reach the threshold", () => {
-    const values = [...Array.from({ length: 18 }, () => 0.99), 0.9, 0.9];
-    const verdict = judgeVerification(samples("webp", values), 0.975, 5, applied, before);
+    const verdict = judge([...passing("webp", 18), { format: "webp", ssim: 0.9 }, { format: "webp", ssim: 0.9 }], ["webp"]);
     expect(verdict.status).toBe("regressed");
     expect(verdict.raiseTo).toBe(75);
+    expect(verdict.counts.webp).toEqual({ usable: 20, passing: 18 });
   });
 
-  it("requires both formats when both are judged", () => {
-    const good = samples("avif", [0.99, 0.99, 0.99]);
-    const badWebp = samples("webp", [0.5, 0.5]);
-    const verdict = judgeVerification([...good, ...badWebp], 0.975, 5, applied, before);
+  it("requires every served format to pass", () => {
+    const verdict = judge([...passing("avif", 5), ...passing("webp", 5, 0.5)], ["avif", "webp"]);
     expect(verdict.status).toBe("regressed");
     expect(verdict.ssim.avif).toBeCloseTo(0.99, 5);
     expect(verdict.ssim.webp).toBeCloseTo(0.5, 5);
   });
 
-  it("leaves unusable samples out of the share and the medians", () => {
-    const verdict = judgeVerification(
-      [...samples("webp", [0.99, undefined, undefined, 0.98])],
-      0.975,
-      5,
-      applied,
-      before,
-    );
-    expect(verdict.status).toBe("verified");
-    expect(verdict.ssim.webp).toBeCloseTo(0.985, 5);
+  it("is unmeasured when a served format has fewer than the minimum usable samples", () => {
+    const verdict = judge([...passing("webp", 1), { format: "webp" }], ["webp"]);
+    expect(verdict.status).toBe("unmeasured");
+    expect(verdict.reason).toBe("insufficient webp samples: 1");
   });
 
-  it("is unmeasured when no sample is usable", () => {
-    const verdict = judgeVerification(samples("webp", [undefined]), 0.975, 5, applied, before);
-    expect(verdict).toEqual({ status: "unmeasured", ssim: {} });
+  it("verifies a webp-only page with 6 passing samples (minimum is 5)", () => {
+    const verdict = judge(passing("webp", 6), ["webp"]);
+    expect(verdict.status).toBe("verified");
+    expect(verdict.counts.webp).toEqual({ usable: 6, passing: 6 });
+  });
+
+  it("is unmeasured when avif is served but has too few usable samples, even if webp is fine", () => {
+    const verdict = judge([...passing("webp", 20), ...passing("avif", 2)], ["avif", "webp"]);
+    expect(verdict.status).toBe("unmeasured");
+    expect(verdict.reason).toBe("insufficient avif samples: 2");
+  });
+
+  it("uses the lesser of 5 and samplesPerComponent as the minimum", () => {
+    expect(judge(passing("webp", 3), ["webp"], { samplesPerComponent: 3 }).status).toBe("verified");
+    expect(judge(passing("webp", 2), ["webp"], { samplesPerComponent: 3 }).reason).toBe("insufficient webp samples: 2");
+  });
+
+  it("does not count unusable samples toward the minimum", () => {
+    const verdict = judge([...passing("webp", 4), { format: "webp" }, { format: "webp" }], ["webp"]);
+    expect(verdict.status).toBe("unmeasured");
+    expect(verdict.reason).toBe("insufficient webp samples: 4");
+  });
+
+  it("is unmeasured when the page served neither avif nor webp", () => {
+    expect(judge([], []).status).toBe("unmeasured");
+    expect(judge([], []).reason).toBe("no avif or webp image served");
   });
 
   it("caps the raise at the pre-apply quality", () => {
-    const verdict = judgeVerification(samples("avif", [0.5]), 0.975, 5, { quality: 80 }, { quality: 82 });
+    const verdict = judge(passing("webp", 5, 0.5), ["webp"], { applied: { quality: 80 }, before: { quality: 82 } });
     expect(verdict.raiseTo).toBe(82);
   });
 
   it("assumes 100 as the cap when the pre-apply quality is absent", () => {
-    const verdict = judgeVerification(samples("avif", [0.5]), 0.975, 5, { quality: 80 }, undefined);
+    const verdict = judge(passing("webp", 5, 0.5), ["webp"], { applied: { quality: 80 }, before: undefined });
     expect(verdict.raiseTo).toBe(85);
   });
 
   it("gives no raise when the applied quality is absent or already at the cap", () => {
-    expect(judgeVerification(samples("avif", [0.5]), 0.975, 5, { sizes: "50vw" }, before).raiseTo).toBeUndefined();
-    expect(judgeVerification(samples("avif", [0.5]), 0.975, 5, { quality: 90 }, { quality: 90 }).raiseTo).toBeUndefined();
+    expect(judge(passing("webp", 5, 0.5), ["webp"], { applied: { sizes: "50vw" } }).raiseTo).toBeUndefined();
+    expect(judge(passing("webp", 5, 0.5), ["webp"], { applied: { quality: 90 }, before: { quality: 90 } }).raiseTo).toBeUndefined();
   });
 
   it("does not raise when the cap is below the applied quality", () => {
-    expect(judgeVerification(samples("avif", [0.5]), 0.975, 5, { quality: 80 }, { quality: 60 }).raiseTo).toBeUndefined();
+    expect(judge(passing("webp", 5, 0.5), ["webp"], { applied: { quality: 80 }, before: { quality: 60 } }).raiseTo).toBeUndefined();
   });
 });
 
@@ -223,11 +252,22 @@ describe("bytesByViewport and renderVerifyTable", () => {
         relFile: "src/a.tsx",
         line: 12,
         bytes: { desktop: 4096, "iphone-15": 2048 },
-        judgement: { status: "regressed", ssim: { webp: 0.9 }, raiseTo: 80 },
+        beforeBytes: 8192,
+        judgement: { status: "regressed", ssim: { webp: 0.9 }, counts: { webp: { usable: 20, passing: 10 } }, raiseTo: 80 },
+      },
+      {
+        usageId: "b:1:1",
+        component: "Hero",
+        relFile: "src/b.tsx",
+        line: 3,
+        bytes: {},
+        judgement: { status: "unmeasured", reason: "insufficient webp samples: 1", ssim: {}, counts: {} },
       },
     ]);
-    const [, row] = table.split("\n");
+    const [, row, unmeasured] = table.split("\n");
+    expect(row).toContain("8.0 KB");
     expect(row).toContain("iphone-15 2.0 KB, desktop 4.0 KB");
+    expect(unmeasured).toContain("not measured (insufficient webp samples: 1)");
     expect(row).toContain("regressed (raise quality to 80)");
     expect(row).toContain("src/a.tsx:12");
   });
