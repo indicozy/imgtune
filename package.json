@@ -1,0 +1,30 @@
+{
+  "name": "imgtune",
+  "version": "0.1.0",
+  "description": "Measures images in a Next.js app and tunes next/image sizes and quality",
+  "type": "module",
+  "bin": {
+    "imgtune": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "packageManager": "pnpm@10.8.0",
+  "dependencies": {
+    "fast-xml-parser": "^5.11.2",
+    "playwright": "^1.64.1",
+    "sharp": "^0.35.5",
+    "typescript": "^7.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "vitest": "^5.0.5"
+  }
+}
