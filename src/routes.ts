@@ -16,6 +16,7 @@ export interface RouteIndex {
   routesByFile: Map<string, RoutePattern[]>;
 }
 
+const NO_INPUTS_FOUND = 18003;
 const ROUTE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 /** `(group)` segments; intercepting segments such as `(.)photo` or `(..)(..)x` are kept. */
 const ROUTE_GROUP = /^\((?!\.)[^()]*\)$/;
@@ -59,9 +60,19 @@ function compilerOptions(projectDir: string): ts.CompilerOptions {
   const configFile = join(projectDir, "tsconfig.json");
   if (existsSync(configFile)) {
     const read = ts.readConfigFile(configFile, ts.sys.readFile);
-    if (!read.error) {
-      options = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configFile)).options;
+    if (read.error) {
+      throw new Error(
+        `${ts.flattenDiagnosticMessageText(read.error.messageText, "\n")} (${configFile})`,
+      );
     }
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configFile));
+    for (const diagnostic of parsed.errors) {
+      // 18003: "No inputs were found" is expected for a tsconfig that only sets compilerOptions.
+      if (diagnostic.code === NO_INPUTS_FOUND) continue;
+      const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+      console.warn(`imgtune: tsconfig: ${message} (${configFile})`);
+    }
+    options = parsed.options;
   }
   return {
     ...options,

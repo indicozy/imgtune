@@ -134,6 +134,7 @@ describe("listSourceFiles", () => {
     ".next/server.js",
     "dist/out.js",
     "build/b.js",
+    "src/build/x.tsx",
     "storybook-static/x.js",
     ".imgtune/cache.js",
   ];
@@ -153,12 +154,13 @@ describe("listSourceFiles", () => {
     await rm(tree, { recursive: true, force: true });
   });
 
-  it("returns source files and skips build, vendor and test/story files", async () => {
+  it("skips build output only at the project root, not nested build directories", async () => {
     const files = await listSourceFiles(tree, ["."]);
     expect(files.map((f) => f.slice(tree.length + 1)).sort()).toEqual([
       "app/page.tsx",
       "components/util.ts",
       "lib/helper.jsx",
+      "src/build/x.tsx",
     ]);
     expect(files.every((f) => f.startsWith(tree))).toBe(true);
   });

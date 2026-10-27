@@ -15,6 +15,7 @@ const PLP = {
 const ABOUT = { pattern: "/[store]/about", pageFile: src("app/[store]/about/page.tsx") };
 const FAQ = { pattern: "/[store]/faq", pageFile: src("app/[store]/@sidebar/faq/page.tsx") };
 const HOME = { pattern: "/", pageFile: src("app/page.tsx") };
+const BUILD = { pattern: "/build", pageFile: src("app/build/page.tsx") };
 
 const byPageFile = <T extends { pageFile: string }>(a: T, b: T) =>
   a.pageFile.localeCompare(b.pageFile);
@@ -23,6 +24,11 @@ describe("findRoutesForFiles", () => {
   it("maps a component to the page that imports it through the alias chain", async () => {
     const routes = await findRoutesForFiles(PROJECT, [src("components/Card.tsx")]);
     expect(routes).toEqual([PLP]);
+  });
+
+  it("keeps a nested build directory under app/ as a route", async () => {
+    const routes = await findRoutesForFiles(PROJECT, [src("components/Badge.tsx")]);
+    expect(routes).toEqual([BUILD]);
   });
 
   it("finds a file that is only reached through a next/dynamic import()", async () => {
@@ -66,6 +72,23 @@ describe("buildRouteIndex", () => {
     expect(index.routesFor(src("components/Card.tsx"))).toEqual([PLP]);
     expect(index.routesFor(resolve(PROJECT, "..", "elsewhere.tsx"))).toEqual([]);
     expect(index.routesByFile.get(src("components/Lazy.tsx"))).toEqual([HOME]);
+  });
+});
+
+describe("malformed tsconfig", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "imgtune-routes-bad-"));
+    writeFileSync(join(dir, "tsconfig.json"), `{ "compilerOptions": { "paths": `);
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("throws, naming the tsconfig path", async () => {
+    await expect(findRoutesForFiles(dir, [])).rejects.toThrow(join(dir, "tsconfig.json"));
   });
 });
 

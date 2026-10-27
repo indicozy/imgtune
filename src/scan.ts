@@ -5,14 +5,10 @@ import ts from "typescript";
 import type { ImageUsage, PropInfo } from "./types.js";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx"];
-const SKIPPED_DIRS = new Set([
-  "node_modules",
-  ".next",
-  "dist",
-  "build",
-  "storybook-static",
-  ".imgtune",
-]);
+/** Skipped at any depth. */
+const SKIPPED_DIRS = new Set(["node_modules", ".imgtune"]);
+/** Skipped only as direct children of the project root (build output); `src/build/` is source. */
+const SKIPPED_ROOT_DIRS = new Set([".next", "dist", "build", "storybook-static"]);
 const SKIPPED_FILE = /\.(test|stories)\.[^.]+$/;
 const NEXT_IMAGE_MODULE = "next/image";
 
@@ -23,11 +19,14 @@ function isSourceFile(name: string): boolean {
   return SOURCE_EXTENSIONS.some((ext) => name.endsWith(ext)) && !SKIPPED_FILE.test(name);
 }
 
-async function collect(dir: string, out: string[]): Promise<void> {
+async function collect(dir: string, projectDir: string, out: string[]): Promise<void> {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIPPED_DIRS.has(entry.name)) await collect(abs, out);
+      const skipped =
+        SKIPPED_DIRS.has(entry.name) ||
+        (dir === projectDir && SKIPPED_ROOT_DIRS.has(entry.name));
+      if (!skipped) await collect(abs, projectDir, out);
     } else if (entry.isFile() && isSourceFile(entry.name)) {
       out.push(abs);
     }
@@ -36,11 +35,12 @@ async function collect(dir: string, out: string[]): Promise<void> {
 
 /** Absolute paths of the source files under `paths` (resolved against `projectDir`). */
 export async function listSourceFiles(projectDir: string, paths: string[]): Promise<string[]> {
+  const root = resolve(projectDir);
   const out: string[] = [];
   for (const p of paths) {
-    const abs = resolve(projectDir, p);
+    const abs = resolve(root, p);
     if ((await stat(abs)).isDirectory()) {
-      await collect(abs, out);
+      await collect(abs, root, out);
     } else if (isSourceFile(abs)) {
       out.push(abs);
     }
