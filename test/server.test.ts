@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -140,6 +141,22 @@ describe("detectRunningDevServer", () => {
     }
   });
 
+  it("ignores a next start process (only next dev counts)", async () => {
+    if (process.platform !== "linux") return;
+    const dir = makeProject();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "next", "start"], {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    children.push(child);
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      expect(detectRunningDevServer(dir)).toEqual({ running: false });
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
   it("reports nothing for a project with no lock file and no next dev process", () => {
     expect(detectRunningDevServer(makeProject())).toEqual({ running: false });
   });
@@ -171,6 +188,20 @@ describe("startNext", () => {
     expect(res.status).toBe(200);
     await server.stop();
     await expect(fetch(`${server.baseUrl}/`)).rejects.toThrow();
+  });
+
+  it("rejects a port another server already holds", async () => {
+    const dir = makeProject();
+    const occupier = createHttpServer((req, res) => res.end("other"));
+    await new Promise<void>((r) => occupier.listen(0, "127.0.0.1", () => r()));
+    const port = (occupier.address() as AddressInfo).port;
+    try {
+      await expect(
+        startNext(dir, port, [process.execPath, join(FIXTURES, "serve.mjs")]),
+      ).rejects.toThrow(`port ${port} is already in use; pass --port <free port>`);
+    } finally {
+      await new Promise((r) => occupier.close(r));
+    }
   });
 
   it("fails fast with the exit code and output when the command exits early", async () => {

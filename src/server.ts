@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 
@@ -8,6 +9,7 @@ const READY_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 1_000;
 const REQUEST_TIMEOUT_MS = 5_000;
 const KILL_GRACE_MS = 5_000;
+const MAX_PARTIAL_LINE = 4096;
 
 const LOCKFILE_COMMANDS: { files: string[]; command: string[] }[] = [
   { files: ["pnpm-lock.yaml"], command: ["pnpm", "exec", "next", "dev"] },
@@ -69,6 +71,7 @@ export async function startNext(
 ): Promise<StartedNext> {
   const [bin, ...args] = command;
   if (!bin) throw new Error("dev command is empty");
+  await assertPortFree(port);
 
   const child = spawn(bin, [...args, "-p", String(port)], {
     cwd: projectDir,
@@ -112,9 +115,16 @@ export async function startNext(
     if (exit.done) {
       return fail(`dev command exited before the server was ready (${exit.description})`);
     }
-    if (await respondsOverHttp(`${baseUrl}/`)) return { baseUrl, stop };
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       return fail(`timed out after ${timeoutMs} ms waiting for ${baseUrl}/`);
+    }
+    if (await respondsOverHttp(`${baseUrl}/`, Math.min(REQUEST_TIMEOUT_MS, remaining))) {
+      // A response only means ours if the child is still running.
+      if (exit.done) {
+        return fail(`dev command exited before the server was ready (${exit.description})`);
+      }
+      return { baseUrl, stop };
     }
     await sleep(POLL_INTERVAL_MS);
   }
@@ -158,7 +168,6 @@ function detectFromProc(projectDir: string): RunningDevServer | undefined {
 }
 
 function isNextDevCmdline(cmdline: string): boolean {
-  if (cmdline.includes("next-server")) return true;
   return /\bnext\b/.test(cmdline) && /\bdev\b/.test(cmdline);
 }
 
@@ -188,11 +197,11 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-async function respondsOverHttp(url: string): Promise<boolean> {
+async function respondsOverHttp(url: string, timeoutMs: number): Promise<boolean> {
   try {
     const res = await fetch(url, {
       redirect: "manual",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     void res.body?.cancel().catch(() => undefined);
     return true;
@@ -225,6 +234,10 @@ function tailStream(stream: Readable | null, tail: LineTail): void {
     const parts = (partial + chunk).split(/\r?\n/);
     partial = parts.pop() ?? "";
     for (const line of parts) tail.push(line);
+    if (partial.length > MAX_PARTIAL_LINE) {
+      tail.push(partial);
+      partial = "";
+    }
   });
   stream.on("end", () => {
     if (partial) tail.push(partial);
@@ -239,6 +252,28 @@ async function waitFor(done: () => boolean, timeoutMs: number): Promise<boolean>
     await sleep(100);
   }
   return true;
+}
+
+/** Rejects when another process already listens on `port` on any common address. */
+async function assertPortFree(port: number): Promise<void> {
+  for (const host of [undefined, "127.0.0.1", "0.0.0.0", "::"]) {
+    const inUse = await isPortInUse(port, host);
+    if (inUse) {
+      throw new Error(`port ${port} is already in use; pass --port <free port>`);
+    }
+  }
+}
+
+function isPortInUse(port: number, host: string | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe: Server = createServer();
+    probe.once("error", (err: NodeJS.ErrnoException) => {
+      resolve(err.code === "EADDRINUSE");
+    });
+    probe.listen({ port, host, exclusive: true }, () => {
+      probe.close(() => resolve(false));
+    });
+  });
 }
 
 function sleep(ms: number): Promise<void> {
