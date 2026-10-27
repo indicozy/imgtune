@@ -11,6 +11,5 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
-  "exclude": ["test/fixtures/next-config-shop"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

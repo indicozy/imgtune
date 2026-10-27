@@ -87,7 +87,7 @@ function readImagesObject(obj: ts.ObjectLiteralExpression, sf: ts.SourceFile, co
     if (!values.has(name)) return undefined;
     const node = values.get(name);
     const value = node && reader(node);
-    if (value === undefined) config.warnings.push(`images.${name} is not a literal list; treated as absent`);
+    if (value === undefined) config.warnings.push(`images.${name} is not a literal; treated as absent`);
     return value;
   };
 

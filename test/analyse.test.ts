@@ -6,6 +6,7 @@ import { encode, loadReference, type EncoderProfile } from "../src/encode.js";
 import type { ImageObservation } from "../src/measure.js";
 import { readImageConfig, type ImageConfig } from "../src/nextconfig.js";
 import type { ImageUsage, ImgtuneConfig, PropInfo } from "../src/types.js";
+import type { RawImage } from "../src/ssim.js";
 import { gradientNoise } from "./image-fixtures.js";
 
 const BASE = "http://localhost:3999";
@@ -214,7 +215,7 @@ describe("analyse", () => {
     const calls: { n: number; width: number; q: number; formats: string[] }[] = [];
     const confirm: NonNullable<AnalyseOptions["confirm"]> = async (samples, q, formats) => {
       calls.push({ n: samples.length, width: samples[0].width, q, formats });
-      return { confirmed: true, ssim: { webp: 0.99 } };
+      return { confirmed: true, ssim: { webp: 0.99 }, bytes: { webp: 1234 } };
     };
     const [r] = await analyse(
       [usage()],
@@ -229,8 +230,107 @@ describe("analyse", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({ n: 3, width: 1200, q: r.proposed.quality, formats: ["webp"] });
     expect(r.estimated).toBe(false);
+    expect(r.proposed.projectedBytes).toBe(1234);
     expect(r.notes).not.toContain("estimated: not confirmed against /_next/image");
   });
+
+  it("keeps the local projection and estimated when the confirmation does not pass", async () => {
+    const confirm: NonNullable<AnalyseOptions["confirm"]> = async () => ({
+      confirmed: false,
+      ssim: { webp: 0.8 },
+      bytes: { webp: 1234 },
+    });
+    const [r] = await analyse(
+      [usage()],
+      await nextDefaultObservations(),
+      nextConfig,
+      cfg,
+      BASE,
+      fetchStub,
+      silent({ confirm }),
+    );
+
+    expect(r.estimated).toBe(true);
+    expect(r.proposed.projectedBytes).toBeDefined();
+    expect(r.proposed.projectedBytes).not.toBe(1234);
+  });
+
+  it("counts only rendered observations for instances and bytes", async () => {
+    const base = await nextDefaultObservations();
+    const unrendered = observation({
+      viewport: "iphone-15",
+      src: SRC[0],
+      page: "/hidden",
+      natural: 0,
+      rendered: 0,
+      currentSrc: nextSrc(SRC[0], 1200, 85),
+    });
+    const [withHidden] = await analyse([usage()], [...base, unrendered], nextConfig, cfg, BASE, fetchStub, silent());
+    const [plain] = await analyse([usage()], base, nextConfig, cfg, BASE, fetchStub, silent());
+
+    expect(withHidden.instances).toBe(3);
+    expect(withHidden.current.medianBytes).toBe(plain.current.medianBytes);
+    expect(withHidden.current.medianWidth).toBe(plain.current.medianWidth);
+    expect(withHidden.current.format).toBe("image/webp");
+  });
+
+  it("notes the assumed quality when neither a literal nor the URL gives one", async () => {
+    const noQuality = (await nextDefaultObservations()).map((o) => ({ ...o, currentSrc: "/static/x.jpg" }));
+    const failing = async (url: string): Promise<Buffer> => {
+      throw new Error(`unreachable ${url}`);
+    };
+    const [r] = await analyse([usage()], noQuality, nextConfig, cfg, BASE, failing, silent());
+
+    expect(r.current.quality).toBe(75);
+    expect(r.notes).toContain("current quality assumed 75 (not found in props or URL)");
+  });
+
+  it("projects cdn bytes per sample from known byte counts", async () => {
+    // Stub encoder: bytes = quality * 1000 + reference width; SSIM always passes, so the search goes to its floor.
+    const deps = {
+      encode: (async (ref: RawImage, _format: string, q: number) => ({
+        bytes: q * 1000 + ref.width,
+        decoded: ref,
+        buffer: Buffer.alloc(0),
+      })) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
+      ssim: () => 1,
+    };
+    // The CDN served quality 85 whose stub size is 85000 + 320 (the reference width after loading).
+    const served = 85 * 1000 + 320;
+    const observations = [
+      ...SRC.map((src) =>
+        observation({
+          viewport: "iphone-15",
+          src,
+          natural: 1200,
+          rendered: 393,
+          bytes: served,
+          contentType: "image/avif",
+          currentSrc: `https://shop-cdn.example.com/cdn-cgi/image/width=1200,quality=85,format=auto/${src}`,
+        }),
+      ),
+      ...SRC.map((src) =>
+        observation({
+          viewport: "iphone-15",
+          src,
+          natural: 1200,
+          rendered: 393,
+          accept: "webp",
+          bytes: served,
+          contentType: "image/webp",
+          currentSrc: `https://shop-cdn.example.com/cdn-cgi/image/width=1200,quality=85,format=auto/${src}`,
+        }),
+      ),
+    ];
+    const [r] = await analyse([usage()], observations, cdnConfig, cfg, BASE, fetchStub, silent({ deps }));
+
+    // Bisection with an always-passing SSIM: AVIF settles at 28, WebP at 45 (offsets 0). The larger, 45, is proposed.
+    expect(r.proposed.quality).toBe(45);
+    // Projection: observed 85320 x (stub bytes at 45 / stub bytes at 85) = 45320, per sample.
+    expect(r.proposed.projectedBytes).toBe(45320);
+    expect(r.current.medianBytes).toBe(served);
+    expect(r.savedBytesTotal).toBe((served - 45320) * 3);
+  }, CDN_TIMEOUT_MS);
 
   it("proposes quality for a cdn component once AVIF and WebP are calibrated, and stays estimated", async () => {
     const [r] = await analyse(

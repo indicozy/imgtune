@@ -55,7 +55,7 @@ export interface AnalyseOptions {
     samples: { src: string; ref: RawImage; width: number }[],
     q: number,
     formats: Format[],
-  ) => Promise<{ confirmed: boolean; ssim: { avif?: number; webp?: number } } | undefined>;
+  ) => Promise<{ confirmed: boolean; ssim: { avif?: number; webp?: number }; bytes: { avif?: number; webp?: number } } | undefined>;
   deps?: SearchDeps;
   log?: (msg: string) => void;
 }
@@ -155,7 +155,9 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const rendered = defaultObs.filter((o) => o.renderedWidth >= 1);
   const sizesLiteral = literalString(usage.props.sizes);
   const widthLiteral = literalNumber(usage.props.width);
-  const quality = literalNumber(usage.props.quality) ?? currentQualityFromSrc(usageObs) ?? DEFAULT_QUALITY;
+  const literalQuality = literalNumber(usage.props.quality);
+  const urlQuality = currentQualityFromSrc(usageObs);
+  const quality = literalQuality ?? urlQuality ?? DEFAULT_QUALITY;
 
   const result: ComponentResult = {
     usageId: usage.id,
@@ -180,27 +182,32 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     return result;
   }
 
+  if (literalQuality === undefined && urlQuality === undefined) {
+    notes.push(`current quality assumed ${DEFAULT_QUALITY} (not found in props or URL)`);
+  }
+
   // Reference viewport: iphone-15 when measured, else the first mobile viewport, else the first viewport.
   const names = unique(rendered.map((o) => o.viewport));
   const refName = names.includes("iphone-15")
     ? "iphone-15"
     : (rendered.find((o) => o.mobile)?.viewport ?? names[0]);
   const refRendered = rendered.filter((o) => o.viewport === refName);
-  const refAll = defaultObs.filter((o) => o.viewport === refName);
+  // Bytes, width and format come from the rendered observations that also have a byte count.
+  const refMeasured = refRendered.filter((o) => o.bytes !== undefined);
   const refSlot = median(refRendered.map((o) => o.renderedWidth)) ?? 0;
   const refDpr = refRendered[0].dpr;
-  const medianBytes = median(refAll.flatMap((o) => (o.bytes === undefined ? [] : [o.bytes])));
-  const medianWidth = median(refAll.flatMap((o) => (o.naturalWidth > 0 ? [o.naturalWidth] : [])));
-  result.instances = refAll.length;
+  const medianBytes = median(refMeasured.flatMap((o) => (o.bytes === undefined ? [] : [o.bytes])));
+  const medianWidth = median(refMeasured.flatMap((o) => (o.naturalWidth > 0 ? [o.naturalWidth] : [])));
+  result.instances = refRendered.length;
   result.current = {
     ...result.current,
     medianBytes,
     medianWidth,
-    format: mode(refAll.flatMap((o) => (o.contentType ? [o.contentType] : []))),
+    format: mode(refMeasured.flatMap((o) => (o.contentType ? [o.contentType] : []))),
   };
 
   if (usage.tag === "img") {
-    return plainImg(result, refAll, refSlot, refDpr);
+    return plainImg(result, refRendered, refSlot, refDpr);
   }
 
   const sizesManual =
@@ -250,47 +257,56 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const served: Format = result.servedFormats.includes("avif") ? "avif" : "webp";
   const projectionFormat: Format = ctx.profile === "cdn" ? "avif" : served;
 
-  const projectedBytes: number[] = [];
-  const projectedRatios: number[] = [];
-  const ssims: number[] = [];
-  for (const sample of search.samples) {
-    const projected = await evaluate(ctx, sample.buffer, projectionFormat, qNew, evalWidth, search.offsets);
-    if (projected) {
-      if (ctx.profile === "cdn") {
-        const baseline = await evaluate(ctx, sample.buffer, projectionFormat, quality, medianWidth ?? width, search.offsets);
-        if (baseline && baseline.bytes > 0) projectedRatios.push(projected.bytes / baseline.bytes);
-      } else {
-        projectedBytes.push(projected.bytes);
-      }
-    }
-    const scored = projectionFormat === served ? projected : await evaluate(ctx, sample.buffer, served, qNew, evalWidth, search.offsets);
-    if (scored) ssims.push(scored.ssim);
+  // Observed reference-viewport bytes per original, for cdn projection (samples without one are skipped).
+  const observedBySrc = new Map<string, number>();
+  for (const src of unique(refMeasured.map((o) => o.originalSrc ?? ""))) {
+    const m = median(refMeasured.flatMap((o) => (o.originalSrc === src ? [o.bytes as number] : [])));
+    if (src && m !== undefined) observedBySrc.set(src, m);
   }
 
-  let projected: number | undefined;
-  if (ctx.profile === "cdn") {
-    const ratio = median(projectedRatios);
-    if (medianBytes !== undefined && ratio !== undefined) projected = medianBytes * ratio;
-  } else {
-    projected = median(projectedBytes);
+  const projectedPerSample: number[] = [];
+  const ssims: number[] = [];
+  for (const sample of search.samples) {
+    try {
+      const projected = await evaluate(ctx, sample.buffer, projectionFormat, qNew, evalWidth, search.offsets);
+      if (ctx.profile === "cdn") {
+        const observed = observedBySrc.get(sample.src);
+        const baseline = await evaluate(ctx, sample.buffer, projectionFormat, quality, medianWidth ?? width, search.offsets);
+        if (projected && baseline && baseline.bytes > 0 && observed !== undefined) {
+          projectedPerSample.push(observed * (projected.bytes / baseline.bytes));
+        }
+      } else if (projected) {
+        projectedPerSample.push(projected.bytes);
+      }
+      const scored = projectionFormat === served ? projected : await evaluate(ctx, sample.buffer, served, qNew, evalWidth, search.offsets);
+      if (scored) ssims.push(scored.ssim);
+    } catch (err) {
+      logOnce(ctx, `projection ${sample.src}`, `skipping projection for ${sample.src}: ${message(err)}`);
+    }
   }
-  result.proposed.projectedBytes = projected;
   result.proposed.ssim = median(ssims);
+
+  let projected = median(projectedPerSample);
+  let estimated = true;
+  if (ctx.profile === "next-default") {
+    if (!ctx.opts.confirm) {
+      notes.push(NOTE_NOT_CONFIRMED);
+    } else if (proposedQuality !== undefined && search.samples.length > 0) {
+      // A confirmed result uses the served bytes of the primary format (AVIF when searched, else WebP).
+      const primary: Format = ctx.searchFormats.includes("avif") ? "avif" : "webp";
+      const outcome = await confirmQuality(ctx, search.samples, proposedQuality, width);
+      const confirmedBytes = outcome?.confirmed ? outcome.bytes[primary] : undefined;
+      if (confirmedBytes !== undefined) {
+        projected = confirmedBytes;
+        estimated = false;
+      }
+    }
+  }
+  result.estimated = estimated;
+  result.proposed.projectedBytes = projected;
 
   if (projected !== undefined && medianBytes !== undefined) {
     result.savedBytesTotal = Math.max(0, medianBytes - projected) * result.instances;
-  }
-
-  if (ctx.profile === "cdn") {
-    result.estimated = true;
-  } else if (!ctx.opts.confirm) {
-    notes.push(NOTE_NOT_CONFIRMED);
-    result.estimated = true;
-  } else {
-    result.estimated = true;
-    if (proposedQuality !== undefined && search.samples.length > 0) {
-      result.estimated = !(await confirmQuality(ctx, search.samples, proposedQuality, width));
-    }
   }
 
   return result;
@@ -419,20 +435,25 @@ async function evaluate(
   return { bytes: enc.bytes, ssim: (ctx.deps.ssim ?? ssim)(ref, enc.decoded) };
 }
 
-/** `/_next/image` confirmation for a next-default quality. Failures are logged and leave the result estimated. */
-async function confirmQuality(ctx: Context, samples: Sample[], q: number, width: number): Promise<boolean> {
+/** `/_next/image` confirmation for a next-default quality. Failures are logged and yield no outcome. */
+async function confirmQuality(
+  ctx: Context,
+  samples: Sample[],
+  q: number,
+  width: number,
+): Promise<{ confirmed: boolean; bytes: { avif?: number; webp?: number } } | undefined> {
   const confirm = ctx.opts.confirm;
-  if (!confirm) return false;
+  if (!confirm) return undefined;
   try {
     const picked = [];
     for (const s of samples.slice(0, CONFIRM_SAMPLES)) {
       picked.push({ src: s.src, ref: await loadReference(s.buffer, width), width });
     }
     const outcome = await confirm(picked, q, ctx.searchFormats);
-    return outcome?.confirmed === true;
+    return outcome && { confirmed: outcome.confirmed, bytes: outcome.bytes };
   } catch (err) {
     ctx.log(`confirmation failed: ${message(err)}`);
-    return false;
+    return undefined;
   }
 }
 

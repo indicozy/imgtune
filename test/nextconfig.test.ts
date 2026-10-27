@@ -38,7 +38,7 @@ describe("readImageConfig", () => {
   it("finds images inside a wrapper call, reads literal arrays and treats a variable as absent with a warning", () => {
     const config = readImageConfig(fixture("next-config-dynamic"));
     expect(config.deviceSizes).toEqual([640, 750, 828, 1080, 1200, 1920, 2048, 3840]);
-    expect(config.warnings).toEqual(["images.deviceSizes is not a literal list; treated as absent"]);
+    expect(config.warnings).toEqual(["images.deviceSizes is not a literal; treated as absent"]);
     expect(config.imageSizes).toEqual([16, 48]);
     expect(config.formats).toEqual(["image/avif", "image/webp"]);
     expect(config.qualities).toEqual([60, 90]);
