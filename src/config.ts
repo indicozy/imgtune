@@ -156,10 +156,16 @@ async function readConfigFile(projectDir: string): Promise<FileConfig> {
     throw new Error(`${file} must contain a JSON object`);
   }
 
-  const fileConfig = parsed as FileConfig;
-  if (fileConfig.quality !== undefined) parseQuality(fileConfig.quality, CONFIG_FILE);
-  if (fileConfig.threshold !== undefined) parseThreshold(fileConfig.threshold, CONFIG_FILE);
-  if (fileConfig.port !== undefined) parsePort(fileConfig.port, CONFIG_FILE);
+  const fileConfig: FileConfig = { ...(parsed as FileConfig) };
+  if (fileConfig.quality !== undefined) {
+    fileConfig.quality = parseQuality(fileConfig.quality, CONFIG_FILE);
+  }
+  if (fileConfig.threshold !== undefined) {
+    fileConfig.threshold = parseThreshold(fileConfig.threshold, CONFIG_FILE);
+  }
+  if (fileConfig.port !== undefined) {
+    fileConfig.port = parsePort(fileConfig.port, CONFIG_FILE);
+  }
   return fileConfig;
 }
 

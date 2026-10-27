@@ -4,6 +4,7 @@ import { loadConfig } from "../src/config.js";
 
 const EMPTY = resolve(import.meta.dirname, "fixtures/empty");
 const WITH_CONFIG = resolve(import.meta.dirname, "fixtures/with-config");
+const STRING_VALUES = resolve(import.meta.dirname, "fixtures/string-values");
 
 describe("loadConfig", () => {
   it("defaults", async () => {
@@ -34,6 +35,14 @@ describe("loadConfig", () => {
     const { config } = await loadConfig(["audit", "--port", "4200"], WITH_CONFIG);
     expect(config.urls).toEqual({ "/[store]/[...p]": ["/ae-en/x"] });
     expect(config.port).toBe(4200);
+  });
+
+  it("string port and threshold in file come back as numbers", async () => {
+    const { config } = await loadConfig(["audit"], STRING_VALUES);
+    expect(config.port).toBe(4100);
+    expect(config.threshold).toBe(0.98);
+    expect(typeof config.port).toBe("number");
+    expect(typeof config.threshold).toBe("number");
   });
 
   it("bad args", async () => {
