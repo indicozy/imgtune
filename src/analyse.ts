@@ -1,5 +1,6 @@
 import { calibrationOffset, type CalibrationSample, type ConfirmSample } from "./calibrate.js";
 import { encode, loadReference, type EncoderProfile } from "./encode.js";
+import { adapterFor, cloudflareOriginal, originalFor, type QualityParam } from "./loaders.js";
 import type { ImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
 import {
@@ -193,14 +194,8 @@ export interface AnalyseOptions {
  * original); anything else is resolved against `baseUrl`.
  */
 export function originalUrlFor(src: string, baseUrl: string): string {
-  const cdn = /\/cdn-cgi\/image\/[^/]+\/(.+)$/.exec(src);
-  if (cdn) {
-    const rest = cdn[1];
-    if (/^https?:\/\//.test(rest)) return rest;
-    const origin = /^https?:\/\//.test(src) ? new URL(src).origin : baseUrl;
-    return new URL(`/${rest}`, origin).toString();
-  }
-  return new URL(src, baseUrl).toString();
+  const url = new URL(src, baseUrl);
+  return cloudflareOriginal(url) ?? url.toString();
 }
 
 /**
@@ -337,8 +332,9 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const sizesLiteral = literalString(usage.props.sizes);
   const widthLiteral = literalNumber(usage.props.width);
   const literalQuality = literalNumber(usage.props.quality);
-  const urlQuality = currentQualityFromSrc(usageObs);
-  const quality = literalQuality ?? urlQuality ?? DEFAULT_QUALITY;
+  const loader = loaderOfUsage(usageObs, ctx.baseUrl);
+  const urlQuality = currentQualityFromSrc(usageObs, ctx.baseUrl);
+  const quality = literalQuality ?? urlQuality ?? loader?.defaultQuality ?? DEFAULT_QUALITY;
 
   const result: ComponentResult = {
     usageId: usage.id,
@@ -369,9 +365,12 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     return result;
   }
 
-  if (literalQuality === undefined && urlQuality === undefined) {
+  if (literalQuality === undefined && urlQuality === undefined && loader?.defaultQuality === undefined) {
     notes.push(`current quality assumed ${DEFAULT_QUALITY} (not found in props or URL)`);
   }
+  // A loader that takes no quality in its URL cannot have one set by the code either: the proposal is sizes only.
+  const sizesOnly = loader !== undefined && loader.qualityParam !== "yes" && urlQuality === undefined;
+  if (sizesOnly) notes.push(`loader ${loader.name} cannot set quality (sizes only)`);
 
   // Reference viewport: iphone-15 when measured, else the first mobile viewport, else the first viewport.
   const names = unique(rendered.map((o) => o.viewport));
@@ -471,7 +470,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
    * projected viewport's width is searched and the highest target wins. A refusal at any width refuses the whole.
    */
   const searchAtSizes = async (sizes: string | undefined): Promise<QualityOutcome> => {
-    if (probe.samples.length === 0) return {};
+    if (sizesOnly || probe.samples.length === 0) return {};
     const widths = unique([widthFor(sizes, ref), ...stats.filter((s) => s.bytes !== undefined && s.servedWidth !== undefined).map((s) => widthFor(sizes, s))]);
     const outcomes = await Promise.all(widths.map((width) => searchAtWidth(width)));
     const refused = outcomes.find((o) => o.proposedQuality === undefined);
@@ -698,10 +697,11 @@ interface QualityOutcome {
 
 /** Fetches the sample originals and, for a cdn profile, calibrates each format. Neither depends on the width. */
 async function prepareQuality(ctx: Context, usageObs: ImageObservation[], quality: number): Promise<QualityProbe> {
-  const sources = unique(usageObs.flatMap((o) => (o.originalSrc ? [o.originalSrc] : []))).slice(0, ctx.cfg.samplesPerComponent);
+  const firstBySrc = new Map<string, ImageObservation>();
+  for (const o of usageObs) if (o.originalSrc && !firstBySrc.has(o.originalSrc)) firstBySrc.set(o.originalSrc, o);
   const samples: Sample[] = [];
-  for (const src of sources) {
-    const url = originalUrlFor(src, ctx.baseUrl);
+  for (const [src, o] of [...firstBySrc].slice(0, ctx.cfg.samplesPerComponent)) {
+    const url = originalFor(o.currentSrc, src, ctx.baseUrl);
     try {
       const buffer = await ctx.fetchCached(url);
       await loadReference(buffer, 1);
@@ -782,7 +782,7 @@ async function calibrationSamples(
     if (o.accept !== accept || o.bytes === undefined || !o.originalSrc || o.naturalWidth < 1) continue;
     if (formatOf(o.contentType) !== format || picked.has(o.originalSrc)) continue;
     picked.add(o.originalSrc);
-    const url = originalUrlFor(o.originalSrc, ctx.baseUrl);
+    const url = originalFor(o.currentSrc, o.originalSrc, ctx.baseUrl);
     try {
       const ref = await loadReference(await ctx.fetchCached(url), o.naturalWidth);
       out.push({ ref, format, cdnQuality: quality, cdnBytes: o.bytes });
@@ -883,10 +883,34 @@ function formatOf(contentType: string | undefined): string | undefined {
   return contentType?.split(";")[0].trim().toLowerCase().replace(/^image\//, "");
 }
 
-function currentQualityFromSrc(observations: ImageObservation[]): number | undefined {
+/** The loader the usage's observed URLs came from (most frequent), its quality parameter and documented default. */
+function loaderOfUsage(
+  observations: ImageObservation[],
+  baseUrl: string,
+): { name: string; qualityParam: QualityParam; defaultQuality?: number } | undefined {
+  const resolved = observations.flatMap((o) => {
+    try {
+      return [adapterFor(o.currentSrc, baseUrl)];
+    } catch {
+      return [];
+    }
+  });
+  const name = mode(resolved.map((r) => r.adapter.name));
+  const hit = resolved.find((r) => r.adapter.name === name);
+  if (!hit) return undefined;
+  return { name: hit.adapter.name, qualityParam: hit.adapter.qualityParam, defaultQuality: hit.adapter.defaultQuality };
+}
+
+/** The median quality the observed URLs ask for, through their loader. */
+function currentQualityFromSrc(observations: ImageObservation[], baseUrl: string): number | undefined {
   const values = observations.flatMap((o) => {
-    const match = /quality=(\d+)/.exec(o.currentSrc) ?? /[?&]q=(\d+)/.exec(o.currentSrc);
-    return match ? [Number(match[1])] : [];
+    try {
+      const { adapter, url } = adapterFor(o.currentSrc, baseUrl);
+      const q = adapter.quality(url);
+      return q === undefined ? [] : [q];
+    } catch {
+      return [];
+    }
   });
   const m = median(values);
   return m === undefined ? undefined : Math.round(m);

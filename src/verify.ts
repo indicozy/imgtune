@@ -6,7 +6,7 @@ import { sha1 } from "./atomic.js";
 import { encode, loadReference } from "./encode.js";
 import { readImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
-import { originalUrlFor } from "./analyse.js";
+import { originalFor } from "./loaders.js";
 import { installRestoreHandlers } from "./instrument.js";
 import { assertMetricAvailable, formatScore, makeScorer, metricLabel, type Metric, type Scorer } from "./metric.js";
 import { readReport } from "./report.js";
@@ -232,7 +232,7 @@ export async function scoreVariant(obs: ImageObservation, format: Format, baseUr
 
   let original: Buffer;
   try {
-    original = await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl));
+    original = await deps.fetchOriginal(originalFor(obs.currentSrc, obs.originalSrc, baseUrl));
   } catch (err) {
     return { unusable: `original: ${(err as Error).message}` };
   }
@@ -365,7 +365,7 @@ export async function recomputeBar(
 ): Promise<number> {
   if (!obs.originalSrc) throw new Error("no data-imgtune-src on the image");
   if (width < 1) throw new Error(`no served width (${width})`);
-  const reference = await loadReference(await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl)), width);
+  const reference = await loadReference(await deps.fetchOriginal(originalFor(obs.currentSrc, obs.originalSrc, baseUrl)), width);
   const enc = await encode(reference, format, beforeQuality, "next-default");
   return Math.max(rule.threshold, (await deps.score(reference, enc.decoded)) - rule.delta);
 }
@@ -459,7 +459,7 @@ export async function judgeSample(
   }
   const qualityChanged = before !== undefined && applied !== undefined && applied !== before;
   try {
-    const original = await deps.fetchOriginal(originalUrlFor(obs.originalSrc as string, input.baseUrl));
+    const original = await deps.fetchOriginal(originalFor(obs.currentSrc, obs.originalSrc as string, input.baseUrl));
     // A quality change needs the calibration to map it to the local scale; a sizes-only change has no drop to map.
     const drop = qualityChanged
       ? await cdnDrop(original, format, scored.width, { before, now: applied, offset: input.offset }, deps.score)

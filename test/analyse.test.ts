@@ -920,3 +920,55 @@ describe("analyse", () => {
     expect(logs).toHaveLength(3);
   });
 });
+
+describe("audit through the loader adapters", () => {
+  /** Stub encoder: bytes = quality * 1000 + reference width; every candidate passes, so the search runs to its floor. */
+  const stubDeps = {
+    encode: (async (ref: RawImage, _format: string, q: number) => ({
+      bytes: q * 1000 + ref.width,
+      decoded: ref,
+      buffer: Buffer.alloc(0),
+    })) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
+    score: () => 1,
+  };
+
+  it("proposes sizes only for a loader that cannot set quality, and says so", async () => {
+    // A Shopify-served image: its original is on the CDN, its URL has no quality, and the loader takes none.
+    const shop = "https://cdn.shopify.com/s/files/1/0001/x/";
+    const shopFetch = async (url: string): Promise<Buffer> => fetchStub(url.replace(shop, `${BASE}/media/`));
+    const observations: ImageObservation[] = [0, 1, 2].flatMap((i) => [
+      observation({
+        viewport: "iphone-15",
+        src: `${shop}p${i}.jpg`,
+        natural: 1200,
+        rendered: 393,
+        bytes: 40_000,
+        contentType: "image/avif",
+        currentSrc: `${shop}p${i}.jpg?width=1200`,
+      }),
+    ]);
+    const [r] = await analyse([usage()], observations, cdnConfig, cfg, BASE, shopFetch, silent({ deps: stubDeps }));
+
+    expect(r.proposed.quality).toBeUndefined();
+    expect(r.notes).toContain("loader shopify cannot set quality (sizes only)");
+  }, CDN_TIMEOUT_MS);
+
+  it("uses the loader's documented default when the URL has no quality", async () => {
+    const observations = SRC.map((src) =>
+      observation({
+        viewport: "iphone-15",
+        src,
+        natural: 1200,
+        rendered: 393,
+        bytes: 40_000,
+        contentType: "image/avif",
+        currentSrc: `https://shop-cdn.example.com/cdn-cgi/image/width=1200,format=auto/${src}`,
+      }),
+    );
+    const [r] = await analyse([usage()], observations, cdnConfig, cfg, BASE, fetchStub, silent({ deps: stubDeps }));
+
+    expect(r.current.quality).toBe(85);
+    expect(r.notes.some((note) => note.startsWith("current quality assumed"))).toBe(false);
+    expect(r.notes.some((note) => note.includes("sizes only"))).toBe(false);
+  }, CDN_TIMEOUT_MS);
+});
