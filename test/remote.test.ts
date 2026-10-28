@@ -30,7 +30,6 @@ import {
   mdText,
   pagesOverBudget,
   parseScanArgs,
-  parseSrcset,
   pixelSize,
   referenceUrl,
   renderMarkdown,
@@ -49,6 +48,7 @@ import {
   type PageResult,
   type ViewportObservation,
 } from "../src/remote.js";
+import { parseSrcset } from "../src/srcset-parse.js";
 import type { encode } from "../src/encode.js";
 import { ssim, type RawImage } from "../src/ssim.js";
 import type { Viewport } from "../src/types.js";

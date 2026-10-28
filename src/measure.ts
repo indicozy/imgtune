@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import type { Browser, Page, Response } from "playwright";
 import { launchChromium } from "./browser.js";
+import { srcsetWidths } from "./srcset-parse.js";
 import type { Viewport } from "./types.js";
 
 export interface ImageObservation {
@@ -51,7 +52,8 @@ interface CollectedImage {
   currentSrc: string;
   originalSrc?: string;
   sizesAttr?: string;
-  srcsetWidths: number[];
+  /** The raw srcset attribute; parsed in Node, since the page only hands it over. */
+  srcset: string;
 }
 
 /**
@@ -154,7 +156,7 @@ async function measureOne(
         currentSrc: img.currentSrc,
         originalSrc: img.originalSrc,
         sizesAttr: img.sizesAttr,
-        srcsetWidths: img.srcsetWidths,
+        srcsetWidths: srcsetWidths(img.srcset),
         bytes: fetched?.bytes,
         contentType: fetched?.contentType,
         accept,
@@ -240,12 +242,6 @@ async function collectImages(page: Page): Promise<CollectedImage[]> {
       return Promise.all(
         Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]"), async (img) => {
           const rect = img.getBoundingClientRect();
-          const srcsetWidths: number[] = [];
-          for (const candidate of (img.getAttribute("srcset") ?? "").split(/,\s+/)) {
-            const descriptor = candidate.trim().split(/\s+/)[1];
-            const match = descriptor ? /^(\d+)w$/.exec(descriptor) : null;
-            if (match) srcsetWidths.push(Number(match[1]));
-          }
           return {
             usageId: img.getAttribute("data-imgtune") ?? "",
             renderedWidth: rect.width,
@@ -254,7 +250,7 @@ async function collectImages(page: Page): Promise<CollectedImage[]> {
             currentSrc: img.currentSrc,
             originalSrc: img.getAttribute("data-imgtune-src") || undefined,
             sizesAttr: img.getAttribute("sizes") || undefined,
-            srcsetWidths,
+            srcset: img.getAttribute("srcset") ?? "",
           };
         }),
       );
