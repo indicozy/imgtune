@@ -429,6 +429,8 @@ const BLOCKED_IPV6: [string, number][] = [
   ["ff00::", 8],
   ["2001:db8::", 32],
   ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["2001::", 32],
   ["2002::", 16],
 ];
 for (const [net, prefix] of BLOCKED_IPV4) BLOCKED.addSubnet(net, prefix, "ipv4");
@@ -488,7 +490,12 @@ export function isBlockedAddress(address: string): boolean {
   const zeroPrefix = bytes.subarray(0, 10).every((b) => b === 0);
   const mapped = bytes[10] === 0xff && bytes[11] === 0xff;
   const compatible = bytes[10] === 0 && bytes[11] === 0;
-  if (zeroPrefix && (mapped || compatible)) {
+  // NAT64 well-known prefix 64:ff9b::/96: the IPv4 address is the last 32 bits.
+  const nat64 = bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && bytes.subarray(4, 12).every((b) => b === 0);
+  // ::ffff:0:0/96 (IPv4-mapped) is blocked as a whole. It is not a BlockList entry: an IPv6 subnet there also matches
+  // plain IPv4 checks, which would block public IPv4 addresses.
+  if (mapped && zeroPrefix) return true;
+  if ((zeroPrefix && compatible) || nat64) {
     const embedded = `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
     if (BLOCKED.check(embedded, "ipv4")) return true;
   }
@@ -531,6 +538,8 @@ export interface Fetcher {
   get(url: string, opts?: FetchOptions): Promise<Buffer | undefined>;
   /** Whether the host of `url` resolves to a blocked address: a page that does is allowed private destinations. */
   isPrivateHost(url: string): Promise<boolean>;
+  /** Like isPrivateHost, but a resolver failure rejects instead of answering: the caller decides (the browser guard blocks). */
+  hostIsBlocked(url: string): Promise<boolean>;
 }
 
 /** The body up to `maxBytes`; undefined when it is larger (checked on Content-Length and while streaming). */
@@ -561,7 +570,8 @@ async function readCapped(res: IncomingMessage, maxBytes: number): Promise<Buffe
 function requestOnce(url: URL, headers: Record<string, string>, allowPrivate: boolean, resolver: Resolver, signal: AbortSignal): Promise<IncomingMessage> {
   const send = url.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
-    const req = send(url, { method: "GET", headers, signal, lookup: allowPrivate ? undefined : guardedLookup(resolver) }, resolve);
+    // agent: false, so no pooled socket skips the connect-time lookup.
+    const req = send(url, { method: "GET", headers, signal, agent: false, lookup: allowPrivate ? undefined : guardedLookup(resolver) }, resolve);
     req.on("error", reject);
     req.end();
   });
@@ -617,16 +627,19 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
     }
   };
 
-  // One lookup per host for the whole scan: the route guard and the fetches share it.
+  // One lookup per host for the whole scan: the route guard and the fetches share it. Only successful answers are kept;
+  // a failed lookup is asked again next time.
   const hostMemo = new Map<string, Promise<boolean>>();
   const hostIsPrivate = (bare: string): Promise<boolean> => {
     let pending = hostMemo.get(bare);
     if (!pending) {
       pending = (async () => {
         const addresses = isIP(bare) !== 0 ? [{ address: bare, family: isIP(bare) }] : await resolver(bare);
+        if (addresses.length === 0) throw new Error(`no address for ${bare}`);
         return addresses.some((a) => isBlockedAddress(a.address));
-      })().catch(() => false);
+      })();
       hostMemo.set(bare, pending);
+      pending.catch(() => hostMemo.delete(bare));
     }
     return pending;
   };
@@ -643,12 +656,19 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
       }
       return pending;
     },
+    /**
+     * Whether the page's own host is private, which allows private destinations for its fetches. Used only as that
+     * allowance: an error answers false, the safe direction. Never a request guard: the browser guard uses hostIsBlocked.
+     */
     async isPrivateHost(url) {
       try {
         return await hostIsPrivate(new URL(url).hostname.replace(/^\[|\]$/g, ""));
       } catch {
         return false;
       }
+    },
+    hostIsBlocked(url) {
+      return hostIsPrivate(new URL(url).hostname.replace(/^\[|\]$/g, ""));
     },
   };
 }
@@ -880,7 +900,12 @@ export interface ViewportObservation {
   responses: Map<string, ResponseRecord>;
 }
 
-/** Whether a request URL may be made. Only consulted when the scanned page is public. */
+/**
+ * Whether a browser request may be made. Only consulted when the scanned page is public. Failing to decide counts as
+ * blocked. Residual risk, accepted: in-browser HTTP redirects and DNS rebinding can still reach a private address; the
+ * browser guard is defense in depth for a CLI that visits user-chosen URLs, comparable to opening them in a normal
+ * browser. The Node-side fetcher (originals, candidates) is fully guarded at connect time.
+ */
 export interface RequestGuard {
   isBlocked(url: string): Promise<boolean>;
 }
@@ -892,6 +917,8 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
     isMobile: viewport.mobile,
     hasTouch: viewport.mobile,
     userAgent: viewport.userAgent,
+    // A service worker could answer requests the route guard never sees, and would change what is measured.
+    serviceWorkers: "block",
   });
   try {
     const responses = new Map<string, ResponseRecord>();
@@ -913,6 +940,20 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
           return route.abort("blockedbyclient");
         }
         return route.continue();
+      });
+      await context.routeWebSocket("**/*", async (socket) => {
+        let blocked = true;
+        try {
+          blocked = await guard.isBlocked(socket.url());
+        } catch {
+          blocked = true;
+        }
+        if (blocked) {
+          blockedRequests++;
+          await socket.close();
+        } else {
+          socket.connectToServer();
+        }
       });
     }
     context.on("response", (response) => {
@@ -1410,7 +1451,7 @@ async function scanPage(
   if (!robotsAllows(await robotsFor(url.origin, allowPrivate), pageUrl)) return { ...base, status: "robots" };
 
   // One pass per viewport; a challenge stops the page at once, with no retry.
-  const guard: RequestGuard | undefined = allowPrivate ? undefined : { isBlocked: (u) => run.fetcher.isPrivateHost(u) };
+  const guard: RequestGuard | undefined = allowPrivate ? undefined : { isBlocked: (u) => run.fetcher.hostIsBlocked(u) };
   const observations: ViewportObservation[] = [];
   try {
     for (const viewport of run.viewports) {

@@ -386,6 +386,8 @@ describe("isBlockedAddress", () => {
       "::ffff:10.0.0.1",
       "::ffff:192.168.0.1",
       "::ffff:100.64.0.1",
+      "::ffff:8.8.8.8",
+      "0:0:0:0:0:ffff:0808:0808",
     ]) {
       expect(isBlockedAddress(address), address).toBe(true);
     }
@@ -394,9 +396,15 @@ describe("isBlockedAddress", () => {
   it("allows public addresses, including ones next to the blocked ranges", () => {
     for (const address of [
       "93.184.216.34", "8.8.8.8", "100.63.255.255", "100.128.0.1", "172.32.0.1", "172.15.0.1", "198.20.0.1",
-      "2606:4700::1111", "::ffff:8.8.8.8", "0:0:0:0:0:ffff:0808:0808", "2a00:1450::1",
+      "2606:4700::1111", "2a00:1450::1",
     ]) {
       expect(isBlockedAddress(address), address).toBe(false);
+    }
+  });
+
+  it("blocks the further special-purpose IPv6 ranges and their embedded IPv4", () => {
+    for (const address of ["64:ff9b:1::1", "2001::1", "2001:0:4136:e378::1", "::ffff:0:1", "64:ff9b::808:808", "64:ff9b::a00:1", "64:ff9b::7f00:1"]) {
+      expect(isBlockedAddress(address), address).toBe(true);
     }
   });
 
