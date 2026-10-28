@@ -94,6 +94,11 @@ describe("deriveSizeBranches and joinSizeBranches", () => {
   it("joins two branches under the 768px media condition", () => {
     expect(joinSizeBranches({ mobile: "33vw", desktop: "280px" })).toBe("(max-width: 768px) 33vw, 280px");
   });
+
+  it("emits one expression when the mobile and desktop branches are equal", () => {
+    expect(deriveSizes([mobile(375, 33), desktop(1440, 33)])).toBe("33px");
+    expect(joinSizeBranches({ mobile: "33px", desktop: "33px" })).toBe("33px");
+  });
 });
 
 describe("sizesSlotAt", () => {

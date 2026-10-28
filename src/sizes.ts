@@ -73,9 +73,12 @@ export function deriveSizeBranches(points: SizePoint[]): SizeBranches {
   return { mobile: expressionFor(measured.filter((p) => p.mobile)), desktop: expressionFor(measured.filter((p) => !p.mobile)) };
 }
 
-/** Joins the branches into one `sizes` value; undefined when neither is set. */
+/**
+ * Joins the branches into one `sizes` value; undefined when neither is set. Equal branches are one expression, since the
+ * media condition then changes nothing.
+ */
 export function joinSizeBranches({ mobile, desktop }: SizeBranches): string | undefined {
-  if (mobile && desktop) return `(max-width: ${MOBILE_MAX_WIDTH}px) ${mobile}, ${desktop}`;
+  if (mobile && desktop && mobile !== desktop) return `(max-width: ${MOBILE_MAX_WIDTH}px) ${mobile}, ${desktop}`;
   return mobile ?? desktop;
 }
 
