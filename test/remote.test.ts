@@ -29,6 +29,7 @@ import {
   pagesOverBudget,
   parseScanArgs,
   parseSrcset,
+  pixelSize,
   referenceUrl,
   renderMarkdown,
   resizedEstimate,
@@ -432,6 +433,14 @@ describe("the CI budget and summary", () => {
     expect(summary.pages[0]).toMatchObject({ url: "https://shop.example/", status: "ok", page: { exactEstPct: 33.04 } });
     expect(summary.pages[1]).toEqual({ url: "https://b.example/", host: "shop.example", status: "blocked", error: "challenge" });
     expect(summary.pages[1]).not.toHaveProperty("page");
+  });
+});
+
+describe("pixelSize", () => {
+  it("names an AVIF file avif, not the heif that sharp reports for it", async () => {
+    const raw = gradientNoise(64, 48, 4, 1);
+    const avif = await sharp(raw.data, { raw: { width: 64, height: 48, channels: 4 } }).avif({ quality: 50 }).toBuffer();
+    expect(await pixelSize(avif)).toMatchObject({ width: 64, height: 48, format: "avif" });
   });
 });
 
@@ -880,15 +889,15 @@ describe("duplicatesOf", () => {
   });
 });
 
-describe("analysePage with a Contentful-shaped image (fake fetcher, no network)", () => {
+describe.each(["webp", "avif"] as const)("analysePage with a Contentful-shaped %s image (fake fetcher, no network)", (format) => {
   const ORIGIN = "https://images.ctfassets.net/space/env/hero.jpg";
-  const ctf = (w: number, q?: number) => `${ORIGIN}?w=${w}${q === undefined ? "" : `&q=${q}`}&fm=webp`;
+  const ctf = (w: number, q?: number) => `${ORIGIN}?w=${w}${q === undefined ? "" : `&q=${q}`}&fm=${format}`;
 
   it("records the loader, reads the served quality from the URL and judges it against the original", async () => {
     const pixels = gradientNoise(800, 533, 4, 3);
     const original = await rawToPng(pixels);
     const encoded = (w: number) =>
-      sharp(Buffer.from(pixels.data.buffer), { raw: { width: 800, height: 533, channels: 4 } }).resize(w).webp({ quality: 70 }).toBuffer();
+      sharp(Buffer.from(pixels.data.buffer), { raw: { width: 800, height: 533, channels: 4 } }).resize(w).toFormat(format, { quality: 70 }).toBuffer();
     const served400 = await encoded(400);
     const served800 = await encoded(800);
     const gets: string[] = [];
@@ -912,12 +921,13 @@ describe("analysePage with a Contentful-shaped image (fake fetcher, no network)"
       nextImage: false,
       inFirstViewport: true,
     };
-    const response = (url: string, buffer: Buffer, width: number) => ({
+    // The pixels are what the scan reads from the served file (sharp's own format name, so an AVIF is "heif" to sharp).
+    const response = (url: string, buffer: Buffer, pixels: Awaited<ReturnType<typeof pixelSize>>) => ({
       url,
-      contentType: "image/webp",
+      contentType: `image/${format}`,
       bytes: buffer.length,
       buffer,
-      pixels: { width, height: Math.round((533 * width) / 800), format: "webp" },
+      pixels,
     });
     const observation: ViewportObservation = {
       viewport,
@@ -927,8 +937,8 @@ describe("analysePage with a Contentful-shaped image (fake fetcher, no network)"
       nextjs: false,
       images: [image],
       responses: new Map([
-        [ctf(400, 70), response(ctf(400, 70), served400, 400)],
-        [ctf(800, 70), response(ctf(800, 70), served800, 800)],
+        [ctf(400, 70), response(ctf(400, 70), served400, await pixelSize(served400))],
+        [ctf(800, 70), response(ctf(800, 70), served800, await pixelSize(served800))],
       ]),
     };
     const base: PageResult = {
@@ -960,6 +970,7 @@ describe("analysePage with a Contentful-shaped image (fake fetcher, no network)"
     expect(gets).toContain(ORIGIN);
     const [report] = page.perViewport["iphone-15"].images;
     expect(report.loader).toBe("contentful");
+    expect(report.format).toBe(format);
     expect(report.quality).toMatchObject({ current: 70, qualityAssumed: false, sampled: true });
     expect(page.counts.byLoader).toEqual({ contentful: 1 });
   }, 120_000);

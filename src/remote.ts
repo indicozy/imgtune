@@ -745,6 +745,15 @@ export interface PixelSize {
   format?: string;
 }
 
+/**
+ * sharp names an AVIF file "heif" (its compression is "av1"). Every other use in this file says "avif", so that is the
+ * name a pixel size carries. A HEIF with another compression (HEVC) keeps sharp's name and gets no estimate.
+ */
+function pixelFormat(meta: { format?: string; compression?: string }): string | undefined {
+  if (meta.format === "heif" && meta.compression === "av1") return "avif";
+  return meta.format;
+}
+
 /** The pixel size and format of an image file, as displayed (EXIF orientation applied). Undefined when sharp cannot read it. */
 export async function pixelSize(buffer: Buffer): Promise<PixelSize | undefined> {
   try {
@@ -753,7 +762,7 @@ export async function pixelSize(buffer: Buffer): Promise<PixelSize | undefined> 
     const turned = (meta.orientation ?? 1) >= 5;
     const width = turned ? meta.height : meta.width;
     const height = turned ? meta.width : meta.height;
-    return { width, height, format: meta.format };
+    return { width, height, format: pixelFormat(meta) };
   } catch {
     return undefined;
   }
