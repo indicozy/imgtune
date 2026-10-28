@@ -93,9 +93,11 @@ const contentful: LoaderAdapter = {
   qualityParam: "yes",
 };
 
+/** A Sanity asset path, `/images/<project>/<dataset>/<hash>-<w>x<h>.<ext>`: the same on cdn.sanity.io and custom domains. */
+const SANITY_ASSET_PATH = /^\/images\/[a-z0-9]+\/[a-z0-9_-]+\/[0-9a-f]{20,}-\d+x\d+\.(jpg|jpeg|png|webp|gif|avif|svg)$/;
 const sanity: LoaderAdapter = {
   name: "sanity",
-  matches: (url) => url.hostname === "cdn.sanity.io" && url.pathname.startsWith("/images/"),
+  matches: (url) => (url.hostname === "cdn.sanity.io" && url.pathname.startsWith("/images/")) || SANITY_ASSET_PATH.test(url.pathname),
   original: withoutQuery,
   quality: (url) => toQuality(url.searchParams.get("q")),
   qualityParam: "yes",

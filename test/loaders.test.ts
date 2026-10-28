@@ -106,6 +106,24 @@ describe("sanity", () => {
   it("leaves other paths on that host to the generic fallback", () => {
     expect(read("https://cdn.sanity.io/files/proj1/production/abc.pdf").name).toBe("generic");
   });
+
+  it("matches a Sanity asset path on a custom media domain, by its path shape", () => {
+    const src = "https://media.shop.example/images/proj1/production/0123456789abcdef0123-2400x1350.png?w=1200&q=100&fit=clip&auto=format";
+    expect(read(src)).toEqual({
+      name: "sanity",
+      original: "https://media.shop.example/images/proj1/production/0123456789abcdef0123-2400x1350.png",
+      quality: 100,
+      qualityParam: "yes",
+      defaultQuality: 75,
+    });
+  });
+
+  it("does not take look-alike paths on other hosts for Sanity", () => {
+    expect(read("https://media.shop.example/images/logo.png").name).toBe("generic");
+    expect(read("https://media.shop.example/images/proj1/production/short-2400x1350.png").name).toBe("generic");
+    expect(read("https://media.shop.example/images/proj1/production/0123456789abcdef0123-2400x1350.pdf").name).toBe("generic");
+    expect(read("https://media.shop.example/files/proj1/production/0123456789abcdef0123-2400x1350.png").name).toBe("generic");
+  });
 });
 
 describe("shopify", () => {
