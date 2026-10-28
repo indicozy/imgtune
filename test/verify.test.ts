@@ -104,6 +104,31 @@ describe("judgeVerification", () => {
     expect(verdict.reason).toBe("insufficient webp samples: 4");
   });
 
+  it("judges a usage with 2 distinct images on those 2 and reports n=2 when they pass", () => {
+    const verdict = judge(passing("webp", 2), ["webp"], { distinctImages: 2 });
+    expect(verdict.status).toBe("verified");
+    expect(verdict.sampleSize).toBe(2);
+  });
+
+  it("regresses a usage with 2 distinct images when one of them fails", () => {
+    const verdict = judge([...passing("webp", 1), { format: "webp", ssim: 0.5 }], ["webp"], { distinctImages: 2 });
+    expect(verdict.status).toBe("regressed");
+    expect(verdict.sampleSize).toBe(2);
+  });
+
+  it("judges a usage with 1 distinct image on that one and reports n=1", () => {
+    const verdict = judge(passing("webp", 1), ["webp"], { distinctImages: 1 });
+    expect(verdict.status).toBe("verified");
+    expect(verdict.sampleSize).toBe(1);
+  });
+
+  it("still needs 5 usable samples when the usage has 5 or more distinct images", () => {
+    const verdict = judge(passing("webp", 4), ["webp"], { distinctImages: 9 });
+    expect(verdict.status).toBe("unmeasured");
+    expect(verdict.reason).toBe("insufficient webp samples: 4");
+    expect(verdict.sampleSize).toBeUndefined();
+  });
+
   it("is unmeasured when the page served neither avif nor webp", () => {
     expect(judge([], []).status).toBe("unmeasured");
     expect(judge([], []).reason).toBe("no avif or webp image served");
@@ -724,6 +749,25 @@ describe("verify with fake measurement, originals and scorer", () => {
     const saved = await loadState(dir);
     expect(saved.find((e) => e.relFile === "src/in/A.tsx")?.verification?.at).not.toBe(sentinel.at);
     expect(saved.find((e) => e.relFile === "src/out/B.tsx")?.verification).toEqual(sentinel);
+  });
+
+  it("verifies a usage with two distinct images on those two, and shows n=2 in the table", async () => {
+    const dir = project({ "src/A.tsx": IMAGE });
+    await saveState(dir, [appliedEntry(dir, "src/A.tsx", { applied: { sizes: "50vw" } })]);
+    const base = observationsFor("x")[0];
+    const twoImages = (usageId: string): ImageObservation[] => [
+      { ...base, usageId, originalSrc: "/a.png", currentSrc: `http://localhost/_next/image?url=a&w=${WIDTH}` },
+      { ...base, usageId, originalSrc: "/b.png", currentSrc: `http://localhost/_next/image?url=b&w=${WIDTH}` },
+    ];
+    const { deps } = await fakes((usages) => twoImages(usages[0].id));
+
+    const rows = await verify(config(dir), deps);
+
+    expect(rows[0].judgement.status).toBe("verified");
+    expect(rows[0].judgement.sampleSize).toBe(2);
+    expect(renderVerifyTable(rows, "ssim")).toContain("verified (n=2)");
+    const [saved] = await loadState(dir);
+    expect(saved.verification?.status).toBe("verified");
   });
 
   it("fails with the audit's error for a --path that does not exist, measuring nothing", async () => {

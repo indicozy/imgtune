@@ -64,6 +64,8 @@ export interface Judgement {
   counts: { avif?: FormatCounts; webp?: FormatCounts };
   /** Set for a regression when a quality raise can help: applied quality + tolerance, capped at the pre-apply quality. */
   raiseTo?: number;
+  /** Set when the usage was judged on fewer than MIN_USABLE_SAMPLES samples: the distinct images it was judged on. */
+  sampleSize?: number;
 }
 
 export interface VerifyRow {
@@ -106,6 +108,8 @@ export interface JudgeInput {
   served: Format[];
   /** Samples taken per format (`samplesPerComponent`); the minimum is the lesser of this and MIN_USABLE_SAMPLES. */
   samplesPerComponent: number;
+  /** Distinct images of the usage that were measured. When fewer than the minimum, the usage is judged on them. */
+  distinctImages?: number;
   threshold: number;
   tolerance: number;
   /** The cdn rule's allowed quality drop (`delta`); set only when the drop check applies. */
@@ -116,15 +120,17 @@ export interface JudgeInput {
 
 /**
  * Decides an applied usage from its scored samples. Every format the page served for the usage is judged, and each
- * needs at least min(MIN_USABLE_SAMPLES, samplesPerComponent) usable samples, else the usage is unmeasured. It is
+ * needs at least min(MIN_USABLE_SAMPLES, samplesPerComponent, distinct images) usable samples, else the usage is
+ * unmeasured. A usage with fewer distinct images than that is judged on them and reports its n (`sampleSize`). It is
  * verified when every judged format has at least 95% of its usable samples at or above `threshold`, otherwise
  * regressed. Unusable samples never count against a format.
  */
 export function judgeVerification(input: JudgeInput): Judgement {
   const { samples, served, threshold } = input;
-  const minimum = Math.max(1, Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent));
+  const minimum = Math.max(1, Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent, input.distinctImages ?? MIN_USABLE_SAMPLES));
   const formats = FORMATS.filter((format) => served.includes(format));
   const judgement: Judgement = { status: "verified", ssim: {}, counts: {} };
+  if (minimum < MIN_USABLE_SAMPLES) judgement.sampleSize = minimum;
   if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
 
   let failed = false;
@@ -306,6 +312,7 @@ function statusOf(judgement: Judgement): string {
   else if (judgement.status === "verified") status = "verified";
   else if (judgement.reason !== undefined) status = `regressed (${judgement.reason})`;
   else status = judgement.raiseTo === undefined ? "regressed" : `regressed (raise quality to ${judgement.raiseTo})`;
+  if (judgement.status !== "unmeasured" && judgement.sampleSize !== undefined) status += ` (n=${judgement.sampleSize})`;
   // The 95% rule decides the verdict, so the table shows the passing counts behind it.
   const counts = FORMATS.flatMap((format) => {
     const count = judgement.counts[format];
@@ -609,6 +616,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
         samples,
         served: servedFormats(observations),
         samplesPerComponent: config.samplesPerComponent,
+        distinctImages: new Set(observations.flatMap((obs) => (obs.originalSrc ? [obs.originalSrc] : []))).size,
         threshold: config.threshold,
         tolerance: config.tolerance,
         maxDrop: recomputable ? undefined : config.delta,
