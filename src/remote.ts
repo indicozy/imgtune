@@ -1360,6 +1360,9 @@ export interface GroupReport {
 
 export type PageStatus = "ok" | "blocked" | "robots" | "failed";
 
+/** The `robots` value recorded for a page on a loopback or private host: its owner's own server is not checked. */
+export const ROBOTS_SKIPPED_LOCAL = "skipped (local host)";
+
 export interface PageResult {
   url: string;
   host: string;
@@ -1371,6 +1374,8 @@ export interface PageResult {
   viewports: string[];
   status: PageStatus;
   error?: string;
+  /** Set when robots.txt was not checked: the page is on a loopback or private host. */
+  robots?: string;
   nextjs: boolean;
   perViewport: Record<string, ViewportReport>;
   page?: PageNumbers;
@@ -1569,6 +1574,20 @@ export interface ScanOptions {
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+/**
+ * Whether a page may be scanned under robots.txt. robots.txt is etiquette toward third parties, so a page on a loopback
+ * or private host (its owner's own server) is not checked and the skip is recorded; `fetchRobots` is not called then.
+ * A public host is checked as before.
+ */
+export async function checkRobots(
+  pageUrl: string,
+  allowPrivate: boolean,
+  fetchRobots: () => Promise<string | undefined>,
+): Promise<{ allowed: boolean; skipped?: string }> {
+  if (allowPrivate) return { allowed: true, skipped: ROBOTS_SKIPPED_LOCAL };
+  return { allowed: robotsAllows(await fetchRobots(), pageUrl) };
+}
+
 async function scanPage(
   browser: Browser,
   run: { viewports: Viewport[]; aggressive: boolean; quality: boolean; fetcher: Fetcher; deps: QualityDeps },
@@ -1592,7 +1611,9 @@ async function scanPage(
     groups: [],
     counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
   };
-  if (!robotsAllows(await robotsFor(url.origin, allowPrivate), pageUrl)) return { ...base, status: "robots" };
+  const robots = await checkRobots(pageUrl, allowPrivate, () => robotsFor(url.origin, false));
+  if (!robots.allowed) return { ...base, status: "robots" };
+  if (robots.skipped !== undefined) base.robots = robots.skipped;
 
   // One pass per viewport; a challenge stops the page at once, with no retry.
   const guard: RequestGuard | undefined = allowPrivate ? undefined : { isBlocked: (u) => run.fetcher.hostIsBlocked(u) };

@@ -26,6 +26,7 @@ import {
   pageFileName,
   pageNumbers,
   FAIL_OVER_EXIT,
+  checkRobots,
   mdCode,
   mdText,
   pagesOverBudget,
@@ -96,6 +97,36 @@ describe("robotsAllows", () => {
     const robots = "User-agent: *\nDisallow: /listing?sort=";
     expect(robotsAllows(robots, "https://shop.example/listing?sort=price")).toBe(false);
     expect(robotsAllows(robots, "https://shop.example/listing?page=2")).toBe(true);
+  });
+});
+
+describe("checkRobots", () => {
+  const robots = "User-agent: *\nDisallow: /";
+
+  it("skips robots.txt for a loopback page and says so, without fetching the file", async () => {
+    let fetched = false;
+    const verdict = await checkRobots("http://localhost:3000/ae-en/bags", true, async () => {
+      fetched = true;
+      return robots;
+    });
+    expect(verdict).toEqual({ allowed: true, skipped: "skipped (local host)" });
+    expect(fetched).toBe(false);
+  });
+
+  it("skips robots.txt for a private-address page as well", async () => {
+    const verdict = await checkRobots("http://192.168.1.20/shop", true, async () => robots);
+    expect(verdict).toEqual({ allowed: true, skipped: "skipped (local host)" });
+  });
+
+  it("still applies robots.txt to a public host, which is fetched and enforced", async () => {
+    let fetched = false;
+    const verdict = await checkRobots("https://shop.example/bags", false, async () => {
+      fetched = true;
+      return robots;
+    });
+    expect(verdict).toEqual({ allowed: false });
+    expect(fetched).toBe(true);
+    expect(await checkRobots("https://shop.example/bags", false, async () => undefined)).toEqual({ allowed: true });
   });
 });
 
