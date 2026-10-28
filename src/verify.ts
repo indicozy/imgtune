@@ -243,6 +243,8 @@ export async function scoreVariant(obs: ImageObservation, format: Format, baseUr
   } catch (err) {
     return { unusable: `original decode failed: ${(err as Error).message}` };
   }
+  // The decoded width is what the server served; a resize below only aligns the pixels for scoring.
+  const decodedWidth = served.width;
   if (reference.width !== served.width || reference.height !== served.height) {
     // Rounding can differ by a pixel between the server's resize and ours; compare at the reference size.
     const resized = await sharp(Buffer.from(served.data.buffer, served.data.byteOffset, served.data.byteLength), {
@@ -254,7 +256,7 @@ export async function scoreVariant(obs: ImageObservation, format: Format, baseUr
     served = { data: new Uint8ClampedArray(resized.data.buffer, resized.data.byteOffset, resized.data.byteLength), width: reference.width, height: reference.height };
   }
   const score = deps.score ?? ssim;
-  return { ssim: await score(reference, served), width: served.width };
+  return { ssim: await score(reference, served), width: decodedWidth };
 }
 
 /** Median bytes per viewport over the default-pass observations that have a byte count. */

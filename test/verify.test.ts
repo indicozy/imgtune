@@ -212,6 +212,18 @@ describe("scoreVariant", () => {
     expect("ssim" in score && score.ssim).toBeCloseTo(1, 6);
   });
 
+  it("reports the decoded served width even when the original is narrower than the served file", async () => {
+    const servedPng = await sharp(gradientNoise(400, 300, 10, 13).data, { raw: { width: 400, height: 300, channels: 4 } })
+      .webp({ lossless: true })
+      .toBuffer();
+    const narrowOriginal = async () => rawToPng(gradientNoise(200, 150, 10, 14));
+    const score = await scoreVariant(observation({}), "webp", "http://localhost", {
+      fetchImpl: fetchReturning(servedPng, "image/webp"),
+      fetchOriginal: narrowOriginal,
+    });
+    expect("width" in score && score.width).toBe(400);
+  });
+
   it("treats a response with the wrong content-type as unusable, not as a score", async () => {
     const body = await served("webp");
     const score = await scoreVariant(observation({}), "webp", "http://localhost", {
