@@ -2,6 +2,21 @@
   "name": "imgtune",
   "version": "0.1.0",
   "description": "Measures images in a Next.js app and tunes next/image sizes and quality",
+  "license": "MIT",
+  "keywords": [
+    "nextjs",
+    "next-image",
+    "images",
+    "srcset",
+    "image-optimization",
+    "ssimulacra2",
+    "ssim",
+    "performance"
+  ],
+  "repository": "TODO",
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "bin": {
     "imgtune": "dist/cli.js"
@@ -10,10 +25,13 @@
   "files": [
     "dist",
     "vendor",
+    "README.md",
+    "LICENSE",
     "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsc -p tsconfig.json"
