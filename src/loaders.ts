@@ -132,6 +132,18 @@ const isTransformation = (segment: string): boolean => segment.split(",").every(
 /** A segment with a parameter Cloudinary transforms by (width, height, crop, quality, format). */
 const hasKnownParam = (segment: string): boolean => segment.split(",").some((param) => /^[whcqf]_/.test(param));
 
+/**
+ * On a host other than res.cloudinary.com, a leading segment is a transformation only when it is evidence of Cloudinary:
+ * a known parameter, and either two parameters in the first transform segment or a version (`v123`) after the transforms.
+ * This keeps a path such as `/c_logo/x.jpg` from matching.
+ */
+function isCloudinaryOnAnyHost(transforms: string[], rest: string[]): boolean {
+  if (!transforms.some(hasKnownParam)) return false;
+  const twoParams = transforms.length > 0 && transforms[0].split(",").length >= 2;
+  const versioned = /^v\d+$/.test(rest[0] ?? "");
+  return twoParams || versioned;
+}
+
 interface CloudinaryParts {
   /** The path before the transforms: `/<cloud>/image/upload` on res.cloudinary.com, empty on any other host. */
   base: string;
@@ -154,7 +166,7 @@ function splitCloudinary(url: URL): CloudinaryParts | undefined {
   const transforms = segments.slice(0, i);
   const rest = segments.slice(i);
   if (rest[rest.length - 1] === "") return undefined;
-  if (!upload && !transforms.some(hasKnownParam)) return undefined;
+  if (!upload && !isCloudinaryOnAnyHost(transforms, rest)) return undefined;
   return { base, transforms, rest };
 }
 

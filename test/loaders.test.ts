@@ -267,6 +267,16 @@ describe("cloudinary behind a custom domain or a CDN", () => {
     });
   });
 
+  it("needs two parameters in the first transform segment, or a version after the transforms, on any other host", () => {
+    expect(read("https://img.shop.example/c_logo/x.jpg").name).toBe("generic");
+    expect(read("https://img.shop.example/w_400/shoes/a.jpg").name).toBe("generic");
+    expect(read("https://img.shop.example/c_logo/v1690000000/x.jpg")).toMatchObject({
+      name: "cloudinary",
+      original: "https://img.shop.example/v1690000000/x.jpg",
+    });
+    expect(read("https://img.shop.example/w_400,q_70/shoes/a.jpg").name).toBe("cloudinary");
+  });
+
   it("does not take a path that has no transform, or a transform that is not leading", () => {
     expect(read("https://img.shop.example/logo_x/foo.png").name).toBe("generic");
     expect(read("https://img.shop.example/a_1/foo.png").name).toBe("generic");
