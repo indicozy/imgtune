@@ -353,8 +353,8 @@ async function auditMinScores(projectDir: string): Promise<Map<string, { avif?: 
 
 /**
  * The bar of one served variant, recomputed as the audit did (R38): max(floor, current - delta), where current is the
- * before-quality encoded locally at the served width. Undefined when it cannot be recomputed; the caller then uses the
- * audit's stored median.
+ * before-quality encoded locally at `width`, the variant's decoded served width. Undefined when it cannot be recomputed;
+ * the caller then uses the audit's stored median. Used by the next-default profile only.
  */
 export async function recomputeBar(
   obs: ImageObservation,
@@ -363,10 +363,11 @@ export async function recomputeBar(
   rule: { threshold: number; delta: number },
   baseUrl: string,
   deps: { fetchOriginal: (url: string) => Promise<Buffer>; score: Scorer },
+  width: number,
 ): Promise<number | undefined> {
-  if (!obs.originalSrc || obs.naturalWidth < 1) return undefined;
+  if (!obs.originalSrc || width < 1) return undefined;
   try {
-    const reference = await loadReference(await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl)), obs.naturalWidth);
+    const reference = await loadReference(await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl)), width);
     const enc = await encode(reference, format, beforeQuality, "next-default");
     return Math.max(rule.threshold, (await deps.score(reference, enc.decoded)) - rule.delta);
   } catch {
@@ -528,7 +529,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
             if (config.delta !== undefined) {
               const before = entry.before?.quality;
               if (recomputable && before !== undefined) {
-                minScore = await recomputeBar(obs, format, before, { threshold: config.threshold, delta: config.delta }, measured.baseUrl, { fetchOriginal, score });
+                minScore = await recomputeBar(obs, format, before, { threshold: config.threshold, delta: config.delta }, measured.baseUrl, { fetchOriginal, score }, scored.width);
               }
               minScore ??= auditBars.get(usage.id)?.[format];
             }
