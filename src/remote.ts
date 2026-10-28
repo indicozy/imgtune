@@ -1,12 +1,28 @@
+/// <reference lib="dom" />
+import { readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { chromium, type Browser, type Response } from "playwright";
 import sharp, { type Sharp } from "sharp";
-import { sha1 } from "./atomic.js";
+import { writeFileAtomic, sha1 } from "./atomic.js";
 import { originalUrlFor } from "./analyse.js";
 import { calibrationOffset } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
-import type { Scorer } from "./metric.js";
+import { loadSettled, settleWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
+import { assertMetricAvailable, makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
+import { deriveSizes, type SizePoint } from "./sizes.js";
 import type { RawImage } from "./ssim.js";
+import type { Viewport } from "./types.js";
+
+/** Thresholds of the report and the local search. */
+const MIN_RENDERED_PX = 16;
+/** A plain <img> wider than this multiple of what it needs is an estimated resize. */
+const PLAIN_RESIZE_RATIO = 1.1;
+/** At most this many images per group are scored for quality, at the reference viewport. */
+const SAMPLES_PER_GROUP = 8;
+const TOP_GROUPS = 10;
 
 /** Default output directory, relative to the working directory. */
 export const DEFAULT_OUT = ".imgtune/scan";
@@ -397,15 +413,19 @@ export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch 
 export interface PixelSize {
   width: number;
   height: number;
+  /** sharp's format name: jpeg, png, webp, avif, gif, svg, ... */
+  format?: string;
 }
 
-/** The pixel size of an image file, as displayed (EXIF orientation applied). Undefined when sharp cannot read it. */
+/** The pixel size and format of an image file, as displayed (EXIF orientation applied). Undefined when sharp cannot read it. */
 export async function pixelSize(buffer: Buffer): Promise<PixelSize | undefined> {
   try {
     const meta = await sharp(buffer).metadata();
     if (!meta.width || !meta.height) return undefined;
     const turned = (meta.orientation ?? 1) >= 5;
-    return turned ? { width: meta.height, height: meta.width } : { width: meta.width, height: meta.height };
+    const width = turned ? meta.height : meta.width;
+    const height = turned ? meta.width : meta.height;
+    return { width, height, format: meta.format };
   } catch {
     return undefined;
   }
@@ -571,4 +591,485 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
   }
 
   return undefined;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Browser observation: one fresh context per page and viewport
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface ObservedImage {
+  /** Position among all <img> elements of the page, in document order. Identifies the image across viewports. */
+  index: number;
+  currentSrc: string;
+  renderedWidth: number;
+  renderedHeight: number;
+  srcset: string;
+  sizes?: string;
+  classes: string;
+  nextImage: boolean;
+  inFirstViewport: boolean;
+}
+
+export interface ResponseRecord {
+  url: string;
+  contentType?: string;
+  /** Response body length: the bytes the browser transferred. */
+  bytes: number;
+  buffer?: Buffer;
+  pixels?: PixelSize;
+}
+
+export interface ViewportObservation {
+  viewport: Viewport;
+  status?: number;
+  blocked: boolean;
+  nextjs: boolean;
+  images: ObservedImage[];
+  /** Every image response of the page view, by URL. */
+  responses: Map<string, ResponseRecord>;
+}
+
+async function observeViewport(browser: Browser, pageUrl: string, viewport: Viewport): Promise<ViewportObservation> {
+  const context = await browser.newContext({
+    viewport: { width: viewport.width, height: viewport.height },
+    deviceScaleFactor: viewport.dpr,
+    isMobile: viewport.mobile,
+    hasTouch: viewport.mobile,
+    userAgent: viewport.userAgent,
+  });
+  try {
+    const responses = new Map<string, ResponseRecord>();
+    const bodyReads: Promise<void>[] = [];
+    context.on("response", (response) => {
+      const contentType = response.headers()["content-type"];
+      const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
+      if (!isImage) return;
+      const record: ResponseRecord = { url: response.url(), contentType, bytes: 0 };
+      responses.set(response.url(), record);
+      bodyReads.push(
+        response.body().then(
+          (body) => {
+            record.bytes = body.length;
+            record.buffer = body;
+          },
+          () => {},
+        ),
+      );
+    });
+
+    const page = await context.newPage();
+    const docResponse: Response | null = await loadSettled(page, pageUrl, "img");
+    const seen = await page.evaluate(() => {
+      const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
+      const images = Array.from(document.querySelectorAll("img"), (img, index) => {
+        const rect = img.getBoundingClientRect();
+        return {
+          index,
+          currentSrc: img.currentSrc,
+          renderedWidth: rect.width,
+          renderedHeight: rect.height,
+          srcset: img.getAttribute("srcset") ?? "",
+          sizes: img.getAttribute("sizes") ?? undefined,
+          classes: img.getAttribute("class") ?? "",
+          nextImage: img.hasAttribute("data-nimg"),
+          inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
+        };
+      });
+      return { nextjs, images };
+    });
+    const html = seen.images.length === 0 ? await page.content() : "";
+    const status = docResponse?.status();
+    await settleWithin(bodyReads, BODY_READ_TIMEOUT_MS);
+    for (const record of responses.values()) {
+      if (record.buffer) record.pixels = await pixelSize(record.buffer);
+    }
+    return {
+      viewport,
+      status,
+      blocked: isChallenge(status, seen.images.length, html),
+      nextjs: seen.nextjs,
+      images: seen.images,
+      responses,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Analysis of one page
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** One image element at one viewport, with what it saves. */
+interface Instance {
+  viewport: Viewport;
+  element: number;
+  img: ObservedImage;
+  url: string;
+  bytes: number;
+  format?: string;
+  pixelWidth: number;
+  renderedWidth: number;
+  needed: number;
+  kind: "srcset" | "plain" | "skipped";
+  skipped?: string;
+  /** The right candidate (srcset) and its file, kept for the quality step. */
+  right?: { url: string; bytes: number; width: number; height: number; format: string; buffer: Buffer };
+  exact: number;
+  est: number;
+  estAggressive: number;
+  growth: number;
+  group: string;
+  /** Quality ratio per delta (projected / served bytes): the image's own, or its group's median. */
+  qualityRatio?: Record<number, number>;
+  qualityInfo?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
+}
+
+interface AnalysisContext {
+  pageUrl: string;
+  fetcher: Fetcher;
+  deps: QualityDeps;
+  quality: boolean;
+  aggressive: boolean;
+  resized: Map<string, Promise<{ bytes: number; buffer: Buffer } | undefined>>;
+}
+
+const formatName = (format: string | undefined): string | undefined => (format === "jpg" ? "jpeg" : format);
+
+async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: ObservedImage): Promise<Instance> {
+  const dpr = obs.viewport.dpr;
+  const needed = Math.ceil(img.renderedWidth * dpr);
+  const instance: Instance = {
+    viewport: obs.viewport,
+    element: img.index,
+    img,
+    url: img.currentSrc,
+    bytes: 0,
+    pixelWidth: 0,
+    renderedWidth: img.renderedWidth,
+    needed,
+    kind: "skipped",
+    exact: 0,
+    est: 0,
+    estAggressive: 0,
+    growth: 0,
+    group: "",
+  };
+  const skip = (reason: string): Instance => ({ ...instance, skipped: reason });
+
+  if (img.renderedWidth < MIN_RENDERED_PX) return skip("under 16 px");
+  if (!img.currentSrc || img.currentSrc.startsWith("data:")) return skip("data URI");
+  const response = obs.responses.get(img.currentSrc);
+  if (!response?.buffer) return skip("not loaded");
+  const served = response.pixels;
+  if (response.contentType?.toLowerCase().includes("svg") || served?.format === "svg") return skip("vector");
+  if (!served) return skip("not decodable");
+  Object.assign(instance, { bytes: response.bytes, pixelWidth: served.width, format: formatName(served.format) });
+
+  const candidates = parseSrcset(img.srcset, ctx.pageUrl);
+  if (candidates.length > 0) {
+    const largest = Math.max(...candidates.map((c) => c.width));
+    const need = neededWidth(img.renderedWidth, dpr, largest);
+    const right = rightCandidate(candidates, need);
+    instance.kind = "srcset";
+    instance.needed = need;
+    let rightBuffer: Buffer | undefined;
+    if (right.url === img.currentSrc) {
+      rightBuffer = response.buffer;
+    } else {
+      // A candidate the browser loaded at this viewport is reused; otherwise it is fetched once, as the page advertises it.
+      rightBuffer = obs.responses.get(right.url)?.buffer ?? (await ctx.fetcher.get(right.url));
+    }
+    if (rightBuffer) {
+      const rightPixels = right.url === img.currentSrc ? served : await pixelSize(rightBuffer);
+      const rightBytes = rightBuffer.length;
+      if (right.url !== img.currentSrc) instance.exact = Math.max(0, response.bytes - rightBytes);
+      if (isUndersized(served.width, need, largest)) instance.growth = Math.max(0, rightBytes - response.bytes);
+      if (rightPixels?.format) {
+        instance.right = {
+          url: right.url,
+          bytes: rightBytes,
+          width: rightPixels.width,
+          height: rightPixels.height,
+          format: formatName(rightPixels.format) ?? rightPixels.format,
+          buffer: rightBuffer,
+        };
+      }
+    }
+    return instance;
+  }
+
+  // No w-descriptor srcset: a wider file than needed is estimated by a local resize at its own format (est.).
+  instance.kind = "plain";
+  if (served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
+    const key = `${img.currentSrc}|${needed}`;
+    let pending = ctx.resized.get(key);
+    if (!pending) {
+      pending = resizedEstimate(response.buffer, served.format, needed).catch(() => undefined);
+      ctx.resized.set(key, pending);
+    }
+    const resized = await pending;
+    if (resized) instance.est = instance.estAggressive = Math.max(0, response.bytes - resized.bytes);
+  }
+  return instance;
+}
+
+function median(values: number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length / 2;
+  return sorted.length % 2 === 1 ? sorted[Math.floor(mid)] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * The quality step: per group, up to SAMPLES_PER_GROUP images are scored at the reference viewport (those with a known
+ * original). Their median ratio applies to every other image of the group that has a reference.
+ */
+async function estimateQualities(ctx: AnalysisContext, instances: Instance[], refName: string): Promise<void> {
+  const groups = new Map<string, Instance[]>();
+  for (const inst of instances) {
+    if (inst.kind !== "srcset" || !inst.right) continue;
+    const list = groups.get(inst.group);
+    if (list) list.push(inst);
+    else groups.set(inst.group, [inst]);
+  }
+  for (const members of groups.values()) {
+    const ratios2: number[] = [];
+    const ratios4: number[] = [];
+    let attempts = 0;
+    for (const member of members.filter((m) => m.viewport.name === refName)) {
+      if (attempts >= SAMPLES_PER_GROUP) break;
+      const original = referenceUrl(member.url, ctx.pageUrl);
+      if (!original) continue;
+      attempts++;
+      const buffer = await ctx.fetcher.get(original);
+      if (!buffer || !member.right) continue;
+      const current = currentQuality(member.url);
+      const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];
+      const estimate = await estimateQuality(
+        {
+          original: buffer,
+          served: member.right.buffer,
+          format: member.right.format,
+          bytes: member.right.bytes,
+          width: member.right.width,
+          height: member.right.height,
+          current: current.quality,
+        },
+        deltas,
+        ctx.deps,
+      ).catch(() => undefined);
+      if (!estimate) continue;
+      member.qualityRatio = { ...estimate.ratio };
+      member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, target: estimate.target, format: estimate.format, sampled: true };
+      ratios2.push(estimate.ratio[SCAN_DELTA]);
+      if (ctx.aggressive) ratios4.push(estimate.ratio[SCAN_AGGRESSIVE_DELTA]);
+    }
+    const group2 = median(ratios2);
+    const group4 = median(ratios4);
+    if (group2 === undefined) continue;
+    for (const member of members) {
+      if (member.qualityRatio || !referenceUrl(member.url, ctx.pageUrl)) continue;
+      const current = currentQuality(member.url);
+      member.qualityRatio = ctx.aggressive && group4 !== undefined ? { [SCAN_DELTA]: group2, [SCAN_AGGRESSIVE_DELTA]: group4 } : { [SCAN_DELTA]: group2 };
+      member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, sampled: false };
+    }
+  }
+}
+
+/** Turns the quality ratios into savings on top of the right file (est.). */
+function applyQuality(inst: Instance): void {
+  if (!inst.right || !inst.qualityRatio) return;
+  inst.est += Math.max(0, inst.right.bytes * (1 - inst.qualityRatio[SCAN_DELTA]));
+  const r4 = inst.qualityRatio[SCAN_AGGRESSIVE_DELTA];
+  if (r4 !== undefined) inst.estAggressive += Math.max(0, inst.right.bytes * (1 - r4));
+}
+
+export interface ImageReport {
+  url: string;
+  bytes: number;
+  format?: string;
+  pixelWidth: number;
+  renderedWidth: number;
+  dpr: number;
+  needed: number;
+  firstViewport: boolean;
+  kind: "srcset" | "plain" | "skipped";
+  skipped?: string;
+  sizes?: string;
+  right?: { url: string; bytes: number; width: number };
+  exactSaved: number;
+  estSaved: number;
+  estAggressiveSaved?: number;
+  sharpnessGrowth: number;
+  group: string;
+  quality?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
+  qualityNA: boolean;
+}
+
+export interface ViewportReport {
+  imageBytes: number;
+  exactSaved: number;
+  estSaved: number;
+  estAggressiveSaved?: number;
+  sharpnessGrowth: number;
+  images: ImageReport[];
+}
+
+export interface GroupReport {
+  key: string;
+  sizes?: string;
+  suggestedSizes?: string;
+  estQuality?: number;
+  /** Mean over the viewports the group is shown at: exact + est. bytes per page view. */
+  savedBytes: number;
+  members: number;
+  samples: string[];
+  hint?: string;
+}
+
+export type PageStatus = "ok" | "blocked" | "robots" | "failed";
+
+export interface PageResult {
+  url: string;
+  host: string;
+  scannedAt: string;
+  imgtuneVersion: string;
+  metric: "ssimulacra2";
+  delta: number;
+  aggressiveDelta?: number;
+  viewports: string[];
+  status: PageStatus;
+  error?: string;
+  nextjs: boolean;
+  perViewport: Record<string, ViewportReport>;
+  page?: PageNumbers;
+  groups: GroupReport[];
+  counts: { images: number; qualityNA: number; skipped: number };
+}
+
+function toReport(inst: Instance): ImageReport {
+  const quality = inst.qualityInfo;
+  return {
+    url: inst.url,
+    bytes: inst.bytes,
+    format: inst.format,
+    pixelWidth: inst.pixelWidth,
+    renderedWidth: inst.renderedWidth,
+    dpr: inst.viewport.dpr,
+    needed: inst.needed,
+    firstViewport: inst.img.inFirstViewport,
+    kind: inst.kind,
+    skipped: inst.skipped,
+    sizes: inst.img.sizes,
+    right: inst.right ? { url: inst.right.url, bytes: inst.right.bytes, width: inst.right.width } : undefined,
+    exactSaved: inst.exact,
+    estSaved: inst.est,
+    estAggressiveSaved: inst.kind === "skipped" ? undefined : inst.estAggressive,
+    sharpnessGrowth: inst.growth,
+    group: inst.group,
+    quality: quality ? { ...quality } : undefined,
+    qualityNA: inst.kind !== "skipped" && inst.qualityRatio === undefined,
+  };
+}
+
+/** Groups by saving: the mean over viewports of the group's exact + est. bytes, with two sample URLs and a sizes hint. */
+function groupReports(instances: Instance[]): GroupReport[] {
+  const byKey = new Map<string, Instance[]>();
+  for (const inst of instances) {
+    if (inst.kind === "skipped") continue;
+    const list = byKey.get(inst.group);
+    if (list) list.push(inst);
+    else byKey.set(inst.group, [inst]);
+  }
+  const reports: GroupReport[] = [];
+  for (const [key, members] of byKey) {
+    const perViewport = new Map<string, number>();
+    for (const inst of members) {
+      const name = inst.viewport.name;
+      perViewport.set(name, (perViewport.get(name) ?? 0) + inst.exact + inst.est);
+    }
+    const savedBytes = mean([...perViewport.values()]);
+    if (savedBytes <= 0) continue;
+    const sizes = members[0].img.sizes;
+    const points: SizePoint[] = members
+      .filter((m) => m.renderedWidth >= 1)
+      .map((m) => ({ viewportWidth: m.viewport.width, renderedWidth: m.renderedWidth, mobile: m.viewport.mobile }));
+    const suggestedSizes = deriveSizes(points);
+    const targets = members.flatMap((m) => (m.qualityInfo?.target !== undefined ? [m.qualityInfo.target] : []));
+    const samples = [...new Set(members.map((m) => m.url))].slice(0, 2);
+    reports.push({
+      key,
+      sizes,
+      suggestedSizes,
+      estQuality: median(targets),
+      savedBytes,
+      members: new Set(members.map((m) => m.element)).size,
+      samples,
+      hint: suggestedSizes && suggestedSizes !== sizes ? `set sizes="${suggestedSizes}"` : undefined,
+    });
+  }
+  return reports.sort((a, b) => b.savedBytes - a.savedBytes).slice(0, TOP_GROUPS);
+}
+
+/** The viewport the quality step scores at: iphone-15 when it is measured, else the first mobile one, else the first. */
+function referenceViewportName(viewports: Viewport[]): string {
+  return viewports.find((v) => v.name === "iphone-15")?.name ?? viewports.find((v) => v.mobile)?.name ?? viewports[0].name;
+}
+
+/** Turns the observations of one page into the report. Fetches and local encodes happen here. */
+async function analysePage(ctx: AnalysisContext, observations: ViewportObservation[], base: PageResult): Promise<PageResult> {
+  const refName = referenceViewportName(observations.map((o) => o.viewport));
+  const instances: Instance[] = [];
+  for (const obs of observations) {
+    for (const img of obs.images) instances.push(await baseline(ctx, obs, img));
+  }
+  const refWidth = new Map<number, number>();
+  for (const inst of instances) {
+    if (inst.viewport.name === refName && inst.renderedWidth >= 1) refWidth.set(inst.element, inst.renderedWidth);
+  }
+  for (const inst of instances) {
+    inst.group = groupKey(inst.img.sizes, inst.img.classes, refWidth.get(inst.element));
+  }
+  if (ctx.quality) await estimateQualities(ctx, instances, refName);
+  for (const inst of instances) applyQuality(inst);
+
+  const perViewport: Record<string, ViewportReport> = {};
+  const totals: ViewportTotals[] = [];
+  for (const obs of observations) {
+    const own = instances.filter((i) => i.viewport.name === obs.viewport.name);
+    const imageBytes = [...obs.responses.values()].reduce((sum, r) => sum + r.bytes, 0);
+    const vt = viewportTotals(
+      own.map((i) => ({ bytes: i.bytes, exact: i.exact, est: i.est, estAggressive: i.estAggressive, growth: i.growth })),
+      imageBytes,
+    );
+    totals.push(vt);
+    perViewport[obs.viewport.name] = {
+      imageBytes,
+      exactSaved: vt.exact,
+      estSaved: vt.est,
+      estAggressiveSaved: ctx.aggressive ? vt.estAggressive : undefined,
+      sharpnessGrowth: vt.growth,
+      images: own.map(toReport),
+    };
+  }
+
+  const elements = new Set(instances.map((i) => i.element));
+  const skippedElements = new Set<number>();
+  const naElements = new Set<number>();
+  for (const e of elements) {
+    const mine = instances.filter((i) => i.element === e);
+    if (mine.every((i) => i.kind === "skipped")) skippedElements.add(e);
+    if (mine.some((i) => i.kind !== "skipped" && i.qualityRatio === undefined)) naElements.add(e);
+  }
+
+  const numbers = pageNumbers(totals);
+  return {
+    ...base,
+    nextjs: observations.some((o) => o.nextjs),
+    perViewport,
+    page: numbers,
+    groups: groupReports(instances),
+    counts: { images: elements.size, qualityNA: naElements.size, skipped: skippedElements.size },
+  };
 }
