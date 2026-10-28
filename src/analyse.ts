@@ -30,6 +30,11 @@ const CALIBRATION_SAMPLES = 5;
 /** Projected bytes above this multiple of the current median count as growth. */
 const GROWTH_RATIO = 1.05;
 const NOTE_NOT_CONFIRMED = "estimated: not confirmed against /_next/image";
+const NOTE_SIZES_FITS = "sizes already fits";
+const NOTE_VECTOR = "vector image: sizes/quality do not apply";
+/** A sizes proposal saving fewer bytes per image than this, and under NEGLIGIBLE_RATIO of the current bytes, is dropped. */
+const NEGLIGIBLE_BYTES = 200;
+const NEGLIGIBLE_RATIO = 0.02;
 /** The media branches of a `sizes` value, in the order the notes list them. */
 const BRANCHES = ["mobile", "desktop"] as const;
 export type Branch = (typeof BRANCHES)[number];
@@ -355,6 +360,12 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     notes.push("not measured: image not rendered at any viewport");
     return result;
   }
+  // A vector file has no width to scale to, so sizes and quality do not apply to it.
+  const servedFormats = unique(usageObs.flatMap((o) => (o.contentType && formatOf(o.contentType) ? [formatOf(o.contentType) as string] : [])));
+  if (servedFormats.length > 0 && servedFormats.every((format) => format === "svg+xml")) {
+    notes.push(NOTE_VECTOR);
+    return result;
+  }
 
   if (literalQuality === undefined && urlQuality === undefined) {
     notes.push(`current quality assumed ${DEFAULT_QUALITY} (not found in props or URL)`);
@@ -516,7 +527,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   }
   const decision = decideBranches(fullBranches, means, sizesLiteral ?? ABSENT_SIZES);
   const branches = decision.branches;
-  const proposedSizes = decision.sizes;
+  let proposedSizes = decision.sizes;
   result.grows = BRANCHES.some((key) => branches[key]?.grows === true);
   for (const key of BRANCHES) {
     const decision = branches[key];
@@ -528,15 +539,46 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     notes.push(`${key}: corrected sizes is sharper but larger (+${delta} KB/img); ${outcome}`);
   }
 
-  // The page's sizes after the proposal: quality and bytes follow them.
-  const finalSizes = proposedSizes ?? sizesLiteral;
-  const sameAsFull = finalSizes === sizesFull;
-  const finalSearch = sameAsFull ? fullSearch : await searchAtSizes(finalSizes);
-  if (finalSearch.reason) notes.push(finalSearch.reason);
-  const proposedQuality = finalSearch.proposedQuality;
-  const qNew = proposedQuality ?? quality;
-  // The projection under the full correction is kept as is; the final projection is copied so a confirmation can change it.
-  const projFinal = { ...(sameAsFull ? projFull : await project(finalSizes, qNew)) };
+  // A sizes change the page would not notice is no proposal: the same slot at every measured viewport, or a negligible
+  // saving. Quality and bytes follow the sizes that remain.
+  const sameSlotAsCurrent = (sizes: string, current: string): boolean =>
+    stats.every((s) => {
+      const a = sizesSlotAt(sizes, s.viewportWidth);
+      const b = sizesSlotAt(current, s.viewportWidth);
+      return a !== undefined && b !== undefined && Math.round(a) === Math.round(b);
+    });
+  const negligibleSaving = (proj: Record<string, number>): boolean => {
+    const pairs = stats.filter((s) => s.bytes !== undefined && proj[s.name] !== undefined);
+    if (pairs.length === 0) return false;
+    const saved = mean(pairs.map((s) => (s.bytes as number) - proj[s.name]));
+    const current = mean(pairs.map((s) => s.bytes as number));
+    // Growth is not a saving: a proposal that grows bytes is judged by the branch rules, not here.
+    return saved >= 0 && saved < NEGLIGIBLE_BYTES && saved < NEGLIGIBLE_RATIO * current;
+  };
+  const settle = async (sizes: string | undefined) => {
+    const finalSizes = sizes ?? sizesLiteral;
+    const sameAsFull = finalSizes === sizesFull;
+    const search = sameAsFull ? fullSearch : await searchAtSizes(finalSizes);
+    const qNew = search.proposedQuality ?? quality;
+    // The projection under the full correction is kept as is; the final projection is copied so a confirmation can change it.
+    const proj = { ...(sameAsFull ? projFull : await project(finalSizes, qNew)) };
+    return { finalSizes, search, qNew, proj };
+  };
+  let fits = proposedSizes !== undefined && sizesLiteral !== undefined && sameSlotAsCurrent(proposedSizes, sizesLiteral);
+  let settled = await settle(fits ? undefined : proposedSizes);
+  if (!fits && proposedSizes !== undefined && negligibleSaving(settled.proj)) {
+    fits = true;
+    settled = await settle(undefined);
+  }
+  if (fits) {
+    proposedSizes = undefined;
+    notes.push(NOTE_SIZES_FITS);
+  }
+  const { finalSizes, qNew, proj: projFinal } = settled;
+  if (settled.search.reason) notes.push(settled.search.reason);
+  const proposedQuality = settled.search.proposedQuality;
+  // The full correction is no proposal either when it resolves to the current slots (it is what --allow-growth writes).
+  const sizesFullFits = sizesFull !== undefined && sizesLiteral !== undefined && sameSlotAsCurrent(sizesFull, sizesLiteral);
 
   // Candidate widths that the ladder offers well above what a slot needs are reported as gaps.
   const candidates = nextCandidates(ctx.imageConfig, finalSizes, widthLiteral);
@@ -610,7 +652,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   result.proposed = {
     width: widthAt(finalSizes, ref),
     sizes: proposedSizes,
-    sizesFull,
+    sizesFull: sizesFullFits ? undefined : sizesFull,
     quality: proposedQuality,
     qualityFull: fullSearch.proposedQuality,
     projectedBytes: projFinal[ref.name],

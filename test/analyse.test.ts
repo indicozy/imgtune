@@ -258,7 +258,7 @@ describe("per-viewport projection and media branches", () => {
     ]);
     const r = await run(usage({ sizes: literal("33vw") }), observations);
 
-    expect(r.proposed.sizesFull).toBe("(max-width: 768px) 280px, 280px");
+    expect(r.proposed.sizesFull).toBe("280px");
     expect(r.proposed.sizes).toBe("(max-width: 768px) 33vw, 280px");
     expect(r.proposed.bytesByViewport!.desktop).toBeLessThan(r.current.bytesByViewport.desktop);
     expect(r.proposed.branches!.mobile).toMatchObject({ grows: true, kept: true });
@@ -267,6 +267,43 @@ describe("per-viewport projection and media branches", () => {
     expect(r.notes).toContainEqual(
       expect.stringMatching(/^mobile: corrected sizes is sharper but larger \(\+\d+\.\d KB\/img\); kept current — use --allow-growth$/),
     );
+  });
+
+  it("proposes no sizes when the proposal resolves to the current slot at every measured viewport", async () => {
+    // calc(100vw - 0px) on the phone is the 393px slot the proposal would give, and 600px is already the desktop value.
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 1200, rendered: 393, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1200, rendered: 600, bytes: 20000, dpr: 1 }),
+    ]);
+    const r = await run(usage({ sizes: literal("(max-width: 768px) calc(100vw - 0px), 600px") }), observations);
+
+    expect(r.proposed.sizes).toBeUndefined();
+    expect(r.proposed.sizesFull).toBeUndefined();
+    expect(r.notes).toContain("sizes already fits");
+  });
+
+  it("proposes no sizes when the projected saving is negligible, even on a different slot", async () => {
+    // 400px and 393px both resolve to the 1200w candidate, and 600px to 640w, so the projection saves nothing.
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 1200, rendered: 393, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 640, rendered: 600, bytes: 20000, dpr: 1 }),
+    ]);
+    const r = await run(usage({ sizes: literal("(max-width: 768px) 400px, 600px") }), observations);
+
+    expect(r.proposed.sizes).toBeUndefined();
+    expect(r.notes).toContain("sizes already fits");
+  });
+
+  it("proposes nothing for a vector image", async () => {
+    const observations = SRC.flatMap((src) => [
+      { ...viewportObs({ viewport: "iphone-15", src, natural: 1200, rendered: 393, bytes: 20000, dpr: 3 }), contentType: "image/svg+xml" },
+      { ...viewportObs({ viewport: "desktop", src, natural: 1200, rendered: 600, bytes: 20000, dpr: 1 }), contentType: "image/svg+xml" },
+    ]);
+    const r = await run(usage(), observations);
+
+    expect(r.proposed.sizes).toBeUndefined();
+    expect(r.proposed.quality).toBeUndefined();
+    expect(r.notes).toContain("vector image: sizes/quality do not apply");
   });
 
   it("proposes the full correction when both branches shrink", async () => {
@@ -733,7 +770,9 @@ describe("analyse", () => {
     );
 
     expect(r.proposed.quality).toBeUndefined();
-    expect(r.proposed.sizes).toBeDefined();
+    // Absent sizes resolve to the same 1200w candidate as 393px, so the sizes change saves nothing and is no proposal.
+    expect(r.proposed.sizes).toBeUndefined();
+    expect(r.notes).toContain("sizes already fits");
     expect(r.notes).toContain("quality not proposed: no CDN webp variants observed for calibration");
   }, CDN_TIMEOUT_MS);
 
