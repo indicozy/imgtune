@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { listSourceFiles, scanFile } from "../src/scan.js";
+import { isUnderPaths, listSourceFiles, scanFile } from "../src/scan.js";
 
 const PROJECT = resolve(import.meta.dirname, "fixtures/scan");
 const fixture = (name: string) => resolve(PROJECT, name);
@@ -168,5 +168,29 @@ describe("listSourceFiles", () => {
   it("accepts absolute paths", async () => {
     const files = await listSourceFiles(tree, [join(tree, "app")]);
     expect(files.map((f) => f.slice(tree.length + 1))).toEqual(["app/page.tsx"]);
+  });
+});
+
+describe("isUnderPaths", () => {
+  const root = "/work/app";
+
+  it("takes a file or a directory as the path, and everything below a directory", () => {
+    expect(isUnderPaths(root, "src/pages/a.tsx", ["src/pages"])).toBe(true);
+    expect(isUnderPaths(root, "src/pages/deep/a.tsx", ["src/pages/"])).toBe(true);
+    expect(isUnderPaths(root, "src/pages/a.tsx", ["src/pages/a.tsx"])).toBe(true);
+    expect(isUnderPaths(root, "src/pages/a.tsx", [join(root, "src")])).toBe(true);
+  });
+
+  it("is true for every file under the project for the default '.'", () => {
+    expect(isUnderPaths(root, "src/pages/a.tsx", ["."])).toBe(true);
+  });
+
+  it("does not match a sibling that only shares a name prefix", () => {
+    expect(isUnderPaths(root, "src/pagesOld/a.tsx", ["src/pages"])).toBe(false);
+    expect(isUnderPaths(root, "src/pages.tsx", ["src/pages"])).toBe(false);
+  });
+
+  it("is false for files outside every given path", () => {
+    expect(isUnderPaths(root, "app/page.tsx", ["src", "lib"])).toBe(false);
   });
 });

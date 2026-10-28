@@ -356,6 +356,7 @@ export async function applyResults(
             ...(quality ? { quality: quality.value as number } : {}),
           },
           before: { sizes: planUse.result.current.sizes, quality: planUse.result.current.quality },
+          ...(planUse.result.calibration ? { calibration: planUse.result.calibration } : {}),
           at: now,
         });
       }

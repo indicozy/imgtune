@@ -13,6 +13,8 @@ export interface StateEntry {
   applied: { sizes?: string; quality?: number };
   /** The values the usage had before the apply (quality as the audit read it). */
   before?: { sizes?: string; quality?: number };
+  /** cdn profile: the CDN-to-local quality offset per format the audit calibrated, so verify needs no audit report. */
+  calibration?: Partial<Record<"avif" | "webp", number>>;
   /** ISO time of the apply. */
   at: string;
   verification?: {

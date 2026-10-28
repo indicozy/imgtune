@@ -10,7 +10,7 @@ import { originalUrlFor } from "./analyse.js";
 import { installRestoreHandlers } from "./instrument.js";
 import { assertMetricAvailable, formatScore, makeScorer, metricLabel, type Metric, type Scorer } from "./metric.js";
 import { readReport } from "./report.js";
-import { scanFile } from "./scan.js";
+import { isUnderPaths, scanFile } from "./scan.js";
 import { loadState, saveState, type StateEntry } from "./state.js";
 import { ssim, type RawImage } from "./ssim.js";
 import type { ImageUsage, ImgtuneConfig } from "./types.js";
@@ -446,20 +446,35 @@ export async function judgeSample(
       return { unusable: `bar not computable: ${(err as Error).message}` };
     }
   }
-  // cdn rule (R38): judged by the local quality drop, not by a bar.
-  const before = input.before;
-  const now = input.applied ?? before;
-  if (before === undefined || now === undefined) return { unusable: "drop not computable: no before quality recorded" };
+  // cdn rule (R38): judged by the local quality drop, not by a bar. A sizes-only change has no quality to drop by, so it
+  // needs no before quality either; only a quality change does.
+  const { before, applied } = input;
+  const sizesOnly = applied === undefined || applied === before;
+  if (!sizesOnly && before === undefined) return { unusable: "drop not computable: no before quality recorded" };
   try {
     const original = await deps.fetchOriginal(originalUrlFor(obs.originalSrc as string, input.baseUrl));
-    const drop = await cdnDrop(original, format, scored.width, { before, now, offset: input.offset }, deps.score);
     // A quality change needs the calibration to map it to the local scale; a sizes-only change has no drop to map.
+    const drop = sizesOnly
+      ? 0
+      : await cdnDrop(original, format, scored.width, { before: before as number, now: applied as number, offset: input.offset }, deps.score);
     if (drop === undefined) return { unusable: `drop not computable: no calibration offset for ${format}` };
-    const undersized = now === before ? await undersizedFile(original, obs, scored.width) : undefined;
+    const undersized = sizesOnly ? await undersizedFile(original, obs, scored.width) : undefined;
     return { sample: { format, ssim: scored.ssim, drop, undersized } };
   } catch (err) {
     return { unusable: `local rescore failed: ${(err as Error).message}` };
   }
+}
+
+/**
+ * The CDN-to-local quality offset of a format for one usage: the one the apply recorded in its state entry, else the one
+ * the audit report holds (for state written before the offset was recorded).
+ */
+export function offsetFor(
+  entry: StateEntry,
+  reportOffsets: Partial<Record<Format, number>> | undefined,
+  format: Format,
+): number | undefined {
+  return entry.calibration?.[format] ?? reportOffsets?.[format];
 }
 
 /** Audit-time CDN-to-local quality offset per format, keyed by usage id; empty when there is no readable report. */
@@ -501,7 +516,8 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   installRestoreHandlers(projectDir);
 
   log("scanning");
-  const state = await loadState(projectDir);
+  // Only the entries under the given paths are judged; the others keep whatever verdict they have.
+  const state = (await loadState(projectDir)).filter((entry) => isUnderPaths(projectDir, entry.relFile, config.paths));
   const hashes = new Map<string, string | undefined>();
   for (const relFile of unique(state.map((entry) => entry.relFile))) {
     try {
@@ -560,7 +576,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
               scored,
               before: entry.before?.quality,
               applied: entry.applied.quality,
-              offset: calibration.get(usage.id)?.[format],
+              offset: offsetFor(entry, calibration.get(usage.id), format),
               profile: recomputable ? "next-default" : "cdn",
               delta: config.delta,
               threshold: config.threshold,

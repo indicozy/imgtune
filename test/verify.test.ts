@@ -8,6 +8,7 @@ import {
   formatOfContentType,
   judgeSample,
   judgeVerification,
+  offsetFor,
   renderVerifyTable,
   sampleVariants,
   undersizedFile,
@@ -507,10 +508,23 @@ describe("judgeSample for cdn with the drop rule (R41)", () => {
     });
   });
 
-  it("makes a sample with no before quality unusable", async () => {
-    expect(await judgeSample(input({ before: undefined, applied: undefined }), deps)).toEqual({
+  it("makes a quality change with no before quality unusable", async () => {
+    expect(await judgeSample(input({ before: undefined }), deps)).toEqual({
       unusable: "drop not computable: no before quality recorded",
     });
+  });
+
+  it("judges a sizes-only change with no before quality on its resolution: its drop is zero", async () => {
+    const verdict = await judgeSample(input({ before: undefined, applied: undefined }), deps);
+    expect(verdict).toEqual({ sample: { format: "webp", ssim: 0.95, drop: 0, undersized: undefined } });
+  });
+
+  it("flags a sizes-only change with no before quality whose served file is undersized", async () => {
+    const verdict = await judgeSample(
+      input({ before: undefined, applied: undefined, obs: observation({ renderedWidth: 300, dpr: 2, naturalWidth: 480 }), scored: { ssim: 0.95, width: 300 } }),
+      deps,
+    );
+    expect(verdict).toMatchObject({ sample: { drop: 0, undersized: { file: 300, needed: 480 } } });
   });
 
   it("still judges a sizes-only change with no offset, since its drop is zero", async () => {
@@ -524,6 +538,34 @@ describe("judgeSample for cdn with the drop rule (R41)", () => {
       { fetchOriginal: async () => { throw new Error("404"); }, score: ssim },
     );
     expect(verdict).toEqual({ unusable: "local rescore failed: 404" });
+  });
+});
+
+describe("offsetFor", () => {
+  const entry = (calibration?: Partial<Record<"avif" | "webp", number>>): StateEntry => ({
+    usageId: "src/A.tsx:1:1",
+    relFile: "src/A.tsx",
+    component: "A",
+    fileHash: "h",
+    applied: { quality: 60 },
+    at: "2026-10-28T00:00:00.000Z",
+    ...(calibration === undefined ? {} : { calibration }),
+  });
+
+  it("takes the offset the apply recorded in the state entry, with no report needed", () => {
+    expect(offsetFor(entry({ webp: 3 }), undefined, "webp")).toBe(3);
+  });
+
+  it("prefers the state entry's offset over the audit report's", () => {
+    expect(offsetFor(entry({ webp: 3 }), { webp: 9 }, "webp")).toBe(3);
+  });
+
+  it("falls back to the audit report for state written before calibration was recorded", () => {
+    expect(offsetFor(entry(), { webp: 9 }, "webp")).toBe(9);
+  });
+
+  it("is undefined for a format with no offset anywhere", () => {
+    expect(offsetFor(entry({ webp: 3 }), { webp: 9 }, "avif")).toBeUndefined();
   });
 });
 

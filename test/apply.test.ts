@@ -257,6 +257,18 @@ describe("applyResults", () => {
     expect(isDone(entry, sha1(readFileSync(join(dir, "src/A.tsx"), "utf8")))).toBe(false);
   });
 
+  it("copies the usage calibration into its state entry, so verify can judge without the audit report", async () => {
+    const dir = project({
+      "src/A.tsx": `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} />;\n`,
+      "next.config.mjs": "export default {\n  images: {\n    formats: ['image/avif', 'image/webp'],\n  },\n};\n",
+    });
+    const usages = scanAll(dir, ["src/A.tsx"]);
+    await applyResults(dir, [{ ...resultFor(usages[0], { quality: 62 }), calibration: { avif: 4, webp: 3 } }], usages);
+
+    const [entry] = await loadState(dir);
+    expect(entry.calibration).toEqual({ avif: 4, webp: 3 });
+  });
+
   it("escapes double quotes in a sizes value", async () => {
     const dir = project({
       "src/A.tsx": `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} />;\n`,
