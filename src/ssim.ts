@@ -1,6 +1,5 @@
 /**
- * Ported from Optiq: <workspace>/optiq-src/repo/src/quality.ts
- * (with `hasTransparentPixels` from <workspace>/optiq-src/repo/src/pixels.ts).
+ * Ported from Optiq: quality.ts, with `hasTransparentPixels` from pixels.ts (see NOTICE).
  *
  * Copyright Optiq contributors
  * Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
