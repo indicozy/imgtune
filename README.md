@@ -40,8 +40,9 @@ desktop at 1x), scrolls it to the end, and records every image.
   recorded as `robots`. Pages that return a challenge or bot wall are recorded as `blocked` and not retried. The
   scanner identifies itself with the default Chromium user agent, uses no stealth plugins, and fetches each image URL
   at most once per scan.
-- Nothing is requested from the site's image CDN to estimate quality or format. Only URLs the page already advertises
-  are fetched.
+- Besides the page itself, scan fetches the page's own srcset candidates and, for quality estimates, the original of a
+  sampled image (derived from the loader URL), each at most once per scan. It never requests new transformations from
+  the CDN.
 
 ## Supported loaders
 
