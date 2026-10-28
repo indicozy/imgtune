@@ -1,7 +1,10 @@
 /// <reference lib="dom" />
 import { readFileSync } from "node:fs";
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import type { LookupAddress } from "node:dns";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type Response as BrowserResponse } from "playwright";
@@ -395,28 +398,121 @@ export function openImage(buffer: Buffer, limit = MAX_INPUT_PIXELS): Sharp {
   return sharp(buffer, { limitInputPixels: limit });
 }
 
-export type Lookup = (hostname: string) => Promise<{ address: string; family: number }[]>;
+/** Resolves a host to every address it has (dns.lookup with all: true). */
+export type Resolver = (hostname: string) => Promise<LookupAddress[]>;
+const systemResolver: Resolver = (hostname) => dnsLookup(hostname, { all: true });
 
-/** Loopback, private, link-local and unspecified addresses (IPv4, IPv6, and IPv4-mapped IPv6). */
-export function isBlockedAddress(address: string): boolean {
-  const a = address.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
-  if (mapped) return isBlockedAddress(mapped[1]);
-  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
-  if (v4) {
-    const first = Number(v4[1]);
-    const second = Number(v4[2]);
-    return (
-      first === 0 ||
-      first === 10 ||
-      first === 127 ||
-      (first === 169 && second === 254) ||
-      (first === 172 && second >= 16 && second <= 31) ||
-      (first === 192 && second === 168)
-    );
+/** Blocked ranges, from the IANA special-purpose registries. Checked with net.BlockList, never with patterns. */
+const BLOCKED = new BlockList();
+const BLOCKED_IPV4: [string, number][] = [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+  ["255.255.255.255", 32],
+];
+const BLOCKED_IPV6: [string, number][] = [
+  ["::", 128],
+  ["::1", 128],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+  ["2001:db8::", 32],
+  ["64:ff9b::", 96],
+  ["2002::", 16],
+];
+for (const [net, prefix] of BLOCKED_IPV4) BLOCKED.addSubnet(net, prefix, "ipv4");
+for (const [net, prefix] of BLOCKED_IPV6) BLOCKED.addSubnet(net, prefix, "ipv6");
+
+/** An IPv6 address (any textual form, with an optional dotted tail and zone) as its 16 bytes; undefined if malformed. */
+export function ipv6Bytes(text: string): Uint8Array | undefined {
+  let s = text.toLowerCase();
+  const zone = s.indexOf("%");
+  if (zone !== -1) s = s.slice(0, zone);
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(s);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number);
+    s = `${s.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
   }
-  // fc00::/7 (unique local), fe80::/10 (link-local), ::1 and :: (loopback, unspecified).
-  return a === "::" || a === "::1" || /^f[cd]/.test(a) || /^fe[89ab]/.test(a);
+  const halves = s.split("::");
+  if (halves.length > 2) return undefined;
+  const parseGroups = (part: string): number[] | undefined => {
+    if (part === "") return [];
+    const out: number[] = [];
+    for (const group of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(group)) return undefined;
+      out.push(parseInt(group, 16));
+    }
+    return out;
+  };
+  const head = parseGroups(halves[0]);
+  const tail = halves.length === 2 ? parseGroups(halves[1]) : [];
+  if (!head || !tail) return undefined;
+  let groups: number[];
+  if (halves.length === 2) {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return undefined;
+    groups = [...head, ...new Array<number>(fill).fill(0), ...tail];
+  } else {
+    groups = head;
+  }
+  if (groups.length !== 8) return undefined;
+  const bytes = new Uint8Array(16);
+  groups.forEach((g, i) => {
+    bytes[2 * i] = g >> 8;
+    bytes[2 * i + 1] = g & 0xff;
+  });
+  return bytes;
+}
+
+/**
+ * Whether an address (IPv4 or IPv6 in any textual form) is one a scan must not reach. IPv4-mapped (::ffff:a.b.c.d) and
+ * IPv4-compatible (::a.b.c.d) IPv6 addresses are unwrapped and their IPv4 part is checked too. Unparsable text is blocked.
+ */
+export function isBlockedAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return BLOCKED.check(address, "ipv4");
+  if (family !== 6) return true;
+  const bytes = ipv6Bytes(address);
+  if (!bytes) return true;
+  const zeroPrefix = bytes.subarray(0, 10).every((b) => b === 0);
+  const mapped = bytes[10] === 0xff && bytes[11] === 0xff;
+  const compatible = bytes[10] === 0 && bytes[11] === 0;
+  if (zeroPrefix && (mapped || compatible)) {
+    const embedded = `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+    if (BLOCKED.check(embedded, "ipv4")) return true;
+  }
+  return BLOCKED.check(address, "ipv6");
+}
+
+/**
+ * A `lookup` for a socket that resolves the host with `resolver` and refuses the connection when any address is blocked.
+ * The socket then connects to the address that was checked, so a DNS answer that changes later cannot redirect it.
+ */
+export function guardedLookup(resolver: Resolver): LookupFunction {
+  return ((hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
+    resolver(hostname).then(
+      (addresses) => {
+        if (addresses.length === 0 || addresses.some((a) => isBlockedAddress(a.address))) {
+          callback(new Error(`refused: ${hostname} resolves to a blocked address`));
+          return;
+        }
+        if (options.all) callback(null, addresses);
+        else callback(null, addresses[0].address, addresses[0].family);
+      },
+      (err: unknown) => callback(err),
+    );
+  }) as unknown as LookupFunction;
 }
 
 export interface FetchOptions {
@@ -428,47 +524,51 @@ export interface FetchOptions {
 
 export interface Fetcher {
   /**
-   * The body, or undefined when the URL is not http(s), resolves to a blocked address (unless allowed), fails, answers
-   * non-2xx, redirects more than MAX_REDIRECTS times, or is larger than its limit. Each (URL, options) is fetched once.
+   * The body, or undefined when the URL is not http(s), reaches a blocked address (unless allowed), fails, answers
+   * non-2xx, redirects more than MAX_REDIRECTS times, takes longer than EXTRA_FETCH_TIMEOUT_MS, or is larger than its
+   * limit. Each (URL, options) is fetched once.
    */
   get(url: string, opts?: FetchOptions): Promise<Buffer | undefined>;
   /** Whether the host of `url` resolves to a blocked address: a page that does is allowed private destinations. */
   isPrivateHost(url: string): Promise<boolean>;
 }
 
-async function addressesOf(hostname: string, lookup: Lookup): Promise<string[]> {
-  const bare = hostname.replace(/^\[|\]$/g, "");
-  if (isIP(bare)) return [bare];
-  return (await lookup(bare)).map((r) => r.address);
-}
-
 /** The body up to `maxBytes`; undefined when it is larger (checked on Content-Length and while streaming). */
-async function readCapped(res: Response, maxBytes: number): Promise<Buffer | undefined> {
-  const declared = Number(res.headers.get("content-length"));
+async function readCapped(res: IncomingMessage, maxBytes: number): Promise<Buffer | undefined> {
+  const declared = Number(res.headers["content-length"]);
   if (Number.isFinite(declared) && declared > maxBytes) {
-    await res.body?.cancel().catch(() => undefined);
+    res.destroy();
     return undefined;
   }
-  if (!res.body) return Buffer.alloc(0);
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
+  const chunks: Buffer[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return undefined;
+  try {
+    for await (const chunk of res) {
+      const piece = chunk as Buffer;
+      total += piece.length;
+      if (total > maxBytes) {
+        res.destroy();
+        return undefined;
+      }
+      chunks.push(piece);
     }
-    chunks.push(value);
+  } catch {
+    return undefined;
   }
   return Buffer.concat(chunks, total);
 }
 
-export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch; lookup?: Lookup }): Fetcher {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const lookup: Lookup = opts.lookup ?? ((hostname) => dnsLookup(hostname, { all: true }));
+function requestOnce(url: URL, headers: Record<string, string>, allowPrivate: boolean, resolver: Resolver, signal: AbortSignal): Promise<IncomingMessage> {
+  const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const req = send(url, { method: "GET", headers, signal, lookup: allowPrivate ? undefined : guardedLookup(resolver) }, resolve);
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): Fetcher {
+  const resolver = opts.resolver ?? systemResolver;
   const memo = new Map<string, Promise<Buffer | undefined>>();
   let running = 0;
   const waiting: (() => void)[] = [];
@@ -485,33 +585,35 @@ export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch;
     }
   };
 
-  /** Each hop is checked before it is requested; redirects are followed here, not by fetch. */
+  /** Each hop is checked at connect time (guardedLookup); redirects are followed here, not by the client. */
   const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean): Promise<Buffer | undefined> => {
-    let current = start;
-    for (let hop = 0; ; hop++) {
-      const url = new URL(current);
-      if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-      if (!allowPrivate) {
-        const addresses = await addressesOf(url.hostname, lookup);
-        if (addresses.length === 0 || addresses.some(isBlockedAddress)) return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTRA_FETCH_TIMEOUT_MS);
+    try {
+      let current = start;
+      for (let hop = 0; ; hop++) {
+        const url = new URL(current);
+        if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+        // An IP literal never reaches the lookup, so it is checked here as well.
+        const bare = url.hostname.replace(/^\[|\]$/g, "");
+        if (!allowPrivate && isIP(bare) !== 0 && isBlockedAddress(bare)) return undefined;
+        const res = await requestOnce(url, { "User-Agent": opts.userAgent }, allowPrivate, resolver, controller.signal);
+        const status = res.statusCode ?? 0;
+        const location = res.headers.location;
+        if (status >= 300 && status < 400 && location) {
+          res.resume();
+          if (hop >= MAX_REDIRECTS) return undefined;
+          current = new URL(location, url).toString();
+          continue;
+        }
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return undefined;
+        }
+        return await readCapped(res, maxBytes);
       }
-      const res = await fetchImpl(url.toString(), {
-        headers: { "User-Agent": opts.userAgent },
-        redirect: "manual",
-        signal: AbortSignal.timeout(EXTRA_FETCH_TIMEOUT_MS),
-      });
-      const location = res.headers.get("location");
-      if (res.status >= 300 && res.status < 400 && location) {
-        await res.body?.cancel().catch(() => undefined);
-        if (hop >= MAX_REDIRECTS) return undefined;
-        current = new URL(location, url).toString();
-        continue;
-      }
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => undefined);
-        return undefined;
-      }
-      return readCapped(res, maxBytes);
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -529,8 +631,9 @@ export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch;
     },
     async isPrivateHost(url) {
       try {
-        const addresses = await addressesOf(new URL(url).hostname, lookup);
-        return addresses.some(isBlockedAddress);
+        const bare = new URL(url).hostname.replace(/^\[|\]$/g, "");
+        const addresses = isIP(bare) !== 0 ? [{ address: bare, family: isIP(bare) }] : await resolver(bare);
+        return addresses.some((a) => isBlockedAddress(a.address));
       } catch {
         return false;
       }
@@ -1222,8 +1325,8 @@ export interface ScanOptions {
   quality: boolean;
   viewports: Viewport[];
   log: (message: string) => void;
-  fetchImpl?: typeof fetch;
-  lookup?: Lookup;
+  /** Host resolver for the connect-time check (tests inject one; production uses the system resolver). */
+  resolver?: Resolver;
 }
 
 let cachedVersion: string | undefined;
@@ -1291,7 +1394,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const probe = await browser.newContext();
     const userAgent = await (await probe.newPage()).evaluate(() => navigator.userAgent);
     await probe.close();
-    const fetcher = makeFetcher({ userAgent, fetchImpl: opts.fetchImpl, lookup: opts.lookup });
+    const fetcher = makeFetcher({ userAgent, resolver: opts.resolver });
     const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd }) };
     const run = { viewports: opts.viewports, aggressive: opts.aggressive, quality: opts.quality, fetcher, deps };
 
