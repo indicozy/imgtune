@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertPagesResolved,
   changedSince,
   confirmPlan,
   makeConfirm,
@@ -10,6 +11,7 @@ import {
   pagesFor,
   pendingUsages,
   resolveScopeUrls,
+  unresolvedPatterns,
   type ConfirmDeps,
 } from "../src/audit.js";
 import { sha1 } from "../src/atomic.js";
@@ -252,6 +254,27 @@ describe("resolveScopeUrls", () => {
     );
     expect(out.sitemapSource).toBe("none");
     expect(out.resolved.get("/[store]/[...slug]")?.source).toBe("none");
+  });
+});
+
+describe("unresolvedPatterns", () => {
+  it("names each in-scope dynamic pattern that has no URL, with the sitemap that was tried", () => {
+    const resolved = new Map<string, ResolvedUrls>([
+      ["/[store]/[...slug]", { paths: [], source: "none" }],
+      ["/[store]", { paths: ["/ae-en"], source: "config" }],
+      ["/about", { paths: ["/about"], source: "static" }],
+      ["/[lang]", { paths: [], source: "none" }],
+    ]);
+    expect(unresolvedPatterns(["/[store]/[...slug]", "/[store]", "/about"], resolved, "none")).toEqual([
+      'no URL for /[store]/[...slug] (sitemap: none); add one under "urls" in imgtune.config.json',
+    ]);
+  });
+});
+
+describe("assertPagesResolved", () => {
+  it("throws when no page path was resolved", () => {
+    expect(() => assertPagesResolved([])).toThrow("nothing to measure: no page URLs resolved");
+    expect(() => assertPagesResolved(["/ae-en/eyeglasses"])).not.toThrow();
   });
 });
 

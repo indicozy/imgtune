@@ -71,6 +71,22 @@ export function pagesFor(patterns: Iterable<string>, resolved: Map<string, Resol
   return unique([...patterns].flatMap((pattern) => resolved.get(pattern)?.paths ?? []));
 }
 
+/** One message per in-scope dynamic route pattern that resolution left without a URL. */
+export function unresolvedPatterns(
+  scopePatterns: string[],
+  resolved: Map<string, ResolvedUrls>,
+  sitemapSource: string,
+): string[] {
+  return scopePatterns
+    .filter((pattern) => isDynamicPattern(pattern) && (resolved.get(pattern)?.paths.length ?? 0) === 0)
+    .map((pattern) => `no URL for ${pattern} (sitemap: ${sitemapSource}); add one under "urls" in imgtune.config.json`);
+}
+
+/** Nothing measured at all is an error, not an empty report. */
+export function assertPagesResolved(pages: string[]): void {
+  if (pages.length === 0) throw new Error("nothing to measure: no page URLs resolved");
+}
+
 /**
  * Sitemap candidates are tried in order; the first whose paths resolve at least one in-scope dynamic pattern wins.
  * Static-only scopes never read a sitemap. Returns the chosen resolution and the sitemap URL ("none" if none).
@@ -287,10 +303,11 @@ export async function measureUsages(
       log,
     );
     log(`resolving urls (sitemap: ${sitemapSource})`);
+    for (const message of unresolvedPatterns(scopePatterns, resolved, sitemapSource)) log(message);
 
     const pages = pagesFor(scopePatterns, resolved);
+    assertPagesResolved(pages);
     const measured: Measured = { observations: [], baseUrl: server.baseUrl, sitemapSource, stop: server.stop };
-    if (pages.length === 0) return measured;
 
     const instrumented = usages.filter((usage) => pagesFor(patternsOf.get(usage.id) ?? [], resolved).length > 0);
     try {
@@ -409,7 +426,11 @@ export async function audit(config: ImgtuneConfig, opts: { log?: Log } = {}): Pr
 }
 
 /** `imgtune apply`: writes the last audit's proposals, refusing when any audited file changed since. */
-export async function applyCommand(projectDir: string, log: Log = progress): Promise<ApplyResult> {
+export async function applyCommand(
+  projectDir: string,
+  log: Log = progress,
+  opts: { allowGrowth?: boolean } = {},
+): Promise<ApplyResult> {
   await restoreAndReport(projectDir, log);
   const report = await readReport(projectDir);
   const changed = await changedSince(projectDir, report.fileHashes);
@@ -418,7 +439,10 @@ export async function applyCommand(projectDir: string, log: Log = progress): Pro
   }
 
   const usages = await scanAll(projectDir, report.config.paths);
-  const result = await applyResults(projectDir, report.results, usages, { expectedHashes: report.fileHashes });
+  const result = await applyResults(projectDir, report.results, usages, {
+    expectedHashes: report.fileHashes,
+    allowGrowth: opts.allowGrowth,
+  });
   for (const file of result.edited) process.stdout.write(`edited ${file}\n`);
   for (const skip of result.skipped) process.stdout.write(`skipped ${skip.usageId}: ${skip.reason}\n`);
   process.stdout.write(`review with: git diff\n`);
