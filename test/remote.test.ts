@@ -146,6 +146,13 @@ describe("referenceUrl and currentQuality", () => {
     expect(referenceUrl("https://shop.example/img/p1.jpg", page)).toBeUndefined();
   });
 
+  it("unwraps a next/image loader around another loader, as originalFor does", () => {
+    const shopify = encodeURIComponent("https://cdn.shopify.com/s/files/1/0001/products/shirt_600x600.jpg?v=3");
+    expect(referenceUrl(`/_next/image?url=${shopify}&w=640&q=75`, page)).toBe("https://cdn.shopify.com/s/files/1/0001/products/shirt.jpg?v=3");
+    const cloudinary = encodeURIComponent("https://res.cloudinary.com/demo/image/upload/w_800,q_80/v1/a.jpg");
+    expect(referenceUrl(`/_next/image?url=${cloudinary}&w=640&q=75`, page)).toBe("https://res.cloudinary.com/demo/image/upload/v1/a.jpg");
+  });
+
   it("reads the current quality from q= or quality=, else assumes 75", () => {
     expect(currentQuality("https://shop.example/_next/image?url=x&w=640&q=90")).toEqual({ quality: 90, assumed: false });
     expect(currentQuality("https://shop.example/cdn-cgi/image/width=640,quality=82,format=auto/x.jpg")).toEqual({

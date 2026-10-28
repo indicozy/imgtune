@@ -13,7 +13,7 @@ import { writeFileAtomic, sha1 } from "./atomic.js";
 import { calibrationOffset } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
-import { adapterFor, type QualityParam } from "./loaders.js";
+import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import { loadSettled, settleWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
@@ -167,8 +167,7 @@ export function isUndersized(servedWidth: number, needed: number, largest: numbe
  */
 export function referenceUrl(src: string, pageUrl: string): string | undefined {
   try {
-    const { adapter, url } = adapterFor(src, pageUrl);
-    return adapter.original(url);
+    return originalOf(src, pageUrl);
   } catch {
     return undefined;
   }

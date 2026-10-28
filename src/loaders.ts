@@ -227,6 +227,18 @@ export function adapterFor(src: string, pageUrl: string): ResolvedLoader {
 }
 
 /**
+ * The untransformed original an image URL is made from, unwrapped once more when the first original is itself a
+ * transformed URL (`/_next/image?url=<cdn URL>`). Undefined when the loader has no original.
+ */
+export function originalOf(src: string, baseUrl: string): string | undefined {
+  const first = adapterFor(src, baseUrl);
+  const once = first.adapter.original(first.url);
+  if (once === undefined) return undefined;
+  const again = adapterFor(once, baseUrl);
+  return again.adapter.original(again.url) ?? once;
+}
+
+/**
  * The original an observed image was made from. An absolute http(s) `src` prop wins when the currentSrc's adapter does
  * not contradict it (it has no original, or the same one). Otherwise the adapter's original of currentSrc, else `src`
  * resolved against `baseUrl`. The result is unwrapped once more when it is itself a transformed URL.
