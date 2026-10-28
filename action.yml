@@ -63,11 +63,12 @@ runs:
         set +f
         if [ -n "$IMGTUNE_FAIL_OVER" ]; then args+=(--fail-over "$IMGTUNE_FAIL_OVER"); fi
         if [ -n "$IMGTUNE_VIEWPORTS" ]; then args+=(--viewports "$IMGTUNE_VIEWPORTS"); fi
+        # Under bash -e a failing scan would end the step before its code is kept, so the code is read in the || branch.
+        code=0
         node "$IMGTUNE_ACTION_PATH/dist/cli.js" scan "${args[@]}" \
           --out "$IMGTUNE_RESULTS/json" \
           --markdown "$IMGTUNE_RESULTS/comment.md" \
-          --summary-json "$IMGTUNE_RESULTS/summary.json"
-        code=$?
+          --summary-json "$IMGTUNE_RESULTS/summary.json" || code=$?
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         # The job's result is decided by the last step, after the comment is posted.
         exit 0
