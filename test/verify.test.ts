@@ -514,3 +514,22 @@ describe("judgeSample for cdn with the drop rule (R41)", () => {
     expect(verdict).toEqual({ unusable: "local rescore failed: 404" });
   });
 });
+
+describe("judgeVerification stores no bar for the cdn rule", () => {
+  it("keeps the drop and drops the threshold that was never applied as a bar", () => {
+    const samples = Array.from({ length: 10 }, () => ({ format: "webp" as const, ssim: 0.95, drop: 0 }));
+    const verdict = judgeVerification({
+      samples,
+      served: ["webp"],
+      samplesPerComponent: 20,
+      threshold: 0.9,
+      tolerance: 2,
+      maxDrop: 0.02,
+      applied: { sizes: "300px" },
+      before: { quality: 85 },
+    });
+    expect(verdict.status).toBe("verified");
+    expect(verdict.minScore).toBeUndefined();
+    expect(verdict.drop?.webp).toBe(0);
+  });
+});

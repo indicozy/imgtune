@@ -121,7 +121,7 @@ export function judgeVerification(input: JudgeInput): Judgement {
   const { samples, served, threshold } = input;
   const minimum = Math.max(1, Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent));
   const formats = FORMATS.filter((format) => served.includes(format));
-  const judgement: Judgement = { status: "verified", ssim: {}, counts: {}, minScore: {} };
+  const judgement: Judgement = { status: "verified", ssim: {}, counts: {} };
   if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
 
   let failed = false;
@@ -140,7 +140,8 @@ export function judgeVerification(input: JudgeInput): Judgement {
     const passing = usable.filter((s, i) => s.ssim >= bars[i] && dropOk(s)).length;
     judgement.counts[format] = { usable: usable.length, passing };
     judgement.ssim[format] = median(usable.map((s) => s.ssim));
-    judgement.minScore![format] = median(bars);
+    // The cdn rule judges by drop against the floor, so no bar is shown or stored for it.
+    if (input.maxDrop === undefined) (judgement.minScore ??= {})[format] = median(bars);
     const drops = usable.flatMap((s) => (s.drop === undefined ? [] : [s.drop]));
     if (drops.length > 0) {
       judgement.drop ??= {};
