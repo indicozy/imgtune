@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
+import { ssim } from "../src/ssim.js";
 import type { ImageObservation } from "../src/measure.js";
 import {
   bytesByViewport,
+  cdnDrop,
   formatOfContentType,
   judgeVerification,
   renderVerifyTable,
   sampleVariants,
+  undersizedFile,
   scoreVariant,
   selectApplied,
   type VerifySample,
@@ -327,5 +330,97 @@ describe("bytesByViewport and renderVerifyTable", () => {
     expect(unmeasured).toContain("not measured (insufficient webp samples: 1)");
     expect(row).toContain("regressed (raise quality to 80) (passing avif 19/20, webp 10/20)");
     expect(row).toContain("src/a.tsx:12");
+  });
+});
+
+describe("judgeVerification with the cdn rule", () => {
+  const base = {
+    served: ["webp" as const],
+    samplesPerComponent: 20,
+    threshold: 0.9,
+    tolerance: 2,
+    maxDrop: 0.02,
+    applied: { sizes: "300px" },
+    before: { quality: 85 },
+  };
+  it("verifies a sizes-only change on the score floor alone, even when the CDN score is below a local bar", () => {
+    const samples = Array.from({ length: 10 }, () => ({ format: "webp" as const, ssim: 0.93, drop: 0 }));
+    expect(judgeVerification({ ...base, samples }).status).toBe("verified");
+  });
+
+  it("regresses when the local quality drop is beyond delta and shows the median drop", () => {
+    const samples = Array.from({ length: 10 }, () => ({ format: "webp" as const, ssim: 0.95, drop: 0.05 }));
+    const verdict = judgeVerification({ ...base, samples, applied: { quality: 70 } });
+    expect(verdict.status).toBe("regressed");
+    expect(verdict.drop?.webp).toBeCloseTo(0.05, 6);
+    expect(verdict.counts.webp).toEqual({ usable: 10, passing: 0 });
+  });
+
+  it("regresses a sample below the score floor even with no drop", () => {
+    const samples = Array.from({ length: 10 }, () => ({ format: "webp" as const, ssim: 0.8, drop: 0 }));
+    expect(judgeVerification({ ...base, samples }).status).toBe("regressed");
+  });
+
+  it("regresses with the undersized reason whatever the scores say", () => {
+    const samples = Array.from({ length: 10 }, () => ({
+      format: "webp" as const,
+      ssim: 0.99,
+      drop: 0,
+      undersized: { file: 300, needed: 480 },
+    }));
+    const verdict = judgeVerification({ ...base, samples });
+    expect(verdict.status).toBe("regressed");
+    expect(verdict.reason).toBe("undersized: 300px for 480px");
+  });
+
+  it("renders the median drop in place of the bar", () => {
+    const table = renderVerifyTable(
+      [
+        {
+          usageId: "a:1:1",
+          component: "Card",
+          relFile: "src/a.tsx",
+          line: 1,
+          bytes: {},
+          judgement: {
+            status: "regressed",
+            reason: "undersized: 300px for 480px",
+            ssim: { webp: 0.95 },
+            minScore: { webp: 0.9 },
+            drop: { webp: 0.05 },
+            counts: { webp: { usable: 10, passing: 10 } },
+          },
+        },
+      ],
+      "ssim",
+    );
+    expect(table).toContain("0.950 drop 0.050");
+    expect(table).toContain("regressed (undersized: 300px for 480px)");
+  });
+});
+
+describe("cdnDrop and undersizedFile", () => {
+  const originalPromise = (async () => rawToPng(gradientNoise(480, 320, 10, 11)))();
+
+  it("is zero for a sizes-only change without encoding anything", async () => {
+    const drop = await cdnDrop(Buffer.alloc(0), "webp", 480, { before: 85, now: 85, offset: 0 }, ssim);
+    expect(drop).toBe(0);
+  });
+
+  it("is undefined without a calibration offset", async () => {
+    const drop = await cdnDrop(await originalPromise, "webp", 480, { before: 85, now: 40 }, ssim);
+    expect(drop).toBeUndefined();
+  });
+
+  it("is the local score loss when the quality drops, so a large cut exceeds delta", async () => {
+    const drop = await cdnDrop(await originalPromise, "webp", 480, { before: 90, now: 30, offset: 0 }, ssim);
+    expect(drop).toBeGreaterThan(0.02);
+  });
+
+  it("flags a served file narrower than 90% of what the render needs", async () => {
+    const original = await originalPromise;
+    const small = observation({ renderedWidth: 300, dpr: 2, naturalWidth: 300 });
+    expect(await undersizedFile(original, small, 300)).toEqual({ file: 300, needed: 480 });
+    expect(await undersizedFile(original, small, 460)).toBeUndefined();
   });
 });

@@ -34,6 +34,10 @@ export interface VerifySample {
   ssim?: number;
   /** The bar this sample had to reach (R38). Absent: the absolute threshold applies. */
   minScore?: number;
+  /** cdn rule: local quality drop in points from the before-quality to the applied one (0 for a sizes-only change). */
+  drop?: number;
+  /** cdn rule, sizes-only: the served file is narrower than 90% of what the render needs. */
+  undersized?: { file: number; needed: number };
 }
 
 export interface FormatCounts {
@@ -45,12 +49,14 @@ export interface FormatCounts {
 
 export interface Judgement {
   status: "verified" | "regressed" | "unmeasured";
-  /** Set when `status` is unmeasured. */
+  /** Set when `status` is unmeasured, and for a regression by an undersized served file. */
   reason?: string;
   /** Median SSIM of the usable samples per judged format. */
   ssim: { avif?: number; webp?: number };
   /** Median bar of the usable samples per judged format (R38): what the score is shown against as "min". */
   minScore?: { avif?: number; webp?: number };
+  /** Median local quality drop per judged format (cdn rule), shown as "drop" in place of "min". */
+  drop?: { avif?: number; webp?: number };
   /** Usable and passing counts per judged format. */
   counts: { avif?: FormatCounts; webp?: FormatCounts };
   /** Set for a regression when a quality raise can help: applied quality + tolerance, capped at the pre-apply quality. */
@@ -99,6 +105,8 @@ export interface JudgeInput {
   samplesPerComponent: number;
   threshold: number;
   tolerance: number;
+  /** The cdn rule's allowed quality drop (`delta`); set only when the drop check applies. */
+  maxDrop?: number;
   applied: { sizes?: string; quality?: number };
   before: { sizes?: string; quality?: number } | undefined;
 }
@@ -117,6 +125,8 @@ export function judgeVerification(input: JudgeInput): Judgement {
   if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
 
   let failed = false;
+  let undersized: string | undefined;
+  const dropOk = (s: VerifySample): boolean => s.drop === undefined || input.maxDrop === undefined || s.drop <= input.maxDrop;
   for (const format of formats) {
     const usable = samples.filter((s): s is VerifySample & { ssim: number } => s.format === format && s.ssim !== undefined);
     if (usable.length < minimum) {
@@ -127,12 +137,21 @@ export function judgeVerification(input: JudgeInput): Judgement {
       };
     }
     const bars = usable.map((s) => s.minScore ?? threshold);
-    const passing = usable.filter((s, i) => s.ssim >= bars[i]).length;
+    const passing = usable.filter((s, i) => s.ssim >= bars[i] && dropOk(s)).length;
     judgement.counts[format] = { usable: usable.length, passing };
     judgement.ssim[format] = median(usable.map((s) => s.ssim));
     judgement.minScore![format] = median(bars);
+    const drops = usable.flatMap((s) => (s.drop === undefined ? [] : [s.drop]));
+    if (drops.length > 0) {
+      judgement.drop ??= {};
+      judgement.drop[format] = median(drops);
+    }
+    const small = usable.find((s) => s.undersized !== undefined)?.undersized;
+    if (small && undersized === undefined) undersized = `undersized: ${small.file}px for ${small.needed}px`;
     if (passing * 100 < PASS_PERCENT * usable.length) failed = true;
   }
+  // A served file too small for its render is a regression whatever the score says.
+  if (undersized !== undefined) return { ...judgement, status: "regressed", reason: undersized };
   if (!failed) return judgement;
   return {
     ...judgement,
@@ -164,7 +183,8 @@ export function sampleVariants(observations: ImageObservation[], format: Format,
   return picked;
 }
 
-export type VariantScore = { ssim: number } | { unusable: string };
+/** A scored variant: its SSIM and the decoded pixel width it was scored at. */
+export type VariantScore = { ssim: number; width: number } | { unusable: string };
 
 export interface VariantDeps {
   fetchImpl?: typeof fetch;
@@ -233,7 +253,7 @@ export async function scoreVariant(obs: ImageObservation, format: Format, baseUr
     served = { data: new Uint8ClampedArray(resized.data.buffer, resized.data.byteOffset, resized.data.byteLength), width: reference.width, height: reference.height };
   }
   const score = deps.score ?? ssim;
-  return { ssim: await score(reference, served) };
+  return { ssim: await score(reference, served), width: served.width };
 }
 
 /** Median bytes per viewport over the default-pass observations that have a byte count. */
@@ -268,8 +288,9 @@ export function selectApplied(
 
 const fmtBytes = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
 /** A score, with its bar after "min" when the usage has one. */
-const fmtScore = (metric: Metric, value: number | undefined, min?: number): string => {
+const fmtScore = (metric: Metric, value: number | undefined, min?: number, drop?: number): string => {
   if (value === undefined) return "-";
+  if (drop !== undefined) return `${formatScore(metric, value)} drop ${formatScore(metric, drop)}`;
   return min === undefined ? formatScore(metric, value) : `${formatScore(metric, value)} min ${formatScore(metric, min)}`;
 };
 
@@ -277,6 +298,7 @@ function statusOf(judgement: Judgement): string {
   let status: string;
   if (judgement.status === "unmeasured") status = `not measured (${judgement.reason})`;
   else if (judgement.status === "verified") status = "verified";
+  else if (judgement.reason !== undefined) status = `regressed (${judgement.reason})`;
   else status = judgement.raiseTo === undefined ? "regressed" : `regressed (raise quality to ${judgement.raiseTo})`;
   // The 95% rule decides the verdict, so the table shows the passing counts behind it.
   const counts = FORMATS.flatMap((format) => {
@@ -304,8 +326,8 @@ export function renderVerifyTable(rows: VerifyRow[], metric: Metric): string {
       `${row.relFile}:${row.line}`,
       byViewport(row.beforeBytes),
       byViewport(row.bytes),
-      fmtScore(metric, row.judgement.ssim.avif, row.judgement.minScore?.avif),
-      fmtScore(metric, row.judgement.ssim.webp, row.judgement.minScore?.webp),
+      fmtScore(metric, row.judgement.ssim.avif, row.judgement.minScore?.avif, row.judgement.drop?.avif),
+      fmtScore(metric, row.judgement.ssim.webp, row.judgement.minScore?.webp, row.judgement.drop?.webp),
       statusOf(row.judgement),
     ];
   });
@@ -350,6 +372,57 @@ export async function recomputeBar(
   } catch {
     return undefined;
   }
+}
+
+/** The cdn rule's local stand-in quality for a CDN quality, on the scale the audit calibrated. */
+const localQuality = (cdnQuality: number, offset: number): number => Math.min(100, Math.max(1, cdnQuality - offset));
+
+/**
+ * The cdn rule's quality drop of one served sample (R38, relative): the local score at the before-quality minus the
+ * local score at the applied one, both encoded at the served width on the audit's calibrated scale. The CDN's own
+ * encoder bias cancels out of the difference. A sizes-only change (same quality) has no drop by definition; without a
+ * calibration offset the drop is undefined and not judged.
+ */
+export async function cdnDrop(
+  original: Buffer,
+  format: Format,
+  width: number,
+  quality: { before: number; now: number; offset?: number },
+  score: Scorer,
+): Promise<number | undefined> {
+  if (quality.now === quality.before) return 0;
+  const { offset } = quality;
+  if (offset === undefined) return undefined;
+  const reference = await loadReference(original, width);
+  const scoreAt = async (cdnQuality: number): Promise<number> => {
+    const enc = await encode(reference, format, localQuality(cdnQuality, offset), "cdn");
+    return score(reference, enc.decoded);
+  };
+  return (await scoreAt(quality.before)) - (await scoreAt(quality.now));
+}
+
+/**
+ * The sizes-only resolution check (cdn rule): the served file must be at least 90% of the smaller of what the render
+ * needs (rendered width x dpr) and the original's own width. Returns the sizes when it fails.
+ */
+export async function undersizedFile(
+  original: Buffer,
+  obs: ImageObservation,
+  servedWidth: number,
+): Promise<{ file: number; needed: number } | undefined> {
+  const originalWidth = (await sharp(original).metadata()).width ?? 0;
+  const needed = Math.min(Math.ceil(obs.renderedWidth * obs.dpr), originalWidth);
+  return servedWidth < 0.9 * needed ? { file: servedWidth, needed } : undefined;
+}
+
+/** Audit-time CDN-to-local quality offset per format, keyed by usage id; empty when there is no readable report. */
+async function auditCalibration(projectDir: string): Promise<Map<string, Partial<Record<Format, number>>>> {
+  const out = new Map<string, Partial<Record<Format, number>>>();
+  const report = await readReport(projectDir).catch(() => undefined);
+  for (const result of report?.results ?? []) {
+    if (result.calibration) out.set(result.usageId, result.calibration);
+  }
+  return out;
 }
 
 /** Audit-time median bytes per viewport, keyed by usage id; empty when there is no readable report. */
@@ -412,6 +485,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
 
   const beforeBytes = await auditBytes(projectDir);
   const auditBars = await auditMinScores(projectDir);
+  const calibration = await auditCalibration(projectDir);
   const score = makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
   const imageConfig = readImageConfig(projectDir);
   const recomputable = profileOf(imageConfig) === "next-default";
@@ -430,6 +504,24 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
           if ("unusable" in scored) {
             log(`unusable ${format} sample for ${usage.id}: ${scored.unusable}`);
             samples.push({ format });
+          } else if (!recomputable && config.delta !== undefined) {
+            // cdn rule (R38): judged by the local quality drop, not by a bar. A failed local rescore makes the sample unusable.
+            try {
+              const original = await fetchOriginal(originalUrlFor(obs.originalSrc as string, measured.baseUrl));
+              const before = entry.before?.quality;
+              const now = entry.applied.quality ?? before;
+              if (before === undefined || now === undefined) {
+                samples.push({ format, ssim: scored.ssim });
+                continue;
+              }
+              const offset = calibration.get(usage.id)?.[format];
+              const drop = await cdnDrop(original, format, scored.width, { before, now, offset }, score);
+              const undersized = now === before ? await undersizedFile(original, obs, scored.width) : undefined;
+              samples.push({ format, ssim: scored.ssim, drop, undersized });
+            } catch (err) {
+              log(`unusable ${format} sample for ${usage.id}: local rescore failed: ${(err as Error).message}`);
+              samples.push({ format });
+            }
           } else {
             // Relative rule (R38): recompute the sample's bar when possible, else the audit's stored median.
             let minScore: number | undefined;
@@ -450,6 +542,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
         samplesPerComponent: config.samplesPerComponent,
         threshold: config.threshold,
         tolerance: config.tolerance,
+        maxDrop: recomputable ? undefined : config.delta,
         applied: entry.applied,
         before: entry.before,
       });
@@ -488,6 +581,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
         bytes,
         ssim: judgement.ssim,
         minScore: judgement.minScore,
+        ...(judgement.drop !== undefined ? { drop: judgement.drop } : {}),
         counts: judgement.counts,
         ...(judgement.raiseTo !== undefined ? { raiseTo: judgement.raiseTo } : {}),
       },

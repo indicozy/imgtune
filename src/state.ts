@@ -22,6 +22,8 @@ export interface StateEntry {
     ssim: { avif?: number; webp?: number };
     /** Median bar per judged format (R38). */
     minScore?: { avif?: number; webp?: number };
+    /** Median local quality drop per judged format (cdn rule). */
+    drop?: { avif?: number; webp?: number };
     /** Usable and passing sample counts per judged format. */
     counts: { avif?: { usable: number; passing: number }; webp?: { usable: number; passing: number } };
     raiseTo?: number;

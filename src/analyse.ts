@@ -166,6 +166,8 @@ export interface ComponentResult {
   mobileViewports?: string[];
   /** Derived: true when any media branch grows bytes under the full correction. */
   grows?: boolean;
+  /** cdn profile: the CDN-to-local quality offset per format the search used, so verify scores on the same scale. */
+  calibration?: Partial<Record<Format, number>>;
 }
 
 export interface AnalyseOptions {
@@ -596,6 +598,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     }
   }
   result.estimated = estimated;
+  if (Object.keys(probe.offsets).length > 0) result.calibration = { ...probe.offsets };
 
   // Savings: each projected viewport's saving times its instances, averaged over the projected viewports.
   const pairs = stats.filter((s) => s.bytes !== undefined && projFinal[s.name] !== undefined);
