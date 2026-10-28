@@ -10,10 +10,10 @@ import { join, resolve } from "node:path";
 import { chromium, type Browser, type Response as BrowserResponse } from "playwright";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
-import { originalUrlFor } from "./analyse.js";
 import { calibrationOffset } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
+import { adapterFor, type QualityParam } from "./loaders.js";
 import { loadSettled, settleWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { assertMetricAvailable, makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
@@ -161,43 +161,42 @@ export function isUndersized(servedWidth: number, needed: number, largest: numbe
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
- * The original an optimised image URL was made from: `/_next/image?url=X` gives X (resolved against the page), a
- * Cloudflare `/cdn-cgi/image/<opts>/<path>` gives `<path>` (R19). Any other URL has no known original.
+ * The original an optimised image URL was made from, per its loader (`/_next/image?url=X`, a Cloudflare
+ * `/cdn-cgi/image/<opts>/<path>`, a CDN's own original, ...). Any other URL has no known original.
  */
 export function referenceUrl(src: string, pageUrl: string): string | undefined {
-  let url: URL;
   try {
-    url = new URL(src, pageUrl);
+    const { adapter, url } = adapterFor(src, pageUrl);
+    return adapter.original(url);
   } catch {
     return undefined;
   }
-  if (url.pathname === "/_next/image") {
-    const inner = url.searchParams.get("url");
-    if (!inner) return undefined;
-    try {
-      return new URL(inner, pageUrl).toString();
-    } catch {
-      return undefined;
-    }
-  }
-  if (/\/cdn-cgi\/image\/[^/]+\/.+/.test(url.pathname)) return originalUrlFor(url.toString(), pageUrl);
-  return undefined;
 }
 
-/** The quality the URL asks for (`q=` of /_next/image, `quality=` of cdn-cgi options), else ASSUMED_QUALITY. */
-export function currentQuality(src: string): { quality: number; assumed: boolean } {
-  let url: URL;
+/**
+ * The quality the URL asks for, per its loader. Without one in the URL, the loader's documented default (not assumed);
+ * else ASSUMED_QUALITY, assumed.
+ */
+export function currentQuality(src: string, pageUrl = "http://localhost"): { quality: number; assumed: boolean } {
   try {
-    url = new URL(src, "http://localhost");
+    const { adapter, url } = adapterFor(src, pageUrl);
+    const fromUrl = adapter.quality(url);
+    if (fromUrl !== undefined) return { quality: fromUrl, assumed: false };
+    if (adapter.defaultQuality !== undefined) return { quality: adapter.defaultQuality, assumed: false };
   } catch {
-    return { quality: ASSUMED_QUALITY, assumed: true };
+    // An unparseable src has no quality: the assumed one below.
   }
-  const fromNext = url.pathname === "/_next/image" ? url.searchParams.get("q") : null;
-  if (fromNext && /^\d+$/.test(fromNext)) return { quality: Number(fromNext), assumed: false };
-  const options = /\/cdn-cgi\/image\/([^/]+)\//.exec(url.pathname);
-  const fromCdn = options ? /(?:^|,)quality=(\d+)/.exec(options[1]) : null;
-  if (fromCdn) return { quality: Number(fromCdn[1]), assumed: false };
   return { quality: ASSUMED_QUALITY, assumed: true };
+}
+
+/** The loader name and its quality parameter for one image URL; "generic" when the URL does not parse. */
+export function loaderOf(src: string, pageUrl: string): { loader: string; qualityParam: QualityParam } {
+  try {
+    const { adapter } = adapterFor(src, pageUrl);
+    return { loader: adapter.name, qualityParam: adapter.qualityParam };
+  } catch {
+    return { loader: "generic", qualityParam: "yes" };
+  }
 }
 
 /**
@@ -879,10 +878,11 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
     const offset = fit.offset;
     const localCurrent = clampQuality(input.current - offset);
     const currentOut = await enc(reference, format, localCurrent, "cdn");
-    const currentScore = await score(reference, currentOut.decoded);
+    // The bar is the served file's own score against the original, so it holds whatever quality the URL asks for.
+    const servedScore = await score(reference, await decodeRaw(input.served, { width: reference.width, height: reference.height }));
     let target: number | undefined;
     for (const delta of deltas) {
-      const bar = Math.max(SCAN_THRESHOLD, currentScore - delta);
+      const bar = Math.max(SCAN_THRESHOLD, servedScore - delta);
       const best = await minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score });
       const bestBytes = (await enc(reference, format, best, "cdn")).bytes;
       ratio[delta] = currentOut.bytes > 0 ? Math.min(1, bestBytes / currentOut.bytes) : 1;
@@ -1086,9 +1086,11 @@ interface Instance {
   qualityInfo?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
   /** Set on an element that repeats a URL measured at another element of the viewport: it contributes nothing. */
   duplicateOf?: number;
+  loader: string;
+  qualityParam: QualityParam;
 }
 
-interface AnalysisContext {
+export interface AnalysisContext {
   pageUrl: string;
   fetcher: Fetcher;
   /** The page is on a loopback or private host, so its candidates and originals may be too. */
@@ -1119,6 +1121,7 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
     estAggressive: 0,
     growth: 0,
     group: "",
+    ...loaderOf(img.currentSrc, ctx.pageUrl),
   };
   const skip = (reason: string): Instance => ({ ...instance, skipped: reason });
 
@@ -1178,6 +1181,25 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   return instance;
 }
 
+/** The most frequent value, the first seen among ties. */
+function modeOf(values: string[]): string {
+  const counts = new Map<string, number>();
+  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+  let best = values[0];
+  for (const [v, n] of counts) if (n > (counts.get(best) ?? 0)) best = v;
+  return best;
+}
+
+/**
+ * The hint for a group whose loader limits the quality: none (re-export the sources), auto (set an explicit q_N), or
+ * tunable (the quality the estimate lands on, once there is one).
+ */
+export function qualityHintFor(loader: string, qualityParam: QualityParam, estQuality: number | undefined): string | undefined {
+  if (qualityParam === "none") return `${loader}: no quality parameter — re-export sources at lower quality`;
+  if (qualityParam === "auto") return `${loader}: q_auto in use — set an explicit q_<N>`;
+  return estQuality === undefined ? undefined : `${loader}: set quality=${estQuality}`;
+}
+
 function median(values: number[]): number | undefined {
   if (values.length === 0) return undefined;
   const sorted = [...values].sort((a, b) => a - b);
@@ -1208,7 +1230,7 @@ async function estimateQualities(ctx: AnalysisContext, instances: Instance[], re
       attempts++;
       const buffer = await ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate });
       if (!buffer || !member.right) continue;
-      const current = currentQuality(member.url);
+      const current = currentQuality(member.url, ctx.pageUrl);
       const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];
       const estimate = await estimateQuality(
         {
@@ -1234,7 +1256,7 @@ async function estimateQualities(ctx: AnalysisContext, instances: Instance[], re
     if (group2 === undefined) continue;
     for (const member of members) {
       if (member.qualityRatio || !referenceUrl(member.url, ctx.pageUrl)) continue;
-      const current = currentQuality(member.url);
+      const current = currentQuality(member.url, ctx.pageUrl);
       member.qualityRatio = ctx.aggressive && group4 !== undefined ? { [SCAN_DELTA]: group2, [SCAN_AGGRESSIVE_DELTA]: group4 } : { [SCAN_DELTA]: group2 };
       member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, sampled: false };
     }
@@ -1272,6 +1294,7 @@ export interface ImageReport {
   group: string;
   quality?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
   qualityNA: boolean;
+  loader: string;
   /** Index of the element measured instead, when this element repeats its URL (its savings are zero). */
   duplicateOf?: number;
 }
@@ -1290,6 +1313,10 @@ export interface GroupReport {
   sizes?: string;
   suggestedSizes?: string;
   estQuality?: number;
+  /** The loader most of the group's images come from. */
+  loader?: string;
+  /** How the loader's quality parameter limits the saving: the hint for the quality step. */
+  qualityHint?: string;
   /** Mean over the viewports the group is shown at: exact + est. bytes per page view. */
   savedBytes: number;
   members: number;
@@ -1314,7 +1341,7 @@ export interface PageResult {
   perViewport: Record<string, ViewportReport>;
   page?: PageNumbers;
   groups: GroupReport[];
-  counts: { images: number; qualityNA: number; skipped: number; blockedRequests: number };
+  counts: { images: number; qualityNA: number; skipped: number; blockedRequests: number; byLoader: Record<string, number> };
 }
 
 function toReport(inst: Instance): ImageReport {
@@ -1339,6 +1366,7 @@ function toReport(inst: Instance): ImageReport {
     group: inst.group,
     quality: quality ? { ...quality } : undefined,
     qualityNA: inst.kind !== "skipped" && inst.qualityRatio === undefined,
+    loader: inst.loader,
     duplicateOf: inst.duplicateOf,
   };
 }
@@ -1368,11 +1396,16 @@ function groupReports(instances: Instance[]): GroupReport[] {
     const suggestedSizes = deriveSizes(points);
     const targets = members.flatMap((m) => (m.qualityInfo?.target !== undefined ? [m.qualityInfo.target] : []));
     const samples = [...new Set(members.map((m) => m.url))].slice(0, 2);
+    const loader = modeOf(members.map((m) => m.loader));
+    const lead = members.find((m) => m.loader === loader) as Instance;
+    const estQuality = median(targets);
     reports.push({
       key,
       sizes,
       suggestedSizes,
-      estQuality: median(targets),
+      estQuality,
+      loader,
+      qualityHint: qualityHintFor(loader, lead.qualityParam, estQuality),
       savedBytes,
       members: new Set(members.map((m) => m.element)).size,
       samples,
@@ -1388,7 +1421,7 @@ function referenceViewportName(viewports: Viewport[]): string {
 }
 
 /** Turns the observations of one page into the report. Fetches and local encodes happen here. */
-async function analysePage(ctx: AnalysisContext, observations: ViewportObservation[], base: PageResult): Promise<PageResult> {
+export async function analysePage(ctx: AnalysisContext, observations: ViewportObservation[], base: PageResult): Promise<PageResult> {
   const refName = referenceViewportName(observations.map((o) => o.viewport));
   const instances: Instance[] = [];
   for (const obs of observations) {
@@ -1415,6 +1448,7 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
           growth: 0,
           group: "",
           duplicateOf: rep,
+          ...loaderOf(img.currentSrc, ctx.pageUrl),
         });
       }
     }
@@ -1450,6 +1484,11 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
   }
 
   const elements = new Set(instances.map((i) => i.element));
+  const byLoader: Record<string, number> = {};
+  for (const e of elements) {
+    const first = instances.find((i) => i.element === e) as Instance;
+    byLoader[first.loader] = (byLoader[first.loader] ?? 0) + 1;
+  }
   const skippedElements = new Set<number>();
   const naElements = new Set<number>();
   for (const e of elements) {
@@ -1471,6 +1510,7 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
       qualityNA: naElements.size,
       skipped: skippedElements.size,
       blockedRequests: observations.reduce((sum, o) => sum + o.blockedRequests, 0),
+      byLoader,
     },
   };
 }
@@ -1522,7 +1562,7 @@ async function scanPage(
     nextjs: false,
     perViewport: {},
     groups: [],
-    counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0 },
+    counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
   };
   if (!robotsAllows(await robotsFor(url.origin, allowPrivate), pageUrl)) return { ...base, status: "robots" };
 
@@ -1626,9 +1666,11 @@ export function renderPage(result: PageResult, aggressive: boolean): string[] {
     lines.push("  top groups:");
     for (const g of result.groups) {
       const hint = g.hint ? `  ${safeText(g.hint)}` : "";
+      const qualityHint = g.qualityHint ? `  ${safeText(g.qualityHint)}` : "";
+      const loader = g.loader ? `  loader: ${safeText(g.loader)}` : "";
       const sizes = g.sizes === undefined ? "no sizes" : safeText(g.sizes);
       const suggested = g.suggestedSizes === undefined ? "-" : safeText(g.suggestedSizes);
-      lines.push(`    ${sizes} -> ${suggested}  saves ${kb(g.savedBytes)}/view${hint}`);
+      lines.push(`    ${sizes} -> ${suggested}  saves ${kb(g.savedBytes)}/view${loader}${hint}${qualityHint}`);
     }
   }
   if (result.nextjs) lines.push('  Next.js detected: run "npx imgtune audit" in the project to fix these in code');

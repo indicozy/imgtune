@@ -3,8 +3,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import sharp from "sharp";
 import {
+  analysePage,
   currentQuality,
+  decodeRaw,
   estimateQuality,
+  qualityHintFor,
   groupKey,
   isChallenge,
   isUndersized,
@@ -30,9 +33,14 @@ import {
   safeText,
   siteNumbers,
   viewportTotals,
+  type AnalysisContext,
   type ImageFinding,
+  type ObservedImage,
+  type PageResult,
+  type ViewportObservation,
 } from "../src/remote.js";
-import { ssim } from "../src/ssim.js";
+import { ssim, type RawImage } from "../src/ssim.js";
+import type { Viewport } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
 describe("robotsAllows", () => {
@@ -137,6 +145,43 @@ describe("referenceUrl and currentQuality", () => {
       assumed: false,
     });
     expect(currentQuality("https://shop.example/img/p1.jpg")).toEqual({ quality: 75, assumed: true });
+  });
+
+  it("takes a documented loader default when the URL has no quality, and assumes 75 otherwise", () => {
+    expect(currentQuality("https://shop.example/_next/image?url=x&w=640")).toEqual({ quality: 75, assumed: false });
+    expect(currentQuality("https://shop.example/cdn-cgi/image/width=640,format=auto/x.jpg")).toEqual({ quality: 85, assumed: false });
+    expect(currentQuality("https://images.ctfassets.net/s/e/abc/hero.jpg")).toEqual({ quality: 75, assumed: true });
+    expect(currentQuality("https://cdn.shopify.com/s/files/1/0001/x.jpg")).toEqual({ quality: 75, assumed: true });
+  });
+
+  it("reads the quality and the original of loaders beyond next and cdn-cgi", () => {
+    expect(currentQuality("https://images.ctfassets.net/s/e/abc/hero.jpg?w=400&q=70")).toEqual({ quality: 70, assumed: false });
+    expect(currentQuality("https://res.cloudinary.com/demo/image/upload/w_400,q_60/a.jpg")).toEqual({ quality: 60, assumed: false });
+    expect(referenceUrl("https://images.ctfassets.net/s/e/abc/hero.jpg?w=400&q=70", page)).toBe(
+      "https://images.ctfassets.net/s/e/abc/hero.jpg",
+    );
+    expect(referenceUrl("https://cdn.shopify.com/s/files/1/0001/products/shirt_600x600.jpg?width=600", page)).toBe(
+      "https://cdn.shopify.com/s/files/1/0001/products/shirt.jpg",
+    );
+    expect(referenceUrl("https://res.cloudinary.com/demo/image/upload/c_fill,w_300/v1/a.jpg", page)).toBe(
+      "https://res.cloudinary.com/demo/image/upload/v1/a.jpg",
+    );
+  });
+
+  it("gives a Cloudinary auto quality no number", () => {
+    expect(currentQuality("https://res.cloudinary.com/demo/image/upload/q_auto/a.jpg")).toEqual({ quality: 75, assumed: true });
+  });
+});
+
+describe("qualityHintFor", () => {
+  it("says how to get the saving for a loader that cannot take a quality", () => {
+    expect(qualityHintFor("shopify", "none", 60)).toBe("shopify: no quality parameter — re-export sources at lower quality");
+    expect(qualityHintFor("cloudinary", "auto", undefined)).toBe("cloudinary: q_auto in use — set an explicit q_<N>");
+  });
+
+  it("names the quality for a tunable loader only once a quality is estimated", () => {
+    expect(qualityHintFor("contentful", "yes", 62)).toBe("contentful: set quality=62");
+    expect(qualityHintFor("contentful", "yes", undefined)).toBeUndefined();
   });
 });
 
@@ -279,6 +324,26 @@ describe("resizedEstimate", () => {
 });
 
 describe("estimateQuality", () => {
+  it("bars the candidates by the served file's own score, so an assumed current quality cannot move the bar", async () => {
+    const pixels = gradientNoise(160, 120, 4, 7);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).webp({ quality: 60 }).toBuffer();
+    const scored: RawImage[] = [];
+    const score = (ref: RawImage, test: RawImage) => {
+      scored.push(test);
+      return ssim(ref, test) * 100;
+    };
+    // The URL is taken to ask for 90 (or was assumed to): the served bytes are those of quality 60.
+    await estimateQuality(
+      { original, served, format: "webp", bytes: served.length, width: 160, height: 120, current: 90 },
+      [2],
+      { score },
+    );
+    const servedRaw = await decodeRaw(served, { width: 160, height: 120 });
+    const isServed = (img: RawImage) => img.width === servedRaw.width && img.data.length === servedRaw.data.length && img.data.every((v, i) => v === servedRaw.data[i]);
+    expect(scored.some(isServed)).toBe(true);
+  });
+
   it("projects the bytes of the right file at the relative bar, never above today's bytes", async () => {
     const pixels = gradientNoise(160, 120, 4, 7);
     const original = await rawToPng(pixels);
@@ -610,7 +675,7 @@ describe("safeText and terminal output", () => {
       status: "ok" as const,
       nextjs: false,
       perViewport: {},
-      counts: { images: 1, qualityNA: 0, skipped: 0, blockedRequests: 0 },
+      counts: { images: 1, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
       page: { meanImageBytes: 1, exactPct: 1, exactEstPct: 1, fixablePct: 1, sharpnessKB: 0 },
       groups: [
         {
@@ -682,4 +747,89 @@ describe("duplicatesOf", () => {
     expect(rightCandidate(candidates, need).width).toBe(640);
     expect(rightCandidate(candidates, neededWidth(100, dpr, 1080)).width).toBe(384);
   });
+});
+
+describe("analysePage with a Contentful-shaped image (fake fetcher, no network)", () => {
+  const ORIGIN = "https://images.ctfassets.net/space/env/hero.jpg";
+  const ctf = (w: number, q?: number) => `${ORIGIN}?w=${w}${q === undefined ? "" : `&q=${q}`}&fm=webp`;
+
+  it("records the loader, reads the served quality from the URL and judges it against the original", async () => {
+    const pixels = gradientNoise(800, 533, 4, 3);
+    const original = await rawToPng(pixels);
+    const encoded = (w: number) =>
+      sharp(Buffer.from(pixels.data.buffer), { raw: { width: 800, height: 533, channels: 4 } }).resize(w).webp({ quality: 70 }).toBuffer();
+    const served400 = await encoded(400);
+    const served800 = await encoded(800);
+    const gets: string[] = [];
+    const fetcher = {
+      get: async (url: string) => {
+        gets.push(url);
+        return url === ORIGIN ? original : undefined;
+      },
+      isPrivateHost: async () => false,
+      hostIsBlocked: async () => false,
+    };
+    const viewport: Viewport = { name: "iphone-15", width: 390, height: 844, dpr: 3, mobile: true };
+    const image: ObservedImage = {
+      index: 0,
+      currentSrc: ctf(400, 70),
+      renderedWidth: 200,
+      renderedHeight: 133,
+      srcset: `${ctf(400, 70)} 400w, ${ctf(800, 70)} 800w`,
+      sizes: "200px",
+      classes: "hero",
+      nextImage: false,
+      inFirstViewport: true,
+    };
+    const response = (url: string, buffer: Buffer, width: number) => ({
+      url,
+      contentType: "image/webp",
+      bytes: buffer.length,
+      buffer,
+      pixels: { width, height: Math.round((533 * width) / 800), format: "webp" },
+    });
+    const observation: ViewportObservation = {
+      viewport,
+      status: 200,
+      blocked: false,
+      blockedRequests: 0,
+      nextjs: false,
+      images: [image],
+      responses: new Map([
+        [ctf(400, 70), response(ctf(400, 70), served400, 400)],
+        [ctf(800, 70), response(ctf(800, 70), served800, 800)],
+      ]),
+    };
+    const base: PageResult = {
+      url: "https://shop.example/",
+      host: "shop.example",
+      scannedAt: new Date(0).toISOString(),
+      imgtuneVersion: "test",
+      metric: "ssimulacra2",
+      delta: 2,
+      viewports: ["iphone-15"],
+      status: "ok",
+      nextjs: false,
+      perViewport: {},
+      groups: [],
+      counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
+    };
+    const ctx: AnalysisContext = {
+      pageUrl: "https://shop.example/",
+      fetcher: fetcher as unknown as AnalysisContext["fetcher"],
+      allowPrivate: false,
+      deps: { score: (ref, test) => ssim(ref, test) * 100 },
+      quality: true,
+      aggressive: false,
+      resized: new Map(),
+    };
+
+    const page = await analysePage(ctx, [observation], base);
+
+    expect(gets).toContain(ORIGIN);
+    const [report] = page.perViewport["iphone-15"].images;
+    expect(report.loader).toBe("contentful");
+    expect(report.quality).toMatchObject({ current: 70, qualityAssumed: false, sampled: true });
+    expect(page.counts.byLoader).toEqual({ contentful: 1 });
+  }, 120_000);
 });
