@@ -271,6 +271,44 @@ describe("per-viewport projection and media branches", () => {
     expect(r.notes).toContainEqual(expect.stringMatching(/^desktop: corrected sizes is sharper but larger/));
   });
 
+  it("shrinks the desktop branch for a 1440@2 carousel card at 160px served a 1080px file (sunglasses numbers)", async () => {
+    // Desktop 1440 at 2x, 33vw: the card renders 160 css px and the browser asks for ~950px, so the 1080px file is oversized.
+    // The phone grid card renders 175px at 3x; its 33vw sizes serve a 640px file there, so the phone branch is unchanged.
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 175, bytes: 8000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1080, rendered: 160, bytes: 20480, dpr: 2 }),
+    ]);
+    const r = await run(usage({ sizes: literal("33vw") }), observations);
+
+    expect(r.proposed.sizesFull).toBe("(max-width: 768px) 175px, 160px");
+    expect(r.proposed.sizes).toBe("(max-width: 768px) 175px, 160px");
+    expect(r.proposed.branches!.desktop).toMatchObject({ grows: false, kept: false });
+    expect(r.proposed.bytesByViewport!.desktop).toBeLessThan(r.current.bytesByViewport.desktop);
+    expect(r.savedBytesTotal).toBeGreaterThan(0);
+  });
+
+  it("notes several rendered widths at one viewport when they are clearly apart", async () => {
+    const observations = SRC.flatMap((src, i) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: i === 0 ? 400 : 160, bytes: 8000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 640, rendered: 600, bytes: 8000, dpr: 1 }),
+    ]);
+    const r = await run(usage({ sizes: literal("33vw") }), observations);
+
+    expect(r.notes).toContain(
+      "renders at several widths at iphone-15: 160px ×2, 400px ×1; one sizes cannot fit all — pass sizes from the parent (e.g. carousel)",
+    );
+  });
+
+  it("does not note several widths when the rendered widths are close", async () => {
+    const observations = SRC.flatMap((src, i) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: i === 0 ? 175 : 160, bytes: 8000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 640, rendered: 600, bytes: 8000, dpr: 1 }),
+    ]);
+    const r = await run(usage({ sizes: literal("33vw") }), observations);
+
+    expect(r.notes.some((n) => n.startsWith("renders at several widths"))).toBe(false);
+  });
+
   it("keeps 100vw for a growing mobile branch when the current sizes is absent", async () => {
     const observations = SRC.flatMap((src) => [
       viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 400, bytes: 20000, dpr: 3 }),

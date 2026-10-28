@@ -20,6 +20,12 @@ const GROWTH_RATIO = 1.05;
 const NOTE_NOT_CONFIRMED = "estimated: not confirmed against /_next/image";
 /** The media branches of a `sizes` value, in the order the notes list them. */
 const BRANCHES = ["mobile", "desktop"] as const;
+/** Rendered widths at one viewport count as several slots when the widest is over this multiple of the narrowest. */
+const MULTI_SLOT_SPREAD = 1.5;
+/** Widths closer than this factor to each other are one slot. */
+const MULTI_SLOT_GROUP_RATIO = 1.25;
+/** At most this many slot groups are named in the note. */
+const MULTI_SLOT_LISTED = 3;
 /** What a `sizes` value means when the usage has none: Next serves the full viewport width. */
 const ABSENT_SIZES = "100vw";
 
@@ -184,6 +190,17 @@ interface Sample {
   buffer: Buffer;
 }
 
+/** Rendered widths that are clearly apart: a new group starts where a width exceeds the previous one by more than 1.25x. */
+function widthGroups(widths: number[]): { width: number; n: number }[] {
+  const groups: number[][] = [];
+  for (const w of [...widths].sort((a, b) => a - b)) {
+    const last = groups[groups.length - 1];
+    if (last && w <= last[last.length - 1] * MULTI_SLOT_GROUP_RATIO) last.push(w);
+    else groups.push([w]);
+  }
+  return groups.map((group) => ({ width: Math.round(median(group) as number), n: group.length }));
+}
+
 /** Per-viewport facts from the rendered observations of one usage. */
 interface ViewportStat {
   name: string;
@@ -299,6 +316,15 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     result.measuredWidths = defaultObs.map((o) => ({ page: o.page, viewport: o.viewport, renderedWidth: o.renderedWidth }));
   }
   if (qualityManual) notes.push("manual change needed: quality is an expression");
+  for (const s of stats) {
+    const widths = rendered.filter((o) => o.viewport === s.name).map((o) => o.renderedWidth);
+    if (Math.max(...widths) / Math.min(...widths) <= MULTI_SLOT_SPREAD) continue;
+    const groups = widthGroups(widths);
+    if (groups.length < 2) continue;
+    const listed = groups.sort((a, b) => b.n - a.n).slice(0, MULTI_SLOT_LISTED).sort((a, b) => a.width - b.width);
+    const parts = listed.map((g) => `${g.width}px ×${g.n}`).join(", ");
+    notes.push(`renders at several widths at ${s.name}: ${parts}; one sizes cannot fit all — pass sizes from the parent (e.g. carousel)`);
+  }
 
   // The full correction: every media branch at its measured width. Nothing when sizes is manual.
   const fullBranches: SizeBranches = sizesManual
