@@ -132,6 +132,21 @@ describe("measurePages", () => {
   );
 
   it(
+    "reports the pixel width of the served file, not the density-corrected DOM width",
+    async () => {
+      const observations = await measurePages(baseUrl, ["/page"], [iphone15!]);
+
+      // 33vw of 390px is a ~129 css px slot at dpr 3, so the browser picks the 640w candidate. The DOM's
+      // density-corrected naturalWidth is the slot in css px (~129), not the file's 640 pixels.
+      const eager = observations.find((o) => o.usageId === "a");
+      expect(eager!.naturalWidth).toBe(640);
+      expect(observations.find((o) => o.usageId === "cdn")!.naturalWidth).toBe(640);
+      expect(observations.find((o) => o.usageId === "lazy")!.naturalWidth).toBe(800);
+    },
+    120_000,
+  );
+
+  it(
     "parses srcset candidates whose URLs contain commas",
     async () => {
       const observations = await measurePages(baseUrl, ["/page"], [iphone15!]);

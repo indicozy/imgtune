@@ -11,6 +11,7 @@ export interface ImageObservation {
   mobile: boolean;
   renderedWidth: number;
   renderedHeight: number;
+  /** pixel width of the served file (not the density-corrected DOM value) */
   naturalWidth: number;
   currentSrc: string;
   originalSrc?: string;
@@ -32,6 +33,7 @@ const SCROLL_STEP_WAIT_MS = 250;
 const NETWORK_IDLE_TIMEOUT_MS = 10_000;
 const IMAGES_COMPLETE_TIMEOUT_MS = 5_000;
 const BODY_READ_TIMEOUT_MS = 5_000;
+const PIXEL_PROBE_TIMEOUT_MS = 5_000;
 
 type Accept = ImageObservation["accept"];
 
@@ -200,25 +202,50 @@ async function scrollThrough(page: Page): Promise<void> {
 }
 
 async function collectImages(page: Page): Promise<CollectedImage[]> {
-  return page.evaluate(() =>
-    Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]"), (img) => {
-      const rect = img.getBoundingClientRect();
-      const srcsetWidths: number[] = [];
-      for (const candidate of (img.getAttribute("srcset") ?? "").split(/,\s+/)) {
-        const descriptor = candidate.trim().split(/\s+/)[1];
-        const match = descriptor ? /^(\d+)w$/.exec(descriptor) : null;
-        if (match) srcsetWidths.push(Number(match[1]));
-      }
-      return {
-        usageId: img.getAttribute("data-imgtune") ?? "",
-        renderedWidth: rect.width,
-        renderedHeight: rect.height,
-        naturalWidth: img.naturalWidth,
-        currentSrc: img.currentSrc,
-        originalSrc: img.getAttribute("data-imgtune-src") || undefined,
-        sizesAttr: img.getAttribute("sizes") || undefined,
-        srcsetWidths,
+  return page.evaluate(
+    async (probeTimeoutMs) => {
+      // An Image with only a src has no srcset, so its naturalWidth is the file's pixel width. Its bytes come from
+      // the cache the page just filled. A probe that fails or hangs counts as 0.
+      const widths = new Map<string, Promise<number>>();
+      const pixelWidth = (src: string): Promise<number> => {
+        let pending = widths.get(src);
+        if (!pending) {
+          const probe = new Image();
+          probe.src = src;
+          pending = Promise.race([
+            probe.decode().then(
+              () => probe.naturalWidth,
+              () => 0,
+            ),
+            new Promise<number>((resolve) => setTimeout(() => resolve(0), probeTimeoutMs)),
+          ]);
+          widths.set(src, pending);
+        }
+        return pending;
       };
-    }),
+
+      return Promise.all(
+        Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]"), async (img) => {
+          const rect = img.getBoundingClientRect();
+          const srcsetWidths: number[] = [];
+          for (const candidate of (img.getAttribute("srcset") ?? "").split(/,\s+/)) {
+            const descriptor = candidate.trim().split(/\s+/)[1];
+            const match = descriptor ? /^(\d+)w$/.exec(descriptor) : null;
+            if (match) srcsetWidths.push(Number(match[1]));
+          }
+          return {
+            usageId: img.getAttribute("data-imgtune") ?? "",
+            renderedWidth: rect.width,
+            renderedHeight: rect.height,
+            naturalWidth: img.currentSrc ? await pixelWidth(img.currentSrc) : 0,
+            currentSrc: img.currentSrc,
+            originalSrc: img.getAttribute("data-imgtune-src") || undefined,
+            sizesAttr: img.getAttribute("sizes") || undefined,
+            srcsetWidths,
+          };
+        }),
+      );
+    },
+    PIXEL_PROBE_TIMEOUT_MS,
   );
 }

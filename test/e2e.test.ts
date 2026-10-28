@@ -20,6 +20,12 @@ const CARD_FILE = "components/Card.tsx";
 const PAGE_FILE = "app/[store]/[...slug]/page.tsx";
 /** Grid of two columns with 12px page padding and an 8px gap: each card is 50vw minus 16px. */
 const CARD_SIZES = "(max-width: 768px) calc(50vw - 16px), calc(50vw - 16px)";
+/**
+ * The card at the reference viewport (iphone-15, 390px, dpr 3) is 50vw minus 16px = 179 css px. The file the browser
+ * serves for it must cover at least half of its device pixels; a density-corrected DOM width (~129 for the old 33vw)
+ * fails this. The report keeps no served URL, so the bound is checked instead of an exact width.
+ */
+const CARD_MIN_FILE_PX_IPHONE15 = ((390 / 2 - 16) * 3) / 2;
 const CONFIG_FILE = "next.config.ts";
 /** Project files the run must not change (apart from the applied card and next.config). */
 const WATCHED_FILES = ["next.config.ts", "next-env.d.ts", "tsconfig.json"];
@@ -304,6 +310,7 @@ describe.skipIf(process.platform !== "linux")("imgtune end to end on the Next.js
       expect(card?.component).toBe("Card");
       expect(card?.proposed.sizes).toBe(CARD_SIZES);
       expect(card?.estimated).toBe(false);
+      expect(card?.current.medianWidth).toBeGreaterThanOrEqual(CARD_MIN_FILE_PX_IPHONE15);
       // Next's telemetry flush (detached-flush.js) can outlive `next dev` for a moment; the dev server must not.
       await waitUntil(async () => leftoverProcesses(dir).length === 0, 30_000, "no process left in the fixture");
       expect(leftoverProcesses(dir)).toEqual([]);
