@@ -446,10 +446,12 @@ export async function judgeSample(
   // cdn rule (R38): judged by the local quality drop, not by a bar.
   const before = input.before;
   const now = input.applied ?? before;
-  if (before === undefined || now === undefined) return { sample: { format, ssim: scored.ssim } };
+  if (before === undefined || now === undefined) return { unusable: "drop not computable: no before quality recorded" };
   try {
     const original = await deps.fetchOriginal(originalUrlFor(obs.originalSrc as string, input.baseUrl));
     const drop = await cdnDrop(original, format, scored.width, { before, now, offset: input.offset }, deps.score);
+    // A quality change needs the calibration to map it to the local scale; a sizes-only change has no drop to map.
+    if (drop === undefined) return { unusable: `drop not computable: no calibration offset for ${format}` };
     const undersized = now === before ? await undersizedFile(original, obs, scored.width) : undefined;
     return { sample: { format, ssim: scored.ssim, drop, undersized } };
   } catch (err) {

@@ -471,3 +471,46 @@ describe("judgeSample for next-default with the R38 rule (R41)", () => {
     expect(verdict).toEqual({ sample: { format: "webp", ssim: 80 } });
   });
 });
+
+describe("judgeSample for cdn with the drop rule (R41)", () => {
+  const original = (async () => rawToPng(gradientNoise(480, 320, 10, 11)))();
+  const input = (overrides: Partial<Parameters<typeof judgeSample>[0]> = {}) => ({
+    obs: observation({ renderedWidth: 300, dpr: 1, naturalWidth: 480 }),
+    format: "webp" as const,
+    scored: { ssim: 0.95, width: 480 },
+    before: 85,
+    applied: 60,
+    offset: 0,
+    profile: "cdn" as const,
+    delta: 0.02,
+    threshold: 0.9,
+    baseUrl: "http://localhost",
+    ...overrides,
+  });
+  const deps = { fetchOriginal: async () => original, score: ssim };
+
+  it("makes a quality change with no calibration offset unusable, not a pass on the floor", async () => {
+    expect(await judgeSample(input({ offset: undefined }), deps)).toEqual({
+      unusable: "drop not computable: no calibration offset for webp",
+    });
+  });
+
+  it("makes a sample with no before quality unusable", async () => {
+    expect(await judgeSample(input({ before: undefined, applied: undefined }), deps)).toEqual({
+      unusable: "drop not computable: no before quality recorded",
+    });
+  });
+
+  it("still judges a sizes-only change with no offset, since its drop is zero", async () => {
+    const verdict = await judgeSample(input({ offset: undefined, applied: undefined }), deps);
+    expect(verdict).toMatchObject({ sample: { format: "webp", ssim: 0.95, drop: 0 } });
+  });
+
+  it("makes a sample unusable when its local rescore fails", async () => {
+    const verdict = await judgeSample(
+      input(),
+      { fetchOriginal: async () => { throw new Error("404"); }, score: ssim },
+    );
+    expect(verdict).toEqual({ unusable: "local rescore failed: 404" });
+  });
+});
