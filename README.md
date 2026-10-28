@@ -124,6 +124,15 @@ image-heavy commerce.
 - tailwindcss.com/blog rendered no `<img>` at scan time (0 images); counted as 0%.
 - A2's 47.8% is driven by its speakers page (84%): 1440 px product images (~300 KB) in 150–180 CSS px slots.
 
+## CI
+
+`action.yml` at the root scans a preview deployment on each pull request and comments its image waste on the pull
+request. Set `fail-over` to fail the job when a page is above a budget. The action builds itself, so `dist/` is not
+needed in the repository. See [docs/ci.md](docs/ci.md) for the inputs and two example workflows.
+
+For the command line, `scan` takes `--markdown <file>` (the comment text), `--summary-json <file>` (every page's
+numbers) and `--fail-over <pct>` (exit 3 above the budget).
+
 ## Requirements
 
 - Node.js 20 or later.

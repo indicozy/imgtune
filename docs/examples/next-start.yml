@@ -1,0 +1,33 @@
+name: imgtune local build
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - name: Start the app on the runner
+        run: |
+          npx next start -p 3000 > "$RUNNER_TEMP/next.log" 2>&1 &
+          for i in $(seq 60); do
+            curl -fsS http://127.0.0.1:3000/ > /dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/next.log"
+          exit 1
+      - uses: OWNER/imgtune@main # replace OWNER/imgtune with the repository the action is published from
+        with:
+          urls: |
+            http://127.0.0.1:3000/
+            http://127.0.0.1:3000/products
+          fail-over: "5"

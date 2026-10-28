@@ -1,0 +1,18 @@
+name: imgtune preview
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    # Vercel reports a preview as a successful deployment_status event; scan the URL it reports.
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: OWNER/imgtune@main # replace OWNER/imgtune with the repository the action is published from
+        with:
+          urls: ${{ github.event.deployment_status.environment_url }}
+          fail-over: "5"
