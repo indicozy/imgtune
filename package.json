@@ -25,6 +25,7 @@
   "files": [
     "dist",
     "vendor",
+    "skills",
     "README.md",
     "LICENSE",
     "NOTICE"

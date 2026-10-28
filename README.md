@@ -133,6 +133,12 @@ needed in the repository. See [docs/ci.md](docs/ci.md) for the inputs and two ex
 For the command line, `scan` takes `--markdown <file>` (the comment text), `--summary-json <file>` (every page's
 numbers) and `--fail-over <pct>` (exit 3 above the budget).
 
+## Use with a coding agent
+
+`skills/imgtune/SKILL.md` teaches a coding agent (Claude Code, or any tool that reads `SKILL.md` skills) to run imgtune
+safely: scan a live URL, or audit, apply and verify in a Next.js project. It ships in the npm package under `skills/`.
+Copy the `skills/imgtune` folder into your agent's skills directory to use it.
+
 ## Requirements
 
 - Node.js 20 or later.
