@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import sharp from "sharp";
 import { writeFileAtomic } from "./atomic.js";
+import { LruCache } from "./lru.js";
 import { ssim, type RawImage } from "./ssim.js";
 
 /** `ssimulacra2`: perceptual score, 100 for identical images. `ssim`: the plain SSIM in ssim.ts, 1 for identical. */
@@ -48,8 +49,9 @@ export async function score(metric: Metric, ref: RawImage, test: RawImage, opts:
   return ssimulacra2(ref, test, opts);
 }
 
-/** Scores of this process by metric and the pixels of both images. A failed score is not kept. */
-const scoreCache = new Map<string, Promise<number>>();
+/** Scores of this process by metric and the pixels of both images, at most SCORE_CACHE_MAX. A failed score is not kept. */
+const SCORE_CACHE_MAX = 5000;
+const scoreCache = new LruCache<string, Promise<number>>(SCORE_CACHE_MAX);
 
 const pixelsKey = (img: RawImage): string =>
   createHash("sha1")
