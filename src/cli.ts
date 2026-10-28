@@ -3,6 +3,7 @@ import { applyCommand, audit, progress, restoreCommand } from "./audit.js";
 import { type Command, loadConfig } from "./config.js";
 import { verify } from "./verify.js";
 import { scanCommand } from "./remote.js";
+import { ChromiumMissingError } from "./browser.js";
 import type { ImgtuneConfig } from "./types.js";
 
 type Handler = (config: ImgtuneConfig, allowGrowth: boolean) => Promise<void>;
@@ -73,6 +74,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof ChromiumMissingError) {
+    console.error(err.message);
+    process.exitCode = 2;
+    return;
+  }
   console.error(`imgtune: ${(err as Error).message}`);
   if (process.env.IMGTUNE_DEBUG === "1" && err instanceof Error && err.stack) {
     console.error(err.stack);

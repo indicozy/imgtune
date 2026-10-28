@@ -7,7 +7,8 @@ import type { LookupAddress } from "node:dns";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { chromium, type Browser, type Response as BrowserResponse } from "playwright";
+import type { Browser, Response as BrowserResponse } from "playwright";
+import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { calibrationOffset } from "./calibrate.js";
@@ -1589,7 +1590,7 @@ async function scanPage(
 
 /** Scans each page in order and writes its JSON to `outDir`. Nothing else is written, except the scorer's temp files. */
 export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
-  const browser = await chromium.launch({ headless: true, args: ["--disable-gpu"] });
+  const browser = await launchChromium();
   try {
     // The fetches send the desktop viewport's user agent: the default one of a fresh context.
     const probe = await browser.newContext();

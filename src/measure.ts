@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
-import { chromium, type Browser, type Page, type Response } from "playwright";
+import type { Browser, Page, Response } from "playwright";
+import { launchChromium } from "./browser.js";
 import type { Viewport } from "./types.js";
 
 export interface ImageObservation {
@@ -64,7 +65,7 @@ export async function measurePages(
   viewports: Viewport[],
   opts: MeasureOptions = {},
 ): Promise<ImageObservation[]> {
-  const browser = await chromium.launch({ headless: true, args: ["--disable-gpu"] });
+  const browser = await launchChromium();
   try {
     const observations: ImageObservation[] = [];
     for (const pagePath of pages) {
