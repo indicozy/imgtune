@@ -20,6 +20,10 @@ inputs:
     description: "Token that posts the pull request comment"
     required: false
     default: ${{ github.token }}
+  comment-author:
+    description: "Login of the account that owns the imgtune comment; only its comments are updated. Set it to your app's bot login when you pass a custom token"
+    required: false
+    default: "github-actions[bot]"
 runs:
   using: "composite"
   steps:
@@ -76,6 +80,7 @@ runs:
         IMGTUNE_RESULTS: ${{ runner.temp }}/imgtune
         IMGTUNE_REPO: ${{ github.repository }}
         IMGTUNE_PR: ${{ github.event.pull_request.number }}
+        IMGTUNE_AUTHOR: ${{ inputs.comment-author }}
       run: |
         if [ ! -s "$IMGTUNE_RESULTS/comment.md" ]; then
           echo "::warning::imgtune wrote no summary, so no comment was posted"
@@ -84,7 +89,7 @@ runs:
         body="$IMGTUNE_RESULTS/comment-body.md"
         { echo "<!-- imgtune-scan -->"; cat "$IMGTUNE_RESULTS/comment.md"; } > "$body"
         id=$(gh api --paginate "repos/$IMGTUNE_REPO/issues/$IMGTUNE_PR/comments" \
-          --jq '.[] | select(.body | startswith("<!-- imgtune-scan -->")) | .id' | head -n 1)
+          --jq '.[] | select(.user.login == env.IMGTUNE_AUTHOR and (.body | startswith("<!-- imgtune-scan -->"))) | .id' | head -n 1)
         if [ -n "$id" ]; then
           gh api --method PATCH "repos/$IMGTUNE_REPO/issues/comments/$id" -F "body=@$body" > /dev/null
         else

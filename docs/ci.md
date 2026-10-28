@@ -13,6 +13,11 @@ request. One comment per pull request is created, then updated on each push. It 
 | `comment` | `true` | post or update the pull request comment (pull_request events only) |
 | `viewports` | all six | comma-separated viewport names |
 | `github-token` | `github.token` | token that posts the comment |
+| `comment-author` | `github-actions[bot]` | login whose comments the action may update |
+
+The action updates only a comment that this login wrote and that starts with the marker, so a commenter cannot make it
+edit their own text. When you pass a custom `github-token` (a GitHub App or a PAT), set `comment-author` to that
+account's login: the action cannot look it up from the token.
 
 The job's result is the scan's exit code: 0 when it passed, 3 when a `fail-over` budget was exceeded, 1 or 2 when the
 scan itself failed (2 when Chromium is missing).
