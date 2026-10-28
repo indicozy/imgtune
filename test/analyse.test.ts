@@ -645,14 +645,14 @@ describe("analyse", () => {
       [usage()],
       cdnStubObservations(served),
       cdnConfig,
-      { ...cfg, metric: "ssimulacra2", threshold: 88 },
+      { ...cfg, metric: "ssimulacra2", threshold: 70, delta: 2 },
       BASE,
       fetchStub,
       silent({ deps }),
     );
 
     expect(r.proposed.quality).toBe(28);
-    expect(r.notes).toContain("webp fallback scores 70.0 at q28");
+    expect(r.notes).toContain("webp fallback drops 25.0 points at q28");
   }, CDN_TIMEOUT_MS);
 
   it("notes no WebP fallback when the other format also scores at the threshold", async () => {
@@ -668,7 +668,7 @@ describe("analyse", () => {
       [usage()],
       cdnStubObservations(85 * 1000 + 320),
       cdnConfig,
-      { ...cfg, metric: "ssimulacra2", threshold: 88 },
+      { ...cfg, metric: "ssimulacra2", threshold: 70, delta: 2 },
       BASE,
       fetchStub,
       silent({ deps }),
@@ -677,6 +677,31 @@ describe("analyse", () => {
     expect(r.proposed.quality).toBe(28);
     expect(r.notes.some((n) => n.includes("fallback"))).toBe(false);
   }, CDN_TIMEOUT_MS);
+
+  it("sets each sample's bar from the current quality's score (max of floor and current - delta), stored as minScore", async () => {
+    // The score of a variant is its quality, so the current q85 scores 85: the bar is max(70, 85 - 2) = 83.
+    const deps = {
+      encode: (async (ref: RawImage, _format: string, q: number) => ({
+        bytes: q * 1000 + ref.width,
+        decoded: { data: Uint8ClampedArray.of(q), width: ref.width, height: ref.height },
+        buffer: Buffer.alloc(0),
+      })) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
+      score: (_ref: RawImage, test: RawImage) => test.data[0],
+    };
+    const [r] = await analyse(
+      [usage()],
+      await nextDefaultObservations(),
+      nextConfig,
+      { ...cfg, metric: "ssimulacra2", threshold: 70, delta: 2 },
+      BASE,
+      fetchStub,
+      silent({ deps }),
+    );
+
+    expect(r.proposed.minScore?.webp).toBe(83);
+    expect(r.proposed.quality).toBeGreaterThanOrEqual(83);
+    expect(r.proposed.quality).toBeLessThanOrEqual(85);
+  });
 
   it("proposes quality for a cdn component once AVIF and WebP are calibrated, and stays estimated", async () => {
     const [r] = await analyse(

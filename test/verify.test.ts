@@ -240,7 +240,52 @@ describe("scoreVariant", () => {
   });
 });
 
+describe("judgeVerification with per-sample bars (R38)", () => {
+  const base = {
+    served: ["webp" as const],
+    samplesPerComponent: 20,
+    threshold: 70,
+    tolerance: 2,
+    applied: { quality: 60 },
+    before: { quality: 75 },
+  };
+  it("passes a sample against its own bar, not the absolute threshold", () => {
+    const samples = Array.from({ length: 10 }, () => ({ format: "webp" as const, ssim: 74, minScore: 73 }));
+    const verdict = judgeVerification({ ...base, samples, threshold: 88 });
+    expect(verdict.status).toBe("verified");
+    expect(verdict.counts.webp).toEqual({ usable: 10, passing: 10 });
+    expect(verdict.minScore?.webp).toBe(73);
+  });
+
+  it("falls back to the threshold for a sample without a bar", () => {
+    const samples = Array.from({ length: 10 }, () => ({ format: "webp" as const, ssim: 74 }));
+    expect(judgeVerification({ ...base, samples, threshold: 88 }).status).toBe("regressed");
+  });
+});
+
 describe("bytesByViewport and renderVerifyTable", () => {
+  it("shows the bar after each score as min", () => {
+    const table = renderVerifyTable(
+      [
+        {
+          usageId: "a:1:1",
+          component: "Card",
+          relFile: "src/a.tsx",
+          line: 1,
+          bytes: {},
+          judgement: {
+            status: "verified",
+            ssim: { webp: 72.5 },
+            minScore: { webp: 70.25 },
+            counts: { webp: { usable: 10, passing: 10 } },
+          },
+        },
+      ],
+      "ssimulacra2",
+    );
+    expect(table).toContain("SSIMU2 webp");
+    expect(table).toContain("72.5 min 70.3");
+  });
   it("takes the median default-pass bytes per viewport and lists the reference viewport first", () => {
     const obs = [
       observation({ viewport: "desktop", bytes: 4000 }),

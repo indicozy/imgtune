@@ -28,7 +28,8 @@ describe("loadConfig", () => {
     expect(command).toBe("audit");
     expect(config.quality).toBe("relaxed");
     expect(config.metric).toBe("ssimulacra2");
-    expect(config.threshold).toBe(88);
+    expect(config.threshold).toBe(70);
+    expect(config.delta).toBe(2);
     expect(config.tolerance).toBe(5);
     expect(config.viewports).toHaveLength(6);
     expect(config.paths).toEqual(["."]);
@@ -36,12 +37,15 @@ describe("loadConfig", () => {
 
   it("strict", async () => {
     const { config } = await loadConfig(["audit", "--quality", "strict"], EMPTY);
-    expect(config.threshold).toBe(90);
+    expect(config.threshold).toBe(80);
+    expect(config.delta).toBe(1);
     expect(config.tolerance).toBe(3);
   });
 
   it("ssim keeps the 0.975 and 0.99 presets", async () => {
-    expect((await loadConfig(["audit", "--metric", "ssim"], EMPTY)).config.threshold).toBe(0.975);
+    const relaxed = await loadConfig(["audit", "--metric", "ssim"], EMPTY);
+    expect(relaxed.config.threshold).toBe(0.975);
+    expect(relaxed.config.delta).toBeUndefined();
     const strict = await loadConfig(["audit", "--metric", "ssim", "--quality", "strict"], EMPTY);
     expect(strict.config.threshold).toBe(0.99);
     expect(strict.config.metric).toBe("ssim");
@@ -59,12 +63,33 @@ describe("loadConfig", () => {
       EMPTY,
     );
     expect(config.threshold).toBe(92);
+    expect(config.delta).toBeUndefined();
   });
 
   it("threshold is checked against the metric's range (0-100 ssimulacra2, 0-1 ssim)", async () => {
     await expect(loadConfig(["audit", "--threshold", "0.98"], EMPTY)).resolves.toMatchObject({ config: { threshold: 0.98 } });
     await expect(loadConfig(["audit", "--threshold", "101"], EMPTY)).rejects.toThrow(/Invalid threshold "101" \(--threshold\).*0 and 100/);
     await expect(loadConfig(["audit", "--metric", "ssim", "--threshold", "88"], EMPTY)).rejects.toThrow(/0 and 1/);
+  });
+
+  it("--max-drop and maxScoreDrop replace the preset delta; strict keeps its own otherwise", async () => {
+    expect((await loadConfig(["audit", "--max-drop", "4"], EMPTY)).config.delta).toBe(4);
+    expect((await loadConfig(["audit", "--max-drop=2.5"], EMPTY)).config.delta).toBe(2.5);
+    expect((await loadConfig(["audit"], projectWith({ maxScoreDrop: 4 }))).config.delta).toBe(4);
+    expect((await loadConfig(["audit", "--max-drop", "3"], projectWith({ maxScoreDrop: 4 }))).config.delta).toBe(3);
+    expect((await loadConfig(["audit", "--quality", "strict"], EMPTY)).config.delta).toBe(1);
+  });
+
+  it("refuses a maxScoreDrop that is not a positive number, or that conflicts with the rule", async () => {
+    await expect(loadConfig(["audit", "--max-drop", "0"], EMPTY)).rejects.toThrow('Invalid max-drop "0" (--max-drop)');
+    await expect(loadConfig(["audit", "--max-drop", "-1"], EMPTY)).rejects.toThrow("Invalid max-drop");
+    await expect(loadConfig(["audit"], projectWith({ maxScoreDrop: "x" }))).rejects.toThrow("Invalid maxScoreDrop");
+    await expect(loadConfig(["audit", "--threshold", "80", "--max-drop", "2"], EMPTY)).rejects.toThrow(
+      "--max-drop has no effect with an absolute --threshold",
+    );
+    await expect(loadConfig(["audit", "--metric", "ssim", "--max-drop", "2"], EMPTY)).rejects.toThrow(
+      "--max-drop applies to ssimulacra2 only",
+    );
   });
 
   it("refuses an unknown metric, from a flag or the file", async () => {

@@ -10,10 +10,14 @@ const QUALITY_LEVELS: readonly QualityLevel[] = ["relaxed", "strict"];
 const CONFIG_FILE = "imgtune.config.json";
 
 const DEFAULT_METRIC: Metric = "ssimulacra2";
-const QUALITY_PRESETS: Record<Metric, Record<QualityLevel, { threshold: number; tolerance: number }>> = {
+/**
+ * ssimulacra2 presets are relative (R38): `threshold` is the floor and `delta` the allowed drop from the current quality.
+ * ssim keeps its absolute bars.
+ */
+const QUALITY_PRESETS: Record<Metric, Record<QualityLevel, { threshold: number; delta?: number; tolerance: number }>> = {
   ssimulacra2: {
-    relaxed: { threshold: 88, tolerance: 5 },
-    strict: { threshold: 90, tolerance: 3 },
+    relaxed: { threshold: 70, delta: 2, tolerance: 5 },
+    strict: { threshold: 80, delta: 1, tolerance: 3 },
   },
   ssim: {
     relaxed: { threshold: 0.975, tolerance: 5 },
@@ -39,7 +43,7 @@ export const DEFAULT_VIEWPORTS: readonly Viewport[] = [
  * Keys read from `imgtune.config.json`. `projectDir` always comes from `--project` or cwd. `threshold` stays unchecked
  * here: its range depends on the metric the flags and the file settle on, so `loadConfig` checks it.
  */
-type FileConfig = Partial<Omit<ImgtuneConfig, "projectDir" | "threshold">> & { threshold?: unknown };
+type FileConfig = Partial<Omit<ImgtuneConfig, "projectDir" | "threshold" | "delta">> & { threshold?: unknown; maxScoreDrop?: unknown };
 
 interface Flags {
   project?: string;
@@ -47,6 +51,7 @@ interface Flags {
   quality?: QualityLevel;
   metric?: Metric;
   threshold?: string;
+  maxDrop?: string;
   port?: number;
   url?: string;
   all: boolean;
@@ -65,6 +70,19 @@ export async function loadConfig(
   const metric = flags.metric ?? file.metric ?? DEFAULT_METRIC;
   const quality = flags.quality ?? file.quality ?? "relaxed";
   const preset = QUALITY_PRESETS[metric][quality];
+  // An explicit threshold is an absolute bar and switches the relative rule off (R38).
+  const explicit = flags.threshold !== undefined || file.threshold !== undefined;
+  const dropValue = flags.maxDrop ?? file.maxScoreDrop;
+  if (dropValue !== undefined) {
+    if (explicit) throw new Error("--max-drop has no effect with an absolute --threshold (remove one of them)");
+    if (metric !== "ssimulacra2") throw new Error("--max-drop applies to ssimulacra2 only");
+  }
+  const delta =
+    dropValue === undefined
+      ? explicit
+        ? undefined
+        : preset.delta
+      : parseDrop(dropValue, flags.maxDrop !== undefined ? "--max-drop" : CONFIG_FILE);
   const threshold =
     flags.threshold !== undefined
       ? parseThreshold(flags.threshold, "--threshold", metric)
@@ -76,6 +94,7 @@ export async function loadConfig(
     quality,
     metric,
     threshold,
+    delta,
     tolerance: file.tolerance ?? preset.tolerance,
     market: file.market ?? "ae-en",
     port: flags.port ?? file.port ?? 3999,
@@ -141,6 +160,9 @@ function parseArgs(argv: string[]): { command: Command; flags: Flags } {
       case "--threshold":
         flags.threshold = value;
         break;
+      case "--max-drop":
+        flags.maxDrop = value;
+        break;
       case "--port":
         flags.port = parsePort(value, "--port");
         break;
@@ -192,6 +214,9 @@ async function readConfigFile(projectDir: string): Promise<FileConfig> {
   if (fileConfig.metric !== undefined) {
     fileConfig.metric = parseMetric(fileConfig.metric, CONFIG_FILE);
   }
+  if (fileConfig.maxScoreDrop !== undefined && typeof fileConfig.maxScoreDrop !== "string" && typeof fileConfig.maxScoreDrop !== "number") {
+    throw new Error(`Invalid maxScoreDrop ${JSON.stringify(fileConfig.maxScoreDrop)} (${CONFIG_FILE}): expected a positive number`);
+  }
   if (fileConfig.ssimulacra2Path !== undefined && typeof fileConfig.ssimulacra2Path !== "string") {
     throw new Error(`Invalid ssimulacra2Path ${JSON.stringify(fileConfig.ssimulacra2Path)} (${CONFIG_FILE}): expected a path string`);
   }
@@ -228,6 +253,16 @@ function parseQuality(value: unknown, source: string): QualityLevel {
     );
   }
   return value as QualityLevel;
+}
+
+/** The allowed score drop of the relative rule (R38): a positive number of points. */
+function parseDrop(value: unknown, source: string): number {
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+    const key = source === "--max-drop" ? "max-drop" : "maxScoreDrop";
+    throw new Error(`Invalid ${key} ${JSON.stringify(value)} (${source}): expected a positive number of points`);
+  }
+  return n;
 }
 
 function parseMetric(value: unknown, source: string): Metric {

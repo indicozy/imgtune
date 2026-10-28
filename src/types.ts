@@ -17,8 +17,13 @@ export interface ImgtuneConfig {
   quality: QualityLevel;
   /** The metric every threshold, score and proposal is judged with. */
   metric: Metric;
-  /** Pass mark on the metric's scale: 0-100 for ssimulacra2, 0-1 for ssim. */
+  /**
+   * Pass mark on the metric's scale: 0-100 for ssimulacra2, 0-1 for ssim. With `delta` set (the relative rule, R38) it is
+   * the floor: a sample passes at max(threshold, its current score - delta). Without `delta` it is an absolute bar.
+   */
   threshold: number;
+  /** Relative rule (R38): points a candidate may drop below the current quality's score. Absent for an absolute bar. */
+  delta?: number;
   tolerance: number;
   market: string;
   port: number;

@@ -185,40 +185,39 @@ async function readReportResults(): Promise<ComponentResult[]> {
   return (JSON.parse(raw) as { results: ComponentResult[] }).results;
 }
 
-/** Deterministic LCG in [0, 1). */
-function lcg(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
+/** Studio-style product shots: a soft gradient ground, a rounded body with soft shading and a soft shadow. No noise. */
+const PRODUCT_COLOURS: [string, string][] = [
+  ["#c0392b", "#7b241c"],
+  ["#2e86c1", "#1b4f72"],
+  ["#229954", "#145a32"],
+  ["#d4ac0d", "#9a7d0a"],
+  ["#8e44ad", "#5b2c6f"],
+  ["#17a589", "#0b5345"],
+  ["#e67e22", "#a04000"],
+  ["#566573", "#2c3e50"],
+];
 
-/**
- * A smooth synthetic "photo": a gradient, a hard-edged disc and a soft wave, plus light noise (sigma 2). Dense
- * noise would make WebP at quality 75 fail any SSIM threshold, which real product photos do not do.
- */
-function syntheticPhoto(index: number): Buffer {
-  const size = 1200;
-  const next = lcg(index);
-  const gauss = (): number => Math.sqrt(-2 * Math.log(Math.max(next(), 1e-12))) * Math.cos(2 * Math.PI * next());
-  const cx = 300 + index * 97;
-  const cy = 420 + index * 53;
-  const radius = 260 + index * 40;
-  const data = Buffer.alloc(size * size * 3);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const p = (y * size + x) * 3;
-      const inDisc = Math.hypot(x - cx, y - cy) < radius;
-      const wave = 0.5 + 0.5 * Math.sin((x + index * 30) / 37) * Math.cos((y - index * 20) / 53);
-      const base = [(x / size) * 255, (y / size) * 255, 128 + 60 * wave];
-      for (let c = 0; c < 3; c++) {
-        const value = inDisc ? 255 - base[(c + 1) % 3] * 0.6 : base[c];
-        data[p + c] = Math.min(255, Math.max(0, Math.round(value + 2 * gauss())));
-      }
-    }
-  }
-  return data;
+/** A synthetic product image (SVG rendered by sharp). Nothing in it comes from a real client photo. */
+function productSvg(index: number): string {
+  const [c1, c2] = PRODUCT_COLOURS[(index - 1) % PRODUCT_COLOURS.length];
+  const w = 460 + index * 14;
+  const h = 640 + index * 10;
+  const x = 600 - w / 2;
+  const y = 600 - h / 2 + 20;
+  const r = 110 + index * 4;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<defs>
+<radialGradient id="bg" cx="50%" cy="38%" r="72%"><stop offset="0" stop-color="#fbfaf7"/><stop offset="1" stop-color="#d8d2c8"/></radialGradient>
+<linearGradient id="body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient>
+<filter id="shadow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="26"/></filter>
+<filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="18"/></filter>
+</defs>
+<rect width="1200" height="1200" fill="url(#bg)"/>
+<ellipse cx="600" cy="${y + h + 26}" rx="${w * 0.62}" ry="34" fill="#000" opacity="0.28" filter="url(#shadow)"/>
+<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="url(#body)"/>
+<ellipse cx="${x + w * 0.34}" cy="${y + h * 0.22}" rx="${w * 0.2}" ry="${h * 0.07}" fill="#ffffff" opacity="0.35" filter="url(#soft)"/>
+<rect x="${x + w * 0.06}" y="${y + h * 0.5}" width="${w * 0.88}" height="${h * 0.04}" rx="${h * 0.02}" fill="#000" opacity="0.08" filter="url(#soft)"/>
+</svg>`;
 }
 
 async function writeImages(): Promise<void> {
@@ -230,9 +229,7 @@ async function writeImages(): Promise<void> {
     await sharp({ create: { width: 40, height: 40, channels: 3, background: "#336699" } }).jpeg().toBuffer(),
   );
   for (let i = 1; i <= 8; i++) {
-    const jpeg = await sharp(syntheticPhoto(i), { raw: { width: 1200, height: 1200, channels: 3 } })
-      .jpeg({ quality: 90 })
-      .toBuffer();
+    const jpeg = await sharp(Buffer.from(productSvg(i))).resize(1200, 1200).jpeg({ quality: 90 }).toBuffer();
     await writeFile(join(imgDir, `p${i}.jpg`), jpeg);
   }
 }
@@ -326,7 +323,7 @@ describe.skipIf(process.platform !== "linux")("imgtune end to end on the Next.js
       expect(result.stdout).toContain(`edited ${CARD_FILE}`);
 
       applied = await snapshot(dir);
-      // The lower quality (75 -> 45) is not listed in next.config, so apply adds it there too.
+      // The lower quality (90 -> 85) is not listed in next.config, so apply adds it there too.
       expect(changedBetween(original, applied)).toEqual([CARD_FILE, CONFIG_FILE].sort());
       expect(applied.get(PAGE_FILE)).toBe(original.get(PAGE_FILE));
       const card = await readFile(join(dir, CARD_FILE), "utf8");

@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import { makeFetchOriginal, measureUsages, progress, restoreAndReport, unique, type Log } from "./audit.js";
+import { makeFetchOriginal, measureUsages, profileOf, progress, restoreAndReport, unique, type Log } from "./audit.js";
 import { sha1 } from "./atomic.js";
-import { loadReference } from "./encode.js";
+import { encode, loadReference } from "./encode.js";
 import { readImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
 import { originalUrlFor } from "./analyse.js";
@@ -32,6 +32,8 @@ const REFERENCE_VIEWPORT = "iphone-15";
 export interface VerifySample {
   format: Format;
   ssim?: number;
+  /** The bar this sample had to reach (R38). Absent: the absolute threshold applies. */
+  minScore?: number;
 }
 
 export interface FormatCounts {
@@ -47,6 +49,8 @@ export interface Judgement {
   reason?: string;
   /** Median SSIM of the usable samples per judged format. */
   ssim: { avif?: number; webp?: number };
+  /** Median bar of the usable samples per judged format (R38): what the score is shown against as "min". */
+  minScore?: { avif?: number; webp?: number };
   /** Usable and passing counts per judged format. */
   counts: { avif?: FormatCounts; webp?: FormatCounts };
   /** Set for a regression when a quality raise can help: applied quality + tolerance, capped at the pre-apply quality. */
@@ -109,12 +113,12 @@ export function judgeVerification(input: JudgeInput): Judgement {
   const { samples, served, threshold } = input;
   const minimum = Math.max(1, Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent));
   const formats = FORMATS.filter((format) => served.includes(format));
-  const judgement: Judgement = { status: "verified", ssim: {}, counts: {} };
+  const judgement: Judgement = { status: "verified", ssim: {}, counts: {}, minScore: {} };
   if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
 
   let failed = false;
   for (const format of formats) {
-    const usable = samples.flatMap((s) => (s.format === format && s.ssim !== undefined ? [s.ssim] : []));
+    const usable = samples.filter((s): s is VerifySample & { ssim: number } => s.format === format && s.ssim !== undefined);
     if (usable.length < minimum) {
       return {
         ...judgement,
@@ -122,9 +126,11 @@ export function judgeVerification(input: JudgeInput): Judgement {
         reason: `insufficient ${format} samples: ${usable.length}`,
       };
     }
-    const passing = usable.filter((value) => value >= threshold).length;
+    const bars = usable.map((s) => s.minScore ?? threshold);
+    const passing = usable.filter((s, i) => s.ssim >= bars[i]).length;
     judgement.counts[format] = { usable: usable.length, passing };
-    judgement.ssim[format] = median(usable);
+    judgement.ssim[format] = median(usable.map((s) => s.ssim));
+    judgement.minScore![format] = median(bars);
     if (passing * 100 < PASS_PERCENT * usable.length) failed = true;
   }
   if (!failed) return judgement;
@@ -261,7 +267,11 @@ export function selectApplied(
 }
 
 const fmtBytes = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
-const fmtScore = (metric: Metric, value: number | undefined): string => (value === undefined ? "-" : formatScore(metric, value));
+/** A score, with its bar after "min" when the usage has one. */
+const fmtScore = (metric: Metric, value: number | undefined, min?: number): string => {
+  if (value === undefined) return "-";
+  return min === undefined ? formatScore(metric, value) : `${formatScore(metric, value)} min ${formatScore(metric, min)}`;
+};
 
 function statusOf(judgement: Judgement): string {
   let status: string;
@@ -294,8 +304,8 @@ export function renderVerifyTable(rows: VerifyRow[], metric: Metric): string {
       `${row.relFile}:${row.line}`,
       byViewport(row.beforeBytes),
       byViewport(row.bytes),
-      fmtScore(metric, row.judgement.ssim.avif),
-      fmtScore(metric, row.judgement.ssim.webp),
+      fmtScore(metric, row.judgement.ssim.avif, row.judgement.minScore?.avif),
+      fmtScore(metric, row.judgement.ssim.webp, row.judgement.minScore?.webp),
       statusOf(row.judgement),
     ];
   });
@@ -307,6 +317,39 @@ export function renderVerifyTable(rows: VerifyRow[], metric: Metric): string {
 export interface VerifyOptions {
   log?: Log;
   fetchImpl?: typeof fetch;
+}
+
+/** Audit-time bar per format (`proposed.minScore`, R38), keyed by usage id; empty when there is no readable report. */
+async function auditMinScores(projectDir: string): Promise<Map<string, { avif?: number; webp?: number }>> {
+  const out = new Map<string, { avif?: number; webp?: number }>();
+  const report = await readReport(projectDir).catch(() => undefined);
+  for (const result of report?.results ?? []) {
+    if (result.proposed.minScore) out.set(result.usageId, result.proposed.minScore);
+  }
+  return out;
+}
+
+/**
+ * The bar of one served variant, recomputed as the audit did (R38): max(floor, current - delta), where current is the
+ * before-quality encoded locally at the served width. Undefined when it cannot be recomputed; the caller then uses the
+ * audit's stored median.
+ */
+export async function recomputeBar(
+  obs: ImageObservation,
+  format: Format,
+  beforeQuality: number,
+  rule: { threshold: number; delta: number },
+  baseUrl: string,
+  deps: { fetchOriginal: (url: string) => Promise<Buffer>; score: Scorer },
+): Promise<number | undefined> {
+  if (!obs.originalSrc || obs.naturalWidth < 1) return undefined;
+  try {
+    const reference = await loadReference(await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl)), obs.naturalWidth);
+    const enc = await encode(reference, format, beforeQuality, "next-default");
+    return Math.max(rule.threshold, (await deps.score(reference, enc.decoded)) - rule.delta);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Audit-time median bytes per viewport, keyed by usage id; empty when there is no readable report. */
@@ -368,8 +411,10 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   }
 
   const beforeBytes = await auditBytes(projectDir);
+  const auditBars = await auditMinScores(projectDir);
   const score = makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
   const imageConfig = readImageConfig(projectDir);
+  const recomputable = profileOf(imageConfig) === "next-default";
   const measured = await measureUsages(config, applied.map((a) => a.usage), imageConfig, log);
   const rows: VerifyRow[] = [];
   const judged = new Map<string, { entry: StateEntry; judgement: Judgement; bytes: Record<string, number> }>();
@@ -386,7 +431,16 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
             log(`unusable ${format} sample for ${usage.id}: ${scored.unusable}`);
             samples.push({ format });
           } else {
-            samples.push({ format, ssim: scored.ssim });
+            // Relative rule (R38): recompute the sample's bar when possible, else the audit's stored median.
+            let minScore: number | undefined;
+            if (config.delta !== undefined) {
+              const before = entry.before?.quality;
+              if (recomputable && before !== undefined) {
+                minScore = await recomputeBar(obs, format, before, { threshold: config.threshold, delta: config.delta }, measured.baseUrl, { fetchOriginal, score });
+              }
+              minScore ??= auditBars.get(usage.id)?.[format];
+            }
+            samples.push({ format, ssim: scored.ssim, minScore });
           }
         }
       }
@@ -433,6 +487,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
         at: now,
         bytes,
         ssim: judgement.ssim,
+        minScore: judgement.minScore,
         counts: judgement.counts,
         ...(judgement.raiseTo !== undefined ? { raiseTo: judgement.raiseTo } : {}),
       },

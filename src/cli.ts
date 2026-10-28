@@ -33,8 +33,12 @@ Options:
   --project <dir>     project directory (default: current directory)
   --path <path>       limit the scan to a file or directory (repeatable; default: .)
   --metric <name>     ssimulacra2 (default) or ssim
-  --quality <level>   relaxed (default) or strict; ssimulacra2 >= 88 / >= 90, ssim >= 0.975 / >= 0.99
-  --threshold <n>     pass mark on the metric's scale (0-100 ssimulacra2, 0-1 ssim); overrides --quality
+  --quality <level>   relaxed (default) or strict. ssimulacra2: relative, a sample may drop 2 (relaxed) or 1 (strict)
+                      points from its current score, never below 70 / 80. ssim: absolute 0.975 / 0.99
+  --max-drop <points> relative rule (ssimulacra2): a sample may drop this many points from its current score (default:
+                      2 relaxed, 1 strict). Positive; not with --threshold or ssim
+  --threshold <n>     absolute pass mark on the metric's scale (0-100 ssimulacra2, 0-1 ssim). Overrides --quality and
+                      switches the relative rule off, for ssimulacra2 too
   --port <n>          port for a dev server the tool starts (default: 3999)
   --url <baseUrl>     measure a server that is already running; the tool never starts or stops it
   --all               also re-measure usages that were already applied

@@ -66,6 +66,8 @@ export interface ConfirmSample {
   src: string;
   ref: RawImage;
   width: number;
+  /** This sample's bar per format (R38). A format without one is judged against the threshold. */
+  minScore?: Partial<Record<Format, number>>;
 }
 
 export interface ConfirmOptions {
@@ -149,7 +151,8 @@ async function probeOne(
     return { status: "decode", bytes: body.length, error: message(e) };
   }
   const value = await score(sample.ref, decoded);
-  return { status: value >= threshold ? "ok" : "ssim-fail", ssim: value, bytes: body.length };
+  const bar = sample.minScore?.[format] ?? threshold;
+  return { status: value >= bar ? "ok" : "ssim-fail", ssim: value, bytes: body.length };
 }
 
 /**

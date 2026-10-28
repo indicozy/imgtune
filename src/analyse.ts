@@ -1,4 +1,4 @@
-import { calibrationOffset, type CalibrationSample } from "./calibrate.js";
+import { calibrationOffset, type CalibrationSample, type ConfirmSample } from "./calibrate.js";
 import { encode, loadReference, type EncoderProfile } from "./encode.js";
 import type { ImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
@@ -24,8 +24,8 @@ const DEFAULT_QUALITY = 75;
 /** Rendered width may exceed slot x dpr by this factor before the width ladder is reported as a gap. */
 const LADDER_GAP_RATIO = 1.25;
 const CONFIRM_SAMPLES = 5;
-/** A cdn format that does not decide the quality is noted when it scores this far below the threshold (R36). */
-const FALLBACK_MARGIN = 8;
+/** A cdn format that does not decide the quality is noted when it loses more than delta plus this many points (R36, R38). */
+const FALLBACK_EXTRA_POINTS = 3;
 const CALIBRATION_SAMPLES = 5;
 /** Projected bytes above this multiple of the current median count as growth. */
 const GROWTH_RATIO = 1.05;
@@ -145,6 +145,8 @@ export interface ComponentResult {
     width: number;
     projectedBytes?: number;
     ssim?: number;
+    /** The bar per format (R38): the median over samples of max(floor, current score - delta) at the proposed width. */
+    minScore?: { avif?: number; webp?: number };
     bytesByViewport?: Record<string, number>;
     /** `bytesByViewport` under the full correction, to compare with the proposed sizes. */
     bytesByViewportFull?: Record<string, number>;
@@ -169,7 +171,7 @@ export interface ComponentResult {
 export interface AnalyseOptions {
   /** Confirms a `next-default` quality against the running app's `/_next/image`. */
   confirm?: (
-    samples: { src: string; ref: RawImage; width: number }[],
+    samples: ConfirmSample[],
     q: number,
     formats: Format[],
   ) => Promise<{ confirmed: boolean; ssim: { avif?: number; webp?: number }; bytes: { avif?: number; webp?: number } } | undefined>;
@@ -427,18 +429,39 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   // next-default: every searched format must pass (R16). cdn: the format the page was served decides (R36).
   const deciding: Format[] = ctx.profile === "cdn" ? [served] : ctx.searchFormats;
 
+  /**
+   * The score a sample must reach in `format` at `width`. An absolute bar is the threshold. The relative rule (R38)
+   * takes max(floor, current score - delta), with the current quality scored like the candidates at the same width.
+   */
+  const barAt = async (sample: Sample, format: Format, width: number): Promise<number> => {
+    if (ctx.cfg.delta === undefined) return ctx.cfg.threshold;
+    const current = await sampleEval(sample, format, quality, width);
+    if (!current) throw new Error(`no current ${format} score for ${sample.src}`);
+    return Math.max(ctx.cfg.threshold, current.ssim - ctx.cfg.delta);
+  };
+
   // One search per width: the full correction and the final sizes often share one.
   const searches = new Map<number, Promise<QualityOutcome>>();
   /** Quality searched at the reference viewport's width under `sizes`. Samples are not searched without originals. */
-  const searchAtSizes = (sizes: string | undefined): Promise<QualityOutcome> => {
-    if (probe.samples.length === 0) return Promise.resolve({});
-    const width = widthFor(sizes, ref);
+  const searchAtWidth = (width: number): Promise<QualityOutcome> => {
     let pending = searches.get(width);
     if (!pending) {
-      pending = searchAt(ctx, probe, quality, width, deciding);
+      pending = searchAt(ctx, probe, quality, width, deciding, (sample, format) => barAt(sample, format, width));
       searches.set(width, pending);
     }
     return pending;
+  };
+  /**
+   * The quality must hold at every width the usage is served at (R38: each sample's bar is per width), so every
+   * projected viewport's width is searched and the highest target wins. A refusal at any width refuses the whole.
+   */
+  const searchAtSizes = async (sizes: string | undefined): Promise<QualityOutcome> => {
+    if (probe.samples.length === 0) return {};
+    const widths = unique([widthFor(sizes, ref), ...stats.filter((s) => s.bytes !== undefined && s.servedWidth !== undefined).map((s) => widthFor(sizes, s))]);
+    const outcomes = await Promise.all(widths.map((width) => searchAtWidth(width)));
+    const refused = outcomes.find((o) => o.proposedQuality === undefined);
+    if (refused) return refused;
+    return { proposedQuality: Math.max(...outcomes.map((o) => o.proposedQuality as number)) };
   };
 
   /** Scores of each sample at `format`, quality `q` and `width`; a sample that cannot be scored is skipped. */
@@ -527,12 +550,32 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   // Scores are taken at the reference viewport's width under the proposed sizes.
   const scoreWidth = widthFor(finalSizes, ref);
   const ssims = await scoresAt(served, qNew, scoreWidth);
-  // The format that does not decide is scored at the chosen quality too, and noted when it falls well short (R36).
-  if (ctx.profile === "cdn") {
+  // The bar each format's samples had to reach, at this width (R38), for display in the report.
+  let minScore: { avif?: number; webp?: number } | undefined;
+  if (ctx.cfg.delta !== undefined) {
+    minScore = {};
+    for (const format of ctx.searchFormats) {
+      const bars: number[] = [];
+      for (const sample of probe.samples) {
+        try {
+          bars.push(await barAt(sample, format, scoreWidth));
+        } catch (err) {
+          logOnce(ctx, `bar ${sample.src}`, `skipping bar for ${sample.src}: ${message(err)}`);
+        }
+      }
+      minScore[format] = median(bars);
+    }
+  }
+  // The format that does not decide is noted when the chosen quality costs it more than delta plus 3 points (R36, R38).
+  // Only the relative rule has a delta, so an absolute bar gives no such note.
+  if (ctx.profile === "cdn" && ctx.cfg.delta !== undefined) {
     for (const other of ctx.searchFormats.filter((format) => format !== served)) {
-      const fallback = median(await scoresAt(other, qNew, scoreWidth));
-      if (fallback !== undefined && fallback < ctx.cfg.threshold - FALLBACK_MARGIN) {
-        notes.push(`${other} fallback scores ${formatScore(ctx.cfg.metric, fallback)} at q${qNew}`);
+      const before = median(await scoresAt(other, quality, scoreWidth));
+      const after = median(await scoresAt(other, qNew, scoreWidth));
+      if (before === undefined || after === undefined) continue;
+      const drop = before - after;
+      if (drop > ctx.cfg.delta + FALLBACK_EXTRA_POINTS) {
+        notes.push(`${other} fallback drops ${formatScore(ctx.cfg.metric, drop)} points at q${qNew}`);
       }
     }
   }
@@ -544,7 +587,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     } else if (proposedQuality !== undefined && probe.samples.length > 0) {
       // A confirmed result uses the served bytes of the primary format (AVIF when searched, else WebP).
       const primary: Format = ctx.searchFormats.includes("avif") ? "avif" : "webp";
-      const outcome = await confirmQuality(ctx, probe.samples, proposedQuality, scoreWidth);
+      const outcome = await confirmQuality(ctx, probe.samples, proposedQuality, scoreWidth, barAt);
       const confirmedBytes = outcome?.confirmed ? outcome.bytes[primary] : undefined;
       if (confirmedBytes !== undefined) {
         projFinal[ref.name] = confirmedBytes;
@@ -569,6 +612,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     qualityFull: fullSearch.proposedQuality,
     projectedBytes: projFinal[ref.name],
     ssim: median(ssims),
+    minScore,
     bytesByViewport: projFinal,
     bytesByViewportFull: projFull,
     branches,
@@ -638,6 +682,7 @@ async function searchAt(
   quality: number,
   width: number,
   formats: Format[],
+  barAt: (sample: Sample, format: Format) => Promise<number>,
 ): Promise<QualityOutcome> {
   const { cfg, deps } = ctx;
   if (ctx.profile === "cdn") {
@@ -651,7 +696,8 @@ async function searchAt(
       const ref = await loadReference(sample.buffer, width);
       const found: Partial<Record<Format, number>> = {};
       for (const format of formats) {
-        found[format] = await minPassingQuality(ref, format, quality, ctx.profile, cfg.threshold, cfg.tolerance, deps);
+        const bar = await barAt(sample, format);
+        found[format] = await minPassingQuality(ref, format, quality, ctx.profile, bar, cfg.tolerance, deps);
       }
       for (const format of formats) perSample[format].push(found[format] as number);
     } catch (err) {
@@ -742,13 +788,22 @@ async function confirmQuality(
   samples: Sample[],
   q: number,
   width: number,
+  barAt: (sample: Sample, format: Format, width: number) => Promise<number>,
 ): Promise<{ confirmed: boolean; bytes: { avif?: number; webp?: number } } | undefined> {
   const confirm = ctx.opts.confirm;
   if (!confirm) return undefined;
   try {
-    const picked = [];
+    const picked: ConfirmSample[] = [];
     for (const s of samples.slice(0, CONFIRM_SAMPLES)) {
-      picked.push({ src: s.src, ref: await loadReference(s.buffer, width), width });
+      // Each sample is judged against its own bar per format (R38), the same bars the search used.
+      const minScore: Partial<Record<Format, number>> = {};
+      try {
+        for (const format of ctx.searchFormats) minScore[format] = await barAt(s, format, width);
+      } catch (err) {
+        logOnce(ctx, `confirm bar ${s.src}`, `skipping confirmation of ${s.src}: ${message(err)}`);
+        continue;
+      }
+      picked.push({ src: s.src, ref: await loadReference(s.buffer, width), width, minScore });
     }
     const outcome = await confirm(picked, q, ctx.searchFormats);
     return outcome && { confirmed: outcome.confirmed, bytes: outcome.bytes };

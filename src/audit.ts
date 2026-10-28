@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import { analyse, type ComponentResult } from "./analyse.js";
 import { applyResults, type ApplyResult } from "./apply.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
-import { confirmNextDefault, withQuality } from "./calibrate.js";
+import { confirmNextDefault, withQuality, type ConfirmSample } from "./calibrate.js";
 import { backupFiles, installRestoreHandlers, instrument, restore } from "./instrument.js";
 import { measurePages, type ImageObservation } from "./measure.js";
 import { readImageConfig, type ImageConfig } from "./nextconfig.js";
@@ -139,7 +139,7 @@ export function confirmPlan(
 export interface ConfirmDeps {
   confirmNextDefault: (
     baseUrl: string,
-    samples: { src: string; ref: RawImage; width: number }[],
+    samples: ConfirmSample[],
     q: number,
     threshold: number,
     opts: { formats: Format[] },
@@ -165,7 +165,7 @@ export interface ConfirmContext {
 /** The `confirm` callback handed to analyse. Undefined means "not confirmed" (the result stays estimated). */
 export function makeConfirm(ctx: ConfirmContext, deps: ConfirmDeps) {
   return async (
-    samples: { src: string; ref: RawImage; width: number }[],
+    samples: ConfirmSample[],
     q: number,
     formats: Format[],
   ): Promise<ConfirmResult | undefined> => {
