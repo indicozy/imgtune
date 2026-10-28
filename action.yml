@@ -1,0 +1,99 @@
+name: "imgtune scan"
+description: "Scan the images of live pages and comment their image waste on the pull request"
+inputs:
+  urls:
+    description: "Page URLs to scan, separated by newlines or spaces"
+    required: true
+  fail-over:
+    description: "Exit 3 when a page's exact + est. share is above this percentage (default: never fail)"
+    required: false
+    default: ""
+  comment:
+    description: "Post or update the pull request comment (pull_request events only)"
+    required: false
+    default: "true"
+  viewports:
+    description: "Comma-separated viewport names (default: all six)"
+    required: false
+    default: ""
+  github-token:
+    description: "Token that posts the pull request comment"
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4 # TODO pin to SHA
+      with:
+        node-version: 20
+
+    # The action builds itself: dist/ is not committed. The lockfile is pnpm's, so pnpm installs and builds.
+    - name: Build imgtune
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        corepack enable
+        pnpm install --frozen-lockfile
+        pnpm run build
+
+    - name: Install Chromium
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: pnpm exec playwright install --with-deps chromium
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        IMGTUNE_URLS: ${{ inputs.urls }}
+        IMGTUNE_FAIL_OVER: ${{ inputs.fail-over }}
+        IMGTUNE_VIEWPORTS: ${{ inputs.viewports }}
+        IMGTUNE_ACTION_PATH: ${{ github.action_path }}
+        IMGTUNE_RESULTS: ${{ runner.temp }}/imgtune
+      run: |
+        mkdir -p "$IMGTUNE_RESULTS"
+        args=()
+        set -f
+        for url in $IMGTUNE_URLS; do args+=("$url"); done
+        set +f
+        if [ -n "$IMGTUNE_FAIL_OVER" ]; then args+=(--fail-over "$IMGTUNE_FAIL_OVER"); fi
+        if [ -n "$IMGTUNE_VIEWPORTS" ]; then args+=(--viewports "$IMGTUNE_VIEWPORTS"); fi
+        node "$IMGTUNE_ACTION_PATH/dist/cli.js" scan "${args[@]}" \
+          --out "$IMGTUNE_RESULTS/json" \
+          --markdown "$IMGTUNE_RESULTS/comment.md" \
+          --summary-json "$IMGTUNE_RESULTS/summary.json"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        # The job's result is decided by the last step, after the comment is posted.
+        exit 0
+
+    - name: Comment on the pull request
+      if: always() && inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        IMGTUNE_RESULTS: ${{ runner.temp }}/imgtune
+        IMGTUNE_REPO: ${{ github.repository }}
+        IMGTUNE_PR: ${{ github.event.pull_request.number }}
+      run: |
+        if [ ! -s "$IMGTUNE_RESULTS/comment.md" ]; then
+          echo "::warning::imgtune wrote no summary, so no comment was posted"
+          exit 0
+        fi
+        body="$IMGTUNE_RESULTS/comment-body.md"
+        { echo "<!-- imgtune-scan -->"; cat "$IMGTUNE_RESULTS/comment.md"; } > "$body"
+        id=$(gh api --paginate "repos/$IMGTUNE_REPO/issues/$IMGTUNE_PR/comments" \
+          --jq '.[] | select(.body | startswith("<!-- imgtune-scan -->")) | .id' | head -n 1)
+        if [ -n "$id" ]; then
+          gh api --method PATCH "repos/$IMGTUNE_REPO/issues/comments/$id" -F "body=@$body" > /dev/null
+        else
+          gh api --method POST "repos/$IMGTUNE_REPO/issues/$IMGTUNE_PR/comments" -F "body=@$body" > /dev/null
+        fi
+
+    - name: Exit with the scan's code
+      if: always()
+      shell: bash
+      env:
+        IMGTUNE_EXIT: ${{ steps.scan.outputs.exit-code }}
+      run: exit "${IMGTUNE_EXIT:-1}"
