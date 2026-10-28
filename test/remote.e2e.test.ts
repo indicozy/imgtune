@@ -255,6 +255,30 @@ describe("imgtune scan end to end", () => {
     expect(await snapshot(nextDir)).toEqual(fixtureBefore);
   }, 20 * MINUTE);
 
+  it("writes the Markdown and summary JSON, and --fail-over 0 exits 3 on the oversized fixture page", async () => {
+    const url = `http://localhost:${nextPort}/ae-en/eyeglasses`;
+    const out = join(work, "out-ci");
+    const markdown = join(work, "ci", "pr-comment.md");
+    const summary = join(work, "ci", "summary.json");
+    const result = await runScan(work, [url, "--out", out, "--viewports", "iphone-15,desktop", "--fail-over", "0", "--markdown", markdown, "--summary-json", summary]);
+    expect(result.code).toBe(3);
+    // The terminal text is printed as before, plus the line that says why the run failed.
+    expect(result.stdout).toContain("saving exact + est.");
+    expect(result.stdout).toContain("(--fail-over)");
+
+    const md = await readFile(markdown, "utf8");
+    expect(md).toContain("## imgtune scan");
+    expect(md).toContain("| page | status | image KB/view | exact | exact + est. | sharpness |");
+    expect(md).toContain(`| \`localhost:${nextPort}/ae-en/eyeglasses\` | ok |`);
+    expect(md).not.toContain("<!-- imgtune-scan -->");
+    expect(md).not.toContain("<!--");
+
+    const json = JSON.parse(await readFile(summary, "utf8")) as { pages: { url: string; status: string; page?: { exactEstPct: number } }[] };
+    expect(json.pages).toHaveLength(1);
+    expect(json.pages[0]).toMatchObject({ url, status: "ok" });
+    expect(json.pages[0].page?.exactEstPct ?? 0).toBeGreaterThan(0);
+  }, 20 * MINUTE);
+
   it("stops the fixture server and leaves no process of the fixture running", async () => {
     if (nextChild?.pid !== undefined) process.kill(-nextChild.pid, "SIGTERM");
     await waitUntil(async () => processesIn(nextDir).length === 0, 60_000, "next start to exit");

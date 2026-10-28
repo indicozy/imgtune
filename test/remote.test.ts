@@ -24,6 +24,7 @@ import {
   pageFileName,
   pageNumbers,
   FAIL_OVER_EXIT,
+  mdCode,
   mdText,
   pagesOverBudget,
   parseScanArgs,
@@ -350,29 +351,38 @@ function pageResult(over: Partial<PageResult> = {}): PageResult {
   };
 }
 
-describe("mdText and the Markdown summary", () => {
-  it("escapes every Markdown-significant character of page data, and no mention or HTML survives", () => {
-    const hostile = "a|b `c` @user <!-- x --> [l](u) *b* _i_ \\ & 1";
-    const out = mdText(hostile);
-    expect(out).not.toMatch(/[|`@<\[\]*_\\]/);
+describe("mdText, mdCode and the Markdown summary", () => {
+  it("escapes plain text: no mention, link, heading, math, strike or HTML survives", () => {
+    const out = mdText("a|b `c` @user <!-- x --> [l](u) *b* _i_ \\ & #1 ~s~ $x$");
+    expect(out.replace(/&#?\w+;/g, "")).not.toMatch(/[|`@<[\]*_\\#~$]/);
     expect(out).toContain("&#64;user");
-    expect(out).toContain("&#124;");
-    expect(out).not.toContain("<!--");
+    expect(out).toContain("&#35;1");
+    expect(out).toContain("&#126;s&#126;");
+    expect(out).toContain("&#36;x&#36;");
     expect(mdText("line\nbreak\u001b[2J")).toBe("linebreak&#91;2J");
   });
 
-  it("renders one table row per page with the exact figures, and keeps every row at the same width", () => {
-    const md = renderMarkdown([pageResult(), pageResult({ url: "https://shop.example/b", status: "blocked", error: "challenge at desktop", page: undefined })], false);
-    const rows = md.split("\n").filter((line) => line.startsWith("| https://"));
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toContain("| 3235 | 0.0% | 33.0% | +2.0 KB |");
-    expect(rows[1]).toContain("blocked: challenge at desktop");
-    // Six columns: seven pipes per page row, escaped pipes do not count.
-    for (const row of rows.slice(0, 2)) expect(row.split("|").length - 1).toBe(7);
-    expect(md).toContain("Viewports: iphone-15, desktop.");
+  it("puts page text in code spans, which do not autolink, mention or format", () => {
+    expect(mdCode("#1 https://evil.example www.x.y @user $x$ ~a~")).toBe("`#1 https://evil.example www.x.y @user $x$ ~a~`");
+    expect(mdCode("33vw `@x` | 50vw")).toBe("`33vw \u02bc@x\u02bc \\| 50vw`");
+    expect(mdCode("a<!--b")).toBe("`a\u2039!--b`");
+    expect(mdCode("")).toBe("`-`");
   });
 
-  it("lists the top five groups with current, suggested sizes, loader and hint, with hostile sizes escaped", () => {
+  it("renders one row per page, the page as a code span of host and path, and keeps rows the same width", () => {
+    const md = renderMarkdown(
+      [pageResult(), pageResult({ url: "https://shop.example/b", status: "blocked", error: "challenge at desktop", page: undefined })],
+      false,
+    );
+    const rows = md.split("\n").filter((line) => line.startsWith("| `shop.example/"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatch(/^\| `shop\.example\/` \| ok \| 3235 \| 0\.0% \| 33\.0% \| \+2\.0 KB \|/);
+    expect(rows[1]).toContain("`challenge at desktop`");
+    for (const row of rows) expect(row.split("|").length - 1).toBe(7);
+    expect(md).toContain("Viewports: `iphone-15`, `desktop`.");
+  });
+
+  it("lists the top five groups as code spans, with hostile sizes escaped", () => {
     const groups = Array.from({ length: 6 }, (_, i) => ({
       key: `k${i}`,
       sizes: i === 0 ? "33vw | 50vw `@x` <!-- m -->" : undefined,
@@ -386,11 +396,10 @@ describe("mdText and the Markdown summary", () => {
     }));
     const md = renderMarkdown([pageResult({ groups })], false);
     expect(md).not.toContain("<!--");
-    expect(md).not.toContain("@x");
-    expect(md).toContain("&#124;");
-    expect(md).toContain("| no sizes | 280px | 10 | next/image | lower quality |");
-    expect(md).toContain('| 33vw &#124; 50vw &#96;&#64;x&#96; &lt;!-- m --&gt; | 280px | 12 | next/image | set sizes="280px" |');
-    expect(md.split("\n").filter((line) => line.startsWith("| ") && line.includes("next/image"))).toHaveLength(5);
+    expect(md).not.toContain("`@x`");
+    expect(md).toContain("| no sizes | `280px` | 10 | `next/image` | `lower quality` |");
+    expect(md).toContain('| `33vw \\| 50vw \u02bc@x\u02bc \u2039!-- m -->` | `280px` | 12 | `next/image` | `set sizes="280px"` |');
+    expect(md.split("\n").filter((line) => line.startsWith("| ") && line.includes("`next/image`"))).toHaveLength(5);
   });
 
   it("adds the delta 4 column only with --aggressive", () => {

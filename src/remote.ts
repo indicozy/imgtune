@@ -1710,7 +1710,7 @@ export function renderScan(results: PageResult[], aggressive: boolean): string {
 // CI outputs: a Markdown summary for a PR comment, one summary JSON, and the --fail-over exit code
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Markdown-significant characters, replaced by HTML entities so page data cannot format, link or mention anything. */
+/** Markdown-significant characters of plain text, replaced by HTML entities so they cannot format, link or mention. */
 const MD_ENTITIES: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -1723,11 +1723,24 @@ const MD_ENTITIES: Record<string, string> = {
   "|": "&#124;",
   "\\": "&#92;",
   "@": "&#64;",
+  "#": "&#35;",
+  "~": "&#126;",
+  "$": "&#36;",
 };
 
-/** Page-derived text for a Markdown table cell: control characters removed and length limited (safeText), then escaped. */
+/** Plain text for a Markdown cell, for text this module writes itself: control characters removed, then escaped. */
 export function mdText(text: string): string {
-  return safeText(text).replace(/[&<>[\]`*_|\\@]/g, (ch) => MD_ENTITIES[ch]);
+  return safeText(text).replace(/[&<>[\]`*_|\\@#~$]/g, (ch) => MD_ENTITIES[ch]);
+}
+
+/**
+ * Page-derived text as an inline code span. A code span does not autolink, mention, link or format its content, so
+ * this is what every page-derived field uses. Inside: backticks become an apostrophe-like modifier, `<` becomes a
+ * single-angle quote (no HTML comment can open), and pipes are escaped so the table cell does not split.
+ */
+export function mdCode(text: string): string {
+  const clean = safeText(text).replace(/`/g, "ʼ").replace(/</g, "‹").replace(/\|/g, "\\|");
+  return `\`${clean === "" ? "-" : clean}\``;
 }
 
 const kbNumber = (bytes: number): string => (bytes / 1024).toFixed(0);
@@ -1737,6 +1750,16 @@ const SUMMARY_GROUPS = 5;
 const mdRow = (cells: string[], width: number): string =>
   `| ${[...cells, ...Array<string>(width - cells.length).fill("")].join(" | ")} |`;
 
+/** A page as its host and path, in a code span: shown, never linked. */
+function pageLabel(url: string): string {
+  try {
+    const u = new URL(url);
+    return mdCode(`${u.host}${u.pathname}${u.search}`);
+  } catch {
+    return mdCode(url);
+  }
+}
+
 /** The PR-comment Markdown: one row per page, then each page's top groups. Contains no HTML comment and no mention. */
 export function renderMarkdown(results: PageResult[], aggressive: boolean): string {
   const width = aggressive ? 7 : 6;
@@ -1745,26 +1768,26 @@ export function renderMarkdown(results: PageResult[], aggressive: boolean): stri
   const align = ["---", "---", "---:", "---:", "---:", "---:", "---:"].slice(0, width);
   const lines: string[] = ["## imgtune scan", "", mdRow(head, width), mdRow(align, width)];
   for (const result of results) {
-    const url = mdText(result.url);
+    const label = pageLabel(result.url);
     if (result.status !== "ok" || !result.page) {
-      const status = result.error ? `${mdText(result.status)}: ${mdText(result.error)}` : mdText(result.status);
-      lines.push(mdRow([url, status], width));
+      const status = result.error ? `${mdText(result.status)} ${mdCode(result.error)}` : mdText(result.status);
+      lines.push(mdRow([label, status], width));
       continue;
     }
     const n = result.page;
-    const cells = [url, "ok", kbNumber(n.meanImageBytes), pct(n.exactPct), pct(n.exactEstPct), `+${n.sharpnessKB.toFixed(1)} KB`];
+    const cells = [label, "ok", kbNumber(n.meanImageBytes), pct(n.exactPct), pct(n.exactEstPct), `+${n.sharpnessKB.toFixed(1)} KB`];
     if (aggressive) cells.push(pct(n.aggressiveExactEstPct ?? 0));
     lines.push(mdRow(cells, width));
   }
   for (const result of results) {
     if (result.status !== "ok" || !result.page || result.groups.length === 0) continue;
-    lines.push("", `### ${mdText(result.url)}`, "", mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
+    lines.push("", `### ${pageLabel(result.url)}`, "", mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
     lines.push(mdRow(["---", "---", "---:", "---", "---"], 5));
     for (const g of result.groups.slice(0, SUMMARY_GROUPS)) {
-      const current = g.sizes === undefined ? "no sizes" : mdText(g.sizes);
-      const suggested = g.suggestedSizes === undefined ? "-" : mdText(g.suggestedSizes);
-      const loader = g.loader ? mdText(g.loader) : "-";
-      const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdText(h)).join("; ");
+      const current = g.sizes === undefined ? "no sizes" : mdCode(g.sizes);
+      const suggested = g.suggestedSizes === undefined ? "-" : mdCode(g.suggestedSizes);
+      const loader = g.loader ? mdCode(g.loader) : "-";
+      const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdCode(h)).join("; ");
       lines.push(mdRow([current, suggested, kbNumber(g.savedBytes), loader, hint || "-"], 5));
     }
   }
@@ -1773,7 +1796,7 @@ export function renderMarkdown(results: PageResult[], aggressive: boolean): stri
     "",
     `Method: savings are shares of each page view's image bytes, averaged over viewports. exact = the site's own smaller srcset candidates, measured; est. = a local re-encode (quality, format or a plain img resize), judged by SSIMULACRA2 at delta ${SCAN_DELTA}. Sharpness is undersized images, reported apart from the savings.`,
     "",
-    `Viewports: ${viewports.length > 0 ? viewports.map((v) => mdText(v)).join(", ") : "none measured"}.`,
+    `Viewports: ${viewports.length > 0 ? viewports.map((v) => mdCode(v)).join(", ") : "none measured"}.`,
   );
   return lines.join("\n");
 }
