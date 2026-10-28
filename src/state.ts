@@ -4,6 +4,9 @@ import { writeFileAtomic } from "./atomic.js";
 
 const STATE_FILE = "imgtune.state.json";
 
+/** The image formats the tool measures and verifies. */
+export type Format = "avif" | "webp";
+
 export interface StateEntry {
   usageId: string;
   relFile: string;
@@ -14,7 +17,7 @@ export interface StateEntry {
   /** The values the usage had before the apply (quality as the audit read it). */
   before?: { sizes?: string; quality?: number };
   /** cdn profile: the CDN-to-local quality offset per format the audit calibrated, so verify needs no audit report. */
-  calibration?: Partial<Record<"avif" | "webp", number>>;
+  calibration?: Partial<Record<Format, number>>;
   /** ISO time of the apply. */
   at: string;
   verification?: {

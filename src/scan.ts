@@ -48,19 +48,6 @@ export async function listSourceFiles(projectDir: string, paths: string[]): Prom
   return out.sort();
 }
 
-/**
- * True when the project-relative `relFile` is one of `paths` or lies below one, with the meaning `listSourceFiles` gives
- * them: each path is resolved against `projectDir`, and `.` is the whole project.
- */
-export function isUnderPaths(projectDir: string, relFile: string, paths: string[]): boolean {
-  const root = resolve(projectDir);
-  const file = resolve(root, relFile);
-  return paths.some((p) => {
-    const abs = resolve(root, p);
-    return file === abs || file.startsWith(abs.endsWith(sep) ? abs : abs + sep);
-  });
-}
-
 /** Local names bound to the default export of `next/image`. */
 function nextImageBindings(sf: ts.SourceFile): Set<string> {
   const names = new Set<string>();

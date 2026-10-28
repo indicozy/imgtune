@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { sha1 } from "../src/atomic.js";
 import { ssim } from "../src/ssim.js";
 import type { ImageObservation } from "../src/measure.js";
 import {
@@ -14,10 +18,13 @@ import {
   undersizedFile,
   scoreVariant,
   selectApplied,
+  verify,
   type VerifySample,
 } from "../src/verify.js";
-import type { StateEntry } from "../src/state.js";
-import type { ImageUsage } from "../src/types.js";
+import { listSourceFiles, scanFile } from "../src/scan.js";
+import type { measureUsages } from "../src/audit.js";
+import { loadState, saveState, type StateEntry } from "../src/state.js";
+import type { ImageUsage, ImgtuneConfig } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
 describe("judgeVerification", () => {
@@ -585,5 +592,150 @@ describe("judgeVerification stores no bar for the cdn rule", () => {
     expect(verdict.status).toBe("verified");
     expect(verdict.minScore).toBeUndefined();
     expect(verdict.drop?.webp).toBe(0);
+  });
+});
+
+describe("verify with fake measurement, originals and scorer", () => {
+  const WIDTH = 480;
+  const HEIGHT = 320;
+  const IMAGE = `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={${WIDTH}} height={${HEIGHT}} />;\n`;
+  const LOADER_CONFIG = "export default {\n  images: {\n    loaderFile: './loader.ts',\n  },\n};\n";
+
+  // verify prints its table to stdout; keep the test output clean.
+  let stdout: { mockRestore(): void };
+  beforeEach(() => {
+    stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  });
+  afterEach(() => stdout.mockRestore());
+
+  const original = (async () => rawToPng(gradientNoise(WIDTH, HEIGHT, 10, 11)))();
+
+  /** A project with a cdn loader config and the given source files, and no audit report. */
+  function project(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), "imgtune-verify-"));
+    for (const [rel, text] of Object.entries({ "next.config.mjs": LOADER_CONFIG, ...files })) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), text);
+    }
+    return dir;
+  }
+
+  /** An applied state entry for the one usage in `rel`, as apply would record it (quality 90 cut to 30). */
+  function appliedEntry(dir: string, rel: string, extra: Partial<StateEntry> = {}): StateEntry {
+    const [usage] = scanFile(join(dir, rel), dir);
+    return {
+      usageId: usage.id,
+      relFile: rel,
+      component: usage.component,
+      fileHash: sha1(readFileSync(join(dir, rel))),
+      applied: { quality: 30 },
+      before: { quality: 90 },
+      calibration: { webp: 0 },
+      at: "2026-10-28T00:00:00.000Z",
+      ...extra,
+    };
+  }
+
+  const config = (projectDir: string, paths = ["."]): ImgtuneConfig => ({
+    projectDir,
+    paths,
+    quality: "relaxed",
+    metric: "ssim",
+    threshold: 0.9,
+    delta: 0.02,
+    tolerance: 2,
+    market: "",
+    port: 0,
+    urls: {},
+    viewports: [],
+    samplesPerComponent: 5,
+    maxPagesPerPattern: 1,
+    includeDone: false,
+  });
+
+  /** Five webp observations of one usage, one per distinct served URL. */
+  const observationsFor = (usageId: string): ImageObservation[] =>
+    Array.from({ length: 5 }, (_, i) => ({
+      usageId,
+      page: "/",
+      viewport: "iphone-15",
+      viewportWidth: 390,
+      dpr: 1,
+      mobile: false,
+      renderedWidth: WIDTH,
+      renderedHeight: HEIGHT,
+      naturalWidth: WIDTH,
+      currentSrc: `http://localhost/_next/image?url=a&w=${WIDTH}&q=30&n=${i}`,
+      originalSrc: "/a.png",
+      srcsetWidths: [],
+      contentType: "image/webp",
+      bytes: 1000,
+      accept: "default" as const,
+    }));
+
+  /** Fakes for the browser and the network: the served variant is the original, losslessly, as webp. */
+  async function fakes(measured: (usages: ImageUsage[]) => ImageObservation[]) {
+    const served = await sharp(await original).webp({ lossless: true }).toBuffer();
+    const seen: ImageUsage[][] = [];
+    return {
+      seen,
+      deps: {
+        measure: (async (_config, usages) => {
+          seen.push(usages);
+          return { observations: measured(usages), baseUrl: "http://localhost", sitemapSource: "none", stop: async () => {} };
+        }) as typeof measureUsages,
+        fetchImpl: (async () =>
+          new Response(served, { headers: { "content-type": "image/webp" } })) as typeof fetch,
+        fetchOriginal: async () => original,
+        score: ssim,
+        log: () => {},
+      },
+    };
+  }
+
+  it("judges a cdn usage from the offset in its state entry, with no audit report, and computes its drop", async () => {
+    const dir = project({ "src/A.tsx": IMAGE });
+    const entry = appliedEntry(dir, "src/A.tsx");
+    await saveState(dir, [entry]);
+    const { deps } = await fakes((usages) => observationsFor(usages[0].id));
+
+    await verify(config(dir), deps);
+
+    const [saved] = await loadState(dir);
+    // The drop is 90 against 30 at offset 0, well past delta: a computed drop judges the usage regressed. Without the
+    // offset every sample would be unusable and the usage would be unmeasured, with no verification at all.
+    expect(saved.verification?.status).toBe("regressed");
+    expect(saved.verification?.drop?.webp).toBeGreaterThan(0.02);
+    expect(saved.verification?.counts.webp?.usable).toBe(5);
+  });
+
+  it("judges only the entries under --path and leaves the others' stored verdicts untouched", async () => {
+    const dir = project({ "src/in/A.tsx": IMAGE, "src/out/B.tsx": IMAGE });
+    const sentinel = { status: "verified" as const, at: "2026-01-01T00:00:00.000Z", bytes: {}, ssim: {}, counts: {} };
+    await saveState(dir, [
+      appliedEntry(dir, "src/in/A.tsx"),
+      appliedEntry(dir, "src/out/B.tsx", { verification: sentinel }),
+    ]);
+    const { seen, deps } = await fakes((usages) => observationsFor(usages[0].id));
+
+    await verify(config(dir, ["src/in"]), deps);
+
+    expect(seen[0].map((usage) => usage.relFile)).toEqual(["src/in/A.tsx"]);
+    const saved = await loadState(dir);
+    expect(saved.find((e) => e.relFile === "src/in/A.tsx")?.verification?.at).not.toBe(sentinel.at);
+    expect(saved.find((e) => e.relFile === "src/out/B.tsx")?.verification).toEqual(sentinel);
+  });
+
+  it("fails with the audit's error for a --path that does not exist, measuring nothing", async () => {
+    const dir = project({ "src/A.tsx": IMAGE });
+    await saveState(dir, [appliedEntry(dir, "src/A.tsx")]);
+    const { seen, deps } = await fakes(() => []);
+    const expected = await listSourceFiles(dir, ["src/nope"]).then(
+      () => new Error("audit did not fail"),
+      (err: Error) => err,
+    );
+
+    await expect(verify(config(dir, ["src/nope"]), deps)).rejects.toThrow(expected.message);
+    expect(seen).toEqual([]);
   });
 });

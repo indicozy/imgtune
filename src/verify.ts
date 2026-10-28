@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import sharp from "sharp";
 import { makeFetchOriginal, measureUsages, profileOf, progress, restoreAndReport, unique, type Log } from "./audit.js";
 import { sha1 } from "./atomic.js";
@@ -10,12 +10,11 @@ import { originalUrlFor } from "./analyse.js";
 import { installRestoreHandlers } from "./instrument.js";
 import { assertMetricAvailable, formatScore, makeScorer, metricLabel, type Metric, type Scorer } from "./metric.js";
 import { readReport } from "./report.js";
-import { isUnderPaths, scanFile } from "./scan.js";
-import { loadState, saveState, type StateEntry } from "./state.js";
+import { listSourceFiles, scanFile } from "./scan.js";
+import { loadState, saveState, type Format, type StateEntry } from "./state.js";
 import { ssim, type RawImage } from "./ssim.js";
 import type { ImageUsage, ImgtuneConfig } from "./types.js";
 
-type Format = "avif" | "webp";
 const FORMATS: Format[] = ["avif", "webp"];
 
 /** Share of usable samples per format that must reach the threshold, as integer percent. */
@@ -342,6 +341,12 @@ export function renderVerifyTable(rows: VerifyRow[], metric: Metric): string {
 export interface VerifyOptions {
   log?: Log;
   fetchImpl?: typeof fetch;
+  /** Replaces the browser measurement (tests). Production starts a server and measures the pages. */
+  measure?: typeof measureUsages;
+  /** Replaces the download of an original (tests). Production fetches it from the project's server. */
+  fetchOriginal?: (url: string) => Promise<Buffer>;
+  /** Replaces the scorer (tests). Production scores with the configured metric. */
+  score?: Scorer;
 }
 
 /**
@@ -449,16 +454,18 @@ export async function judgeSample(
   // cdn rule (R38): judged by the local quality drop, not by a bar. A sizes-only change has no quality to drop by, so it
   // needs no before quality either; only a quality change does.
   const { before, applied } = input;
-  const sizesOnly = applied === undefined || applied === before;
-  if (!sizesOnly && before === undefined) return { unusable: "drop not computable: no before quality recorded" };
+  if (applied !== undefined && applied !== before && before === undefined) {
+    return { unusable: "drop not computable: no before quality recorded" };
+  }
+  const qualityChanged = before !== undefined && applied !== undefined && applied !== before;
   try {
     const original = await deps.fetchOriginal(originalUrlFor(obs.originalSrc as string, input.baseUrl));
     // A quality change needs the calibration to map it to the local scale; a sizes-only change has no drop to map.
-    const drop = sizesOnly
-      ? 0
-      : await cdnDrop(original, format, scored.width, { before: before as number, now: applied as number, offset: input.offset }, deps.score);
+    const drop = qualityChanged
+      ? await cdnDrop(original, format, scored.width, { before, now: applied, offset: input.offset }, deps.score)
+      : 0;
     if (drop === undefined) return { unusable: `drop not computable: no calibration offset for ${format}` };
-    const undersized = sizesOnly ? await undersizedFile(original, obs, scored.width) : undefined;
+    const undersized = qualityChanged ? undefined : await undersizedFile(original, obs, scored.width);
     return { sample: { format, ssim: scored.ssim, drop, undersized } };
   } catch (err) {
     return { unusable: `local rescore failed: ${(err as Error).message}` };
@@ -516,8 +523,10 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   installRestoreHandlers(projectDir);
 
   log("scanning");
-  // Only the entries under the given paths are judged; the others keep whatever verdict they have.
-  const state = (await loadState(projectDir)).filter((entry) => isUnderPaths(projectDir, entry.relFile, config.paths));
+  // The audit's own listing of the paths, so a path that does not exist fails here as it does there. Only the entries
+  // under the paths are judged; the others keep whatever verdict they have.
+  const inScope = new Set(await listSourceFiles(projectDir, config.paths));
+  const state = (await loadState(projectDir)).filter((entry) => inScope.has(resolve(projectDir, entry.relFile)));
   const hashes = new Map<string, string | undefined>();
   for (const relFile of unique(state.map((entry) => entry.relFile))) {
     try {
@@ -549,15 +558,15 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
 
   const beforeBytes = await auditBytes(projectDir);
   const calibration = await auditCalibration(projectDir);
-  const score = makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
+  const score = opts.score ?? makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
   const imageConfig = readImageConfig(projectDir);
   const recomputable = profileOf(imageConfig) === "next-default";
-  const measured = await measureUsages(config, applied.map((a) => a.usage), imageConfig, log);
+  const measured = await (opts.measure ?? measureUsages)(config, applied.map((a) => a.usage), imageConfig, log);
   const rows: VerifyRow[] = [];
   const judged = new Map<string, { entry: StateEntry; judgement: Judgement; bytes: Record<string, number> }>();
   try {
     log(`checking ${applied.length} components`);
-    const fetchOriginal = makeFetchOriginal(projectDir);
+    const fetchOriginal = opts.fetchOriginal ?? makeFetchOriginal(projectDir);
     for (const { entry, usage } of applied) {
       const observations = measured.observations.filter((obs) => obs.usageId === usage.id);
       const samples: VerifySample[] = [];
