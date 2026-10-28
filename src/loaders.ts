@@ -120,36 +120,54 @@ const shopify: LoaderAdapter = {
   qualityParam: "yes",
 };
 
-/** `/<cloud>/image/upload/<transformations…>/[v123/]<public id>`. */
-const CLOUDINARY_PATH = /^\/([^/]+)\/image\/upload\/(.+)$/;
+/** `/<cloud>/image/upload/<transformations…>/[v123/]<public id>` on res.cloudinary.com. */
+const CLOUDINARY_UPLOAD = /^\/([^/]+)\/image\/upload\/(.+)$/;
 /** A transformation segment: comma-separated `key_value` parameters, e.g. `w_400,q_80,f_auto`. */
 const isTransformation = (segment: string): boolean => segment.split(",").every((param) => /^[a-z]{1,3}_/.test(param));
+/** A segment with a parameter Cloudinary transforms by (width, height, crop, quality, format). */
+const hasKnownParam = (segment: string): boolean => segment.split(",").some((param) => /^[whcqf]_/.test(param));
 
-/** The leading transformation segments and the rest (version and public id), which are kept. */
-function splitCloudinary(pathname: string): { cloud: string; transforms: string[]; rest: string[] } | undefined {
-  const m = CLOUDINARY_PATH.exec(pathname);
-  if (!m) return undefined;
-  const segments = m[2].split("/");
+interface CloudinaryParts {
+  /** The path before the transforms: `/<cloud>/image/upload` on res.cloudinary.com, empty on any other host. */
+  base: string;
+  transforms: string[];
+  /** The version (when present) and the public id: kept. */
+  rest: string[];
+}
+
+/**
+ * A Cloudinary delivery path. On res.cloudinary.com: `/<cloud>/image/upload/…`. On any other host (a custom domain or a
+ * CDN in front of Cloudinary): a path that starts with transformation segments, one with a known parameter at least, then
+ * the version and the public id. The last segment is never a transform.
+ */
+function splitCloudinary(url: URL): CloudinaryParts | undefined {
+  const upload = url.hostname === "res.cloudinary.com" ? CLOUDINARY_UPLOAD.exec(url.pathname) : null;
+  const base = upload ? `/${upload[1]}/image/upload` : "";
+  const segments = (upload ? upload[2] : url.pathname.slice(1)).split("/");
   let i = 0;
   while (i < segments.length - 1 && isTransformation(segments[i])) i++;
-  return { cloud: m[1], transforms: segments.slice(0, i), rest: segments.slice(i) };
+  const transforms = segments.slice(0, i);
+  const rest = segments.slice(i);
+  if (rest[rest.length - 1] === "") return undefined;
+  if (!upload && !transforms.some(hasKnownParam)) return undefined;
+  return { base, transforms, rest };
 }
 
 const cloudinary: LoaderAdapter = {
   name: "cloudinary",
-  matches: (url) => url.hostname === "res.cloudinary.com" && CLOUDINARY_PATH.test(url.pathname),
+  matches: (url) => splitCloudinary(url) !== undefined,
   original(url) {
-    const parts = splitCloudinary(url.pathname);
+    const parts = splitCloudinary(url);
     if (!parts) return undefined;
-    return `${url.origin}/${parts.cloud}/image/upload/${parts.rest.join("/")}`;
+    return `${url.origin}${parts.base}/${parts.rest.join("/")}`;
   },
   quality(url) {
-    const parts = splitCloudinary(url.pathname);
+    const parts = splitCloudinary(url);
     const param = parts?.transforms.flatMap((segment) => segment.split(",")).find((p) => /^q_\d+$/.test(p));
     return param ? Number(param.slice(2)) : undefined;
   },
   qualityParamFor(url) {
-    const parts = splitCloudinary(url.pathname);
+    const parts = splitCloudinary(url);
     const auto = parts?.transforms.flatMap((segment) => segment.split(",")).some((p) => p.startsWith("q_auto"));
     return auto ? "auto" : "yes";
   },

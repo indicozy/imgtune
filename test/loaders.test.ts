@@ -208,6 +208,44 @@ describe("cloudinary", () => {
   });
 });
 
+describe("cloudinary behind a custom domain or a CDN", () => {
+  it("takes the transformation segments at the root of any host as transforms, with the public id kept", () => {
+    expect(read("https://d1abc.cloudfront.net/f_auto,c_limit,w_1280,q_auto:best:sensitive/v1787769317/folder/file.png")).toEqual({
+      name: "cloudinary",
+      original: "https://d1abc.cloudfront.net/v1787769317/folder/file.png",
+      quality: undefined,
+      qualityParam: "auto",
+      defaultQuality: undefined,
+    });
+  });
+
+  it("drops every transform segment of a chained transformation", () => {
+    const src = "https://img.cdn.example/c_crop,x_485,y_0,w_3112,h_2730/f_auto,c_limit,w_1280,q_auto/v1634615055/folder/file.jpg";
+    expect(read(src)).toMatchObject({
+      name: "cloudinary",
+      original: "https://img.cdn.example/v1634615055/folder/file.jpg",
+      quality: undefined,
+      qualityParam: "auto",
+    });
+  });
+
+  it("reads q_N from the transforms on a custom host", () => {
+    expect(read("https://img.shop.example/w_400,q_70/shoes/a.jpg")).toMatchObject({
+      name: "cloudinary",
+      original: "https://img.shop.example/shoes/a.jpg",
+      quality: 70,
+      qualityParam: "yes",
+    });
+  });
+
+  it("does not take a path that has no transform, or a transform that is not leading", () => {
+    expect(read("https://img.shop.example/logo_x/foo.png").name).toBe("generic");
+    expect(read("https://img.shop.example/a_1/foo.png").name).toBe("generic");
+    expect(read("https://img.shop.example/products/w_400/a.jpg").name).toBe("generic");
+    expect(read("https://img.shop.example/w_400.jpg").name).toBe("generic");
+  });
+});
+
 describe("imgix and imgix-based hosts", () => {
   it("strips the query from *.imgix.net and reads q, default 75", () => {
     expect(read("https://assets.imgix.net/examples/bridge.jpg?w=400&q=60&auto=format")).toEqual({
