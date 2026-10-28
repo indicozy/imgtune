@@ -617,6 +617,20 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
     }
   };
 
+  // One lookup per host for the whole scan: the route guard and the fetches share it.
+  const hostMemo = new Map<string, Promise<boolean>>();
+  const hostIsPrivate = (bare: string): Promise<boolean> => {
+    let pending = hostMemo.get(bare);
+    if (!pending) {
+      pending = (async () => {
+        const addresses = isIP(bare) !== 0 ? [{ address: bare, family: isIP(bare) }] : await resolver(bare);
+        return addresses.some((a) => isBlockedAddress(a.address));
+      })().catch(() => false);
+      hostMemo.set(bare, pending);
+    }
+    return pending;
+  };
+
   return {
     get(url, fetchOpts = {}) {
       const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
@@ -631,9 +645,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
     },
     async isPrivateHost(url) {
       try {
-        const bare = new URL(url).hostname.replace(/^\[|\]$/g, "");
-        const addresses = isIP(bare) !== 0 ? [{ address: bare, family: isIP(bare) }] : await resolver(bare);
-        return addresses.some((a) => isBlockedAddress(a.address));
+        return await hostIsPrivate(new URL(url).hostname.replace(/^\[|\]$/g, ""));
       } catch {
         return false;
       }
@@ -860,13 +872,20 @@ export interface ViewportObservation {
   viewport: Viewport;
   status?: number;
   blocked: boolean;
+  /** Requests the browser was stopped from making (the page is public and they reach a blocked address). */
+  blockedRequests: number;
   nextjs: boolean;
   images: ObservedImage[];
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
 }
 
-async function observeViewport(browser: Browser, pageUrl: string, viewport: Viewport): Promise<ViewportObservation> {
+/** Whether a request URL may be made. Only consulted when the scanned page is public. */
+export interface RequestGuard {
+  isBlocked(url: string): Promise<boolean>;
+}
+
+async function observeViewport(browser: Browser, pageUrl: string, viewport: Viewport, guard?: RequestGuard): Promise<ViewportObservation> {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: viewport.dpr,
@@ -877,6 +896,25 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
   try {
     const responses = new Map<string, ResponseRecord>();
     const bodyReads: Promise<void>[] = [];
+    let blockedRequests = 0;
+    if (guard) {
+      // Every request of the page goes through the guard, so a sub-resource cannot reach a blocked address either.
+      await context.route("**/*", async (route) => {
+        const url = route.request().url();
+        if (url.startsWith("data:") || url.startsWith("blob:")) return route.continue();
+        let blocked = true;
+        try {
+          blocked = /^https?:/i.test(url) ? await guard.isBlocked(url) : true;
+        } catch {
+          blocked = true;
+        }
+        if (blocked) {
+          blockedRequests++;
+          return route.abort("blockedbyclient");
+        }
+        return route.continue();
+      });
+    }
     context.on("response", (response) => {
       const contentType = response.headers()["content-type"];
       const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
@@ -924,6 +962,7 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
       viewport,
       status,
       blocked: isChallenge(status, seen.images.length, html),
+      blockedRequests,
       nextjs: seen.nextjs,
       images: seen.images,
       responses,
@@ -1184,7 +1223,7 @@ export interface PageResult {
   perViewport: Record<string, ViewportReport>;
   page?: PageNumbers;
   groups: GroupReport[];
-  counts: { images: number; qualityNA: number; skipped: number };
+  counts: { images: number; qualityNA: number; skipped: number; blockedRequests: number };
 }
 
 function toReport(inst: Instance): ImageReport {
@@ -1310,7 +1349,12 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
     perViewport,
     page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
     groups: groupReports(instances),
-    counts: { images: elements.size, qualityNA: naElements.size, skipped: skippedElements.size },
+    counts: {
+      images: elements.size,
+      qualityNA: naElements.size,
+      skipped: skippedElements.size,
+      blockedRequests: observations.reduce((sum, o) => sum + o.blockedRequests, 0),
+    },
   };
 }
 
@@ -1361,15 +1405,16 @@ async function scanPage(
     nextjs: false,
     perViewport: {},
     groups: [],
-    counts: { images: 0, qualityNA: 0, skipped: 0 },
+    counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0 },
   };
   if (!robotsAllows(await robotsFor(url.origin, allowPrivate), pageUrl)) return { ...base, status: "robots" };
 
   // One pass per viewport; a challenge stops the page at once, with no retry.
+  const guard: RequestGuard | undefined = allowPrivate ? undefined : { isBlocked: (u) => run.fetcher.isPrivateHost(u) };
   const observations: ViewportObservation[] = [];
   try {
     for (const viewport of run.viewports) {
-      const obs = await observeViewport(browser, pageUrl, viewport);
+      const obs = await observeViewport(browser, pageUrl, viewport, guard);
       if (obs.blocked) {
         return { ...base, status: "blocked", error: `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}` };
       }
@@ -1413,7 +1458,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     await mkdir(opts.outDir, { recursive: true });
     const results: PageResult[] = [];
     for (const url of urls) {
-      opts.log(`scanning ${url}`);
+      opts.log(`scanning ${safeText(url)}`);
       const result = await scanPage(browser, run, url, robotsFor);
       await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
         root: opts.outDir,
@@ -1430,17 +1475,29 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
 // Terminal summary
 // ---------------------------------------------------------------------------------------------------------------------
 
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+const TEXT_LIMIT = 200;
+
+/**
+ * Page-derived text as it may be printed: C0 and C1 control characters removed (no escape sequences reach the
+ * terminal), and at most TEXT_LIMIT characters, the last three of them "...". JSON output is not passed through here.
+ */
+export function safeText(text: string, limit = TEXT_LIMIT): string {
+  const clean = text.replace(CONTROL_CHARS, "");
+  return clean.length > limit ? `${clean.slice(0, limit - 3)}...` : clean;
+}
+
 const pct = (value: number): string => `${value.toFixed(1)}%`;
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
 /** One page: a short table, its top groups and, for Next.js, the pointer to audit. */
 export function renderPage(result: PageResult, aggressive: boolean): string[] {
-  const head = `${result.url}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
-  if (result.status !== "ok" || !result.page) return [head, `  ${result.error ?? result.status}`];
+  const head = `${safeText(result.url)}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
+  if (result.status !== "ok" || !result.page) return [head, `  ${safeText(result.error ?? result.status)}`];
   const n = result.page;
   const lines = [
     head,
-    `  viewports: ${result.viewports.join(", ")}`,
+    `  viewports: ${safeText(result.viewports.join(", "))}`,
     `  image bytes per view   ${kb(n.meanImageBytes)}`,
     `  saving exact           ${pct(n.exactPct)}`,
     `  saving exact + est.    ${pct(n.exactEstPct)}`,
@@ -1451,8 +1508,10 @@ export function renderPage(result: PageResult, aggressive: boolean): string[] {
   if (result.groups.length > 0) {
     lines.push("  top groups:");
     for (const g of result.groups) {
-      const hint = g.hint ? `  ${g.hint}` : "";
-      lines.push(`    ${g.sizes ?? "no sizes"} -> ${g.suggestedSizes ?? "-"}  saves ${kb(g.savedBytes)}/view${hint}`);
+      const hint = g.hint ? `  ${safeText(g.hint)}` : "";
+      const sizes = g.sizes === undefined ? "no sizes" : safeText(g.sizes);
+      const suggested = g.suggestedSizes === undefined ? "-" : safeText(g.suggestedSizes);
+      lines.push(`    ${sizes} -> ${suggested}  saves ${kb(g.savedBytes)}/view${hint}`);
     }
   }
   if (result.nextjs) lines.push('  Next.js detected: run "npx imgtune audit" in the project to fix these in code');
@@ -1474,7 +1533,7 @@ export function renderScan(results: PageResult[], aggressive: boolean): string {
     if (pages.length < 2) continue;
     const site = siteNumbers(pages);
     lines.push(
-      `${host} (${site.pages} pages): exact ${pct(site.exactPct)} · exact + est. ${pct(site.exactEstPct)} · fixable ${pct(site.fixablePct)} · sharpness +${site.sharpnessKB.toFixed(1)} KB`,
+      `${safeText(host)} (${site.pages} pages): exact ${pct(site.exactPct)} · exact + est. ${pct(site.exactEstPct)} · fixable ${pct(site.fixablePct)} · sharpness +${site.sharpnessKB.toFixed(1)} KB`,
     );
   }
   return `${lines.join("\n")}\n`;

@@ -23,7 +23,9 @@ import {
   referenceUrl,
   resizedEstimate,
   rightCandidate,
+  renderPage,
   robotsAllows,
+  safeText,
   siteNumbers,
   viewportTotals,
   type ImageFinding,
@@ -567,5 +569,50 @@ describe("makeFetcher over a local server", () => {
     const publicFetcher = makeFetcher({ userAgent: "ua", resolver: async () => [{ address: "93.184.216.34", family: 4 }] });
     expect(await publicFetcher.isPrivateHost("https://shop.example/")).toBe(false);
     expect(await publicFetcher.isPrivateHost("http://[::1]/")).toBe(true);
+  });
+});
+
+describe("safeText and terminal output", () => {
+  it("strips C0 and C1 control characters, ESC included", () => {
+    expect(safeText("a\u001b[2Jb\u0007c\u009bd\u007fe\nf")).toBe("a[2Jbcdef");
+    expect(safeText("\u001b]0;title\u0007x")).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+  });
+
+  it("caps the length at 200 characters, ending in an ellipsis", () => {
+    const long = "x".repeat(500);
+    expect(safeText(long)).toBe(`${"x".repeat(197)}...`);
+    expect(safeText(long).length).toBe(200);
+    expect(safeText("short")).toBe("short");
+  });
+
+  it("prints page-derived sizes and hints without any control character", () => {
+    const page = {
+      url: "https://shop.example/\u001b[31mred",
+      host: "shop.example",
+      scannedAt: "",
+      imgtuneVersion: "0",
+      metric: "ssimulacra2" as const,
+      delta: 2,
+      viewports: ["iphone-15"],
+      status: "ok" as const,
+      nextjs: false,
+      perViewport: {},
+      counts: { images: 1, qualityNA: 0, skipped: 0, blockedRequests: 0 },
+      page: { meanImageBytes: 1, exactPct: 1, exactEstPct: 1, fixablePct: 1, sharpnessKB: 0 },
+      groups: [
+        {
+          key: "k",
+          sizes: "33vw\u001b[2J",
+          suggestedSizes: "280px\u009b",
+          savedBytes: 2048,
+          members: 1,
+          samples: [],
+          hint: 'set sizes="280px"\u001b[0m',
+        },
+      ],
+    };
+    const lines = renderPage(page, false);
+    for (const line of lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(lines.join("\n")).toContain("33vw[2J -> 280px");
   });
 });
