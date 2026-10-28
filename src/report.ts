@@ -133,10 +133,12 @@ export async function writeReport(projectDir: string, results: ComponentResult[]
 /** A proposal is written into source as an attribute value, so a hand-edited report may carry nothing else. */
 function checkProposals(report: Report): void {
   for (const result of report.results) {
-    const { quality, sizes, sizesFull } = result.proposed;
-    const badQuality = quality !== undefined && !(Number.isInteger(quality) && quality >= 1 && quality <= 100);
-    if (badQuality) {
-      throw new Error(`invalid report ${REPORT_DIR}/${REPORT_FILE}: ${result.relFile}:${result.line} proposes quality ${JSON.stringify(quality)}`);
+    const { quality, qualityFull, sizes, sizesFull } = result.proposed;
+    for (const [name, value] of [["quality", quality], ["qualityFull", qualityFull]] as const) {
+      const bad = value !== undefined && !(Number.isInteger(value) && value >= 1 && value <= 100);
+      if (bad) {
+        throw new Error(`invalid report ${REPORT_DIR}/${REPORT_FILE}: ${result.relFile}:${result.line} proposes ${name} ${JSON.stringify(value)}`);
+      }
     }
     for (const [name, value] of [["sizes", sizes], ["sizesFull", sizesFull]] as const) {
       if (value !== undefined && (typeof value !== "string" || !isSizesValue(value))) {

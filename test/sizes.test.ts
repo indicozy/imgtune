@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { deriveSizeBranches, deriveSizes, joinSizeBranches, sizesSlotAt, sizesValueAt } from "../src/sizes.js";
+import {
+  deriveSizeBranches,
+  deriveSizes,
+  isSingleValue,
+  joinSizeBranches,
+  overlaySizes,
+  sizesSlotAt,
+  sizesValueAt,
+} from "../src/sizes.js";
 
 const mobile = (viewportWidth: number, renderedWidth: number) => ({
   viewportWidth,
@@ -139,5 +147,23 @@ describe("sizesValueAt", () => {
 
   it("is undefined when the value is unsupported", () => {
     expect(sizesValueAt("(orientation: landscape) 50vw", 800)).toBeUndefined();
+  });
+});
+
+describe("isSingleValue and overlaySizes", () => {
+  it("is true only for one unconditioned width value", () => {
+    expect(isSingleValue("33vw")).toBe(true);
+    expect(isSingleValue("calc(50vw - 20px)")).toBe(true);
+    expect(isSingleValue("(max-width: 768px) 33vw, 280px")).toBe(false);
+    expect(isSingleValue("(orientation: landscape) 50vw")).toBe(false);
+  });
+
+  it("gives the corrected value in the branch's own range and the current value elsewhere", () => {
+    expect(overlaySizes("mobile", "175px", "(max-width: 768px) 33vw, 280px")).toBe(
+      "(max-width: 768px) 175px, (max-width: 768px) 33vw, 280px",
+    );
+    expect(overlaySizes("desktop", "200px", "(max-width: 768px) 33vw, 280px")).toBe(
+      "(min-width: 769px) 200px, (max-width: 768px) 33vw, 280px",
+    );
   });
 });

@@ -282,6 +282,7 @@ describe("applyResults", () => {
       sizes: "(max-width: 768px) 33vw, 280px",
       sizesFull: "(max-width: 768px) 280px, 280px",
       quality: 60,
+      qualityFull: 45,
     };
 
     it("applies the branch-merged proposal by default and the quality with it", async () => {
@@ -292,24 +293,26 @@ describe("applyResults", () => {
       expect(after).toContain("sizes='(max-width: 768px) 33vw, 280px'");
       expect(after).not.toContain("280px, 280px");
       expect(after).toContain("quality={60}");
+      expect(after).not.toContain("quality={45}");
       expect(out.skipped).toEqual([]);
       expect(out.edited).toEqual(["next.config.mjs", "src/A.tsx"]);
     });
 
-    it("applies the full correction with allowGrowth, and the quality too", async () => {
+    it("applies the full correction with allowGrowth, with the quality searched for it (qualityFull)", async () => {
       const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
       const usages = scanAll(dir, ["src/A.tsx"]);
       const out = await applyResults(dir, [resultFor(usages[0], split)], usages, { allowGrowth: true });
       const after = readFileSync(join(dir, "src/A.tsx"), "utf8");
       expect(after).toContain("sizes='(max-width: 768px) 280px, 280px'");
-      expect(after).toContain("quality={60}");
+      expect(after).toContain("quality={45}");
+      expect(after).not.toContain("quality={60}");
       expect(out.skipped).toEqual([]);
     });
 
     it("applies the full correction with allowGrowth even when every branch kept its current sizes", async () => {
       const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
       const usages = scanAll(dir, ["src/A.tsx"]);
-      const kept = { sizes: undefined, sizesFull: "(max-width: 768px) 280px, 280px" };
+      const kept = { sizes: undefined, sizesFull: "(max-width: 768px) 280px, 280px", quality: undefined, qualityFull: undefined };
       const plain = await applyResults(dir, [resultFor(usages[0], kept)], usages);
       expect(plain.edited).toEqual([]);
       expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain("sizes='33vw'");

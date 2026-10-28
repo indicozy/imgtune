@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { analyse, originalUrlFor, type AnalyseOptions } from "../src/analyse.js";
+import { analyse, decideBranches, evaluator, originalUrlFor, type AnalyseOptions } from "../src/analyse.js";
 import { encode, loadReference, type EncoderProfile } from "../src/encode.js";
 import type { ImageObservation } from "../src/measure.js";
 import { readImageConfig, type ImageConfig } from "../src/nextconfig.js";
@@ -224,8 +224,8 @@ describe("per-viewport projection and media branches", () => {
     }
   });
 
-  const run = (u: ImageUsage, observations: ImageObservation[]) =>
-    analyse([u], observations, nextConfig, cfg, BASE, wideFetch, silent({ deps: widthDeps })).then(([r]) => r);
+  const run = (u: ImageUsage, observations: ImageObservation[], deps: AnalyseOptions["deps"] = widthDeps) =>
+    analyse([u], observations, nextConfig, cfg, BASE, wideFetch, silent({ deps })).then(([r]) => r);
 
   it("keeps the current mobile sizes when corrected mobile grows, and applies the desktop correction", async () => {
     // 33vw is undersized on the phone (280 css px slot) and oversized on desktop (1440 at 2x wants ~950px).
@@ -309,6 +309,76 @@ describe("per-viewport projection and media branches", () => {
     expect(r.notes.some((n) => n.startsWith("renders at several widths"))).toBe(false);
   });
 
+  it("skips a sample whose original is corrupt and analyses the others", async () => {
+    const corrupt = async (url: string): Promise<Buffer> => (url === SRC[0] ? Buffer.from("not an image") : wideFetch(url));
+    const logs: string[] = [];
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1080, rendered: 280, bytes: 20000, dpr: 2 }),
+    ]);
+    const [r] = await analyse([usage({ sizes: literal("33vw") })], observations, nextConfig, cfg, BASE, corrupt, {
+      log: (msg) => logs.push(msg),
+      deps: widthDeps,
+    });
+    expect(r.proposed.sizes).toBe("(max-width: 768px) 33vw, 280px");
+    expect(r.proposed.quality).toBeDefined();
+    expect(logs.some((l) => l.startsWith(`skipping sample ${SRC[0]}:`))).toBe(true);
+  });
+
+  it("skips a sample whose quality search throws and searches the rest", async () => {
+    let calls = 0;
+    const flaky = (async (ref: RawImage) => {
+      if (calls++ === 0) throw new Error("encoder crashed");
+      return { bytes: ref.width * 100, decoded: ref, buffer: Buffer.alloc(0) };
+    }) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"];
+    const logs: string[] = [];
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1080, rendered: 280, bytes: 20000, dpr: 2 }),
+    ]);
+    const [r] = await analyse([usage({ sizes: literal("33vw") })], observations, nextConfig, cfg, BASE, wideFetch, {
+      log: (msg) => logs.push(msg),
+      deps: { encode: flaky, ssim: () => 0 },
+    });
+    expect(r.proposed.quality).toBeDefined();
+    expect(logs).toContain(`skipping quality search for ${SRC[0]}: encoder crashed`);
+  });
+
+  it("proposes no quality when every quality search fails, and still completes", async () => {
+    const broken = (async () => {
+      throw new Error("encoder down");
+    }) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"];
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
+    ]);
+    const [r] = await analyse([usage()], observations, nextConfig, cfg, BASE, wideFetch, silent({ deps: { encode: broken, ssim: () => 0 } }));
+    expect(r.proposed.quality).toBeUndefined();
+    expect(r.notes).toContain("quality not proposed: no sample could be searched");
+  });
+
+  it("searches the quality at the full correction's width as qualityFull, separately from the final quality", async () => {
+    // Passes SSIM only at reference widths up to 700px: the full correction (1080px on the phone) fails, the 33vw one passes.
+    const deps = { encode: widthDeps.encode, ssim: (ref: RawImage) => (ref.width <= 700 ? 1 : 0) };
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1080, rendered: 280, bytes: 20000, dpr: 2 }),
+    ]);
+    const r = await run(usage({ sizes: literal("33vw") }), observations, deps);
+    expect(r.proposed.qualityFull).toBe(85);
+    expect(r.proposed.quality!).toBeLessThan(85);
+  });
+
+  it("notes desktop widths of 668 and 160 as several slots", async () => {
+    const observations = SRC.flatMap((src, i) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 175, bytes: 8000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 640, rendered: i === 0 ? 668 : 160, bytes: 8000, dpr: 2 }),
+    ]);
+    const r = await run(usage({ sizes: literal("33vw") }), observations);
+    expect(r.notes).toContain(
+      "renders at several widths at desktop: 160px ×2, 668px ×1; one sizes cannot fit all — pass sizes from the parent (e.g. carousel)",
+    );
+  });
+
   it("keeps 100vw for a growing mobile branch when the current sizes is absent", async () => {
     const observations = SRC.flatMap((src) => [
       viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 400, bytes: 20000, dpr: 3 }),
@@ -318,6 +388,84 @@ describe("per-viewport projection and media branches", () => {
 
     expect(r.proposed.sizesFull).toBe("(max-width: 768px) 400px, 600px");
     expect(r.proposed.sizes).toBe("(max-width: 768px) 100vw, 600px");
+  });
+});
+
+describe("decideBranches", () => {
+  const grows = { current: 20000, corrected: 33000 };
+  const shrinks = { current: 20000, corrected: 11000 };
+  const full = { mobile: "175px", desktop: "280px" };
+
+  it("proposes the full correction when no branch grows", () => {
+    const d = decideBranches(full, { mobile: shrinks, desktop: shrinks }, "33vw");
+    expect(d.sizes).toBe("(max-width: 768px) 175px, 280px");
+    expect(d.branches.mobile).toMatchObject({ grows: false, kept: false });
+  });
+
+  it("keeps an unconditioned current value for a growing mobile branch", () => {
+    const d = decideBranches(full, { mobile: grows, desktop: shrinks }, "33vw");
+    expect(d.sizes).toBe("(max-width: 768px) 33vw, 280px");
+    expect(d.branches.mobile).toMatchObject({ grows: true, kept: true });
+    expect(d.branches.desktop).toMatchObject({ grows: false, kept: false });
+  });
+
+  it("keeps an unconditioned current value for a growing desktop branch", () => {
+    expect(decideBranches(full, { mobile: shrinks, desktop: grows }, "33vw").sizes).toBe("(max-width: 768px) 175px, 33vw");
+  });
+
+  it("proposes nothing when every present branch grows and keeps", () => {
+    const d = decideBranches(full, { mobile: grows, desktop: grows }, "20vw");
+    expect(d.sizes).toBeUndefined();
+    expect(d.branches.desktop).toMatchObject({ grows: true, kept: true });
+  });
+
+  it("keeps the absent sizes (100vw) for a growing branch", () => {
+    expect(decideBranches(full, { mobile: grows, desktop: shrinks }, "100vw").sizes).toBe("(max-width: 768px) 100vw, 280px");
+  });
+
+  it("overlays a conditioned current value so it applies unchanged in the kept branch", () => {
+    const d = decideBranches({ mobile: "175px", desktop: "200px" }, { mobile: grows, desktop: shrinks }, "(max-width: 768px) 33vw, 280px");
+    expect(d.sizes).toBe("(min-width: 769px) 200px, (max-width: 768px) 33vw, 280px");
+  });
+
+  it("overlays the corrected mobile branch over a conditioned current value that keeps desktop", () => {
+    const d = decideBranches(full, { mobile: shrinks, desktop: grows }, "(max-width: 500px) 50vw, 280px");
+    expect(d.sizes).toBe("(max-width: 768px) 175px, (max-width: 500px) 50vw, 280px");
+  });
+
+  it("proposes no sizes when a growing branch's current sizes is not understood", () => {
+    const d = decideBranches(full, { mobile: grows, desktop: shrinks }, "(orientation: landscape) 50vw");
+    expect(d.sizes).toBeUndefined();
+    expect(d.branches.mobile).toMatchObject({ grows: true, kept: false });
+  });
+
+  it("treats a branch without projected viewports as not growing", () => {
+    expect(decideBranches(full, {}, "33vw").sizes).toBe("(max-width: 768px) 175px, 280px");
+  });
+
+  it("is empty when no branch was measured", () => {
+    expect(decideBranches({}, {}, "33vw")).toEqual({ branches: {}, sizes: undefined });
+  });
+});
+
+describe("evaluator", () => {
+  it("encodes each (sample, format, quality, width) once", async () => {
+    const calls: string[] = [];
+    const deps = {
+      encode: (async (ref: RawImage, format: string, q: number) => {
+        calls.push(`${ref.width}|${format}|${q}`);
+        return { bytes: ref.width * 100, decoded: ref, buffer: Buffer.alloc(0) };
+      }) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
+      ssim: () => 1,
+    };
+    const ctx = { profile: "next-default", deps } as unknown as Parameters<typeof evaluator>[0];
+    const sample = { src: SRC[0], buffer: wideOriginals.get(SRC[0])! };
+    const evaluate = evaluator(ctx, {});
+    await evaluate(sample, "webp", 85, 640);
+    await evaluate(sample, "webp", 85, 640);
+    await evaluate(sample, "webp", 85, 1080);
+    await evaluate(sample, "webp", 85, 640);
+    expect(calls).toEqual(["640|webp|85", "1080|webp|85"]);
   });
 });
 

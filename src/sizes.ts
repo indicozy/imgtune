@@ -6,7 +6,7 @@ export interface SizePoint {
 }
 
 /** Mobile/desktop split used in the emitted media query. */
-const MOBILE_MAX_WIDTH = 768;
+export const MOBILE_MAX_WIDTH = 768;
 /** Max residual (px) for a mobile/desktop group to count as a linear fit. */
 const FIT_TOLERANCE_PX = 2;
 
@@ -89,9 +89,9 @@ export function deriveSizes(points: SizePoint[]): string | undefined {
 
 /** A `sizes` value with a supported width, e.g. `33vw`, `280px` or `calc(50vw - 20px)`. */
 const WIDTH_RE = /^(\d+(?:\.\d+)?)(px|vw)$/;
-const CALC_RE = /^calc\(\s*(\d+(?:\.\d+)?)vw\s*([+-])\s*(\d+(?:\.\d+)?)px\s*\)$/;
+const CALC_RE = /^calc\( *(\d+(?:\.\d+)?)vw *([+-]) *(\d+(?:\.\d+)?)px *\)$/;
 /** A leading `(max-width: Npx)` or `(min-width: Npx)` condition of one comma-separated branch. */
-const CONDITION_RE = /^\((max|min)-width:\s*(\d+(?:\.\d+)?)px\)\s*/;
+const CONDITION_RE = /^\((max|min)-width: *(\d+(?:\.\d+)?)px\) */;
 
 interface SizesBranch {
   condition?: { kind: "max" | "min"; px: number };
@@ -112,6 +112,22 @@ function parseSizes(sizes: string): SizesBranch[] | undefined {
     });
   }
   return branches.length > 0 ? branches : undefined;
+}
+
+/** Whether `sizes` is one unconditioned width value, e.g. `33vw`: the same at every viewport. */
+export function isSingleValue(sizes: string): boolean {
+  const branches = parseSizes(sizes);
+  return branches !== undefined && branches.length === 1 && branches[0].condition === undefined;
+}
+
+/**
+ * A `sizes` value that gives `corrected` in one media branch's own range and `current` everywhere else: the corrected
+ * branch comes first, so the current value (with its own conditions) applies outside it.
+ */
+export function overlaySizes(branch: "mobile" | "desktop", corrected: string, current: string): string {
+  return branch === "mobile"
+    ? `(max-width: ${MOBILE_MAX_WIDTH}px) ${corrected}, ${current}`
+    : `(min-width: ${MOBILE_MAX_WIDTH + 1}px) ${corrected}, ${current}`;
 }
 
 /** Whether `sizes` is a value this module understands: comma-separated branches of the supported forms only. */

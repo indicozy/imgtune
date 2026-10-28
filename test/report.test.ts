@@ -163,6 +163,18 @@ describe("writeReport / readReport", () => {
     expect((await readReport(dir)).results[0].proposed.sizesFull).toBe("calc(50vw - 20px)");
   });
 
+  it("rejects a qualityFull outside 1..100", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imgtune-report-"));
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "Card.tsx"), "export const x = 1;\n");
+    const imageConfig = readImageConfig(dir);
+    await writeReport(dir, [result({ usageId: "src/Card.tsx:3:1", proposed: { width: 160, qualityFull: 1000 } })], {
+      config,
+      imageConfig,
+    });
+    await expect(readReport(dir)).rejects.toThrow(/invalid report .*src\/Card\.tsx:3 proposes qualityFull 1000/);
+  });
+
   it("throws when no report exists", async () => {
     await expect(readReport(mkdtempSync(join(tmpdir(), "imgtune-report-")))).rejects.toThrow(
       "no audit report found; run imgtune audit",

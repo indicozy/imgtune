@@ -102,7 +102,8 @@ function planUsage(
     }
   }
 
-  const quality = result.proposed.quality;
+  // The quality goes with the sizes it was searched for: qualityFull with sizesFull.
+  const quality = allowGrowth ? result.proposed.qualityFull : result.proposed.quality;
   if (quality !== undefined) {
     const prop = usage.props.quality;
     if (prop.kind === "expression" || (usage.hasSpread && prop.kind === "absent")) {
@@ -225,7 +226,8 @@ export async function applyResults(
   const byFile = new Map<string, ComponentResult[]>();
   for (const result of results) {
     const sizes = allowGrowth ? result.proposed.sizesFull : result.proposed.sizes;
-    if (sizes === undefined && result.proposed.quality === undefined) continue;
+    const quality = allowGrowth ? result.proposed.qualityFull : result.proposed.quality;
+    if (sizes === undefined && quality === undefined) continue;
     const audited = byId.get(result.usageId);
     if (!audited) {
       skipped.push({ usageId: result.usageId, reason: REASON_CHANGED });

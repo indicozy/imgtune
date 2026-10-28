@@ -2,7 +2,16 @@ import { calibrationOffset, type CalibrationSample } from "./calibrate.js";
 import { encode, loadReference, type EncoderProfile } from "./encode.js";
 import type { ImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
-import { deriveSizeBranches, joinSizeBranches, sizesSlotAt, sizesValueAt, type SizeBranches } from "./sizes.js";
+import {
+  deriveSizeBranches,
+  isSingleValue,
+  isSizesValue,
+  joinSizeBranches,
+  overlaySizes,
+  sizesSlotAt,
+  sizesValueAt,
+  type SizeBranches,
+} from "./sizes.js";
 import { componentQuality, minPassingQuality, toTargetQuality, type SearchDeps } from "./search.js";
 import { nextCandidates, pickCandidate, pickForX } from "./srcset.js";
 import { ssim, type RawImage } from "./ssim.js";
@@ -20,6 +29,7 @@ const GROWTH_RATIO = 1.05;
 const NOTE_NOT_CONFIRMED = "estimated: not confirmed against /_next/image";
 /** The media branches of a `sizes` value, in the order the notes list them. */
 const BRANCHES = ["mobile", "desktop"] as const;
+export type Branch = (typeof BRANCHES)[number];
 /** Rendered widths at one viewport count as several slots when the widest is over this multiple of the narrowest. */
 const MULTI_SLOT_SPREAD = 1.5;
 /** Widths closer than this factor to each other are one slot. */
@@ -43,6 +53,65 @@ export interface BranchGrowth {
   grows: boolean;
   /** A growing branch keeps its current value in `proposed.sizes`. */
   kept: boolean;
+}
+
+/** Mean current and corrected bytes of one branch's projected viewports. */
+export interface BranchMeans {
+  current: number;
+  corrected: number;
+}
+
+export interface BranchDecision {
+  branches: { mobile?: BranchGrowth; desktop?: BranchGrowth };
+  /** The `sizes` value to propose; undefined for no proposal. */
+  sizes?: string;
+}
+
+/**
+ * The per-branch growth decision and the `sizes` it leads to. A branch grows when its corrected sizes projects more
+ * than GROWTH_RATIO times its current bytes, and a growing branch keeps the current sizes in its own range. A branch
+ * without means is not judged. `current` is the sizes as written (100vw when absent).
+ *
+ * A single unconditioned current value is kept as it is. A conditioned one is kept by laying the corrected branch in
+ * front of it (see overlaySizes), so the current value still applies everywhere else. A current value this module does
+ * not understand cannot be written safely: a growing branch then leaves no proposal. When every present branch grows,
+ * nothing is proposed.
+ */
+export function decideBranches(full: SizeBranches, means: Partial<Record<Branch, BranchMeans>>, current: string): BranchDecision {
+  const branches: BranchDecision["branches"] = {};
+  for (const key of BRANCHES) {
+    const m = means[key];
+    if (full[key] === undefined || m === undefined) continue;
+    branches[key] = { deltaBytes: m.corrected - m.current, grows: m.corrected > m.current * GROWTH_RATIO, kept: false };
+  }
+  const present = BRANCHES.filter((key) => full[key] !== undefined);
+  const growing = (key: Branch): boolean => branches[key]?.grows === true;
+  if (!present.some(growing)) return { branches, sizes: joinSizeBranches(full) };
+
+  for (const key of present) {
+    const decision = branches[key];
+    if (decision?.grows) decision.kept = true;
+  }
+  if (present.every(growing)) return { branches, sizes: undefined };
+  if (!isSizesValue(current)) {
+    for (const key of present) {
+      const decision = branches[key];
+      if (decision) decision.kept = false;
+    }
+    return { branches, sizes: undefined };
+  }
+  if (isSingleValue(current)) {
+    // An unconditioned value is the same at every width, so it stands in for the growing branch as it is.
+    const value = sizesValueAt(current, 0) as string;
+    const final: SizeBranches = {};
+    for (const key of present) final[key] = growing(key) ? value : full[key];
+    return { branches, sizes: joinSizeBranches(final) };
+  }
+  // Both branches are present here: one present branch that grows is already "every present branch grows".
+  const sizes = growing("mobile")
+    ? overlaySizes("desktop", full.desktop as string, current)
+    : overlaySizes("mobile", full.mobile as string, current);
+  return { branches, sizes };
 }
 
 export interface ComponentResult {
@@ -76,6 +145,8 @@ export interface ComponentResult {
     bytesByViewport?: Record<string, number>;
     /** `bytesByViewport` under the full correction, to compare with the proposed sizes. */
     bytesByViewportFull?: Record<string, number>;
+    /** The quality searched at the full correction's width: what `apply --allow-growth` writes with `sizesFull`. */
+    qualityFull?: number;
     /** Per media branch, when the branch has a projected viewport. */
     branches?: { mobile?: BranchGrowth; desktop?: BranchGrowth };
   };
@@ -88,6 +159,8 @@ export interface ComponentResult {
   measuredWidths?: MeasuredWidth[];
   /** Names of the rendered mobile viewports, so the report can label the phone column. */
   mobileViewports?: string[];
+  /** Derived: true when any media branch grows bytes under the full correction. */
+  grows?: boolean;
 }
 
 export interface AnalyseOptions {
@@ -380,39 +453,16 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const fullSearch = await searchAtSizes(sizesFull);
   const qFull = fullSearch.proposedQuality ?? quality;
   const projFull = await project(sizesFull, qFull);
-  const branches: { mobile?: BranchGrowth; desktop?: BranchGrowth } = {};
+  const means: Partial<Record<Branch, BranchMeans>> = {};
   for (const key of BRANCHES) {
     const members = stats.filter((s) => s.mobile === (key === "mobile") && s.bytes !== undefined && projFull[s.name] !== undefined);
-    if (fullBranches[key] === undefined || members.length === 0) continue;
-    const currentMean = mean(members.map((s) => s.bytes as number));
-    const correctedMean = mean(members.map((s) => projFull[s.name]));
-    branches[key] = { deltaBytes: correctedMean - currentMean, grows: correctedMean > currentMean * GROWTH_RATIO, kept: false };
+    if (members.length === 0) continue;
+    means[key] = { current: mean(members.map((s) => s.bytes as number)), corrected: mean(members.map((s) => projFull[s.name])) };
   }
-
-  // A growing branch keeps the current value at its own viewport width; the others take the full correction.
-  const current = sizesLiteral ?? ABSENT_SIZES;
-  const finalBranches: SizeBranches = {};
-  let unresolved = false;
-  for (const key of BRANCHES) {
-    const full = fullBranches[key];
-    if (full === undefined) continue;
-    const decision = branches[key];
-    if (!decision?.grows) {
-      finalBranches[key] = full;
-      continue;
-    }
-    const viewportWidth = (stats.find((s) => s.mobile === (key === "mobile")) as ViewportStat).viewportWidth;
-    const keep = sizesValueAt(current, viewportWidth);
-    if (keep === undefined) {
-      unresolved = true;
-    } else {
-      decision.kept = true;
-      finalBranches[key] = keep;
-    }
-  }
-  // Every present branch keeping its value is no sizes proposal at all.
-  const allKept = BRANCHES.filter((key) => fullBranches[key] !== undefined).every((key) => branches[key]?.kept === true);
-  const proposedSizes = sizesManual || unresolved || allKept ? undefined : joinSizeBranches(finalBranches);
+  const decision = decideBranches(fullBranches, means, sizesLiteral ?? ABSENT_SIZES);
+  const branches = decision.branches;
+  const proposedSizes = decision.sizes;
+  result.grows = BRANCHES.some((key) => branches[key]?.grows === true);
   for (const key of BRANCHES) {
     const decision = branches[key];
     if (!decision?.grows) continue;
@@ -485,6 +535,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     sizes: proposedSizes,
     sizesFull,
     quality: proposedQuality,
+    qualityFull: fullSearch.proposedQuality,
     projectedBytes: projFinal[ref.name],
     ssim: median(ssims),
     bytesByViewport: projFinal,
@@ -551,10 +602,20 @@ async function searchAt(ctx: Context, probe: QualityProbe, quality: number, widt
   const { cfg, deps } = ctx;
   const perSample: Record<Format, number[]> = { avif: [], webp: [] };
   for (const sample of probe.samples) {
-    const ref = await loadReference(sample.buffer, width);
-    for (const format of ctx.searchFormats) {
-      perSample[format].push(await minPassingQuality(ref, format, quality, ctx.profile, cfg.threshold, cfg.tolerance, deps));
+    try {
+      const ref = await loadReference(sample.buffer, width);
+      const found: Partial<Record<Format, number>> = {};
+      for (const format of ctx.searchFormats) {
+        found[format] = await minPassingQuality(ref, format, quality, ctx.profile, cfg.threshold, cfg.tolerance, deps);
+      }
+      for (const format of ctx.searchFormats) perSample[format].push(found[format] as number);
+    } catch (err) {
+      // One failing sample is skipped; the others still decide the component quality.
+      logOnce(ctx, `search ${sample.src}`, `skipping quality search for ${sample.src}: ${message(err)}`);
     }
+  }
+  if (ctx.searchFormats.some((format) => perSample[format].length === 0)) {
+    return { reason: "quality not proposed: no sample could be searched" };
   }
 
   const targets: number[] = [];
@@ -616,7 +677,7 @@ async function evaluate(
 type Scored = { bytes: number; ssim: number } | undefined;
 
 /** `evaluate` memoised per usage: a (sample, format, quality, width) is encoded once however many viewports share it. */
-function evaluator(ctx: Context, offsets: Partial<Record<Format, number>>) {
+export function evaluator(ctx: Context, offsets: Partial<Record<Format, number>>) {
   const memo = new Map<string, Promise<Scored>>();
   return (sample: Sample, format: Format, cdnQ: number, width: number): Promise<Scored> => {
     const key = `${sample.src}|${format}|${cdnQ}|${width}`;
