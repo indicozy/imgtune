@@ -383,6 +383,8 @@ const EXTRA_FETCH_TIMEOUT_MS = 30_000;
 const EXTRA_FETCH_CONCURRENCY = 2;
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+/** Chromium's Accept for images: a candidate is then fetched in the format the browser would have been served. */
+const IMAGE_ACCEPT = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
 
 /** Largest width the tool decodes or encodes at, and the most input pixels sharp accepts for a downloaded file. */
 export const MAX_WIDTH = 8192;
@@ -607,7 +609,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
         // An IP literal never reaches the lookup, so it is checked here as well.
         const bare = url.hostname.replace(/^\[|\]$/g, "");
         if (!allowPrivate && isIP(bare) !== 0 && isBlockedAddress(bare)) return undefined;
-        const res = await requestOnce(url, { "User-Agent": opts.userAgent }, allowPrivate, resolver, controller.signal);
+        const res = await requestOnce(url, { "User-Agent": opts.userAgent, Accept: IMAGE_ACCEPT }, allowPrivate, resolver, controller.signal);
         const status = res.statusCode ?? 0;
         const location = res.headers.location;
         if (status >= 300 && status < 400 && location) {

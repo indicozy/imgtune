@@ -455,11 +455,13 @@ describe("makeFetcher over a local server", () => {
   let inFlight = 0;
   let peak = 0;
   let agent: string | undefined;
+  let accept: string | undefined;
 
   beforeAll(async () => {
     const started = await localServer(async (req, res) => {
       hits.push(req.url ?? "");
       agent = req.headers["user-agent"];
+      accept = req.headers.accept;
       inFlight++;
       peak = Math.max(peak, inFlight);
       const finish = (status: number, body: string | null, headers: Record<string, string> = {}) => {
@@ -529,6 +531,7 @@ describe("makeFetcher over a local server", () => {
   it("sends the given user agent", async () => {
     await makeFetcher({ userAgent: "Chrome/125 test" }).get(`${base}/ok`, { allowPrivate: true });
     expect(agent).toBe("Chrome/125 test");
+    expect(accept).toContain("image/avif");
   });
 
   it("refuses non-http schemes", async () => {
