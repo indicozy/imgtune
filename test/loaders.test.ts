@@ -128,7 +128,7 @@ describe("sanity", () => {
 
 describe("shopify", () => {
   it("drops width, height, crop, quality and format, and keeps the version", () => {
-    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/shirt_600x600.jpg?v=1700000000&width=600")).toEqual({
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/shirt.jpg?v=1700000000&width=600")).toEqual({
       name: "shopify",
       original: "https://cdn.shopify.com/s/files/1/0001/0002/products/shirt.jpg?v=1700000000",
       quality: undefined,
@@ -164,6 +164,35 @@ describe("shopify", () => {
       original: "https://shop.example/cdn/shop/products/bag.webp?v=3",
       qualityParam: "yes",
     });
+  });
+
+  it("keeps the filename when a width param is present: a size-like name is then part of the file", () => {
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/hero_1920x1080.jpg?width=800").original).toBe(
+      "https://cdn.shopify.com/s/files/1/0001/0002/products/hero_1920x1080.jpg",
+    );
+  });
+
+  it("strips a legacy size with a crop position, or a 2x size, when there is no width param", () => {
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/x_600x600_crop_center.jpg?v=2").original).toBe(
+      "https://cdn.shopify.com/s/files/1/0001/0002/products/x.jpg?v=2",
+    );
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/x_400x@2x.jpg").original).toBe(
+      "https://cdn.shopify.com/s/files/1/0001/0002/products/x.jpg",
+    );
+  });
+
+  it("strips the named legacy sizes grande, large, medium, small, compact, thumb, icon, pico and master", () => {
+    for (const name of ["grande", "large", "medium", "small", "compact", "thumb", "icon", "pico", "master"]) {
+      expect(read(`https://cdn.shopify.com/s/files/1/0001/0002/products/x_${name}.jpg`).original).toBe(
+        "https://cdn.shopify.com/s/files/1/0001/0002/products/x.jpg",
+      );
+    }
+  });
+
+  it("keeps a word that starts like a named size, since it is not the size", () => {
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/photo_mediumweight.jpg").original).toBe(
+      "https://cdn.shopify.com/s/files/1/0001/0002/products/photo_mediumweight.jpg",
+    );
   });
 
   it("keeps a filename suffix that is not a size", () => {

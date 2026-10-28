@@ -176,7 +176,7 @@ describe("referenceUrl and currentQuality", () => {
       "https://images.ctfassets.net/s/e/abc/hero.jpg",
     );
     expect(referenceUrl("https://cdn.shopify.com/s/files/1/0001/products/shirt_600x600.jpg?width=600", page)).toBe(
-      "https://cdn.shopify.com/s/files/1/0001/products/shirt.jpg",
+      "https://cdn.shopify.com/s/files/1/0001/products/shirt_600x600.jpg",
     );
     expect(referenceUrl("https://res.cloudinary.com/demo/image/upload/c_fill,w_300/v1/a.jpg", page)).toBe(
       "https://res.cloudinary.com/demo/image/upload/v1/a.jpg",

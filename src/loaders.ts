@@ -104,8 +104,12 @@ const sanity: LoaderAdapter = {
   defaultQuality: DEFAULT_SANITY_QUALITY,
 };
 
-/** A legacy `_{w}x{h}` or `_{w}x` before the extension of a Shopify file name. */
-const SHOPIFY_SIZE_SUFFIX = /_\d+x\d*(?=\.[A-Za-z0-9]+$)/;
+/**
+ * A legacy size before the extension of a Shopify file name: `_{w}x{h}`, `_{w}x`, `_{w}x{h}_crop_{pos}`, `_{w}x@2x`, or a
+ * named size such as `_grande`.
+ */
+const SHOPIFY_LEGACY_SIZE =
+  /_(?:\d+x\d*(?:_crop_[a-z]+)?|\d+x@2x|grande|large|medium|small|compact|thumb|icon|pico|master)(?=\.[A-Za-z0-9]+$)/;
 /** The CDN's transform parameters (`width=640&quality=75`); `v` is the file version and is kept. */
 const SHOPIFY_TRANSFORM_PARAMS = ["width", "height", "crop", "quality", "format"];
 const shopify: LoaderAdapter = {
@@ -113,7 +117,8 @@ const shopify: LoaderAdapter = {
   matches: (url) => url.hostname === "cdn.shopify.com" || /\/cdn\/shop\//.test(url.pathname),
   original(url) {
     const copy = new URL(withoutParams(url, SHOPIFY_TRANSFORM_PARAMS));
-    copy.pathname = copy.pathname.replace(SHOPIFY_SIZE_SUFFIX, "");
+    // With a width param the CDN is resizing a file whose name is its own, so a size-like name is kept.
+    if (!url.searchParams.has("width")) copy.pathname = copy.pathname.replace(SHOPIFY_LEGACY_SIZE, "");
     return copy.toString();
   },
   quality: (url) => toQuality(url.searchParams.get("quality")),
@@ -234,8 +239,18 @@ export function originalOf(src: string, baseUrl: string): string | undefined {
   const first = adapterFor(src, baseUrl);
   const once = first.adapter.original(first.url);
   if (once === undefined) return undefined;
-  const again = adapterFor(once, baseUrl);
-  return again.adapter.original(again.url) ?? once;
+  return unwrapOnce(once, first.adapter.name, baseUrl);
+}
+
+/**
+ * A found original is unwrapped once more when it is a URL of another loader (a nested `/_next/image?url=<cdn URL>`).
+ * The same loader is not applied again: its original is the file itself, and a second pass would drop a size-like name
+ * that Shopify keeps when the URL had a width param.
+ */
+function unwrapOnce(found: string, from: string, baseUrl: string): string {
+  const again = adapterFor(found, baseUrl);
+  if (again.adapter.name === from) return found;
+  return again.adapter.original(again.url) ?? found;
 }
 
 /**
@@ -252,8 +267,7 @@ export function originalFor(currentSrc: string, src: string | undefined, baseUrl
   if (agrees) chosen = src as string;
   else if (fromCurrent !== undefined) chosen = fromCurrent;
   else chosen = new URL(src ?? currentSrc, baseUrl).toString();
-  const again = adapterFor(chosen, baseUrl);
-  return new URL(again.adapter.original(again.url) ?? chosen, baseUrl).toString();
+  return new URL(unwrapOnce(chosen, observed.adapter.name, baseUrl), baseUrl).toString();
 }
 
 /** The Cloudflare rule alone: `/cdn-cgi/image/<opts>/<path>` gives `<path>`, anything else is resolved as it is. */
