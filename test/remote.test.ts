@@ -46,6 +46,7 @@ import {
   type PageResult,
   type ViewportObservation,
 } from "../src/remote.js";
+import type { encode } from "../src/encode.js";
 import { ssim, type RawImage } from "../src/ssim.js";
 import type { Viewport } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
@@ -519,7 +520,62 @@ describe("estimateQuality", () => {
       ),
     ).toBeUndefined();
   });
+
+  it("gives no format saving (ratio 1) when no AVIF quality from the start up to 100 reaches the bar", async () => {
+    const pixels = gradientNoise(160, 120, 4, 9);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).jpeg({ quality: 95 }).toBuffer();
+    const estimate = await estimateQuality(
+      { original, served, format: "jpeg", bytes: 1000, width: 160, height: 120, current: 75 },
+      [2],
+      { encode: avifStub(), score: fakeAvifScore(undefined) },
+    );
+    expect(estimate?.format).toBe("avif");
+    expect(estimate?.ratio[2]).toBe(1);
+  });
+
+  it("takes the AVIF ratio from the first quality above the start that reaches the bar when the start does not", async () => {
+    const pixels = gradientNoise(160, 120, 4, 9);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).jpeg({ quality: 95 }).toBuffer();
+    const estimate = await estimateQuality(
+      { original, served, format: "jpeg", bytes: 1000, width: 160, height: 120, current: 75 },
+      [2],
+      { encode: avifStub(), score: fakeAvifScore(96) },
+    );
+    // AVIF at 96 is 96 x 5 = 480 bytes against 1000 served: the start (90, 450 bytes) failed the bar, so it is not used.
+    expect(estimate?.ratio[2]).toBeCloseTo(0.48, 10);
+  });
+
+  it("keeps the ratio of 1 for WebP when the local encode at the current quality misses the bar", async () => {
+    const pixels = gradientNoise(160, 120, 4, 11);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).webp({ quality: 60 }).toBuffer();
+    const estimate = await estimateQuality(
+      { original, served, format: "webp", bytes: served.length, width: 160, height: 120, current: 60 },
+      [2],
+      { score: () => 10 },
+    );
+    expect(estimate?.ratio[2]).toBe(1);
+  });
 });
+
+/** A stub AVIF encoder: the decoded image carries the quality, and the bytes are five per quality point. */
+function avifStub(): typeof encode {
+  return (async (_ref: RawImage, _format: "avif" | "webp", quality: number) => ({
+    bytes: quality * 5,
+    decoded: { data: Uint8ClampedArray.of(quality), width: 1, height: 1 },
+    buffer: Buffer.alloc(0),
+  })) as typeof encode;
+}
+
+/** Scores the stub's AVIF at 90 from quality `passAt` up and at 10 below it; the served file (many pixels) scores 90. */
+function fakeAvifScore(passAt: number | undefined) {
+  return (_ref: RawImage, test: RawImage): number => {
+    if (test.data.length !== 1) return 90;
+    return passAt !== undefined && test.data[0] >= passAt ? 90 : 10;
+  };
+}
 
 describe("ruleMatches", () => {
   it("matches prefixes, * runs and a $ end anchor", () => {

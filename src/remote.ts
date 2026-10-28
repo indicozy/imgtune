@@ -883,6 +883,23 @@ export interface QualityEstimate {
 
 const clampQuality = (q: number): number => Math.min(100, Math.max(1, Math.round(q)));
 
+/** The bytes of the AVIF that meets `bar`, or undefined when none from FORMAT_START_QUALITY up to 100 does. */
+async function avifBytesAtBar(reference: RawImage, bar: number, enc: typeof encode, score: Scorer): Promise<number | undefined> {
+  const passing = async (q: number) => {
+    const out = await enc(reference, "avif", q, "cdn");
+    return (await score(reference, out.decoded)) >= bar ? out.bytes : undefined;
+  };
+  // The bisection returns its start when the start fails, so the result is checked before it is taken.
+  const best = await minPassingQuality(reference, "avif", FORMAT_START_QUALITY, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score });
+  const atBest = await passing(best);
+  if (atBest !== undefined) return atBest;
+  for (let q = FORMAT_START_QUALITY + 2; q <= 100; q += 2) {
+    const bytes = await passing(q);
+    if (bytes !== undefined) return bytes;
+  }
+  return undefined;
+}
+
 /**
  * Estimates the quality and format savings of one right file at its width. For AVIF and WebP the local `cdn` encoder is
  * calibrated to the file's bytes (calibrationOffset); the bar is the local encode's score at the current quality minus
@@ -923,9 +940,8 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
     const ownScore = await score(reference, servedRaw);
     for (const delta of deltas) {
       const bar = Math.max(SCAN_THRESHOLD, ownScore - delta);
-      const best = await minPassingQuality(reference, "avif", FORMAT_START_QUALITY, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score });
-      const avifBytes = (await enc(reference, "avif", best, "cdn")).bytes;
-      ratio[delta] = input.bytes > 0 ? Math.min(1, avifBytes / input.bytes) : 1;
+      const avifBytes = await avifBytesAtBar(reference, bar, enc, score);
+      ratio[delta] = avifBytes !== undefined && input.bytes > 0 ? Math.min(1, avifBytes / input.bytes) : 1;
     }
     return { ratio, format: "avif" };
   }
