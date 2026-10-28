@@ -71,6 +71,33 @@ describe("writeReport / readReport", () => {
     expect(report.fileHashes["src/Card.tsx"]).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it("rejects a report whose proposed quality or sizes is not safe to write into source", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imgtune-report-"));
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "Card.tsx"), "export const x = 1;\n");
+    const imageConfig = readImageConfig(dir);
+    const write = (proposed: Partial<ComponentResult["proposed"]>) =>
+      writeReport(dir, [result({ usageId: "src/Card.tsx:3:1", proposed: { width: 160, ...proposed } })], {
+        config,
+        imageConfig,
+      });
+
+    const bad: Partial<ComponentResult["proposed"]>[] = [
+      { quality: 1000 },
+      { quality: 0 },
+      { quality: 2.5 },
+      { quality: "85" as unknown as number },
+      { sizes: 33 as unknown as string },
+    ];
+    for (const proposed of bad) {
+      await write(proposed);
+      await expect(readReport(dir)).rejects.toThrow(/invalid report .*src\/Card\.tsx:3/);
+    }
+
+    await write({ quality: 85, sizes: "33vw" });
+    expect((await readReport(dir)).results[0].proposed.quality).toBe(85);
+  });
+
   it("throws when no report exists", async () => {
     await expect(readReport(mkdtempSync(join(tmpdir(), "imgtune-report-")))).rejects.toThrow(
       "no audit report found; run imgtune audit",

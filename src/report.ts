@@ -108,6 +108,19 @@ export async function writeReport(projectDir: string, results: ComponentResult[]
   await writeFileAtomic(join(dir, REPORT_FILE), `${JSON.stringify(report, null, 2)}\n`, { root: projectDir });
 }
 
+/** A proposal is written into source as an attribute value, so a hand-edited report may carry nothing else. */
+function checkProposals(report: Report): void {
+  for (const result of report.results) {
+    const { quality, sizes } = result.proposed;
+    const badQuality = quality !== undefined && !(Number.isInteger(quality) && quality >= 1 && quality <= 100);
+    const badSizes = sizes !== undefined && typeof sizes !== "string";
+    if (badQuality || badSizes) {
+      const field = badQuality ? `quality ${JSON.stringify(quality)}` : `sizes ${JSON.stringify(sizes)}`;
+      throw new Error(`invalid report ${REPORT_DIR}/${REPORT_FILE}: ${result.relFile}:${result.line} proposes ${field}`);
+    }
+  }
+}
+
 export async function readReport(projectDir: string): Promise<Report> {
   let raw: string;
   try {
@@ -120,6 +133,7 @@ export async function readReport(projectDir: string): Promise<Report> {
   }
   const report = JSON.parse(raw) as Report;
   if (report.version !== 1) throw new Error(`${REPORT_DIR}/${REPORT_FILE}: unsupported version ${report.version}`);
+  checkProposals(report);
   return report;
 }
 
