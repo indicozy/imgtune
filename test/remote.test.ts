@@ -12,7 +12,9 @@ import {
   guardedLookup,
   ipv6Bytes,
   isBlockedAddress,
+  duplicatesOf,
   makeFetcher,
+  netSavings,
   neededWidth,
   openImage,
   ruleMatches,
@@ -625,5 +627,59 @@ describe("safeText and terminal output", () => {
     const lines = renderPage(page, false);
     for (const line of lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
     expect(lines.join("\n")).toContain("33vw[2J -> 280px");
+  });
+});
+
+describe("netSavings", () => {
+  it("counts the resolution saving once and the quality saving on the right file", () => {
+    // served 30k, right 10k at ratio .7: the page would get 7k, so 23k in total, 20k of it resolution.
+    expect(netSavings(30_000, 10_000, 0.7)).toEqual({ exact: 20_000, est: 3_000, total: 23_000 });
+  });
+
+  it("saves nothing when the right file is bigger than the served one, whatever the ratio", () => {
+    expect(netSavings(10_000, 30_000, 0.7)).toEqual({ exact: 0, est: 0, total: 0 });
+    expect(netSavings(10_000, 10_000, 1)).toEqual({ exact: 0, est: 0, total: 0 });
+  });
+
+  it("never reports an est below zero", () => {
+    for (const [served, right, ratio] of [[1, 2, 0.5], [5, 5, 0.9], [100, 40, 1]]) {
+      expect(netSavings(served, right, ratio).est).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+describe("duplicatesOf", () => {
+  it("maps each element of a URL to the one with the largest rendered width, ties to the first", () => {
+    const map = duplicatesOf([
+      { index: 0, currentSrc: "https://shop.example/a.jpg", renderedWidth: 120 },
+      { index: 1, currentSrc: "https://shop.example/a.jpg", renderedWidth: 300 },
+      { index: 2, currentSrc: "https://shop.example/a.jpg", renderedWidth: 300 },
+      { index: 3, currentSrc: "https://shop.example/b.jpg", renderedWidth: 50 },
+    ]);
+    expect([...map.entries()]).toEqual([
+      [0, 1],
+      [2, 1],
+    ]);
+  });
+
+  it("on a tie in width, measures the element that has a srcset, since only it has a right candidate", () => {
+    const map = duplicatesOf([
+      { index: 0, currentSrc: "https://shop.example/big.jpg", renderedWidth: 200, srcset: "" },
+      { index: 1, currentSrc: "https://shop.example/big.jpg", renderedWidth: 200, srcset: "/small.jpg 400w, /big.jpg 1200w" },
+    ]);
+    expect([...map.entries()]).toEqual([[0, 1]]);
+  });
+
+  it("leaves elements with no URL alone", () => {
+    expect(duplicatesOf([{ index: 0, currentSrc: "", renderedWidth: 10 }, { index: 1, currentSrc: "", renderedWidth: 10 }]).size).toBe(0);
+  });
+
+  it("the representative's need is the largest need of its URL, so the right candidate covers every slot", () => {
+    const candidates = [384, 640, 1080].map((width) => ({ url: `u${width}`, width }));
+    const dpr = 2;
+    const widths = [100, 300];
+    const need = Math.max(...widths.map((w) => neededWidth(w, dpr, 1080)));
+    expect(rightCandidate(candidates, need).width).toBe(640);
+    expect(rightCandidate(candidates, neededWidth(100, dpr, 1080)).width).toBe(384);
   });
 });

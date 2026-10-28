@@ -200,6 +200,48 @@ export function currentQuality(src: string): { quality: number; assumed: boolean
   return { quality: ASSUMED_QUALITY, assumed: true };
 }
 
+/**
+ * One file's savings at one viewport, net of what the page would get instead: `exact` is the resolution saving (the
+ * right candidate against the served file), `est` the quality or format saving on top of it, and `total` their sum.
+ * The total never exceeds the served bytes, and a right file bigger than the served one saves nothing.
+ */
+export function netSavings(served: number, rightBytes: number, ratio: number): { exact: number; est: number; total: number } {
+  const exact = Math.max(0, served - rightBytes);
+  const total = Math.max(0, served - rightBytes * ratio);
+  return { exact, est: Math.max(0, total - exact), total };
+}
+
+/** Representative order: the wider element, then one with a srcset (it alone has a right candidate), then the first. */
+function beats(a: { index: number; width: number; srcset: boolean }, b: { index: number; width: number; srcset: boolean }): boolean {
+  if (a.width !== b.width) return a.width > b.width;
+  if (a.srcset !== b.srcset) return a.srcset;
+  return a.index < b.index;
+}
+
+/**
+ * The elements of one viewport that repeat a URL already shown by another element (carousel clones, for one). Each URL
+ * is downloaded once, so only one element per URL is measured: the one with the largest rendered width (its slot needs
+ * the most), ties to the first in document order. Returns element index -> the index of the element measured instead.
+ */
+export function duplicatesOf(
+  images: { index: number; currentSrc: string; renderedWidth: number; srcset?: string }[],
+): Map<number, number> {
+  const representative = new Map<string, { index: number; width: number; srcset: boolean }>();
+  for (const img of images) {
+    if (!img.currentSrc) continue;
+    const candidate = { index: img.index, width: img.renderedWidth, srcset: Boolean(img.srcset?.trim()) };
+    const current = representative.get(img.currentSrc);
+    if (!current || beats(candidate, current)) representative.set(img.currentSrc, candidate);
+  }
+  const out = new Map<number, number>();
+  for (const img of images) {
+    if (!img.currentSrc) continue;
+    const rep = representative.get(img.currentSrc);
+    if (rep && rep.index !== img.index) out.set(img.index, rep.index);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Aggregation: per viewport, per page, per site
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1042,6 +1084,8 @@ interface Instance {
   /** Quality ratio per delta (projected / served bytes): the image's own, or its group's median. */
   qualityRatio?: Record<number, number>;
   qualityInfo?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
+  /** Set on an element that repeats a URL measured at another element of the viewport: it contributes nothing. */
+  duplicateOf?: number;
 }
 
 interface AnalysisContext {
@@ -1104,7 +1148,6 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
     if (rightBuffer) {
       const rightPixels = right.url === img.currentSrc ? served : await pixelSize(rightBuffer);
       const rightBytes = rightBuffer.length;
-      if (right.url !== img.currentSrc) instance.exact = Math.max(0, response.bytes - rightBytes);
       if (isUndersized(served.width, need, largest)) instance.growth = Math.max(0, rightBytes - response.bytes);
       if (rightPixels?.format) {
         instance.right = {
@@ -1200,10 +1243,13 @@ async function estimateQualities(ctx: AnalysisContext, instances: Instance[], re
 
 /** Turns the quality ratios into savings on top of the right file (est.). */
 function applyQuality(inst: Instance): void {
-  if (!inst.right || !inst.qualityRatio) return;
-  inst.est += Math.max(0, inst.right.bytes * (1 - inst.qualityRatio[SCAN_DELTA]));
-  const r4 = inst.qualityRatio[SCAN_AGGRESSIVE_DELTA];
-  if (r4 !== undefined) inst.estAggressive += Math.max(0, inst.right.bytes * (1 - r4));
+  if (!inst.right) return;
+  const r2 = inst.qualityRatio?.[SCAN_DELTA] ?? 1;
+  const r4 = inst.qualityRatio?.[SCAN_AGGRESSIVE_DELTA] ?? r2;
+  const net = netSavings(inst.bytes, inst.right.bytes, r2);
+  inst.exact = net.exact;
+  inst.est = net.est;
+  inst.estAggressive = netSavings(inst.bytes, inst.right.bytes, r4).est;
 }
 
 export interface ImageReport {
@@ -1226,6 +1272,8 @@ export interface ImageReport {
   group: string;
   quality?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
   qualityNA: boolean;
+  /** Index of the element measured instead, when this element repeats its URL (its savings are zero). */
+  duplicateOf?: number;
 }
 
 export interface ViewportReport {
@@ -1291,6 +1339,7 @@ function toReport(inst: Instance): ImageReport {
     group: inst.group,
     quality: quality ? { ...quality } : undefined,
     qualityNA: inst.kind !== "skipped" && inst.qualityRatio === undefined,
+    duplicateOf: inst.duplicateOf,
   };
 }
 
@@ -1343,7 +1392,32 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
   const refName = referenceViewportName(observations.map((o) => o.viewport));
   const instances: Instance[] = [];
   for (const obs of observations) {
-    for (const img of obs.images) instances.push(await baseline(ctx, obs, img));
+    const duplicates = duplicatesOf(obs.images);
+    for (const img of obs.images) {
+      const rep = duplicates.get(img.index);
+      if (rep === undefined) {
+        instances.push(await baseline(ctx, obs, img));
+      } else {
+        instances.push({
+          viewport: obs.viewport,
+          element: img.index,
+          img,
+          url: img.currentSrc,
+          bytes: 0,
+          pixelWidth: 0,
+          renderedWidth: img.renderedWidth,
+          needed: Math.ceil(img.renderedWidth * obs.viewport.dpr),
+          kind: "skipped",
+          skipped: "duplicate",
+          exact: 0,
+          est: 0,
+          estAggressive: 0,
+          growth: 0,
+          group: "",
+          duplicateOf: rep,
+        });
+      }
+    }
   }
   const refWidth = new Map<number, number>();
   for (const inst of instances) {
@@ -1380,7 +1454,7 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
   const naElements = new Set<number>();
   for (const e of elements) {
     const mine = instances.filter((i) => i.element === e);
-    if (mine.every((i) => i.kind === "skipped")) skippedElements.add(e);
+    if (mine.every((i) => i.kind === "skipped" && i.skipped !== "duplicate")) skippedElements.add(e);
     if (mine.some((i) => i.kind !== "skipped" && i.qualityRatio === undefined)) naElements.add(e);
   }
 

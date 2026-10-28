@@ -123,10 +123,12 @@ beforeAll(async () => {
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "big.jpg"), await jpeg(1200, 800, 11));
   await writeFile(join(staticDir, "small.jpg"), await jpeg(400, 267, 12));
+  // A separate file for the plain <img>: two elements on one URL are one download, measured once.
+  await writeFile(join(staticDir, "huge.jpg"), await jpeg(1200, 800, 13));
   await writeFile(
     join(staticDir, "index.html"),
     `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>static</title></head><body>
-<img src="/big.jpg" width="200" height="133" alt="">
+<img src="/huge.jpg" width="200" height="133" alt="">
 <img srcset="/small.jpg 400w, /big.jpg 1200w" sizes="1200px" width="200" height="133" alt="">
 </body></html>`,
   );
