@@ -109,14 +109,29 @@ describe("sanity", () => {
 });
 
 describe("shopify", () => {
-  it("drops width, height and crop, and keeps the version", () => {
+  it("drops width, height, crop, quality and format, and keeps the version", () => {
     expect(read("https://cdn.shopify.com/s/files/1/0001/0002/products/shirt_600x600.jpg?v=1700000000&width=600")).toEqual({
       name: "shopify",
       original: "https://cdn.shopify.com/s/files/1/0001/0002/products/shirt.jpg?v=1700000000",
       quality: undefined,
-      qualityParam: "none",
+      qualityParam: "yes",
       defaultQuality: undefined,
     });
+  });
+
+  it("reads quality= from a live CDN URL and takes the original without it", () => {
+    const src = "https://cdn.shopify.com/s/files/1/0001/0002/products/shirt.jpg?v=1700000000&width=640&quality=75&format=webp";
+    expect(read(src)).toMatchObject({
+      name: "shopify",
+      original: "https://cdn.shopify.com/s/files/1/0001/0002/products/shirt.jpg?v=1700000000",
+      quality: 75,
+      qualityParam: "yes",
+    });
+  });
+
+  it("has no quality when the URL carries none, and a non-numeric quality is not one", () => {
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/files/hat.png?width=300").quality).toBeUndefined();
+    expect(read("https://cdn.shopify.com/s/files/1/0001/0002/files/hat.png?quality=auto").quality).toBeUndefined();
   });
 
   it("drops height and crop params and leaves no stray ?", () => {
@@ -129,7 +144,7 @@ describe("shopify", () => {
     expect(read("https://shop.example/cdn/shop/products/bag_400x.webp?v=3")).toMatchObject({
       name: "shopify",
       original: "https://shop.example/cdn/shop/products/bag.webp?v=3",
-      qualityParam: "none",
+      qualityParam: "yes",
     });
   });
 

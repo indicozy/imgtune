@@ -104,16 +104,18 @@ const sanity: LoaderAdapter = {
 
 /** A legacy `_{w}x{h}` or `_{w}x` before the extension of a Shopify file name. */
 const SHOPIFY_SIZE_SUFFIX = /_\d+x\d*(?=\.[A-Za-z0-9]+$)/;
+/** The CDN's transform parameters (`width=640&quality=75`); `v` is the file version and is kept. */
+const SHOPIFY_TRANSFORM_PARAMS = ["width", "height", "crop", "quality", "format"];
 const shopify: LoaderAdapter = {
   name: "shopify",
   matches: (url) => url.hostname === "cdn.shopify.com" || /\/cdn\/shop\//.test(url.pathname),
   original(url) {
-    const copy = new URL(withoutParams(url, ["width", "height", "crop"]));
+    const copy = new URL(withoutParams(url, SHOPIFY_TRANSFORM_PARAMS));
     copy.pathname = copy.pathname.replace(SHOPIFY_SIZE_SUFFIX, "");
     return copy.toString();
   },
-  quality: () => undefined,
-  qualityParam: "none",
+  quality: (url) => toQuality(url.searchParams.get("quality")),
+  qualityParam: "yes",
 };
 
 /** `/<cloud>/image/upload/<transformations…>/[v123/]<public id>`. */

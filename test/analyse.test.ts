@@ -932,11 +932,11 @@ describe("audit through the loader adapters", () => {
     score: () => 1,
   };
 
-  it("proposes sizes only for a loader that cannot set quality, and says so", async () => {
-    // A Shopify-served image: its original is on the CDN, its URL has no quality, and the loader takes none.
+  it("reads quality= from a Shopify URL and does not call the proposal sizes only", async () => {
+    // A Shopify-served image: its original is on the CDN, and its live URL carries width= and quality=.
     const shop = "https://cdn.shopify.com/s/files/1/0001/x/";
     const shopFetch = async (url: string): Promise<Buffer> => fetchStub(url.replace(shop, `${BASE}/media/`));
-    const observations: ImageObservation[] = [0, 1, 2].flatMap((i) => [
+    const observations: ImageObservation[] = [0, 1, 2].map((i) =>
       observation({
         viewport: "iphone-15",
         src: `${shop}p${i}.jpg`,
@@ -944,13 +944,13 @@ describe("audit through the loader adapters", () => {
         rendered: 393,
         bytes: 40_000,
         contentType: "image/avif",
-        currentSrc: `${shop}p${i}.jpg?width=1200`,
+        currentSrc: `${shop}p${i}.jpg?width=1200&quality=85`,
       }),
-    ]);
+    );
     const [r] = await analyse([usage()], observations, cdnConfig, cfg, BASE, shopFetch, silent({ deps: stubDeps }));
 
-    expect(r.proposed.quality).toBeUndefined();
-    expect(r.notes).toContain("loader shopify cannot set quality (sizes only)");
+    expect(r.current.quality).toBe(85);
+    expect(r.notes.some((note) => note.includes("sizes only"))).toBe(false);
   }, CDN_TIMEOUT_MS);
 
   it("uses the loader's documented default when the URL has no quality", async () => {
