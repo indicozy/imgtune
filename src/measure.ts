@@ -32,7 +32,7 @@ const MAX_SCROLL_STEPS = 30;
 const SCROLL_STEP_WAIT_MS = 250;
 const NETWORK_IDLE_TIMEOUT_MS = 10_000;
 const IMAGES_COMPLETE_TIMEOUT_MS = 5_000;
-const BODY_READ_TIMEOUT_MS = 5_000;
+export const BODY_READ_TIMEOUT_MS = 5_000;
 const PIXEL_PROBE_TIMEOUT_MS = 5_000;
 
 type Accept = ImageObservation["accept"];
@@ -129,22 +129,7 @@ async function measureOne(
     let collected: CollectedImage[];
     try {
       const page = await context.newPage();
-      await page.goto(baseUrl + pagePath, { waitUntil: "load", timeout: PAGE_LOAD_TIMEOUT_MS });
-      await scrollThrough(page);
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await page
-        .waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS })
-        .catch(() => {});
-      await page
-        .waitForFunction(
-          () =>
-            Array.from(document.querySelectorAll<HTMLImageElement>("img[data-imgtune]")).every(
-              (img) => !img.currentSrc || img.complete,
-            ),
-          undefined,
-          { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
-        )
-        .catch(() => {});
+      await loadSettled(page, baseUrl + pagePath, "img[data-imgtune]");
       collected = await collectImages(page);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -179,8 +164,29 @@ async function measureOne(
   }
 }
 
+/**
+ * Loads `url` in `page` the way every measurement does: waits for the load event, scrolls the page to its bottom and
+ * back so lazy images start, then waits for the network and for the images matched by `imageSelector` to complete.
+ * Resolves with the document response (null when the page has none).
+ */
+export async function loadSettled(page: Page, url: string, imageSelector: string): Promise<Response | null> {
+  const response = await page.goto(url, { waitUntil: "load", timeout: PAGE_LOAD_TIMEOUT_MS });
+  await scrollThrough(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
+  await page
+    .waitForFunction(
+      (selector) =>
+        Array.from(document.querySelectorAll<HTMLImageElement>(selector)).every((img) => !img.currentSrc || img.complete),
+      imageSelector,
+      { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
+    )
+    .catch(() => {});
+  return response;
+}
+
 /** Waits for the promises to settle, but never longer than `ms`. */
-async function settleWithin(promises: Promise<void>[], ms: number): Promise<void> {
+export async function settleWithin(promises: Promise<void>[], ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, ms);
