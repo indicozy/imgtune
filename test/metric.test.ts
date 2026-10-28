@@ -3,7 +3,16 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { assertMetricAvailable, clearSsimulacra2Cache, makeScorer, resolveSsimulacra2, score } from "../src/metric.js";
+import {
+  assertMetricAvailable,
+  cachedScorer,
+  clearScoreCache,
+  clearSsimulacra2Cache,
+  makeScorer,
+  resolveSsimulacra2,
+  score,
+} from "../src/metric.js";
+import { ssim } from "../src/ssim.js";
 import { decodeRgba, gradientNoise } from "./image-fixtures.js";
 
 const created: string[] = [];
@@ -75,7 +84,8 @@ describe.skipIf(!hasBinary)("ssimulacra2 concurrency", () => {
     const { bin, log } = await countingBinary(dir);
     const scorer = makeScorer("ssimulacra2", { projectDir: dir, binary: bin });
     const img = gradientNoise(48, 48, 0, 11);
-    const values = await Promise.all(Array.from({ length: 9 }, () => scorer(img, img)));
+    // Distinct pixels, so the score cache does not answer any of the nine.
+    const values = await Promise.all(Array.from({ length: 9 }, (_, i) => scorer(gradientNoise(48, 48, 2, 100 + i), img)));
     expect(values).toEqual(Array(9).fill(90));
     const inFlight = (await readFile(log, "utf8")).trim().split("\n").map(Number);
     expect(inFlight).toHaveLength(9);
@@ -121,5 +131,50 @@ describe("ssimulacra2 binary lookup", () => {
       process.env.PATH = saved;
       process.env.HOME = home;
     }
+  });
+});
+
+describe("cachedScorer", () => {
+  beforeEach(() => clearScoreCache());
+  const a = gradientNoise(32, 32, 0, 21);
+  const b = gradientNoise(32, 32, 3, 22);
+
+  it("scores each ordered pair of images once, however often it is asked", async () => {
+    let calls = 0;
+    const scorer = cachedScorer("ssim", (ref, test) => {
+      calls++;
+      return ssim(ref, test);
+    });
+    const first = await scorer(a, b);
+    expect(await scorer(a, b)).toBe(first);
+    expect(await scorer(a, b)).toBe(first);
+    expect(calls).toBe(1);
+    await scorer(b, a);
+    expect(calls).toBe(2);
+  });
+
+  it("shares a score between scorers of the same metric, and not across metrics", async () => {
+    let calls = 0;
+    const inner = (ref: typeof a, test: typeof a) => {
+      calls++;
+      return ssim(ref, test);
+    };
+    await cachedScorer("ssim", inner)(a, b);
+    await cachedScorer("ssim", inner)(a, b);
+    expect(calls).toBe(1);
+    await cachedScorer("ssimulacra2", inner)(a, b);
+    expect(calls).toBe(2);
+  });
+
+  it("does not keep a failed score, so the next ask computes it again", async () => {
+    let calls = 0;
+    const scorer = cachedScorer("ssim", (ref, test) => {
+      calls++;
+      if (calls === 1) throw new Error("binary failed");
+      return ssim(ref, test);
+    });
+    await expect(scorer(a, b)).rejects.toThrow("binary failed");
+    expect(await scorer(a, b)).toBeCloseTo(ssim(a, b), 12);
+    expect(calls).toBe(2);
   });
 });

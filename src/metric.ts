@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, constants, mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -48,9 +48,41 @@ export async function score(metric: Metric, ref: RawImage, test: RawImage, opts:
   return ssimulacra2(ref, test, opts);
 }
 
-/** A scorer bound to one metric and its options, for the search, analysis and verify code. */
+/** Scores of this process by metric and the pixels of both images. A failed score is not kept. */
+const scoreCache = new Map<string, Promise<number>>();
+
+const pixelsKey = (img: RawImage): string =>
+  createHash("sha1")
+    .update(Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength))
+    .update(`${img.width}x${img.height}`)
+    .digest("hex");
+
+/**
+ * Wraps `inner` so each pair of images is scored once per process: a later call with the same metric and the same
+ * pixels returns the earlier result. The pixels already fix the format, width and quality they were encoded at, so
+ * usages, samples and stages that meet the same encoded image share one score.
+ */
+export function cachedScorer(metric: Metric, inner: Scorer): Scorer {
+  return (ref, test) => {
+    const key = `${metric}|${pixelsKey(ref)}|${pixelsKey(test)}`;
+    let pending = scoreCache.get(key);
+    if (!pending) {
+      pending = (async () => inner(ref, test))();
+      scoreCache.set(key, pending);
+      pending.catch(() => scoreCache.delete(key));
+    }
+    return pending;
+  };
+}
+
+/** Forgets the cached scores. For tests. */
+export function clearScoreCache(): void {
+  scoreCache.clear();
+}
+
+/** A scorer bound to one metric and its options, for the search, analysis and verify code. Scores are cached. */
 export function makeScorer(metric: Metric, opts: ScoreOptions = {}): Scorer {
-  return (ref, test) => score(metric, ref, test, opts);
+  return cachedScorer(metric, (ref, test) => score(metric, ref, test, opts));
 }
 
 /** Short name of a metric as shown in table headers. */
