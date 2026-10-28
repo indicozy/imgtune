@@ -23,6 +23,12 @@ if [ "$found" != "$BINDGEN_VERSION" ]; then
   exit 1
 fi
 
+# The committed module must not carry this machine's paths: remap the cargo registry, the rustup
+# toolchain and the repo root to fixed names. Computed from the environment, nothing is hard-coded.
+CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
+RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="--remap-path-prefix=$CARGO_HOME_DIR/registry/src=/cargo-registry --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup --remap-path-prefix=$ROOT=/build"
+
 CARGO_BUILD_JOBS=4 taskset -c 16-19 cargo build --manifest-path "$CRATE/Cargo.toml" --lib --release --locked --target "$TARGET"
 
 mkdir -p "$OUT"

@@ -18,3 +18,6 @@ wasm-bindgen = "=0.2.129"
 opt-level = 3
 codegen-units = 1
 lto = "thin"
+panic = "abort"
+debug = false
+strip = true
