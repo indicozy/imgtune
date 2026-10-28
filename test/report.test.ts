@@ -23,7 +23,7 @@ function result(overrides: Partial<ComponentResult> & { usageId: string }): Comp
   };
 }
 
-const config = { projectDir: "/x", paths: ["src"], urls: {}, viewports: [] } as unknown as ImgtuneConfig;
+const config = { projectDir: "/x", paths: ["src"], urls: {}, viewports: [], metric: "ssimulacra2" } as unknown as ImgtuneConfig;
 
 describe("rank", () => {
   it("orders by saved bytes descending and puts not-measured rows last", () => {
@@ -48,11 +48,12 @@ describe("renderTable", () => {
         proposed: { width: 160, projectedBytes: 60 * 1024, bytesByViewport: { "iphone-15": 60 * 1024 } },
         mobileViewports: ["iphone-15"],
       }),
-    ]);
+    ], "ssimulacra2");
     const [header, rule, row] = table.trimEnd().split("\n");
     expect(header).toMatch(/^#\s+component\s+file:line\s+instances\s+sizes now -> new/);
     expect(header).toContain("phone KB now -> new");
     expect(header).toContain("desktop KB now -> new");
+    expect(header).toMatch(/ SSIMU2 /);
     expect(header).not.toContain("KB/img");
     expect(rule).toMatch(/^-+/);
     expect(row).toContain("est.");
@@ -75,7 +76,7 @@ describe("renderTable", () => {
         proposed: { width: 160, bytesByViewport: { "iphone-15": 60 * 1024, desktop: 215 * 1024 } },
         mobileViewports: ["iphone-15"],
       }),
-    ]);
+    ], "ssimulacra2");
     const row = table.trimEnd().split("\n")[2];
     expect(row).toContain("100.0 -> 60.0");
     expect(row).toContain("200.0 -> 215.0");
@@ -90,7 +91,7 @@ describe("renderTable", () => {
         proposed: { width: 160, bytesByViewport: { "pixel-7": 40 * 1024 } },
         mobileViewports: ["pixel-7"],
       }),
-    ]);
+    ], "ssimulacra2");
     const row = table.trimEnd().split("\n")[2];
     expect(row).toContain("50.0 -> 40.0");
     expect(row).toContain("80.0");
@@ -109,6 +110,7 @@ describe("writeReport / readReport", () => {
     const report = await readReport(dir);
 
     expect(report.version).toBe(1);
+    expect(report.metric).toBe("ssimulacra2");
     expect(report.sitemapSource).toBe("local");
     expect(report.results).toHaveLength(1);
     expect(Object.keys(report.fileHashes).sort()).toEqual(["next.config.mjs", "src/Card.tsx"]);

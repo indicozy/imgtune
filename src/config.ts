@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { METRICS, type Metric } from "./metric.js";
 import type { ImgtuneConfig, QualityLevel, Viewport } from "./types.js";
 
 export type Command = "audit" | "apply" | "verify" | "restore";
@@ -8,9 +9,16 @@ const COMMANDS: readonly Command[] = ["audit", "apply", "verify", "restore"];
 const QUALITY_LEVELS: readonly QualityLevel[] = ["relaxed", "strict"];
 const CONFIG_FILE = "imgtune.config.json";
 
-const QUALITY_PRESETS: Record<QualityLevel, { threshold: number; tolerance: number }> = {
-  relaxed: { threshold: 0.975, tolerance: 5 },
-  strict: { threshold: 0.99, tolerance: 3 },
+const DEFAULT_METRIC: Metric = "ssimulacra2";
+const QUALITY_PRESETS: Record<Metric, Record<QualityLevel, { threshold: number; tolerance: number }>> = {
+  ssimulacra2: {
+    relaxed: { threshold: 88, tolerance: 5 },
+    strict: { threshold: 90, tolerance: 3 },
+  },
+  ssim: {
+    relaxed: { threshold: 0.975, tolerance: 5 },
+    strict: { threshold: 0.99, tolerance: 3 },
+  },
 };
 
 const IPHONE_UA =
@@ -27,14 +35,18 @@ export const DEFAULT_VIEWPORTS: readonly Viewport[] = [
   { name: "desktop-1280", width: 1280, height: 800, dpr: 1, mobile: false },
 ];
 
-/** Keys read from `imgtune.config.json`. `projectDir` always comes from `--project` or cwd. */
-type FileConfig = Partial<Omit<ImgtuneConfig, "projectDir">>;
+/**
+ * Keys read from `imgtune.config.json`. `projectDir` always comes from `--project` or cwd. `threshold` stays unchecked
+ * here: its range depends on the metric the flags and the file settle on, so `loadConfig` checks it.
+ */
+type FileConfig = Partial<Omit<ImgtuneConfig, "projectDir" | "threshold">> & { threshold?: unknown };
 
 interface Flags {
   project?: string;
   paths: string[];
   quality?: QualityLevel;
-  threshold?: number;
+  metric?: Metric;
+  threshold?: string;
   port?: number;
   url?: string;
   all: boolean;
@@ -50,20 +62,27 @@ export async function loadConfig(
   const projectDir = resolve(cwd, flags.project ?? ".");
   const file = await readConfigFile(projectDir);
 
+  const metric = flags.metric ?? file.metric ?? DEFAULT_METRIC;
   const quality = flags.quality ?? file.quality ?? "relaxed";
-  const preset = QUALITY_PRESETS[quality];
+  const preset = QUALITY_PRESETS[metric][quality];
+  const threshold =
+    flags.threshold !== undefined
+      ? parseThreshold(flags.threshold, "--threshold", metric)
+      : parseThreshold(file.threshold ?? preset.threshold, CONFIG_FILE, metric);
 
   const config: ImgtuneConfig = {
     projectDir,
     paths: flags.paths.length > 0 ? flags.paths : (file.paths ?? ["."]),
     quality,
-    threshold: flags.threshold ?? file.threshold ?? preset.threshold,
+    metric,
+    threshold,
     tolerance: file.tolerance ?? preset.tolerance,
     market: file.market ?? "ae-en",
     port: flags.port ?? file.port ?? 3999,
     devCommand: file.devCommand,
     sitemapUrl: file.sitemapUrl,
     url: flags.url ?? file.url,
+    ssimulacra2Path: file.ssimulacra2Path === undefined ? undefined : resolve(projectDir, file.ssimulacra2Path),
     urls: file.urls ?? {},
     viewports: file.viewports ?? DEFAULT_VIEWPORTS.map((viewport) => ({ ...viewport })),
     samplesPerComponent: file.samplesPerComponent ?? 20,
@@ -116,8 +135,11 @@ function parseArgs(argv: string[]): { command: Command; flags: Flags } {
       case "--quality":
         flags.quality = parseQuality(value, "--quality");
         break;
+      case "--metric":
+        flags.metric = parseMetric(value, "--metric");
+        break;
       case "--threshold":
-        flags.threshold = parseThreshold(value, "--threshold");
+        flags.threshold = value;
         break;
       case "--port":
         flags.port = parsePort(value, "--port");
@@ -167,8 +189,11 @@ async function readConfigFile(projectDir: string): Promise<FileConfig> {
   if (fileConfig.quality !== undefined) {
     fileConfig.quality = parseQuality(fileConfig.quality, CONFIG_FILE);
   }
-  if (fileConfig.threshold !== undefined) {
-    fileConfig.threshold = parseThreshold(fileConfig.threshold, CONFIG_FILE);
+  if (fileConfig.metric !== undefined) {
+    fileConfig.metric = parseMetric(fileConfig.metric, CONFIG_FILE);
+  }
+  if (fileConfig.ssimulacra2Path !== undefined && typeof fileConfig.ssimulacra2Path !== "string") {
+    throw new Error(`Invalid ssimulacra2Path ${JSON.stringify(fileConfig.ssimulacra2Path)} (${CONFIG_FILE}): expected a path string`);
   }
   if (fileConfig.port !== undefined) {
     fileConfig.port = parsePort(fileConfig.port, CONFIG_FILE);
@@ -205,10 +230,19 @@ function parseQuality(value: unknown, source: string): QualityLevel {
   return value as QualityLevel;
 }
 
-function parseThreshold(value: unknown, source: string): number {
+function parseMetric(value: unknown, source: string): Metric {
+  if (typeof value !== "string" || !(METRICS as readonly string[]).includes(value)) {
+    throw new Error(`Invalid metric ${JSON.stringify(value)} (${source}): expected one of ${METRICS.join(", ")}`);
+  }
+  return value as Metric;
+}
+
+/** A threshold on the metric's scale: 0-100 for ssimulacra2, 0-1 for ssim. */
+function parseThreshold(value: unknown, source: string, metric: Metric): number {
   const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
-  if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > 1) {
-    throw new Error(`Invalid threshold ${JSON.stringify(value)} (${source}): expected a number between 0 and 1`);
+  const max = metric === "ssim" ? 1 : 100;
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > max) {
+    throw new Error(`Invalid threshold ${JSON.stringify(value)} (${source}): expected a number between 0 and ${max} for ${metric}`);
   }
   return n;
 }

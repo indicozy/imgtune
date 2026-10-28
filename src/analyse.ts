@@ -12,6 +12,7 @@ import {
   sizesValueAt,
   type SizeBranches,
 } from "./sizes.js";
+import { formatScore, makeScorer } from "./metric.js";
 import { componentQuality, minPassingQuality, toTargetQuality, type SearchDeps } from "./search.js";
 import { nextCandidates, pickCandidate, pickForX } from "./srcset.js";
 import { ssim, type RawImage } from "./ssim.js";
@@ -23,6 +24,8 @@ const DEFAULT_QUALITY = 75;
 /** Rendered width may exceed slot x dpr by this factor before the width ladder is reported as a gap. */
 const LADDER_GAP_RATIO = 1.25;
 const CONFIRM_SAMPLES = 5;
+/** A cdn format that does not decide the quality is noted when it scores this far below the threshold (R36). */
+const FALLBACK_MARGIN = 8;
 const CALIBRATION_SAMPLES = 5;
 /** Projected bytes above this multiple of the current median count as growth. */
 const GROWTH_RATIO = 1.05;
@@ -209,7 +212,8 @@ export async function analyse(
     profile: imageConfig.loaderFile ? "cdn" : "next-default",
     searchFormats: [],
     baseUrl,
-    deps: opts.deps ?? {},
+    // The configured metric scores every decision; a test can inject its own scorer.
+    deps: { score: makeScorer(cfg.metric, { projectDir: cfg.projectDir, binary: cfg.ssimulacra2Path }), ...(opts.deps ?? {}) },
     opts,
     log: opts.log ?? ((msg) => console.error(`imgtune: ${msg}`)),
     loggedUrls: new Set(),
@@ -420,10 +424,36 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const sampleEval = evaluator(ctx, probe.offsets);
   const served: Format = result.servedFormats.includes("avif") ? "avif" : "webp";
   const projectionFormat: Format = ctx.profile === "cdn" ? "avif" : served;
+  // next-default: every searched format must pass (R16). cdn: the format the page was served decides (R36).
+  const deciding: Format[] = ctx.profile === "cdn" ? [served] : ctx.searchFormats;
 
+  // One search per width: the full correction and the final sizes often share one.
+  const searches = new Map<number, Promise<QualityOutcome>>();
   /** Quality searched at the reference viewport's width under `sizes`. Samples are not searched without originals. */
-  const searchAtSizes = (sizes: string | undefined): Promise<QualityOutcome> =>
-    probe.samples.length === 0 ? Promise.resolve({}) : searchAt(ctx, probe, quality, widthFor(sizes, ref));
+  const searchAtSizes = (sizes: string | undefined): Promise<QualityOutcome> => {
+    if (probe.samples.length === 0) return Promise.resolve({});
+    const width = widthFor(sizes, ref);
+    let pending = searches.get(width);
+    if (!pending) {
+      pending = searchAt(ctx, probe, quality, width, deciding);
+      searches.set(width, pending);
+    }
+    return pending;
+  };
+
+  /** Scores of each sample at `format`, quality `q` and `width`; a sample that cannot be scored is skipped. */
+  const scoresAt = async (format: Format, q: number, width: number): Promise<number[]> => {
+    const out: number[] = [];
+    for (const sample of probe.samples) {
+      try {
+        const scored = await sampleEval(sample, format, q, width);
+        if (scored) out.push(scored.ssim);
+      } catch (err) {
+        logOnce(ctx, `projection ${sample.src}`, `skipping projection for ${sample.src}: ${message(err)}`);
+      }
+    }
+    return out;
+  };
 
   /** Projected median bytes per viewport name under `sizes` at quality `qNew`. A viewport that cannot be projected is omitted. */
   const project = async (sizes: string | undefined, qNew: number): Promise<Record<string, number>> => {
@@ -496,13 +526,14 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
 
   // Scores are taken at the reference viewport's width under the proposed sizes.
   const scoreWidth = widthFor(finalSizes, ref);
-  const ssims: number[] = [];
-  for (const sample of probe.samples) {
-    try {
-      const scored = await sampleEval(sample, served, qNew, scoreWidth);
-      if (scored) ssims.push(scored.ssim);
-    } catch (err) {
-      logOnce(ctx, `projection ${sample.src}`, `skipping projection for ${sample.src}: ${message(err)}`);
+  const ssims = await scoresAt(served, qNew, scoreWidth);
+  // The format that does not decide is scored at the chosen quality too, and noted when it falls well short (R36).
+  if (ctx.profile === "cdn") {
+    for (const other of ctx.searchFormats.filter((format) => format !== served)) {
+      const fallback = median(await scoresAt(other, qNew, scoreWidth));
+      if (fallback !== undefined && fallback < ctx.cfg.threshold - FALLBACK_MARGIN) {
+        notes.push(`${other} fallback scores ${formatScore(ctx.cfg.metric, fallback)} at q${qNew}`);
+      }
     }
   }
 
@@ -597,29 +628,43 @@ async function prepareQuality(ctx: Context, usageObs: ImageObservation[], qualit
   return { samples, offsets };
 }
 
-/** Per-sample bisection per format at `width`, then the component's 95th percentile mapped onto the project's quality scale. */
-async function searchAt(ctx: Context, probe: QualityProbe, quality: number, width: number): Promise<QualityOutcome> {
+/**
+ * Per-sample bisection per deciding format at `width`, then the component's 95th percentile mapped onto the project's
+ * quality scale. For cdn every format the CDN can serve must be calibrated, since the other one is scored as fallback.
+ */
+async function searchAt(
+  ctx: Context,
+  probe: QualityProbe,
+  quality: number,
+  width: number,
+  formats: Format[],
+): Promise<QualityOutcome> {
   const { cfg, deps } = ctx;
+  if (ctx.profile === "cdn") {
+    for (const format of ctx.searchFormats) {
+      if (probe.offsets[format] === undefined) return { reason: `quality not proposed: no CDN ${format} variants observed for calibration` };
+    }
+  }
   const perSample: Record<Format, number[]> = { avif: [], webp: [] };
   for (const sample of probe.samples) {
     try {
       const ref = await loadReference(sample.buffer, width);
       const found: Partial<Record<Format, number>> = {};
-      for (const format of ctx.searchFormats) {
+      for (const format of formats) {
         found[format] = await minPassingQuality(ref, format, quality, ctx.profile, cfg.threshold, cfg.tolerance, deps);
       }
-      for (const format of ctx.searchFormats) perSample[format].push(found[format] as number);
+      for (const format of formats) perSample[format].push(found[format] as number);
     } catch (err) {
       // One failing sample is skipped; the others still decide the component quality.
       logOnce(ctx, `search ${sample.src}`, `skipping quality search for ${sample.src}: ${message(err)}`);
     }
   }
-  if (ctx.searchFormats.some((format) => perSample[format].length === 0)) {
+  if (formats.some((format) => perSample[format].length === 0)) {
     return { reason: "quality not proposed: no sample could be searched" };
   }
 
   const targets: number[] = [];
-  for (const format of ctx.searchFormats) {
+  for (const format of formats) {
     const target = toTargetQuality(componentQuality(perSample[format]), probe.offsets[format], ctx.profile, quality);
     if (target === undefined) return { reason: `quality not proposed: no CDN ${format} variants observed for calibration` };
     targets.push(target);
@@ -671,7 +716,8 @@ async function evaluate(
   local = Math.min(100, Math.max(1, local));
   const ref = await loadReference(buffer, width);
   const enc = await (ctx.deps.encode ?? encode)(ref, format, local, ctx.profile);
-  return { bytes: enc.bytes, ssim: (ctx.deps.ssim ?? ssim)(ref, enc.decoded) };
+  const score = ctx.deps.score ?? ssim;
+  return { bytes: enc.bytes, ssim: await score(ref, enc.decoded) };
 }
 
 type Scored = { bytes: number; ssim: number } | undefined;

@@ -1,17 +1,20 @@
 import { encode, type EncoderProfile } from "./encode.js";
+import type { Scorer } from "./metric.js";
 import { ssim, type RawImage } from "./ssim.js";
 
-/** Test seams: default to the real encoder and SSIM. */
+/**
+ * Test seams: the real encoder, and the plain SSIM as scorer. Production passes the configured metric's scorer.
+ */
 export interface SearchDeps {
   encode?: typeof encode;
-  ssim?: typeof ssim;
+  score?: Scorer;
 }
 
 /** Lowest quality the search will consider, per format (in the profile's own quality scale). */
 const FLOOR: Record<"avif" | "webp", number> = { avif: 25, webp: 40 };
 
 /**
- * Bisect downward from `start` for the lowest quality whose SSIM stays at or above `threshold`.
+ * Bisect downward from `start` for the lowest quality whose score stays at or above `threshold` (on the metric's scale).
  *
  * Sequence: encode `start`; if it fails, return `start` (never raise quality). Otherwise the floor is treated as
  * unknown-but-assumed-failing (the floor itself is not probed, which keeps the encode count within 6 for the
@@ -28,10 +31,10 @@ export async function minPassingQuality(
   deps: SearchDeps = {},
 ): Promise<number> {
   const enc = deps.encode ?? encode;
-  const score = deps.ssim ?? ssim;
+  const score = deps.score ?? ssim;
   const passes = async (q: number): Promise<boolean> => {
     const { decoded } = await enc(ref, format, q, profile);
-    return score(ref, decoded) >= threshold;
+    return (await score(ref, decoded)) >= threshold;
   };
 
   if (!(await passes(start))) return start;

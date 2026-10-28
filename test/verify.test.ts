@@ -273,7 +273,7 @@ describe("bytesByViewport and renderVerifyTable", () => {
         bytes: {},
         judgement: { status: "unmeasured", reason: "insufficient webp samples: 1", ssim: {}, counts: {} },
       },
-    ]);
+    ], "ssim");
     const [header, row, unmeasured] = table.split("\n");
     expect(header).toContain("bytes before");
     expect(row).toContain("iphone-15 8.0 KB, desktop 16.0 KB");

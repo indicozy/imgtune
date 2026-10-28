@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { encode } from "./encode.js";
+import type { Scorer } from "./metric.js";
 import type { SearchDeps } from "./search.js";
 import { ssim, type RawImage } from "./ssim.js";
 
@@ -72,6 +73,8 @@ export interface ConfirmOptions {
   percentile?: number;
   /** Formats to probe and judge (Next's default `images.formats` is webp only). */
   formats?: Format[];
+  /** Scores each variant against its reference; the threshold is on this scale. Production passes the configured metric. */
+  score?: Scorer;
 }
 
 /** `ok` passes; every other status is a failed sample for that format. */
@@ -102,6 +105,7 @@ async function probeOne(
   q: number,
   threshold: number,
   fetchImpl: typeof fetch,
+  score: Scorer,
 ): Promise<FormatOutcome> {
   const url = `${baseUrl}/_next/image?url=${encodeURIComponent(sample.src)}&w=${sample.width}&q=${q}`;
   let res: Response;
@@ -144,13 +148,13 @@ async function probeOne(
   } catch (e) {
     return { status: "decode", bytes: body.length, error: message(e) };
   }
-  const score = ssim(sample.ref, decoded);
-  return { status: score >= threshold ? "ok" : "ssim-fail", ssim: score, bytes: body.length };
+  const value = await score(sample.ref, decoded);
+  return { status: value >= threshold ? "ok" : "ssim-fail", ssim: value, bytes: body.length };
 }
 
 /**
  * Confirm a `next-default` quality against the live optimizer. For each sample and each probed format the
- * `/_next/image` variant is fetched, decoded and scored with SSIM against the local reference. A format passes when
+ * `/_next/image` variant is fetched, decoded and scored against the local reference. A format passes when
  * the share of passing samples is at least `percentile` (default 0.95); confirmed requires every probed format to
  * pass. Failed samples are counted per status in `failures` and left out of the medians. Formats that are not probed
  * (default: webp only) have undefined fields. With no samples or no formats the result is not confirmed.
@@ -169,6 +173,7 @@ export async function confirmNextDefault(
   errors: FormatMap<string>;
 }> {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const score = opts.score ?? ssim;
   const percentile = opts.percentile ?? 0.95;
   const formats = [...new Set(opts.formats ?? (["webp"] as Format[]))];
   const result: Awaited<ReturnType<typeof confirmNextDefault>> = {
@@ -182,7 +187,7 @@ export async function confirmNextDefault(
   for (const format of formats) {
     const outcomes: FormatOutcome[] = [];
     for (const sample of samples) {
-      outcomes.push(await probeOne(baseUrl, sample, format, q, threshold, fetchImpl));
+      outcomes.push(await probeOne(baseUrl, sample, format, q, threshold, fetchImpl, score));
     }
     const passing = outcomes.filter((o) => o.status === "ok").length;
     if (samples.length === 0 || passing / samples.length < percentile) result.confirmed = false;

@@ -3,6 +3,7 @@ import { join, relative, sep } from "node:path";
 import type { ComponentResult } from "./analyse.js";
 import { isSizesValue } from "./sizes.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
+import { formatScore, metricLabel, type Metric } from "./metric.js";
 import type { ImageConfig } from "./nextconfig.js";
 import type { ImgtuneConfig } from "./types.js";
 
@@ -19,6 +20,8 @@ export interface Report {
   version: 1;
   createdAt: string;
   project: string;
+  /** The metric of the scores in the results (`proposed.ssim`). */
+  metric: Metric;
   config: ImgtuneConfig;
   imageConfig: ImageConfig;
   sitemapSource?: string;
@@ -68,7 +71,7 @@ function viewportKb(r: ComponentResult, name: string | undefined): string {
 }
 
 /** Plain-text table, one row per result in rank order, fixed-width columns. */
-export function renderTable(results: ComponentResult[]): string {
+export function renderTable(results: ComponentResult[], metric: Metric): string {
   const header = [
     "#",
     "component",
@@ -79,7 +82,7 @@ export function renderTable(results: ComponentResult[]): string {
     "phone KB now -> new",
     "desktop KB now -> new",
     "saved KB",
-    "SSIM",
+    metricLabel(metric),
     "est./exact",
     "notes",
   ];
@@ -95,7 +98,7 @@ export function renderTable(results: ComponentResult[]): string {
       viewportKb(r, columnViewport(r, true)),
       viewportKb(r, columnViewport(r, false)),
       isMeasured ? savedKb(r.savedBytesTotal) : "-",
-      r.proposed.ssim === undefined ? "-" : r.proposed.ssim.toFixed(3),
+      r.proposed.ssim === undefined ? "-" : formatScore(metric, r.proposed.ssim),
       isMeasured ? (r.estimated ? "est." : "exact") : "-",
       r.notes.join("; "),
     ];
@@ -119,6 +122,7 @@ export async function writeReport(projectDir: string, results: ComponentResult[]
     version: 1,
     createdAt: new Date().toISOString(),
     project: projectDir,
+    metric: meta.config.metric,
     config: meta.config,
     imageConfig: meta.imageConfig,
     sitemapSource: meta.sitemapSource,

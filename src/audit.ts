@@ -18,6 +18,7 @@ import {
 } from "./server.js";
 import { listSourceFiles, scanFile } from "./scan.js";
 import { isDone, loadState, type StateEntry } from "./state.js";
+import { makeScorer } from "./metric.js";
 import type { ImageUsage, ImgtuneConfig } from "./types.js";
 import { fetchSitemapUrls, resolveUrls, sitemapCandidates, type ResolvedUrls } from "./urls.js";
 import type { RawImage } from "./ssim.js";
@@ -328,10 +329,12 @@ export async function measureUsages(
   }
 }
 
-/** Production dependencies for the confirmation callback. */
-function confirmDepsFor(projectDir: string, baseUrl: string, imageConfigFile: string): ConfirmDeps {
+/** Production dependencies for the confirmation callback. Confirmation scores with the configured metric. */
+function confirmDepsFor(config: ImgtuneConfig, baseUrl: string, imageConfigFile: string): ConfirmDeps {
+  const { projectDir } = config;
+  const score = makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
   return {
-    confirmNextDefault,
+    confirmNextDefault: (url, samples, q, threshold, opts) => confirmNextDefault(url, samples, q, threshold, { ...opts, score }),
     withConfigQuality: async (q, probe, body) => {
       const text = await readFile(imageConfigFile, "utf8");
       const edited = withQuality(text, q);
@@ -402,7 +405,7 @@ export async function audit(config: ImgtuneConfig, opts: { log?: Log } = {}): Pr
               imageConfig,
               serverOwned,
             },
-            confirmDepsFor(projectDir, measured.baseUrl, imageConfig.file),
+            confirmDepsFor(config, measured.baseUrl, imageConfig.file),
           )
         : undefined;
     const results = await analyse(
@@ -419,7 +422,7 @@ export async function audit(config: ImgtuneConfig, opts: { log?: Log } = {}): Pr
     await measured.stop();
   }
 
-  process.stdout.write(`${renderTable(ranked)}\n`);
+  process.stdout.write(`${renderTable(ranked, config.metric)}\n`);
   await writeReport(projectDir, ranked, { config, imageConfig, sitemapSource: measured.sitemapSource });
   log("done");
   return ranked;

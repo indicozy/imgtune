@@ -30,6 +30,7 @@ const cfg: ImgtuneConfig = {
   projectDir: "/project",
   paths: [],
   quality: "relaxed",
+  metric: "ssim",
   threshold: 0.975,
   tolerance: 5,
   market: "ae-en",
@@ -170,6 +171,28 @@ async function cdnObservations({ withWebp }: { withWebp: boolean }): Promise<Ima
   return out;
 }
 
+/** AVIF (default pass) and WebP (webp pass) observations of one CDN variant whose stub size is `served` bytes. */
+function cdnStubObservations(served: number): ImageObservation[] {
+  const currentSrc = (src: string) => `https://shop-cdn.example.com/cdn-cgi/image/width=1200,quality=85,format=auto/${src}`;
+  return [
+    ...SRC.map((src) =>
+      observation({ viewport: "iphone-15", src, natural: 1200, rendered: 393, bytes: served, contentType: "image/avif", currentSrc: currentSrc(src) }),
+    ),
+    ...SRC.map((src) =>
+      observation({
+        viewport: "iphone-15",
+        src,
+        natural: 1200,
+        rendered: 393,
+        accept: "webp",
+        bytes: served,
+        contentType: "image/webp",
+        currentSrc: currentSrc(src),
+      }),
+    ),
+  ];
+}
+
 /** AVIF effort-4 encodes make the CDN cases slow on the E-cores. */
 const CDN_TIMEOUT_MS = 60_000;
 
@@ -207,7 +230,7 @@ const widthDeps = {
   encode: (async (ref: RawImage) => ({ bytes: ref.width * 100, decoded: ref, buffer: Buffer.alloc(0) })) as unknown as NonNullable<
     AnalyseOptions["deps"]
   >["encode"],
-  ssim: () => 0,
+  score: () => 0,
 };
 
 function viewportObs(spec: { viewport: "iphone-15" | "desktop"; src: string; natural: number; rendered: number; bytes: number; dpr: number }): ImageObservation {
@@ -338,7 +361,7 @@ describe("per-viewport projection and media branches", () => {
     ]);
     const [r] = await analyse([usage({ sizes: literal("33vw") })], observations, nextConfig, cfg, BASE, wideFetch, {
       log: (msg) => logs.push(msg),
-      deps: { encode: flaky, ssim: () => 0 },
+      deps: { encode: flaky, score: () => 0 },
     });
     expect(r.proposed.quality).toBeDefined();
     expect(logs).toContain(`skipping quality search for ${SRC[0]}: encoder crashed`);
@@ -351,14 +374,14 @@ describe("per-viewport projection and media branches", () => {
     const observations = SRC.flatMap((src) => [
       viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
     ]);
-    const [r] = await analyse([usage()], observations, nextConfig, cfg, BASE, wideFetch, silent({ deps: { encode: broken, ssim: () => 0 } }));
+    const [r] = await analyse([usage()], observations, nextConfig, cfg, BASE, wideFetch, silent({ deps: { encode: broken, score: () => 0 } }));
     expect(r.proposed.quality).toBeUndefined();
     expect(r.notes).toContain("quality not proposed: no sample could be searched");
   });
 
   it("searches the quality at the full correction's width as qualityFull, separately from the final quality", async () => {
     // Passes SSIM only at reference widths up to 700px: the full correction (1080px on the phone) fails, the 33vw one passes.
-    const deps = { encode: widthDeps.encode, ssim: (ref: RawImage) => (ref.width <= 700 ? 1 : 0) };
+    const deps = { encode: widthDeps.encode, score: (ref: RawImage) => (ref.width <= 700 ? 1 : 0) };
     const observations = SRC.flatMap((src) => [
       viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
       viewportObs({ viewport: "desktop", src, natural: 1080, rendered: 280, bytes: 20000, dpr: 2 }),
@@ -456,7 +479,7 @@ describe("evaluator", () => {
         calls.push(`${ref.width}|${format}|${q}`);
         return { bytes: ref.width * 100, decoded: ref, buffer: Buffer.alloc(0) };
       }) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
-      ssim: () => 1,
+      score: () => 1,
     };
     const ctx = { profile: "next-default", deps } as unknown as Parameters<typeof evaluator>[0];
     const sample = { src: SRC[0], buffer: wideOriginals.get(SRC[0])! };
@@ -561,14 +584,14 @@ describe("analyse", () => {
   });
 
   it("projects cdn bytes per sample from known byte counts", async () => {
-    // Stub encoder: bytes = quality * 1000 + reference width; SSIM always passes, so the search goes to its floor.
+    // Stub encoder: bytes = quality * 1000 + reference width; the score always passes, so the search goes to its floor.
     const deps = {
       encode: (async (ref: RawImage, _format: string, q: number) => ({
         bytes: q * 1000 + ref.width,
         decoded: ref,
         buffer: Buffer.alloc(0),
       })) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
-      ssim: () => 1,
+      score: () => 1,
     };
     // The CDN served quality 85 whose stub size is 85000 + 320 (the reference width after loading).
     const served = 85 * 1000 + 320;
@@ -599,12 +622,60 @@ describe("analyse", () => {
     ];
     const [r] = await analyse([usage()], observations, cdnConfig, cfg, BASE, fetchStub, silent({ deps }));
 
-    // Bisection with an always-passing SSIM: AVIF settles at 28, WebP at 45 (offsets 0). The larger, 45, is proposed.
-    expect(r.proposed.quality).toBe(45);
-    // Projection: observed 85320 x (stub bytes at 45 / stub bytes at 85) = 45320, per sample.
-    expect(r.proposed.projectedBytes).toBe(45320);
+    // The page was served AVIF, so AVIF decides (R36). Bisection with an always-passing score settles at 28 (offset 0).
+    expect(r.proposed.quality).toBe(28);
+    // Projection: observed 85320 x (stub bytes at 28 / stub bytes at 85) = 28320, per sample.
+    expect(r.proposed.projectedBytes).toBe(28320);
     expect(r.current.medianBytes).toBe(served);
-    expect(r.savedBytesTotal).toBe((served - 45320) * 3);
+    expect(r.savedBytesTotal).toBe((served - 28320) * 3);
+  }, CDN_TIMEOUT_MS);
+
+  it("decides a cdn quality on the served format alone, scoring the WebP fallback at the chosen quality", async () => {
+    // AVIF passes everywhere; WebP passes only from q70 and scores 70 below it. The served AVIF decides (28), not WebP (70).
+    const deps = {
+      encode: (async (ref: RawImage, format: string, q: number) => ({
+        bytes: q * 1000 + ref.width,
+        decoded: { data: Uint8ClampedArray.of(format === "webp" && q < 70 ? 70 : 95), width: ref.width, height: ref.height, },
+        buffer: Buffer.alloc(0),
+      })) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
+      score: (_ref: RawImage, test: RawImage) => test.data[0],
+    };
+    const served = 85 * 1000 + 320;
+    const [r] = await analyse(
+      [usage()],
+      cdnStubObservations(served),
+      cdnConfig,
+      { ...cfg, metric: "ssimulacra2", threshold: 88 },
+      BASE,
+      fetchStub,
+      silent({ deps }),
+    );
+
+    expect(r.proposed.quality).toBe(28);
+    expect(r.notes).toContain("webp fallback scores 70.0 at q28");
+  }, CDN_TIMEOUT_MS);
+
+  it("notes no WebP fallback when the other format also scores at the threshold", async () => {
+    const deps = {
+      encode: (async (ref: RawImage, _format: string, q: number) => ({
+        bytes: q * 1000 + ref.width,
+        decoded: { data: Uint8ClampedArray.of(95), width: ref.width, height: ref.height },
+        buffer: Buffer.alloc(0),
+      })) as unknown as NonNullable<AnalyseOptions["deps"]>["encode"],
+      score: (_ref: RawImage, test: RawImage) => test.data[0],
+    };
+    const [r] = await analyse(
+      [usage()],
+      cdnStubObservations(85 * 1000 + 320),
+      cdnConfig,
+      { ...cfg, metric: "ssimulacra2", threshold: 88 },
+      BASE,
+      fetchStub,
+      silent({ deps }),
+    );
+
+    expect(r.proposed.quality).toBe(28);
+    expect(r.notes.some((n) => n.includes("fallback"))).toBe(false);
   }, CDN_TIMEOUT_MS);
 
   it("proposes quality for a cdn component once AVIF and WebP are calibrated, and stays estimated", async () => {

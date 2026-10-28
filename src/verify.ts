@@ -8,6 +8,7 @@ import { readImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
 import { originalUrlFor } from "./analyse.js";
 import { installRestoreHandlers } from "./instrument.js";
+import { formatScore, makeScorer, metricLabel, type Metric, type Scorer } from "./metric.js";
 import { readReport } from "./report.js";
 import { scanFile } from "./scan.js";
 import { loadState, saveState, type StateEntry } from "./state.js";
@@ -162,6 +163,8 @@ export type VariantScore = { ssim: number } | { unusable: string };
 export interface VariantDeps {
   fetchImpl?: typeof fetch;
   fetchOriginal: (url: string) => Promise<Buffer>;
+  /** Scores the served variant against its reference; production passes the configured metric. */
+  score?: Scorer;
 }
 
 /**
@@ -223,7 +226,8 @@ export async function scoreVariant(obs: ImageObservation, format: Format, baseUr
       .toBuffer({ resolveWithObject: true });
     served = { data: new Uint8ClampedArray(resized.data.buffer, resized.data.byteOffset, resized.data.byteLength), width: reference.width, height: reference.height };
   }
-  return { ssim: ssim(reference, served) };
+  const score = deps.score ?? ssim;
+  return { ssim: await score(reference, served) };
 }
 
 /** Median bytes per viewport over the default-pass observations that have a byte count. */
@@ -257,7 +261,7 @@ export function selectApplied(
 }
 
 const fmtBytes = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
-const fmtSsim = (value: number | undefined): string => (value === undefined ? "-" : value.toFixed(4));
+const fmtScore = (metric: Metric, value: number | undefined): string => (value === undefined ? "-" : formatScore(metric, value));
 
 function statusOf(judgement: Judgement): string {
   let status: string;
@@ -279,18 +283,19 @@ function byViewport(bytes: Record<string, number> | undefined): string {
 }
 
 /**
- * Aligned text table: component, location, bytes per viewport before and now, SSIM per format, status.
+ * Aligned text table: component, location, bytes per viewport before and now, the metric's score per format, status.
  */
-export function renderVerifyTable(rows: VerifyRow[]): string {
-  const header = ["component", "location", "bytes before", "bytes now", "SSIM avif", "SSIM webp", "status"];
+export function renderVerifyTable(rows: VerifyRow[], metric: Metric): string {
+  const label = metricLabel(metric);
+  const header = ["component", "location", "bytes before", "bytes now", `${label} avif`, `${label} webp`, "status"];
   const body = rows.map((row) => {
     return [
       row.component,
       `${row.relFile}:${row.line}`,
       byViewport(row.beforeBytes),
       byViewport(row.bytes),
-      fmtSsim(row.judgement.ssim.avif),
-      fmtSsim(row.judgement.ssim.webp),
+      fmtScore(metric, row.judgement.ssim.avif),
+      fmtScore(metric, row.judgement.ssim.webp),
       statusOf(row.judgement),
     ];
   });
@@ -363,6 +368,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   }
 
   const beforeBytes = await auditBytes(projectDir);
+  const score = makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
   const imageConfig = readImageConfig(projectDir);
   const measured = await measureUsages(config, applied.map((a) => a.usage), imageConfig, log);
   const rows: VerifyRow[] = [];
@@ -375,12 +381,12 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
       const samples: VerifySample[] = [];
       for (const format of FORMATS) {
         for (const obs of sampleVariants(observations, format, config.samplesPerComponent)) {
-          const score = await scoreVariant(obs, format, measured.baseUrl, { fetchImpl: opts.fetchImpl, fetchOriginal });
-          if ("unusable" in score) {
-            log(`unusable ${format} sample for ${usage.id}: ${score.unusable}`);
+          const scored = await scoreVariant(obs, format, measured.baseUrl, { fetchImpl: opts.fetchImpl, fetchOriginal, score });
+          if ("unusable" in scored) {
+            log(`unusable ${format} sample for ${usage.id}: ${scored.unusable}`);
             samples.push({ format });
           } else {
-            samples.push({ format, ssim: score.ssim });
+            samples.push({ format, ssim: scored.ssim });
           }
         }
       }
@@ -434,7 +440,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   }
   if (updated.length > 0) await saveState(projectDir, updated);
 
-  process.stdout.write(`${renderVerifyTable(rows)}\n`);
+  process.stdout.write(`${renderVerifyTable(rows, config.metric)}\n`);
   log("done");
   return rows;
 }

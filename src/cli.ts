@@ -32,8 +32,9 @@ Commands:
 Options:
   --project <dir>     project directory (default: current directory)
   --path <path>       limit the scan to a file or directory (repeatable; default: .)
-  --quality <level>   relaxed (SSIM >= 0.975, default) or strict (SSIM >= 0.99)
-  --threshold <n>     SSIM threshold between 0 and 1; overrides --quality
+  --metric <name>     ssimulacra2 (default) or ssim
+  --quality <level>   relaxed (default) or strict; ssimulacra2 >= 88 / >= 90, ssim >= 0.975 / >= 0.99
+  --threshold <n>     pass mark on the metric's scale (0-100 ssimulacra2, 0-1 ssim); overrides --quality
   --port <n>          port for a dev server the tool starts (default: 3999)
   --url <baseUrl>     measure a server that is already running; the tool never starts or stops it
   --all               also re-measure usages that were already applied

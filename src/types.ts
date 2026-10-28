@@ -1,3 +1,5 @@
+import type { Metric } from "./metric.js";
+
 export type QualityLevel = "relaxed" | "strict";
 
 export interface Viewport {
@@ -13,6 +15,9 @@ export interface ImgtuneConfig {
   projectDir: string;
   paths: string[];
   quality: QualityLevel;
+  /** The metric every threshold, score and proposal is judged with. */
+  metric: Metric;
+  /** Pass mark on the metric's scale: 0-100 for ssimulacra2, 0-1 for ssim. */
   threshold: number;
   tolerance: number;
   market: string;
@@ -21,6 +26,8 @@ export interface ImgtuneConfig {
   sitemapUrl?: string;
   /** Base URL of an already running server (`--url`). The tool never starts or stops it. */
   url?: string;
+  /** The ssimulacra2_rs binary, resolved against the project. Without it the binary is looked up on PATH. */
+  ssimulacra2Path?: string;
   /** Route pattern -> example URL paths. */
   urls: Record<string, string[]>;
   viewports: Viewport[];

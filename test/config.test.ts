@@ -27,7 +27,8 @@ describe("loadConfig", () => {
     const { command, config } = await loadConfig(["audit"], EMPTY);
     expect(command).toBe("audit");
     expect(config.quality).toBe("relaxed");
-    expect(config.threshold).toBe(0.975);
+    expect(config.metric).toBe("ssimulacra2");
+    expect(config.threshold).toBe(88);
     expect(config.tolerance).toBe(5);
     expect(config.viewports).toHaveLength(6);
     expect(config.paths).toEqual(["."]);
@@ -35,16 +36,52 @@ describe("loadConfig", () => {
 
   it("strict", async () => {
     const { config } = await loadConfig(["audit", "--quality", "strict"], EMPTY);
-    expect(config.threshold).toBe(0.99);
+    expect(config.threshold).toBe(90);
     expect(config.tolerance).toBe(3);
+  });
+
+  it("ssim keeps the 0.975 and 0.99 presets", async () => {
+    expect((await loadConfig(["audit", "--metric", "ssim"], EMPTY)).config.threshold).toBe(0.975);
+    const strict = await loadConfig(["audit", "--metric", "ssim", "--quality", "strict"], EMPTY);
+    expect(strict.config.threshold).toBe(0.99);
+    expect(strict.config.metric).toBe("ssim");
+  });
+
+  it("metric can come from the file, and the flag wins over it", async () => {
+    const dir = projectWith({ metric: "ssim" });
+    expect((await loadConfig(["audit"], dir)).config.metric).toBe("ssim");
+    expect((await loadConfig(["audit", "--metric=ssimulacra2"], dir)).config.metric).toBe("ssimulacra2");
   });
 
   it("threshold override", async () => {
     const { config } = await loadConfig(
-      ["audit", "--quality", "strict", "--threshold", "0.98"],
+      ["audit", "--quality", "strict", "--threshold", "92"],
       EMPTY,
     );
-    expect(config.threshold).toBe(0.98);
+    expect(config.threshold).toBe(92);
+  });
+
+  it("threshold is checked against the metric's range (0-100 ssimulacra2, 0-1 ssim)", async () => {
+    await expect(loadConfig(["audit", "--threshold", "0.98"], EMPTY)).resolves.toMatchObject({ config: { threshold: 0.98 } });
+    await expect(loadConfig(["audit", "--threshold", "101"], EMPTY)).rejects.toThrow(/Invalid threshold "101" \(--threshold\).*0 and 100/);
+    await expect(loadConfig(["audit", "--metric", "ssim", "--threshold", "88"], EMPTY)).rejects.toThrow(/0 and 1/);
+  });
+
+  it("refuses an unknown metric, from a flag or the file", async () => {
+    await expect(loadConfig(["audit", "--metric", "psnr"], EMPTY)).rejects.toThrow(
+      'Invalid metric "psnr" (--metric): expected one of ssimulacra2, ssim',
+    );
+    await expect(loadConfig(["audit"], projectWith({ metric: 1 }))).rejects.toThrow(
+      "Invalid metric 1 (imgtune.config.json)",
+    );
+  });
+
+  it("resolves ssimulacra2Path against the project", async () => {
+    const { config } = await loadConfig(["audit"], projectWith({ ssimulacra2Path: "bin/ssimulacra2_rs" }));
+    expect(config.ssimulacra2Path).toBe(join(config.projectDir, "bin/ssimulacra2_rs"));
+    await expect(loadConfig(["audit"], projectWith({ ssimulacra2Path: 3 }))).rejects.toThrow(
+      "Invalid ssimulacra2Path 3 (imgtune.config.json)",
+    );
   });
 
   it("file + flags", async () => {

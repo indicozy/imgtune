@@ -4,14 +4,14 @@ import { componentQuality, minPassingQuality, toTargetQuality } from "../src/sea
 import { ssim, type RawImage } from "../src/ssim.js";
 import { gradientNoise } from "./image-fixtures.js";
 
-/** Stub encoder whose "decoded" image carries the quality, and an SSIM that is exactly quality / 100. */
+/** Stub encoder whose "decoded" image carries the quality, and a score that is exactly quality / 100. */
 function qualityStub(log: number[]) {
   return {
     encode: (async (_ref: RawImage, _format: "avif" | "webp", quality: number) => {
       log.push(quality);
       return { bytes: quality, decoded: { data: Uint8ClampedArray.of(quality), width: 1, height: 1 }, buffer: Buffer.alloc(0) };
     }) as typeof encode,
-    ssim: ((_ref: RawImage, test: RawImage) => test.data[0] / 100) as typeof ssim,
+    score: (_ref: RawImage, test: RawImage) => test.data[0] / 100,
   };
 }
 
@@ -55,7 +55,7 @@ describe("minPassingQuality", () => {
       encodes++;
       return encode(r, f, q, p);
     }) as typeof encode;
-    const result = await minPassingQuality(ref, "webp", 85, "next-default", threshold, 5, { encode: counted });
+    const result = await minPassingQuality(ref, "webp", 85, "next-default", threshold, 5, { encode: counted, score: ssim });
     expect(scores.get(result)!).toBeGreaterThanOrEqual(threshold);
     expect(result - firstPassing).toBeGreaterThanOrEqual(0);
     expect(result - firstPassing).toBeLessThanOrEqual(5);
