@@ -17,6 +17,9 @@ const MINUTE = 60_000;
 /** Next telemetry off, so the run makes no calls out. NODE_ENV is inherited from vitest ("test") on purpose. */
 const CHILD_ENV = { ...process.env, NEXT_TELEMETRY_DISABLED: "1" };
 const CARD_FILE = "components/Card.tsx";
+const PAGE_FILE = "app/[store]/[...slug]/page.tsx";
+/** Grid of two columns with 12px page padding and an 8px gap: each card is 50vw minus 16px. */
+const CARD_SIZES = "(max-width: 768px) calc(50vw - 16px), calc(50vw - 16px)";
 const CONFIG_FILE = "next.config.ts";
 /** Project files the run must not change (apart from the applied card and next.config). */
 const WATCHED_FILES = ["next.config.ts", "next-env.d.ts", "tsconfig.json"];
@@ -215,6 +218,11 @@ function syntheticPhoto(index: number): Buffer {
 async function writeImages(): Promise<void> {
   const imgDir = join(dir, "public/img");
   await mkdir(imgDir, { recursive: true });
+  // A 40 px logo at native size: a plain <img> of it saves nothing, so it ranks below the card.
+  await writeFile(
+    join(imgDir, "logo.jpg"),
+    await sharp({ create: { width: 40, height: 40, channels: 3, background: "#336699" } }).jpeg().toBuffer(),
+  );
   for (let i = 1; i <= 8; i++) {
     const jpeg = await sharp(syntheticPhoto(i), { raw: { width: 1200, height: 1200, channels: 3 } })
       .jpeg({ quality: 90 })
@@ -227,7 +235,7 @@ beforeAll(async () => {
   execFileSync("pnpm", ["build"], { cwd: ROOT, stdio: "pipe" });
   dir = await mkdtemp(join(tmpdir(), "imgtune-e2e-"));
   await cp(FIXTURE, dir, { recursive: true });
-  execFileSync("pnpm", ["install", "--prefer-offline", "--frozen-lockfile"], {
+  execFileSync("pnpm", ["install", "--prefer-offline", "--frozen-lockfile", "--network-concurrency=4"], {
     cwd: dir,
     stdio: "pipe",
     timeout: 10 * MINUTE,
@@ -249,7 +257,7 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("imgtune end to end on the Next.js fixture", () => {
+describe.skipIf(process.platform !== "linux")("imgtune end to end on the Next.js fixture", () => {
   it(
     "refuses a running dev server without --url, and measures against it with --url",
     async () => {
@@ -266,7 +274,7 @@ describe("imgtune end to end on the Next.js fixture", () => {
         expect(withUrl.stderr).toContain(`using server http://localhost:${port}`);
         expect(await snapshot(dir)).toEqual(original);
         const results = await readReportResults();
-        expect(results[0]?.component).toBe("Card");
+        expect(results[0]?.relFile).toBe(CARD_FILE);
 
         // The user's server is never stopped by the tool.
         expect(detectRunningDevServer(dir).running).toBe(true);
@@ -288,10 +296,13 @@ describe("imgtune end to end on the Next.js fixture", () => {
       expect(await snapshot(dir)).toEqual(original);
 
       const results = await readReportResults();
-      const card = results[0];
+      const card = results.find((r) => r.relFile === CARD_FILE);
+      const logo = results.find((r) => r.relFile === PAGE_FILE);
+      expect(card).toBeDefined();
+      expect(logo).toBeDefined();
+      expect(results.indexOf(card!)).toBeLessThan(results.indexOf(logo!));
       expect(card?.component).toBe("Card");
-      expect(card?.relFile).toBe(CARD_FILE);
-      expect(card?.proposed.sizes).toMatch(/^\(max-width: 768px\) calc\(50vw/);
+      expect(card?.proposed.sizes).toBe(CARD_SIZES);
       expect(card?.estimated).toBe(false);
       // Next's telemetry flush (detached-flush.js) can outlive `next dev` for a moment; the dev server must not.
       await waitUntil(async () => leftoverProcesses(dir).length === 0, 30_000, "no process left in the fixture");
@@ -310,8 +321,9 @@ describe("imgtune end to end on the Next.js fixture", () => {
       applied = await snapshot(dir);
       // The lower quality (75 -> 45) is not listed in next.config, so apply adds it there too.
       expect(changedBetween(original, applied)).toEqual([CARD_FILE, CONFIG_FILE].sort());
+      expect(applied.get(PAGE_FILE)).toBe(original.get(PAGE_FILE));
       const card = await readFile(join(dir, CARD_FILE), "utf8");
-      expect(card).toMatch(/sizes="\(max-width: 768px\) calc\(50vw/);
+      expect(card).toContain(`sizes="${CARD_SIZES}"`);
     },
     10 * MINUTE,
   );
@@ -321,8 +333,10 @@ describe("imgtune end to end on the Next.js fixture", () => {
     async () => {
       const result = await runCli(["audit", "--port", String(await freePort())]);
       expect(result.code).toBe(0);
-      expect(result.stderr).toContain("nothing to measure");
-      expect(result.stderr).not.toContain("starting server");
+      // The card is done; the logo has no state entry and is measured again, so the report holds only the logo.
+      expect(result.stderr).toContain("analysing 1 components");
+      const results = await readReportResults();
+      expect(results.map((r) => r.relFile)).toEqual([PAGE_FILE]);
       expect(await snapshot(dir)).toEqual(applied);
     },
     10 * MINUTE,
@@ -366,8 +380,7 @@ describe("imgtune end to end on the Next.js fixture", () => {
 
       expect(await snapshot(dir)).toEqual(applied);
       await waitUntil(async () => processesIn(dir).length === 0, 30_000, "dev server processes to exit");
-      // The lock file Next leaves behind names a pid that may still be a zombie for a moment; wait it out.
-      await waitUntil(async () => !detectRunningDevServer(dir).running, 30_000, "dev server lock to clear");
+      expect(detectRunningDevServer(dir).running).toBe(false);
     },
     10 * MINUTE,
   );

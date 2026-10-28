@@ -24,6 +24,7 @@ export const DEFAULT_VIEWPORTS: readonly Viewport[] = [
   { name: "pixel-7", width: 412, height: 915, dpr: 2.625, mobile: true, userAgent: ANDROID_UA },
   { name: "iphone-15-pro-max", width: 430, height: 932, dpr: 3, mobile: true, userAgent: IPHONE_UA },
   { name: "desktop", width: 1440, height: 900, dpr: 2, mobile: false },
+  { name: "desktop-1280", width: 1280, height: 800, dpr: 1, mobile: false },
 ];
 
 /** Keys read from `imgtune.config.json`. `projectDir` always comes from `--project` or cwd. */

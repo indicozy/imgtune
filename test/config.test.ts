@@ -13,7 +13,7 @@ describe("loadConfig", () => {
     expect(config.quality).toBe("relaxed");
     expect(config.threshold).toBe(0.975);
     expect(config.tolerance).toBe(5);
-    expect(config.viewports).toHaveLength(5);
+    expect(config.viewports).toHaveLength(6);
     expect(config.paths).toEqual(["."]);
   });
 

@@ -159,9 +159,28 @@ function detectFromLockFile(projectDir: string): RunningDevServer | undefined {
   }
   const pid = lock?.pid;
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
-  if (!isAlive(pid)) return undefined;
+  if (!isAlive(pid) || !isLiveNextDev(pid, projectDir)) return undefined;
   const appUrl = typeof lock?.appUrl === "string" ? lock.appUrl : undefined;
   return appUrl === undefined ? { running: true, pid } : { running: true, pid, appUrl };
+}
+
+/**
+ * A lock file outlives a killed `next dev`, and its pid can be a zombie or a reused pid. On Linux the pid counts
+ * only when it is not a zombie and is either in the project or running a `next dev` command line. Elsewhere
+ * (no /proc) a live pid is taken as the server.
+ */
+function isLiveNextDev(pid: number, projectDir: string): boolean {
+  if (process.platform !== "linux") return true;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0];
+    if (state === "Z") return false;
+    if (realpathSync(`/proc/${pid}/cwd`) === realpathSync(projectDir)) return true;
+    return isNextDevCmdline(readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" "));
+  } catch {
+    // The process is gone or not inspectable: it is not a server we can name.
+    return false;
+  }
 }
 
 function detectFromProc(projectDir: string): RunningDevServer | undefined {
@@ -187,8 +206,13 @@ function detectFromProc(projectDir: string): RunningDevServer | undefined {
   return undefined;
 }
 
+/**
+ * True for a `next dev` command: an argument that is `next` (or a path ending in `/next`, the package's bin) directly
+ * followed by `dev`. Next's own helpers (e.g. `telemetry/detached-flush.js dev <dir>`) do not match.
+ */
 function isNextDevCmdline(cmdline: string): boolean {
-  return /\bnext\b/.test(cmdline) && /\bdev\b/.test(cmdline);
+  const args = cmdline.split(" ");
+  return args.some((arg, i) => /(^|\/)next$/.test(arg) && args[i + 1] === "dev");
 }
 
 function isAlive(pid: number): boolean {

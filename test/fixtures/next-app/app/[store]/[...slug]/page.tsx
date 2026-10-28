@@ -12,6 +12,7 @@ export default async function Page({
 
   return (
     <main>
+      <img src="/img/logo.jpg" width="40" height="40" alt="" />
       <h1>
         {store} / {slug.join("/")}
       </h1>

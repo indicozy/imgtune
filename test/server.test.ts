@@ -96,21 +96,53 @@ describe("detectDevCommand", () => {
 });
 
 describe("detectRunningDevServer", () => {
-  it("reports a server whose lock file names a live pid", () => {
-    const dir = makeProject({
-      ".next/dev/lock": JSON.stringify({
-        pid: process.pid,
-        port: 3000,
-        hostname: "localhost",
+  it("reports a server whose lock file names a live next dev process in the project", async () => {
+    if (process.platform !== "linux") return;
+    const dir = makeProject();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "next", "dev"], {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    children.push(child);
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      mkdirSync(join(dir, ".next/dev"), { recursive: true });
+      writeFileSync(join(dir, ".next/dev/lock"), JSON.stringify({ pid: child.pid, appUrl: "http://localhost:3000" }));
+      expect(detectRunningDevServer(dir)).toEqual({
+        running: true,
+        pid: child.pid,
         appUrl: "http://localhost:3000",
-        startedAt: 0,
-      }),
+      });
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  it("ignores a lock file whose pid is alive but is neither in the project nor a next dev process", async () => {
+    if (process.platform !== "linux") return;
+    const dir = makeProject();
+    const elsewhere = makeProject();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      cwd: elsewhere,
+      stdio: "ignore",
     });
-    expect(detectRunningDevServer(dir)).toEqual({
-      running: true,
-      pid: process.pid,
-      appUrl: "http://localhost:3000",
+    children.push(child);
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      mkdirSync(join(dir, ".next/dev"), { recursive: true });
+      writeFileSync(join(dir, ".next/dev/lock"), JSON.stringify({ pid: child.pid }));
+      expect(detectRunningDevServer(dir)).toEqual({ running: false });
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  it("ignores a lock file that names this process when this process runs elsewhere", () => {
+    if (process.platform !== "linux") return;
+    const dir = makeProject({
+      ".next/dev/lock": JSON.stringify({ pid: process.pid, appUrl: "http://localhost:3000" }),
     });
+    expect(detectRunningDevServer(dir)).toEqual({ running: false });
   });
 
   it("ignores a lock file whose pid is dead", () => {
@@ -136,6 +168,23 @@ describe("detectRunningDevServer", () => {
         status = detectRunningDevServer(dir);
       }
       expect(status).toEqual({ running: true, pid: child.pid });
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  it("ignores Next's own detached telemetry flush for the project", async () => {
+    if (process.platform !== "linux") return;
+    const dir = makeProject();
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)", "/x/next/dist/telemetry/detached-flush.js", "dev", dir],
+      { cwd: dir, stdio: "ignore" },
+    );
+    children.push(child);
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      expect(detectRunningDevServer(dir)).toEqual({ running: false });
     } finally {
       child.kill("SIGKILL");
     }
