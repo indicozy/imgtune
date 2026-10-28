@@ -9,6 +9,7 @@
   "main": "dist/cli.js",
   "files": [
     "dist",
+    "vendor",
     "NOTICE"
   ],
   "scripts": {

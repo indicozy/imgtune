@@ -7,3 +7,9 @@ The SSIM quality measurement (src/ssim.ts) is adapted from Optiq:
   Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
 
 The adapted code keeps the original attribution header. Modifications are made for imgtune.
+
+The SSIMULACRA2 WebAssembly module in vendor/ssimulacra2 is built from native/ssimulacra2-wasm, which uses:
+
+  ssimulacra2 0.5.0 (BSD-2-Clause), Copyright (c) 2022-2022, the rav1e contributors
+  yuvxyb 0.4.0 (MIT)
+  wasm-bindgen 0.2.129 (MIT OR Apache-2.0)

@@ -3,3 +3,4 @@ node_modules/
 dist/
 .imgtune/
 *.tsbuildinfo
+native/ssimulacra2-wasm/target/
