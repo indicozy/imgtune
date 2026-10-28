@@ -294,6 +294,18 @@ describe("per-viewport projection and media branches", () => {
     expect(r.notes).toContain("sizes already fits");
   });
 
+  it("proposes no sizes for an absent sizes when the proposal changes no slot or bytes", async () => {
+    // Absent sizes is the 100vw default: the phone at 393px and desktop at 1440px already sit on 100vw.
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 1200, rendered: 393, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1440, rendered: 1440, bytes: 20000, dpr: 1 }),
+    ]);
+    const r = await run(usage(), observations);
+
+    expect(r.proposed.sizes).toBeUndefined();
+    expect(r.notes).toContain("no sizes change worth making (no sizes attribute: 100vw default)");
+  });
+
   it("proposes nothing for a vector image", async () => {
     const observations = SRC.flatMap((src) => [
       { ...viewportObs({ viewport: "iphone-15", src, natural: 1200, rendered: 393, bytes: 20000, dpr: 3 }), contentType: "image/svg+xml" },
@@ -790,7 +802,7 @@ describe("analyse", () => {
     expect(r.proposed.quality).toBeUndefined();
     // Absent sizes resolve to the same 1200w candidate as 393px, so the sizes change saves nothing and is no proposal.
     expect(r.proposed.sizes).toBeUndefined();
-    expect(r.notes).toContain("sizes already fits");
+    expect(r.notes).toContain("no sizes change worth making (no sizes attribute: 100vw default)");
     expect(r.notes).toContain("quality not proposed: no CDN webp variants observed for calibration");
   }, CDN_TIMEOUT_MS);
 

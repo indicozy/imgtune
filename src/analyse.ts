@@ -31,6 +31,8 @@ const CALIBRATION_SAMPLES = 5;
 const GROWTH_RATIO = 1.05;
 const NOTE_NOT_CONFIRMED = "estimated: not confirmed against /_next/image";
 const NOTE_SIZES_FITS = "sizes already fits";
+/** The same, for a usage with no sizes attribute: the page gets the 100vw default either way. */
+const NOTE_SIZES_NO_CHANGE = "no sizes change worth making (no sizes attribute: 100vw default)";
 const NOTE_VECTOR = "vector image: sizes/quality do not apply";
 /** A sizes proposal saving fewer bytes per image than this, and under NEGLIGIBLE_RATIO of the current bytes, is dropped. */
 const NEGLIGIBLE_BYTES = 200;
@@ -564,7 +566,9 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     const proj = { ...(sameAsFull ? projFull : await project(finalSizes, qNew)) };
     return { finalSizes, search, qNew, proj };
   };
-  let fits = proposedSizes !== undefined && sizesLiteral !== undefined && sameSlotAsCurrent(proposedSizes, sizesLiteral);
+  // An absent sizes is the 100vw default, so it is the current value for the slot comparison.
+  const currentSizes = sizesLiteral ?? ABSENT_SIZES;
+  let fits = proposedSizes !== undefined && sameSlotAsCurrent(proposedSizes, currentSizes);
   let settled = await settle(fits ? undefined : proposedSizes);
   if (!fits && proposedSizes !== undefined && negligibleSaving(settled.proj)) {
     fits = true;
@@ -572,13 +576,13 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   }
   if (fits) {
     proposedSizes = undefined;
-    notes.push(NOTE_SIZES_FITS);
+    notes.push(sizesLiteral === undefined ? NOTE_SIZES_NO_CHANGE : NOTE_SIZES_FITS);
   }
   const { finalSizes, qNew, proj: projFinal } = settled;
   if (settled.search.reason) notes.push(settled.search.reason);
   const proposedQuality = settled.search.proposedQuality;
   // The full correction is no proposal either when it resolves to the current slots (it is what --allow-growth writes).
-  const sizesFullFits = sizesFull !== undefined && sizesLiteral !== undefined && sameSlotAsCurrent(sizesFull, sizesLiteral);
+  const sizesFullFits = sizesFull !== undefined && sameSlotAsCurrent(sizesFull, currentSizes);
 
   // Candidate widths that the ladder offers well above what a slot needs are reported as gaps.
   const candidates = nextCandidates(ctx.imageConfig, finalSizes, widthLiteral);
