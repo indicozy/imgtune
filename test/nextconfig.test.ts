@@ -6,8 +6,8 @@ import { readImageConfig } from "../src/nextconfig.js";
 const fixture = (name: string) => resolve(import.meta.dirname, "fixtures", name);
 
 describe("readImageConfig", () => {
-  it("reads the shop config: custom loader, qualities, 18 device sizes", () => {
-    const dir = fixture("next-config-shop");
+  it("reads a custom-loader config: custom loader, qualities, 18 device sizes", () => {
+    const dir = fixture("next-config-cdn-loader");
     const config = readImageConfig(dir);
     const text = readFileSync(resolve(dir, "next.config.ts"), "utf8");
 

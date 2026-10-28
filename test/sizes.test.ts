@@ -21,7 +21,7 @@ const desktop = (viewportWidth: number, renderedWidth: number) => ({
 });
 
 describe("deriveSizes", () => {
-  it("fits calc(50vw - 20px) for the shop grid and combines it with a desktop px width", () => {
+  it("fits calc(50vw - 20px) for a product grid and combines it with a desktop px width", () => {
     const points = [
       mobile(375, 167.5),
       mobile(390, 175),
