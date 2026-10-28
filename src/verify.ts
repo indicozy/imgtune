@@ -260,9 +260,16 @@ const fmtBytes = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
 const fmtSsim = (value: number | undefined): string => (value === undefined ? "-" : value.toFixed(4));
 
 function statusOf(judgement: Judgement): string {
-  if (judgement.status === "unmeasured") return `not measured (${judgement.reason})`;
-  if (judgement.status === "verified") return "verified";
-  return judgement.raiseTo === undefined ? "regressed" : `regressed (raise quality to ${judgement.raiseTo})`;
+  let status: string;
+  if (judgement.status === "unmeasured") status = `not measured (${judgement.reason})`;
+  else if (judgement.status === "verified") status = "verified";
+  else status = judgement.raiseTo === undefined ? "regressed" : `regressed (raise quality to ${judgement.raiseTo})`;
+  // The 95% rule decides the verdict, so the table shows the passing counts behind it.
+  const counts = FORMATS.flatMap((format) => {
+    const count = judgement.counts[format];
+    return count ? [`${format} ${count.passing}/${count.usable}`] : [];
+  });
+  return counts.length === 0 ? status : `${status} (passing ${counts.join(", ")})`;
 }
 
 /**

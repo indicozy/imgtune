@@ -258,7 +258,12 @@ describe("bytesByViewport and renderVerifyTable", () => {
         line: 12,
         bytes: { desktop: 4096, "iphone-15": 2048 },
         beforeBytes: 8192,
-        judgement: { status: "regressed", ssim: { webp: 0.9 }, counts: { webp: { usable: 20, passing: 10 } }, raiseTo: 80 },
+        judgement: {
+          status: "regressed",
+          ssim: { avif: 0.99, webp: 0.9 },
+          counts: { avif: { usable: 20, passing: 19 }, webp: { usable: 20, passing: 10 } },
+          raiseTo: 80,
+        },
       },
       {
         usageId: "b:1:1",
@@ -273,7 +278,7 @@ describe("bytesByViewport and renderVerifyTable", () => {
     expect(row).toContain("8.0 KB");
     expect(row).toContain("iphone-15 2.0 KB, desktop 4.0 KB");
     expect(unmeasured).toContain("not measured (insufficient webp samples: 1)");
-    expect(row).toContain("regressed (raise quality to 80)");
+    expect(row).toContain("regressed (raise quality to 80) (passing avif 19/20, webp 10/20)");
     expect(row).toContain("src/a.tsx:12");
   });
 });
