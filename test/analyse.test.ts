@@ -432,6 +432,42 @@ describe("analyse", () => {
     expect(r.proposed.quality!).toBeLessThanOrEqual(85);
   });
 
+  it("searches and confirms quality at the served width when sizes is a manual expression", async () => {
+    const calls: number[] = [];
+    const confirm: NonNullable<AnalyseOptions["confirm"]> = async (samples) => {
+      calls.push(samples[0].width);
+      return { confirmed: true, ssim: { webp: 0.99 }, bytes: { webp: 1234 } };
+    };
+    // The page keeps serving the 384-wide file whatever the slot predicts, so that is the width to quote.
+    const observations: ImageObservation[] = [];
+    for (const src of SRC) {
+      observations.push(
+        observation({
+          viewport: "iphone-15",
+          src,
+          natural: 384,
+          rendered: 393,
+          bytes: await bytesOf(src, 384, "webp", 85, "next-default"),
+          contentType: "image/webp",
+          currentSrc: nextSrc(src, 384, 85),
+        }),
+      );
+    }
+    const [r] = await analyse(
+      [usage({ sizes: expression, quality: literal(85) })],
+      observations,
+      nextConfig,
+      cfg,
+      BASE,
+      fetchStub,
+      silent({ confirm }),
+    );
+
+    expect(calls).toEqual([384]);
+    expect(r.estimated).toBe(false);
+    expect(r.proposed.sizes).toBeUndefined();
+  });
+
   it("reports that no quality is proposed when no sample original can be fetched", async () => {
     const logs: string[] = [];
     const failing = async (url: string): Promise<Buffer> => {

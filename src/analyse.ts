@@ -251,12 +251,13 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
 
   if (qualityManual) notes.push("manual change needed: quality is an expression");
 
-  const search = await searchQuality(ctx, usageObs, quality, width, notes);
+  // A manual `sizes` keeps serving the file's own width, so quality is searched and confirmed at that width.
+  const quoteWidth = sizesManual ? (medianWidth ?? width) : width;
+  const search = await searchQuality(ctx, usageObs, quality, quoteWidth, notes);
   const proposedQuality = search.proposedQuality;
   result.proposed.quality = proposedQuality;
 
-  // Bytes are projected at the width the browser would pick. A manual `sizes` claims no width saving.
-  const evalWidth = sizesManual ? (medianWidth ?? width) : width;
+  // Bytes are projected at the width the page serves. A manual `sizes` claims no width saving.
   const qNew = proposedQuality ?? quality;
   const served: Format = result.servedFormats.includes("avif") ? "avif" : "webp";
   const projectionFormat: Format = ctx.profile === "cdn" ? "avif" : served;
@@ -272,7 +273,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const ssims: number[] = [];
   for (const sample of search.samples) {
     try {
-      const projected = await evaluate(ctx, sample.buffer, projectionFormat, qNew, evalWidth, search.offsets);
+      const projected = await evaluate(ctx, sample.buffer, projectionFormat, qNew, quoteWidth, search.offsets);
       if (ctx.profile === "cdn") {
         const observed = observedBySrc.get(sample.src);
         const baseline = await evaluate(ctx, sample.buffer, projectionFormat, quality, medianWidth ?? width, search.offsets);
@@ -282,7 +283,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
       } else if (projected) {
         projectedPerSample.push(projected.bytes);
       }
-      const scored = projectionFormat === served ? projected : await evaluate(ctx, sample.buffer, served, qNew, evalWidth, search.offsets);
+      const scored = projectionFormat === served ? projected : await evaluate(ctx, sample.buffer, served, qNew, quoteWidth, search.offsets);
       if (scored) ssims.push(scored.ssim);
     } catch (err) {
       logOnce(ctx, `projection ${sample.src}`, `skipping projection for ${sample.src}: ${message(err)}`);
@@ -298,7 +299,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     } else if (proposedQuality !== undefined && search.samples.length > 0) {
       // A confirmed result uses the served bytes of the primary format (AVIF when searched, else WebP).
       const primary: Format = ctx.searchFormats.includes("avif") ? "avif" : "webp";
-      const outcome = await confirmQuality(ctx, search.samples, proposedQuality, width);
+      const outcome = await confirmQuality(ctx, search.samples, proposedQuality, quoteWidth);
       const confirmedBytes = outcome?.confirmed ? outcome.bytes[primary] : undefined;
       if (confirmedBytes !== undefined) {
         projected = confirmedBytes;
