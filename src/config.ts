@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { METRICS, type Metric } from "./metric.js";
-import type { ImgtuneConfig, QualityLevel, Viewport } from "./types.js";
+import type { ImgtuneConfig, QualityLevel, QualityRaise, Viewport } from "./types.js";
 
 export type Command = "audit" | "apply" | "verify" | "restore";
 
@@ -59,14 +59,16 @@ interface Flags {
   url?: string;
   all: boolean;
   allowGrowth: boolean;
+  raises: QualityRaise[];
 }
 
 export async function loadConfig(
   argv: string[],
   cwd: string,
-): Promise<{ command: Command; config: ImgtuneConfig; allowGrowth: boolean }> {
+): Promise<{ command: Command; config: ImgtuneConfig; allowGrowth: boolean; raises: QualityRaise[] }> {
   const { command, flags } = parseArgs(argv);
   if (flags.allowGrowth && command !== "apply") throw new Error("--allow-growth only applies to apply");
+  if (flags.raises.length > 0 && command !== "apply") throw new Error("--raise only applies to apply");
   const projectDir = resolve(cwd, flags.project ?? ".");
   const file = await readConfigFile(projectDir);
 
@@ -111,12 +113,12 @@ export async function loadConfig(
     maxPagesPerPattern: file.maxPagesPerPattern ?? 2,
     includeDone: flags.all || (file.includeDone ?? false),
   };
-  return { command, config, allowGrowth: flags.allowGrowth };
+  return { command, config, allowGrowth: flags.allowGrowth, raises: flags.raises };
 }
 
 function parseArgs(argv: string[]): { command: Command; flags: Flags } {
   const positionals: string[] = [];
-  const flags: Flags = { paths: [], all: false, allowGrowth: false };
+  const flags: Flags = { paths: [], all: false, allowGrowth: false, raises: [] };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -171,6 +173,9 @@ function parseArgs(argv: string[]): { command: Command; flags: Flags } {
         break;
       case "--url":
         flags.url = value;
+        break;
+      case "--raise":
+        flags.raises.push(parseRaise(value));
         break;
       default:
         throw new Error(`Unknown option ${name}`);
@@ -283,6 +288,16 @@ function parseThreshold(value: unknown, source: string, metric: Metric): number 
     throw new Error(`Invalid threshold ${JSON.stringify(value)} (${source}): expected a number between 0 and ${max} for ${metric}`);
   }
   return n;
+}
+
+/** `Component=quality` for `--raise`: a component name and an integer quality from 1 to 100. */
+function parseRaise(value: string): QualityRaise {
+  const match = /^([A-Za-z_$][\w$]*)=(\d{1,3})$/.exec(value);
+  const quality = match ? Number(match[2]) : Number.NaN;
+  if (!match || quality < 1 || quality > 100) {
+    throw new Error(`--raise expects Component=quality with a quality from 1 to 100, got "${value}"`);
+  }
+  return { component: match[1], quality };
 }
 
 function parsePort(value: unknown, source: string): number {

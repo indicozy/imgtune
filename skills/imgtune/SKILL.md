@@ -48,19 +48,27 @@ Scan only the sites the user owns, and scan each one once unless the user asks f
    npx imgtune verify [--url <baseUrl>] [--path <path>]
    ```
 
-   `verify` changes no files. Each usage is `verified`, `regressed`, or `unmeasured`.
+   `verify` changes no files. Each usage is `verified`, `regressed`, or `unmeasured`. A usage with fewer than five
+   distinct images is judged on those, and its status shows `n`, for example `verified (n=2)`.
 5. Show `git diff`. Do not commit. Leave the commit to the user.
 
-If `verify` reports `regressed (raise quality to N)`, set the quality of that usage to N, then run `verify` again.
-That is the one hand edit allowed on top of `apply`. For any other `regressed` reason, or for an `unmeasured` usage,
-report it and stop.
+If `verify` reports `regressed (raise quality to N)`, raise that usage with the command `verify` prints under the
+table, then run `verify` again:
+
+   ```sh
+   npx imgtune apply --raise <Component>=N
+   npx imgtune verify
+   ```
+
+`--raise` only moves the quality of the named usage (and its entry in `images.qualities`). For any other `regressed`
+reason, or for an `unmeasured` usage, report it and stop.
 
 To back out applied changes, ask the user first, then restore the files from `git diff`. `npx imgtune restore` does
 not do this. It only undoes the instrumentation an interrupted run left in the source.
 
 ## 3. Rules
 
-- Never hand-edit what `apply` already wrote, except the "raise quality to N" change in step 2.
+- Never hand-edit what `apply` already wrote. The "raise quality to N" change goes through `apply --raise` in step 2.
 - Use `--allow-growth` only when the user accepts heavier but sharper images.
 - A loader that cannot set quality gets `sizes` changes only. Say so in the summary.
 - Do not run scans against sites the user does not own, beyond one scan.

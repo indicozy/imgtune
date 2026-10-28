@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import sharp from "sharp";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -627,7 +627,7 @@ describe("verify with fake measurement, originals and scorer", () => {
   const LOADER_CONFIG = "export default {\n  images: {\n    loaderFile: './loader.ts',\n  },\n};\n";
 
   // verify prints its table to stdout; keep the test output clean.
-  let stdout: { mockRestore(): void };
+  let stdout: MockInstance<typeof process.stdout.write>;
   beforeEach(() => {
     stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   });
@@ -768,6 +768,66 @@ describe("verify with fake measurement, originals and scorer", () => {
     expect(renderVerifyTable(rows, "ssim")).toContain("verified (n=2)");
     const [saved] = await loadState(dir);
     expect(saved.verification?.status).toBe("verified");
+  });
+
+  /** The file as apply leaves it, with `quality={q}` on the usage. */
+  const imageWithQuality = (q: string): string =>
+    `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={${WIDTH}} height={${HEIGHT}} quality={${q}} />;\n`;
+
+  it("picks up a quality the user wrote after apply: logs it, records it, and measures it", async () => {
+    const dir = project({ "src/A.tsx": imageWithQuality("30") });
+    await saveState(dir, [appliedEntry(dir, "src/A.tsx", { applied: { quality: 30 } })]);
+    writeFileSync(join(dir, "src/A.tsx"), imageWithQuality("40"));
+    const { deps, seen } = await fakes((usages) => observationsFor(usages[0].id));
+    const logs: string[] = [];
+
+    await verify(config(dir), { ...deps, log: (message: string) => logs.push(message) });
+
+    expect(logs).toContain("A: picked up your edit: quality 30 → 40");
+    expect(seen[0]).toHaveLength(1);
+    const [saved] = await loadState(dir);
+    expect(saved.applied.quality).toBe(40);
+    expect(saved.before?.quality).toBe(90);
+    expect(saved.fileHash).toBe(sha1(readFileSync(join(dir, "src/A.tsx"))));
+    expect(saved.verification).toBeDefined();
+  });
+
+  it("leaves a changed file alone when its usage is gone from it", async () => {
+    const dir = project({ "src/A.tsx": imageWithQuality("30") });
+    await saveState(dir, [appliedEntry(dir, "src/A.tsx", { applied: { quality: 30 } })]);
+    // A line above the usage moves it, and its id with it.
+    writeFileSync(join(dir, "src/A.tsx"), `// moved\n${imageWithQuality("40")}`);
+    const { seen, deps } = await fakes(() => []);
+
+    await verify(config(dir), deps);
+
+    expect(seen).toEqual([]);
+    const [saved] = await loadState(dir);
+    expect(saved.applied.quality).toBe(30);
+    expect(saved.verification).toBeUndefined();
+  });
+
+  it("leaves a changed file alone when its quality is no longer a literal", async () => {
+    const dir = project({ "src/A.tsx": imageWithQuality("30") });
+    await saveState(dir, [appliedEntry(dir, "src/A.tsx", { applied: { quality: 30 } })]);
+    writeFileSync(join(dir, "src/A.tsx"), imageWithQuality("someQuality"));
+    const { seen, deps } = await fakes(() => []);
+
+    await verify(config(dir), deps);
+
+    expect(seen).toEqual([]);
+    expect((await loadState(dir))[0].applied.quality).toBe(30);
+  });
+
+  it("prints the exact apply --raise command under a regressed usage that a raise can help", async () => {
+    const dir = project({ "src/A.tsx": IMAGE });
+    await saveState(dir, [appliedEntry(dir, "src/A.tsx")]);
+    const { deps } = await fakes((usages) => observationsFor(usages[0].id));
+
+    await verify(config(dir), deps);
+
+    const printed = stdout.mock.calls.map((call) => String(call[0])).join("");
+    expect(printed).toContain("run: npx imgtune apply --raise A=32\n");
   });
 
   it("fails with the audit's error for a --path that does not exist, measuring nothing", async () => {

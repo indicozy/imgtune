@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { analyse, type ComponentResult } from "./analyse.js";
-import { applyResults, type ApplyResult } from "./apply.js";
+import { applyResults, raiseQuality, type ApplyResult, type RaiseResult } from "./apply.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
 import { confirmNextDefault, withQuality, type ConfirmSample } from "./calibrate.js";
 import { backupFiles, installRestoreHandlers, instrument, restore } from "./instrument.js";
@@ -19,7 +19,7 @@ import {
 import { listSourceFiles, scanFile } from "./scan.js";
 import { isDone, loadState, type StateEntry } from "./state.js";
 import { assertMetricAvailable, makeScorer } from "./metric.js";
-import type { ImageUsage, ImgtuneConfig } from "./types.js";
+import type { ImageUsage, ImgtuneConfig, QualityRaise } from "./types.js";
 import { fetchSitemapUrls, resolveUrls, sitemapCandidates, type ResolvedUrls } from "./urls.js";
 import type { RawImage } from "./ssim.js";
 
@@ -450,6 +450,16 @@ export async function applyCommand(
   for (const file of result.edited) process.stdout.write(`edited ${file}\n`);
   for (const skip of result.skipped) process.stdout.write(`skipped ${skip.usageId}: ${skip.reason}\n`);
   process.stdout.write(`review with: git diff\n`);
+  return result;
+}
+
+/** `apply --raise`: raises the applied quality of the named usages and says what changed. Nothing else is applied. */
+export async function raiseCommand(projectDir: string, raises: QualityRaise[], log: Log = progress): Promise<RaiseResult> {
+  await restoreAndReport(projectDir, log);
+  const result = await raiseQuality(projectDir, raises);
+  for (const file of result.edited) process.stdout.write(`edited ${file}\n`);
+  for (const r of result.raised) process.stdout.write(`raised ${r.component} quality ${r.from} -> ${r.to}\n`);
+  process.stdout.write(`run imgtune verify to measure it\n`);
   return result;
 }
 

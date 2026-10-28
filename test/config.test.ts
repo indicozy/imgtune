@@ -175,6 +175,19 @@ describe("loadConfig", () => {
     );
   });
 
+  it("--raise is repeatable for apply, reads Component=quality, and is refused for other commands", async () => {
+    const raised = await loadConfig(["apply", "--raise", "BlockViewerMobile=75", "--raise", "Hero=80"], EMPTY);
+    expect(raised.command).toBe("apply");
+    expect(raised.raises).toEqual([
+      { component: "BlockViewerMobile", quality: 75 },
+      { component: "Hero", quality: 80 },
+    ]);
+    expect((await loadConfig(["apply"], EMPTY)).raises).toEqual([]);
+    await expect(loadConfig(["apply", "--raise", "Hero"], EMPTY)).rejects.toThrow("--raise expects Component=quality");
+    await expect(loadConfig(["apply", "--raise", "Hero=101"], EMPTY)).rejects.toThrow("--raise expects Component=quality");
+    await expect(loadConfig(["audit", "--raise", "Hero=75"], EMPTY)).rejects.toThrow("--raise only applies to apply");
+  });
+
   it("url + verify", async () => {
     const { command, config } = await loadConfig(
       ["verify", "--url", "http://localhost:3000"],

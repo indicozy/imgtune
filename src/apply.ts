@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import ts from "typescript";
 import type { ComponentResult } from "./analyse.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
 import { withQuality } from "./calibrate.js";
 import { readImageConfig } from "./nextconfig.js";
 import { scanText, scriptKind } from "./scan.js";
-import { saveState, type StateEntry } from "./state.js";
-import type { ImageUsage, PropValue } from "./types.js";
+import { loadState, saveState, type StateEntry } from "./state.js";
+import type { ImageUsage, PropValue, QualityRaise } from "./types.js";
 
 export interface ApplyResult {
   /** Project-relative paths of the files written, next.config included. */
@@ -365,6 +365,99 @@ export async function applyResults(
     if (entries.length > 0) await saveState(projectDir, entries);
   }
   return { edited, skipped };
+}
+
+/** Result of `raiseQuality`: the files written and the usages whose applied quality moved. */
+export interface RaiseResult {
+  edited: string[];
+  raised: { usageId: string; component: string; from: number; to: number }[];
+}
+
+/**
+ * `apply --raise`: sets the applied quality of named usages to a higher value, after verify reported them regressed. Each
+ * usage's literal `quality` is rewritten; the value is added to `images.qualities` (or `[75, q]` when the project has no
+ * list and q is not Next's default of 75). The state then records the new applied quality and the new file hash, so
+ * verify measures the raised usage. Every request is checked before anything is written.
+ */
+export async function raiseQuality(projectDir: string, raises: QualityRaise[]): Promise<RaiseResult> {
+  const state = await loadState(projectDir);
+  const imageConfig = readImageConfig(projectDir);
+  // relFile -> the file's text as read, and as it will be written.
+  const sources = new Map<string, { original: string; text: string }>();
+  let config: { relFile: string; file: string; original: string; text: string } | undefined;
+  const raisedEntries = new Map<string, { entry: StateEntry; from: number; to: number }>();
+
+  for (const { component, quality } of raises) {
+    const matches = state.filter((entry) => entry.component === component && entry.applied.quality !== undefined);
+    if (matches.length === 0) throw new Error(`${component}: no applied quality in the state (run imgtune apply first)`);
+    if (matches.length > 1) {
+      throw new Error(`${component}: ${matches.length} applied usages (${matches.map((e) => e.usageId).join(", ")}); the component name must be unique`);
+    }
+    const [entry] = matches;
+    const from = entry.applied.quality as number;
+    if (quality <= from) throw new Error(`${component}: ${quality} is not above the applied quality ${from}`);
+
+    let source = sources.get(entry.relFile);
+    if (!source) {
+      const original = await readFile(join(projectDir, entry.relFile), "utf8");
+      source = { original, text: original };
+      sources.set(entry.relFile, source);
+    }
+    const usage = scanText(source.text, join(projectDir, entry.relFile), projectDir).find((u) => u.id === entry.usageId);
+    if (!usage) throw new Error(`${component}: usage ${entry.usageId} not found in ${entry.relFile}; re-run imgtune audit`);
+    const prop = usage.props.quality;
+    if (prop.kind !== "literal") {
+      const shape = prop.kind === "expression" ? "an expression" : "absent";
+      throw new Error(`${component}: quality is ${shape}; set it to ${quality} by hand`);
+    }
+    source.text = spliceText(source.text, [{ start: prop.start, end: prop.end, text: `quality={${quality}}` }]);
+
+    // The allowlist: Next only accepts listed qualities. Without a list the default is 75, so only other values need one.
+    if (quality !== NEXT_DEFAULT_QUALITY || imageConfig.qualities !== undefined) {
+      if (!imageConfig.file) throw new Error(`${component}: add ${quality} to images.qualities in next.config`);
+      if (!config) {
+        const original = await readFile(imageConfig.file, "utf8");
+        config = { relFile: toPosix(relative(projectDir, imageConfig.file)), file: imageConfig.file, original, text: original };
+      }
+      const outcome = planConfigQualities(config.text, config.file, [quality]);
+      if (outcome.failed.has(quality)) throw new Error(`${component}: add ${quality} to images.qualities in next.config`);
+      config.text = outcome.text;
+    }
+    raisedEntries.set(entry.usageId, { entry, from, to: quality });
+  }
+
+  const edited: string[] = [];
+  const saved: StateEntry[] = [];
+  const now = new Date().toISOString();
+  const raised: RaiseResult["raised"] = [];
+  try {
+    if (config && config.text !== config.original) {
+      await writeFileAtomic(config.file, config.text, { root: projectDir, followSymlink: true });
+      edited.push(config.relFile);
+    }
+    for (const [relFile, { original, text }] of sources) {
+      const oldHash = sha1(original);
+      const newHash = sha1(text);
+      if (text !== original) {
+        await writeFileAtomic(join(projectDir, relFile), text, { root: projectDir, followSymlink: true });
+        edited.push(relFile);
+      }
+      // Every usage of the file that was measured against the old text now follows the new one; the raised ones also take the new quality.
+      for (const entry of state.filter((e) => e.relFile === relFile)) {
+        const raise = raisedEntries.get(entry.usageId);
+        if (raise) {
+          const { verification: _stale, ...rest } = entry;
+          saved.push({ ...rest, fileHash: newHash, applied: { ...entry.applied, quality: raise.to }, at: now });
+          raised.push({ usageId: entry.usageId, component: entry.component, from: raise.from, to: raise.to });
+        } else if (entry.fileHash === oldHash && newHash !== oldHash) {
+          saved.push({ ...entry, fileHash: newHash });
+        }
+      }
+    }
+  } finally {
+    if (saved.length > 0) await saveState(projectDir, saved);
+  }
+  return { edited, raised };
 }
 
 const toPosix = (path: string): string => path.split(sep).join("/");

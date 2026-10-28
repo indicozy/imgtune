@@ -298,6 +298,47 @@ export function selectApplied(
   return out;
 }
 
+/**
+ * Takes the edit a user made to an applied usage after apply: when its file changed since apply, the usage is still there,
+ * and its applied sizes and quality are still literals, the literal values become the applied ones and the file hash
+ * follows the file, so verify measures what the user wrote. A usage that is gone, or whose applied value is no longer a
+ * literal, keeps its entry (verify then skips it). `changed` lists the entries whose state moved, for saving.
+ */
+export function pickUpEdits(
+  entries: StateEntry[],
+  currentHash: (relFile: string) => string | undefined,
+  usageOf: (entry: StateEntry) => ImageUsage | undefined,
+): { entries: StateEntry[]; changed: StateEntry[]; messages: string[] } {
+  const changed: StateEntry[] = [];
+  const messages: string[] = [];
+  const out = entries.map((entry) => {
+    if (entry.applied.sizes === undefined && entry.applied.quality === undefined) return entry;
+    const hash = currentHash(entry.relFile);
+    if (hash === undefined || hash === entry.fileHash) return entry;
+    const usage = usageOf(entry);
+    if (!usage) return entry;
+    const applied: StateEntry["applied"] = {};
+    const parts: string[] = [];
+    if (entry.applied.sizes !== undefined) {
+      const prop = usage.props.sizes;
+      if (prop.kind !== "literal" || typeof prop.value !== "string") return entry;
+      applied.sizes = prop.value;
+      if (prop.value !== entry.applied.sizes) parts.push(`sizes ${entry.applied.sizes} → ${prop.value}`);
+    }
+    if (entry.applied.quality !== undefined) {
+      const prop = usage.props.quality;
+      if (prop.kind !== "literal" || typeof prop.value !== "number") return entry;
+      applied.quality = prop.value;
+      if (prop.value !== entry.applied.quality) parts.push(`quality ${entry.applied.quality} → ${prop.value}`);
+    }
+    const next: StateEntry = { ...entry, fileHash: hash, applied };
+    changed.push(next);
+    if (parts.length > 0) messages.push(`${usage.component}: picked up your edit: ${parts.join(", ")}`);
+    return next;
+  });
+  return { entries: out, changed, messages };
+}
+
 const fmtBytes = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
 /** A score, with its bar after "min" when the usage has one. */
 const fmtScore = (metric: Metric, value: number | undefined, min?: number, drop?: number): string => {
@@ -537,9 +578,9 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   // The audit's own listing of the paths, so a path that does not exist fails here as it does there. Only the entries
   // under the paths are judged; the others keep whatever verdict they have.
   const inScope = new Set(await listSourceFiles(projectDir, config.paths));
-  const state = (await loadState(projectDir)).filter((entry) => inScope.has(resolve(projectDir, entry.relFile)));
+  const stored = (await loadState(projectDir)).filter((entry) => inScope.has(resolve(projectDir, entry.relFile)));
   const hashes = new Map<string, string | undefined>();
-  for (const relFile of unique(state.map((entry) => entry.relFile))) {
+  for (const relFile of unique(stored.map((entry) => entry.relFile))) {
     try {
       hashes.set(relFile, sha1(await readFile(join(projectDir, relFile))));
     } catch {
@@ -555,6 +596,10 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
     }
     return usages.find((usage) => usage.id === entry.usageId);
   };
+  const picked = pickUpEdits(stored, (relFile) => hashes.get(relFile), usageOf);
+  if (picked.changed.length > 0) await saveState(projectDir, picked.changed);
+  for (const message of picked.messages) log(message);
+  const state = picked.entries;
   const applied = selectApplied(state, (relFile) => hashes.get(relFile), usageOf);
   for (const entry of state) {
     const hasApplied = entry.applied.sizes !== undefined || entry.applied.quality !== undefined;
@@ -667,6 +712,11 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   if (updated.length > 0) await saveState(projectDir, updated);
 
   process.stdout.write(`${renderVerifyTable(rows, config.metric)}\n`);
+  for (const row of rows) {
+    if (row.judgement.status === "regressed" && row.judgement.raiseTo !== undefined) {
+      process.stdout.write(`run: npx imgtune apply --raise ${row.component}=${row.judgement.raiseTo}\n`);
+    }
+  }
   log("done");
   return rows;
 }

@@ -42,6 +42,12 @@ export interface ImgtuneConfig {
   includeDone: boolean;
 }
 
+/** A request from `apply --raise`: set the applied quality of the usage named `component` to `quality`. */
+export interface QualityRaise {
+  component: string;
+  quality: number;
+}
+
 /** start/end = source offsets of the attribute. */
 export interface PropValue {
   kind: "literal";

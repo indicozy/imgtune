@@ -23,6 +23,18 @@ npx imgtune verify    # re-check the applied changes against the served images (
 
 Run `npx imgtune --help`, or `npx imgtune <command> --help`, for every option.
 
+When `verify` reports a usage `regressed (raise quality to N)`, raise its applied quality with:
+
+```sh
+npx imgtune apply --raise <Component>=<N>     # repeatable; N must be above the applied quality, at most 100
+npx imgtune verify                             # measure it again
+```
+
+The raise rewrites that usage's `quality` literal, lists N in `images.qualities` when the project has a list (or
+`[75, N]` when it has none and N is not 75), and records the new file in the state. Nothing else is applied. `verify`
+prints the exact command under each such usage. A quality you already wrote by hand is picked up by `verify` as the
+applied value, so it is measured as it stands.
+
 ## What `scan` measures
 
 `scan` loads each page in headless Chromium at six viewports (four phones, a 1440 px desktop at 2x, and a 1280 px

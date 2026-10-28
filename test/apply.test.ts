@@ -3,10 +3,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ComponentResult } from "../src/analyse.js";
-import { applyResults } from "../src/apply.js";
+import { applyResults, raiseQuality } from "../src/apply.js";
 import { scanFile } from "../src/scan.js";
 import { sha1 } from "../src/atomic.js";
-import { isDone, loadState } from "../src/state.js";
+import { isDone, loadState, saveState, type StateEntry } from "../src/state.js";
 import type { ImageUsage } from "../src/types.js";
 
 const FIXTURE = resolve(import.meta.dirname, "fixtures/apply/ProductItem.tsx");
@@ -359,5 +359,108 @@ describe("applyResults", () => {
       expect(out.skipped).toEqual([]);
       expect(out.edited).toEqual([]);
     });
+  });
+});
+
+describe("raiseQuality (apply --raise)", () => {
+  const CONFIG = "export default {\n  images: {\n    qualities: [70],\n  },\n};\n";
+  const HERO = 'import Image from "next/image";\nexport const Hero = () => <Image src="/a.png" width={480} height={320} quality={70} />;\n';
+  const OTHER = 'import Image from "next/image";\nexport const Other = () => <Image src="/b.png" width={480} height={320} quality={70} />;\n';
+  const TWO = `${HERO}${OTHER.split("\n").slice(1).join("\n")}`;
+
+  /** The state entry apply would have written for the `component` usage of `rel`, applied at `quality`. */
+  function appliedEntry(dir: string, rel: string, component: string, quality: number): StateEntry {
+    const usage = scanFile(join(dir, rel), dir).find((u) => u.component === component);
+    if (!usage) throw new Error(`no ${component} in ${rel}`);
+    return {
+      usageId: usage.id,
+      relFile: rel,
+      component,
+      fileHash: sha1(readFileSync(join(dir, rel))),
+      applied: { quality },
+      before: { quality: 90 },
+      at: "2026-10-28T00:00:00.000Z",
+    };
+  }
+
+  it("rewrites the usage's quality, lists it in images.qualities, and records the new file and quality in the state", async () => {
+    const dir = project({ "next.config.mjs": CONFIG, "src/Hero.tsx": HERO });
+    await saveState(dir, [appliedEntry(dir, "src/Hero.tsx", "Hero", 70)]);
+
+    const result = await raiseQuality(dir, [{ component: "Hero", quality: 75 }]);
+
+    expect(readFileSync(join(dir, "src/Hero.tsx"), "utf8")).toContain("quality={75}");
+    expect(readFileSync(join(dir, "next.config.mjs"), "utf8")).toContain("qualities: [70, 75]");
+    expect(result.edited).toEqual(["next.config.mjs", "src/Hero.tsx"]);
+    expect(result.raised).toEqual([expect.objectContaining({ component: "Hero", from: 70, to: 75 })]);
+    const [saved] = await loadState(dir);
+    expect(saved.applied.quality).toBe(75);
+    expect(saved.before).toEqual({ quality: 90 });
+    expect(saved.fileHash).toBe(sha1(readFileSync(join(dir, "src/Hero.tsx"))));
+  });
+
+  it("refuses a quality that is not above the applied one, and writes nothing", async () => {
+    const dir = project({ "next.config.mjs": CONFIG, "src/Hero.tsx": HERO });
+    await saveState(dir, [appliedEntry(dir, "src/Hero.tsx", "Hero", 70)]);
+
+    await expect(raiseQuality(dir, [{ component: "Hero", quality: 70 }])).rejects.toThrow("70 is not above the applied quality 70");
+    expect(readFileSync(join(dir, "src/Hero.tsx"), "utf8")).toBe(HERO);
+    expect((await loadState(dir))[0].applied.quality).toBe(70);
+  });
+
+  it("refuses a usage whose quality is an expression, with the change to make by hand", async () => {
+    const dir = project({
+      "next.config.mjs": CONFIG,
+      "src/Hero.tsx": HERO.replace("quality={70}", "quality={q}"),
+    });
+    await saveState(dir, [appliedEntry(dir, "src/Hero.tsx", "Hero", 70)]);
+
+    await expect(raiseQuality(dir, [{ component: "Hero", quality: 75 }])).rejects.toThrow("quality is an expression");
+    expect(readFileSync(join(dir, "next.config.mjs"), "utf8")).toBe(CONFIG);
+  });
+
+  it("refuses a component with no applied usage, and one that matches more than one", async () => {
+    const dir = project({ "next.config.mjs": CONFIG, "src/Hero.tsx": HERO, "src/Hero2.tsx": HERO });
+    await saveState(dir, [appliedEntry(dir, "src/Hero.tsx", "Hero", 70)]);
+    await expect(raiseQuality(dir, [{ component: "Missing", quality: 75 }])).rejects.toThrow("no applied quality");
+
+    await saveState(dir, [appliedEntry(dir, "src/Hero2.tsx", "Hero", 70)]);
+    await expect(raiseQuality(dir, [{ component: "Hero", quality: 75 }])).rejects.toThrow("must be unique");
+  });
+
+  it("keeps the other usages of the same file measurable: their state follows the new file hash", async () => {
+    const dir = project({ "next.config.mjs": CONFIG, "src/Both.tsx": TWO });
+    await saveState(dir, [
+      appliedEntry(dir, "src/Both.tsx", "Hero", 70),
+      appliedEntry(dir, "src/Both.tsx", "Other", 70),
+    ]);
+
+    await raiseQuality(dir, [{ component: "Hero", quality: 75 }]);
+
+    const saved = await loadState(dir);
+    const newHash = sha1(readFileSync(join(dir, "src/Both.tsx")));
+    expect(saved.find((e) => e.component === "Hero")?.fileHash).toBe(newHash);
+    expect(saved.find((e) => e.component === "Other")?.fileHash).toBe(newHash);
+    expect(saved.find((e) => e.component === "Other")?.applied.quality).toBe(70);
+  });
+
+  it("takes the value the user already wrote by hand (quality 75 in the file) and records it without rewriting the file", async () => {
+    const dir = project({ "next.config.mjs": CONFIG, "src/Hero.tsx": HERO.replace("quality={70}", "quality={75}") });
+    await saveState(dir, [appliedEntry(dir, "src/Hero.tsx", "Hero", 70)]);
+
+    const result = await raiseQuality(dir, [{ component: "Hero", quality: 75 }]);
+
+    expect(result.edited).toEqual(["next.config.mjs"]);
+    expect((await loadState(dir))[0].applied.quality).toBe(75);
+  });
+
+  it("adds [75, q] when the project has no allowlist and q is not Next's default of 75", async () => {
+    const config = "export default {\n  images: {\n    remotePatterns: [],\n  },\n};\n";
+    const dir = project({ "next.config.mjs": config, "src/Hero.tsx": HERO });
+    await saveState(dir, [appliedEntry(dir, "src/Hero.tsx", "Hero", 70)]);
+
+    await raiseQuality(dir, [{ component: "Hero", quality: 80 }]);
+
+    expect(readFileSync(join(dir, "next.config.mjs"), "utf8")).toContain("qualities: [75, 80]");
   });
 });

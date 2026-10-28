@@ -1,20 +1,26 @@
 #!/usr/bin/env node
-import { applyCommand, audit, progress, restoreCommand } from "./audit.js";
+import { applyCommand, audit, progress, raiseCommand, restoreCommand } from "./audit.js";
 import { type Command, loadConfig } from "./config.js";
 import { verify } from "./verify.js";
 import { scanCommand } from "./remote.js";
 import { ChromiumMissingError } from "./browser.js";
 import { IMGTUNE_VERSION } from "./version.js";
-import type { ImgtuneConfig } from "./types.js";
+import type { ImgtuneConfig, QualityRaise } from "./types.js";
 
-type Handler = (config: ImgtuneConfig, allowGrowth: boolean) => Promise<void>;
+interface HandlerOptions {
+  allowGrowth: boolean;
+  raises: QualityRaise[];
+}
+
+type Handler = (config: ImgtuneConfig, options: HandlerOptions) => Promise<void>;
 
 const handlers: Record<Command, Handler> = {
   audit: async (config) => {
     await audit(config);
   },
-  apply: async (config, allowGrowth) => {
-    await applyCommand(config.projectDir, progress, { allowGrowth });
+  apply: async (config, { allowGrowth, raises }) => {
+    if (raises.length > 0) await raiseCommand(config.projectDir, raises, progress);
+    else await applyCommand(config.projectDir, progress, { allowGrowth });
   },
   verify: async (config) => {
     await verify(config);
@@ -45,6 +51,10 @@ const OPTION_HELP = {
   url: ["--url <baseUrl>", "measure a server that is already running; the tool never starts or stops it"],
   all: ["--all", "also re-measure usages that were already applied"],
   allowGrowth: ["--allow-growth", "write the full sizes correction, including media branches that grow bytes"],
+  raise: [
+    "--raise <Component>=<quality>",
+    "raise the applied quality of a usage that verify reported regressed (repeatable). Only the raise is made, nothing else is applied",
+  ],
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
   aggressive: ["--aggressive", "also report a delta 4 column (never used for the claim)"],
   viewports: ["--viewports <names>", "comma-separated viewport names to measure (default: all six)"],
@@ -80,8 +90,11 @@ const COMMAND_HELP: Record<Command | "scan", string> = {
   ),
   apply: commandHelp(
     "imgtune apply [options]",
-    ["Write the proposals of the last audit into the source files. Nothing is committed."],
-    ["project", "allowGrowth"],
+    [
+      "Write the proposals of the last audit into the source files. Nothing is committed.",
+      "With --raise, raise the quality of named usages instead (after a verify regression); the next verify measures them.",
+    ],
+    ["project", "allowGrowth", "raise"],
   ),
   verify: commandHelp(
     "imgtune verify [options]",
@@ -109,7 +122,7 @@ const USAGE = `Usage: imgtune <command> [options]
 
 Commands:
   audit     measure the images of a running app and propose sizes and quality (writes .imgtune/report.json)
-  apply     write the proposals of the last audit into the source files
+  apply     write the proposals of the last audit into the source files (or --raise a regressed quality)
   verify    re-check applied changes against the served images (report only)
   restore   undo the instrumentation an interrupted run left in the source files
   scan      measure live pages by URL, with no source, config or dev server (writes JSON to --out)
@@ -148,7 +161,7 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  await handlers[loaded.command](loaded.config, loaded.allowGrowth);
+  await handlers[loaded.command](loaded.config, { allowGrowth: loaded.allowGrowth, raises: loaded.raises });
 }
 
 main().catch((err: unknown) => {
