@@ -242,7 +242,8 @@ export interface PageNumbers {
   /** Savings as a share of the bytes of the images that have one. */
   fixablePct: number;
   sharpnessKB: number;
-  aggressiveExactEstPct: number;
+  /** Only with --aggressive. */
+  aggressiveExactEstPct?: number;
 }
 
 const mean = (values: number[]): number => (values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length);
@@ -266,7 +267,7 @@ export interface SiteNumbers extends PageNumbers {
 
 /** Site numbers: the mean of its pages. */
 export function siteNumbers(pages: PageNumbers[]): SiteNumbers {
-  const pick = (key: keyof PageNumbers) => mean(pages.map((p) => p[key]));
+  const pick = (key: keyof PageNumbers) => mean(pages.map((p) => p[key] ?? 0));
   return {
     pages: pages.length,
     meanImageBytes: pick("meanImageBytes"),
@@ -1199,12 +1200,194 @@ async function analysePage(ctx: AnalysisContext, observations: ViewportObservati
   }
 
   const numbers = pageNumbers(totals);
+  const { aggressiveExactEstPct, ...withoutAggressive } = numbers;
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
     perViewport,
-    page: numbers,
+    page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
     groups: groupReports(instances),
     counts: { images: elements.size, qualityNA: naElements.size, skipped: skippedElements.size },
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Run: pages in order, one JSON file each
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface ScanOptions {
+  outDir: string;
+  cwd: string;
+  aggressive: boolean;
+  quality: boolean;
+  viewports: Viewport[];
+  log: (message: string) => void;
+  fetchImpl?: typeof fetch;
+  lookup?: Lookup;
+}
+
+let cachedVersion: string | undefined;
+function imgtuneVersion(): string {
+  if (cachedVersion === undefined) {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    cachedVersion = pkg.version;
+  }
+  return cachedVersion;
+}
+
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+async function scanPage(
+  browser: Browser,
+  run: { viewports: Viewport[]; aggressive: boolean; quality: boolean; fetcher: Fetcher; deps: QualityDeps },
+  pageUrl: string,
+  robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
+): Promise<PageResult> {
+  const url = new URL(pageUrl);
+  const allowPrivate = await run.fetcher.isPrivateHost(pageUrl);
+  const base: PageResult = {
+    url: pageUrl,
+    host: url.host,
+    scannedAt: new Date().toISOString(),
+    imgtuneVersion: imgtuneVersion(),
+    metric: "ssimulacra2",
+    delta: SCAN_DELTA,
+    aggressiveDelta: run.aggressive ? SCAN_AGGRESSIVE_DELTA : undefined,
+    viewports: run.viewports.map((v) => v.name),
+    status: "ok",
+    nextjs: false,
+    perViewport: {},
+    groups: [],
+    counts: { images: 0, qualityNA: 0, skipped: 0 },
+  };
+  if (!robotsAllows(await robotsFor(url.origin, allowPrivate), pageUrl)) return { ...base, status: "robots" };
+
+  // One pass per viewport; a challenge stops the page at once, with no retry.
+  const observations: ViewportObservation[] = [];
+  try {
+    for (const viewport of run.viewports) {
+      const obs = await observeViewport(browser, pageUrl, viewport);
+      if (obs.blocked) {
+        return { ...base, status: "blocked", error: `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}` };
+      }
+      observations.push(obs);
+    }
+  } catch (err) {
+    return { ...base, status: "failed", error: messageOf(err) };
+  }
+  return analysePage(
+    { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map() },
+    observations,
+    base,
+  );
+}
+
+/** Scans each page in order and writes its JSON to `outDir`. Nothing else is written, except the scorer's temp files. */
+export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
+  if (opts.quality) await assertMetricAvailable("ssimulacra2");
+  const browser = await chromium.launch({ headless: true, args: ["--disable-gpu"] });
+  try {
+    // The fetches send the desktop viewport's user agent: the default one of a fresh context.
+    const probe = await browser.newContext();
+    const userAgent = await (await probe.newPage()).evaluate(() => navigator.userAgent);
+    await probe.close();
+    const fetcher = makeFetcher({ userAgent, fetchImpl: opts.fetchImpl, lookup: opts.lookup });
+    const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd }) };
+    const run = { viewports: opts.viewports, aggressive: opts.aggressive, quality: opts.quality, fetcher, deps };
+
+    const robotsCache = new Map<string, Promise<string | undefined>>();
+    const robotsFor = (origin: string, allowPrivate: boolean) => {
+      let pending = robotsCache.get(origin);
+      if (!pending) {
+        pending = fetcher
+          .get(`${origin}/robots.txt`, { maxBytes: MAX_ROBOTS_BYTES, allowPrivate })
+          .then((body) => body?.toString("utf8"));
+        robotsCache.set(origin, pending);
+      }
+      return pending;
+    };
+
+    await mkdir(opts.outDir, { recursive: true });
+    const results: PageResult[] = [];
+    for (const url of urls) {
+      opts.log(`scanning ${url}`);
+      const result = await scanPage(browser, run, url, robotsFor);
+      await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
+        root: opts.outDir,
+      });
+      results.push(result);
+    }
+    return results;
+  } finally {
+    await browser.close();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Terminal summary
+// ---------------------------------------------------------------------------------------------------------------------
+
+const pct = (value: number): string => `${value.toFixed(1)}%`;
+const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
+
+/** One page: a short table, its top groups and, for Next.js, the pointer to audit. */
+export function renderPage(result: PageResult, aggressive: boolean): string[] {
+  const head = `${result.url}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
+  if (result.status !== "ok" || !result.page) return [head, `  ${result.error ?? result.status}`];
+  const n = result.page;
+  const lines = [
+    head,
+    `  viewports: ${result.viewports.join(", ")}`,
+    `  image bytes per view   ${kb(n.meanImageBytes)}`,
+    `  saving exact           ${pct(n.exactPct)}`,
+    `  saving exact + est.    ${pct(n.exactEstPct)}`,
+    `  of fixable images      ${pct(n.fixablePct)}`,
+    `  sharpness (separate)   +${n.sharpnessKB.toFixed(1)} KB`,
+  ];
+  if (aggressive) lines.push(`  exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}  ${pct(n.aggressiveExactEstPct ?? 0)}`);
+  if (result.groups.length > 0) {
+    lines.push("  top groups:");
+    for (const g of result.groups) {
+      const hint = g.hint ? `  ${g.hint}` : "";
+      lines.push(`    ${g.sizes ?? "no sizes"} -> ${g.suggestedSizes ?? "-"}  saves ${kb(g.savedBytes)}/view${hint}`);
+    }
+  }
+  if (result.nextjs) lines.push('  Next.js detected: run "npx imgtune audit" in the project to fix these in code');
+  return lines;
+}
+
+/** Per-site line for hosts with two or more scanned pages. */
+export function renderScan(results: PageResult[], aggressive: boolean): string {
+  const lines: string[] = [];
+  for (const result of results) lines.push(...renderPage(result, aggressive), "");
+  const byHost = new Map<string, PageNumbers[]>();
+  for (const result of results) {
+    if (result.status !== "ok" || !result.page) continue;
+    const list = byHost.get(result.host);
+    if (list) list.push(result.page);
+    else byHost.set(result.host, [result.page]);
+  }
+  for (const [host, pages] of byHost) {
+    if (pages.length < 2) continue;
+    const site = siteNumbers(pages);
+    lines.push(
+      `${host} (${site.pages} pages): exact ${pct(site.exactPct)} · exact + est. ${pct(site.exactEstPct)} · fixable ${pct(site.fixablePct)} · sharpness +${site.sharpnessKB.toFixed(1)} KB`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** `imgtune scan`: the arguments after `scan`. Returns the terminal text; the JSON files are written to --out. */
+export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<string> {
+  const args = parseScanArgs(argv);
+  const viewports = DEFAULT_VIEWPORTS.filter((v) => !args.viewports || args.viewports.includes(v.name)).map((v) => ({ ...v }));
+  const results = await runScan(args.urls, {
+    outDir: resolve(cwd, args.out),
+    cwd,
+    aggressive: args.aggressive,
+    quality: args.quality,
+    viewports,
+    log,
+  });
+  return renderScan(results, args.aggressive);
 }

@@ -2,6 +2,7 @@
 import { applyCommand, audit, progress, restoreCommand } from "./audit.js";
 import { type Command, loadConfig } from "./config.js";
 import { verify } from "./verify.js";
+import { scanCommand } from "./remote.js";
 import type { ImgtuneConfig } from "./types.js";
 
 type Handler = (config: ImgtuneConfig, allowGrowth: boolean) => Promise<void>;
@@ -28,6 +29,8 @@ Commands:
   apply     write the proposals of the last audit into the source files
   verify    re-check applied changes against the served images (report only)
   restore   undo the instrumentation an interrupted run left in the source files
+  scan      measure live pages by URL, with no source, config or dev server (writes JSON to --out)
+            scan <url> [<url> ...] [--out <dir>] [--aggressive] [--viewports <names>] [--no-quality]
 
 Options:
   --project <dir>     project directory (default: current directory)
@@ -50,6 +53,11 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(USAGE);
+    return;
+  }
+
+  if (argv[0] === "scan") {
+    process.stdout.write(await scanCommand(argv.slice(1), process.cwd(), progress));
     return;
   }
 
