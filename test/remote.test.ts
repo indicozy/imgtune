@@ -107,6 +107,28 @@ describe("srcset and right candidate", () => {
     ]);
   });
 
+  it("splits candidates on a comma with no space after its descriptor, as the HTML srcset algorithm does", () => {
+    expect(parseSrcset("a.jpg 400w,b.jpg 800w", "https://shop.example/")).toEqual([
+      { url: "https://shop.example/a.jpg", width: 400 },
+      { url: "https://shop.example/b.jpg", width: 800 },
+    ]);
+  });
+
+  it("keeps the commas inside a URL, as Cloudinary transforms have them, while splitting the candidates", () => {
+    const srcset =
+      "https://res.cloudinary.com/demo/image/upload/w_400,q_80/a.jpg 400w,https://res.cloudinary.com/demo/image/upload/w_800,q_80/a.jpg 800w";
+    expect(parseSrcset(srcset, "https://shop.example/")).toEqual([
+      { url: "https://res.cloudinary.com/demo/image/upload/w_400,q_80/a.jpg", width: 400 },
+      { url: "https://res.cloudinary.com/demo/image/upload/w_800,q_80/a.jpg", width: 800 },
+    ]);
+  });
+
+  it("drops a candidate with no descriptor, with two descriptors, or with a trailing comma and no width", () => {
+    expect(parseSrcset("a.jpg, b.jpg 800w 2x, c.jpg, d.jpg 900w", "https://shop.example/")).toEqual([
+      { url: "https://shop.example/d.jpg", width: 900 },
+    ]);
+  });
+
   it("needs ceil(rendered width x dpr), capped at the largest candidate", () => {
     expect(neededWidth(179, 3, 3840)).toBe(537);
     expect(neededWidth(179, 2.5, 384)).toBe(384);
