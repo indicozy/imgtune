@@ -96,6 +96,7 @@ function planUsage(
   result: ComponentResult,
   usage: ImageUsage,
   text: string,
+  attrQuote: "'" | '"',
   skipped: ApplyResult["skipped"],
   allowGrowth: boolean,
 ): Edit[] {
@@ -118,7 +119,7 @@ function planUsage(
         edits.push({ field: "sizes", value: sizes, splice: { start: prop.start, end: prop.end, text: sizesLiteral(text, prop, sizes) } });
       }
     } else {
-      const attr = stringAttr("sizes", sizes, dominantAttrQuote(text, usage.file));
+      const attr = stringAttr("sizes", sizes, attrQuote);
       const splice = { start: usage.tagNameEnd, end: usage.tagNameEnd, text: insertText(text, usage, attr) };
       edits.push({ field: "sizes", value: sizes, splice });
     }
@@ -270,6 +271,8 @@ export async function applyResults(
       continue;
     }
     const fresh = scanText(text, file, projectDir);
+    // One parse per file gives the quote every sizes inserted into it uses.
+    const attrQuote = dominantAttrQuote(text, file);
     const usagesInFile: PlannedUsage[] = [];
     for (const result of fileResults) {
       const usage = fresh.find((u) => u.id === result.usageId);
@@ -277,7 +280,7 @@ export async function applyResults(
         skipped.push({ usageId: result.usageId, reason: REASON_CHANGED });
         continue;
       }
-      usagesInFile.push({ result, usage, edits: planUsage(result, usage, text, skipped, allowGrowth) });
+      usagesInFile.push({ result, usage, edits: planUsage(result, usage, text, attrQuote, skipped, allowGrowth) });
     }
     planned.set(file, { relFile, text, usages: usagesInFile });
   }
