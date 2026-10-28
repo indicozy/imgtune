@@ -341,20 +341,10 @@ export interface VerifyOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** Audit-time bar per format (`proposed.minScore`, R38), keyed by usage id; empty when there is no readable report. */
-async function auditMinScores(projectDir: string): Promise<Map<string, { avif?: number; webp?: number }>> {
-  const out = new Map<string, { avif?: number; webp?: number }>();
-  const report = await readReport(projectDir).catch(() => undefined);
-  for (const result of report?.results ?? []) {
-    if (result.proposed.minScore) out.set(result.usageId, result.proposed.minScore);
-  }
-  return out;
-}
-
 /**
  * The bar of one served variant, recomputed as the audit did (R38): max(floor, current - delta), where current is the
- * before-quality encoded locally at `width`, the variant's decoded served width. Undefined when it cannot be recomputed;
- * the caller then uses the audit's stored median. Used by the next-default profile only.
+ * before-quality encoded locally at `width`, the variant's decoded served width. Throws when it cannot be computed:
+ * the caller then makes the sample unusable (R41). Used by the next-default profile only.
  */
 export async function recomputeBar(
   obs: ImageObservation,
@@ -364,15 +354,12 @@ export async function recomputeBar(
   baseUrl: string,
   deps: { fetchOriginal: (url: string) => Promise<Buffer>; score: Scorer },
   width: number,
-): Promise<number | undefined> {
-  if (!obs.originalSrc || width < 1) return undefined;
-  try {
-    const reference = await loadReference(await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl)), width);
-    const enc = await encode(reference, format, beforeQuality, "next-default");
-    return Math.max(rule.threshold, (await deps.score(reference, enc.decoded)) - rule.delta);
-  } catch {
-    return undefined;
-  }
+): Promise<number> {
+  if (!obs.originalSrc) throw new Error("no data-imgtune-src on the image");
+  if (width < 1) throw new Error(`no served width (${width})`);
+  const reference = await loadReference(await deps.fetchOriginal(originalUrlFor(obs.originalSrc, baseUrl)), width);
+  const enc = await encode(reference, format, beforeQuality, "next-default");
+  return Math.max(rule.threshold, (await deps.score(reference, enc.decoded)) - rule.delta);
 }
 
 /** The cdn rule's local stand-in quality for a CDN quality, on the scale the audit calibrated. */
@@ -414,6 +401,60 @@ export async function undersizedFile(
   const originalWidth = (await sharp(original).metadata()).width ?? 0;
   const needed = Math.min(Math.ceil(obs.renderedWidth * obs.dpr), originalWidth);
   return servedWidth < 0.9 * needed ? { file: servedWidth, needed } : undefined;
+}
+
+/** What `judgeSample` needs about one scored served variant and its usage. */
+export interface SampleInput {
+  obs: ImageObservation;
+  format: Format;
+  /** SSIM and decoded width from `scoreVariant`. */
+  scored: { ssim: number; width: number };
+  /** Quality before the apply, and as applied (absent for a sizes-only change). */
+  before?: number;
+  applied?: number;
+  /** The audit's CDN-to-local offset for this format (cdn profile). */
+  offset?: number;
+  profile: "next-default" | "cdn";
+  /** The R38 relative rule's delta; absent for an absolute bar. */
+  delta?: number;
+  threshold: number;
+  baseUrl: string;
+}
+
+export type SampleVerdict = { sample: VerifySample } | { unusable: string };
+
+/**
+ * The verdict input for one scored served variant (R38, R41). Without `delta` the sample is judged against the absolute
+ * threshold. With it, next-default needs its recomputed bar and cdn needs its local drop; a sample whose bar or drop
+ * cannot be computed is unusable, with the reason, and never passes on the floor alone.
+ */
+export async function judgeSample(
+  input: SampleInput,
+  deps: { fetchOriginal: (url: string) => Promise<Buffer>; score: Scorer },
+): Promise<SampleVerdict> {
+  const { obs, format, scored } = input;
+  if (input.delta === undefined) return { sample: { format, ssim: scored.ssim } };
+  if (input.profile === "next-default") {
+    if (input.before === undefined) return { unusable: "bar not computable: no before quality recorded" };
+    try {
+      const minScore = await recomputeBar(obs, format, input.before, { threshold: input.threshold, delta: input.delta }, input.baseUrl, deps, scored.width);
+      return { sample: { format, ssim: scored.ssim, minScore } };
+    } catch (err) {
+      return { unusable: `bar not computable: ${(err as Error).message}` };
+    }
+  }
+  // cdn rule (R38): judged by the local quality drop, not by a bar.
+  const before = input.before;
+  const now = input.applied ?? before;
+  if (before === undefined || now === undefined) return { sample: { format, ssim: scored.ssim } };
+  try {
+    const original = await deps.fetchOriginal(originalUrlFor(obs.originalSrc as string, input.baseUrl));
+    const drop = await cdnDrop(original, format, scored.width, { before, now, offset: input.offset }, deps.score);
+    const undersized = now === before ? await undersizedFile(original, obs, scored.width) : undefined;
+    return { sample: { format, ssim: scored.ssim, drop, undersized } };
+  } catch (err) {
+    return { unusable: `local rescore failed: ${(err as Error).message}` };
+  }
 }
 
 /** Audit-time CDN-to-local quality offset per format, keyed by usage id; empty when there is no readable report. */
@@ -486,7 +527,6 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   }
 
   const beforeBytes = await auditBytes(projectDir);
-  const auditBars = await auditMinScores(projectDir);
   const calibration = await auditCalibration(projectDir);
   const score = makeScorer(config.metric, { projectDir, binary: config.ssimulacra2Path });
   const imageConfig = readImageConfig(projectDir);
@@ -506,35 +546,28 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
           if ("unusable" in scored) {
             log(`unusable ${format} sample for ${usage.id}: ${scored.unusable}`);
             samples.push({ format });
-          } else if (!recomputable && config.delta !== undefined) {
-            // cdn rule (R38): judged by the local quality drop, not by a bar. A failed local rescore makes the sample unusable.
-            try {
-              const original = await fetchOriginal(originalUrlFor(obs.originalSrc as string, measured.baseUrl));
-              const before = entry.before?.quality;
-              const now = entry.applied.quality ?? before;
-              if (before === undefined || now === undefined) {
-                samples.push({ format, ssim: scored.ssim });
-                continue;
-              }
-              const offset = calibration.get(usage.id)?.[format];
-              const drop = await cdnDrop(original, format, scored.width, { before, now, offset }, score);
-              const undersized = now === before ? await undersizedFile(original, obs, scored.width) : undefined;
-              samples.push({ format, ssim: scored.ssim, drop, undersized });
-            } catch (err) {
-              log(`unusable ${format} sample for ${usage.id}: local rescore failed: ${(err as Error).message}`);
-              samples.push({ format });
-            }
+            continue;
+          }
+          const verdict = await judgeSample(
+            {
+              obs,
+              format,
+              scored,
+              before: entry.before?.quality,
+              applied: entry.applied.quality,
+              offset: calibration.get(usage.id)?.[format],
+              profile: recomputable ? "next-default" : "cdn",
+              delta: config.delta,
+              threshold: config.threshold,
+              baseUrl: measured.baseUrl,
+            },
+            { fetchOriginal, score },
+          );
+          if ("unusable" in verdict) {
+            log(`unusable ${format} sample for ${usage.id}: ${verdict.unusable}`);
+            samples.push({ format });
           } else {
-            // Relative rule (R38): recompute the sample's bar when possible, else the audit's stored median.
-            let minScore: number | undefined;
-            if (config.delta !== undefined) {
-              const before = entry.before?.quality;
-              if (recomputable && before !== undefined) {
-                minScore = await recomputeBar(obs, format, before, { threshold: config.threshold, delta: config.delta }, measured.baseUrl, { fetchOriginal, score }, scored.width);
-              }
-              minScore ??= auditBars.get(usage.id)?.[format];
-            }
-            samples.push({ format, ssim: scored.ssim, minScore });
+            samples.push(verdict.sample);
           }
         }
       }

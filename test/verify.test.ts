@@ -6,6 +6,7 @@ import {
   bytesByViewport,
   cdnDrop,
   formatOfContentType,
+  judgeSample,
   judgeVerification,
   renderVerifyTable,
   sampleVariants,
@@ -422,5 +423,51 @@ describe("cdnDrop and undersizedFile", () => {
     const small = observation({ renderedWidth: 300, dpr: 2, naturalWidth: 300 });
     expect(await undersizedFile(original, small, 300)).toEqual({ file: 300, needed: 480 });
     expect(await undersizedFile(original, small, 460)).toBeUndefined();
+  });
+});
+
+describe("judgeSample for next-default with the R38 rule (R41)", () => {
+  const original = (async () => rawToPng(gradientNoise(480, 320, 10, 11)))();
+  const input = (overrides: Partial<Parameters<typeof judgeSample>[0]> = {}) => ({
+    obs: observation({ renderedWidth: 300, dpr: 1, naturalWidth: 400 }),
+    format: "webp" as const,
+    scored: { ssim: 80, width: 400 },
+    before: 85,
+    applied: 70,
+    profile: "next-default" as const,
+    delta: 2,
+    threshold: 70,
+    baseUrl: "http://localhost",
+    ...overrides,
+  });
+  const deps = (fetchOriginal: (url: string) => Promise<Buffer> = async () => original) => ({
+    fetchOriginal,
+    score: () => 80,
+  });
+
+  it("gives the sample the recomputed bar: max(floor, current score - delta)", async () => {
+    const verdict = await judgeSample(input(), deps());
+    expect(verdict).toEqual({ sample: { format: "webp", ssim: 80, minScore: 78 } });
+  });
+
+  it("makes the sample unusable, with the reason, when the bar cannot be recomputed", async () => {
+    const verdict = await judgeSample(
+      input(),
+      deps(async () => {
+        throw new Error("GET original returned HTTP 404");
+      }),
+    );
+    expect(verdict).toEqual({ unusable: "bar not computable: GET original returned HTTP 404" });
+  });
+
+  it("makes the sample unusable when no before-quality is recorded, never the threshold", async () => {
+    expect(await judgeSample(input({ before: undefined }), deps())).toEqual({
+      unusable: "bar not computable: no before quality recorded",
+    });
+  });
+
+  it("judges against the absolute threshold, with no bar, when delta is absent", async () => {
+    const verdict = await judgeSample(input({ delta: undefined, before: undefined }), deps());
+    expect(verdict).toEqual({ sample: { format: "webp", ssim: 80 } });
   });
 });
