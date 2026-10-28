@@ -4,8 +4,11 @@ import { describe, expect, it } from "vitest";
 import { ssim, ssimDetailed, type RawImage } from "../src/ssim.js";
 import { decodeRgba, gradientNoise, rawToPng, withNoise } from "./image-fixtures.js";
 
-const OPTIQ_QUALITY = "<workspace>/optiq-src/repo/dist/quality.js";
-const optiqAvailable = existsSync(OPTIQ_QUALITY);
+// Optional parity check against Optiq's dist/quality.js. Set OPTIQ_QUALITY to that file's
+// absolute path (e.g. OPTIQ_QUALITY=/path/to/optiq/dist/quality.js pnpm test). The Optiq
+// tests are skipped when the variable is unset or the file does not exist.
+const OPTIQ_QUALITY = process.env.OPTIQ_QUALITY ?? "";
+const optiqAvailable = OPTIQ_QUALITY !== "" && existsSync(OPTIQ_QUALITY);
 
 type OptiqQuality = { ssim(reference: RawImage, test: RawImage): { ssim: number; y: number; cb: number; cr: number; activeShare: number; alpha?: number } };
 const optiq: OptiqQuality | undefined = optiqAvailable
