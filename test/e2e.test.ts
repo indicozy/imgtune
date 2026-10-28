@@ -19,7 +19,7 @@ const CHILD_ENV = { ...process.env, NEXT_TELEMETRY_DISABLED: "1" };
 const CARD_FILE = "components/Card.tsx";
 const PAGE_FILE = "app/[store]/[...slug]/page.tsx";
 /** Grid of two columns with 12px page padding and an 8px gap: each card is 50vw minus 16px. */
-const CARD_SIZES = "(max-width: 768px) calc(50vw - 16px), calc(50vw - 16px)";
+const CARD_SIZES = "calc(50vw - 16px)";
 /**
  * The card at the reference viewport (iphone-15, 390px, dpr 3) is 50vw minus 16px = 179 css px. The file the browser
  * serves for it must cover at least half of its device pixels; a density-corrected DOM width (~129 for the old 33vw)
@@ -323,7 +323,7 @@ describe.skipIf(process.platform !== "linux")("imgtune end to end on the Next.js
       expect(result.stdout).toContain(`edited ${CARD_FILE}`);
 
       applied = await snapshot(dir);
-      // The lower quality (90 -> 85) is not listed in next.config, so apply adds it there too.
+      // A proposed quality that next.config does not list is added there too, so the config changes with the card.
       expect(changedBetween(original, applied)).toEqual([CARD_FILE, CONFIG_FILE].sort());
       expect(applied.get(PAGE_FILE)).toBe(original.get(PAGE_FILE));
       const card = await readFile(join(dir, CARD_FILE), "utf8");
