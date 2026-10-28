@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { encode, loadReference } from "../src/encode.js";
+import { clearEncodeCache, encode, encodeCacheStats, loadReference } from "../src/encode.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
 const original = await rawToPng(gradientNoise(480, 320, 10, 11));
@@ -45,5 +45,28 @@ describe("encode", () => {
       .avif({ quality: 65, effort: 3 })
       .toBuffer();
     expect(r.bytes).toBe(expected.length);
+  });
+});
+
+describe("encode cache", () => {
+  it("encodes the same pixels at the same format, quality and profile once", async () => {
+    clearEncodeCache();
+    const ref = await loadReference(original, 240);
+    const again = await loadReference(original, 240);
+    const first = await encode(ref, "webp", 70, "next-default");
+    const second = await encode(again, "webp", 70, "next-default");
+    expect(encodeCacheStats()).toEqual({ hits: 1, misses: 1 });
+    expect(second.bytes).toBe(first.bytes);
+    expect(second.decoded.width).toBe(first.decoded.width);
+  });
+
+  it("encodes again for another quality, format or profile", async () => {
+    clearEncodeCache();
+    const ref = await loadReference(original, 240);
+    await encode(ref, "webp", 70, "next-default");
+    await encode(ref, "webp", 71, "next-default");
+    await encode(ref, "avif", 70, "next-default");
+    await encode(ref, "webp", 70, "cdn");
+    expect(encodeCacheStats()).toEqual({ hits: 0, misses: 4 });
   });
 });

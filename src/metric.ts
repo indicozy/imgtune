@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { access, constants, mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import sharp from "sharp";
 import { writeFileAtomic } from "./atomic.js";
+import { pixelsKey } from "./encode.js";
 import { LruCache } from "./lru.js";
 import { ssim, type RawImage } from "./ssim.js";
 
@@ -52,12 +53,6 @@ export async function score(metric: Metric, ref: RawImage, test: RawImage, opts:
 /** Scores of this process by metric and the pixels of both images, at most SCORE_CACHE_MAX. A failed score is not kept. */
 const SCORE_CACHE_MAX = 5000;
 const scoreCache = new LruCache<string, Promise<number>>(SCORE_CACHE_MAX);
-
-const pixelsKey = (img: RawImage): string =>
-  createHash("sha1")
-    .update(Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength))
-    .update(`${img.width}x${img.height}`)
-    .digest("hex");
 
 /**
  * Wraps `inner` so each pair of images is scored once per process: a later call with the same metric and the same

@@ -2,7 +2,7 @@ import sharp from "sharp";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { analyse, decideBranches, evaluator, originalUrlFor, type AnalyseOptions } from "../src/analyse.js";
-import { encode, loadReference, type EncoderProfile } from "../src/encode.js";
+import { clearEncodeCache, encode, encodeCacheStats, loadReference, type EncoderProfile } from "../src/encode.js";
 import type { ImageObservation } from "../src/measure.js";
 import { readImageConfig, type ImageConfig } from "../src/nextconfig.js";
 import type { ImageUsage, ImgtuneConfig, PropInfo } from "../src/types.js";
@@ -544,6 +544,24 @@ describe("analyse", () => {
     expect(r.estimated).toBe(true);
     expect(r.notes).toContain("estimated: not confirmed against /_next/image");
     expect(r.notes).toContain("AVIF not served");
+  });
+
+  it("encodes a shared original once for a second usage: no new encodes for the same pixels", async () => {
+    const observations = await nextDefaultObservations();
+    const second = observations.map((o) => ({ ...o, usageId: "other.tsx:4:10" }));
+    const otherUsage = usage({}, { id: "other.tsx:4:10", file: "/project/src/other.tsx", relFile: "src/other.tsx", line: 4 });
+
+    clearEncodeCache();
+    await analyse([usage()], observations, nextConfig, cfg, BASE, fetchStub, silent());
+    const alone = encodeCacheStats();
+
+    clearEncodeCache();
+    await analyse([usage(), otherUsage], [...observations, ...second], nextConfig, cfg, BASE, fetchStub, silent());
+    const shared = encodeCacheStats();
+
+    expect(alone.misses).toBeGreaterThan(0);
+    expect(shared.misses).toBe(alone.misses);
+    expect(shared.hits).toBeGreaterThan(0);
   });
 
   it("marks a next-default result exact when the confirmation passes", async () => {
