@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { analyse, type ComponentResult } from "./analyse.js";
 import { applyResults, type ApplyResult } from "./apply.js";

@@ -82,6 +82,8 @@ const ACCEPT: Record<Format, string> = {
   avif: "image/avif,image/webp,*/*",
   webp: "image/webp,*/*",
 };
+/** A hung `/_next/image` fails its probe instead of stalling the audit. */
+const CONFIRM_TIMEOUT_MS = 30_000;
 
 interface FormatOutcome {
   status: ProbeStatus;
@@ -104,7 +106,7 @@ async function probeOne(
   const url = `${baseUrl}/_next/image?url=${encodeURIComponent(sample.src)}&w=${sample.width}&q=${q}`;
   let res: Response;
   try {
-    res = await fetchImpl(url, { headers: { Accept: ACCEPT[format] } });
+    res = await fetchImpl(url, { headers: { Accept: ACCEPT[format] }, signal: AbortSignal.timeout(CONFIRM_TIMEOUT_MS) });
   } catch (e) {
     return { status: "fetch", error: message(e) };
   }
