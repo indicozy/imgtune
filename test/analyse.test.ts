@@ -217,7 +217,7 @@ describe("analyse", () => {
     const [r] = await analyse([usage()], observed, nextConfig, cfg, BASE, fetchStub, silent());
 
     expect(r.grows).toBe(true);
-    expect(r.notes).toContainEqual(expect.stringMatching(/^undersized now: corrected sizes is sharper but larger \(\+\d+(\.\d)? KB at iphone-15\)$/));
+    expect(r.notes).toContainEqual(expect.stringMatching(/^undersized now: the proposal is sharper but larger \(\+\d+(\.\d)? KB at iphone-15\)$/));
   });
 
   it("marks a next-default result exact when the confirmation passes", async () => {

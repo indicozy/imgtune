@@ -278,7 +278,7 @@ describe("applyResults", () => {
   describe("growth (sizes that increase bytes)", () => {
     const source = `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} sizes='33vw' />;\n`;
     const config = "export default {\n  images: {\n    formats: ['image/webp'],\n  },\n};\n";
-    const growsReason = "sizes change increases bytes; re-run apply with --allow-growth to apply it";
+    const growsReason = "proposal increases bytes; re-run apply with --allow-growth to apply its sizes";
     const grown = (usage: ImageUsage) => ({
       ...resultFor(usage, { sizes: "50vw", quality: 60 }),
       grows: true,

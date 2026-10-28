@@ -314,7 +314,7 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     result.savedBytesTotal = Math.max(0, medianBytes - projected) * result.instances;
     if (projected > medianBytes * GROWTH_RATIO) {
       const extraKb = Math.round(((projected - medianBytes) / 1024) * 10) / 10;
-      notes.push(`undersized now: corrected sizes is sharper but larger (+${extraKb} KB at ${refName})`);
+      notes.push(`undersized now: the proposal is sharper but larger (+${extraKb} KB at ${refName})`);
       result.grows = true;
     }
   }

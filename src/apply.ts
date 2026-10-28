@@ -21,7 +21,7 @@ const REASON_EDITED_SINCE_AUDIT = "file changed since audit; re-run imgtune audi
 const REASON_IMG = "plain <img> is report-only";
 const REASON_SIZES_MANUAL = "manual change needed: sizes is an expression";
 const REASON_QUALITY_MANUAL = "manual change needed: quality is an expression";
-const REASON_GROWS = "sizes change increases bytes; re-run apply with --allow-growth to apply it";
+const REASON_GROWS = "proposal increases bytes; re-run apply with --allow-growth to apply its sizes";
 const reasonQualityNotListed = (q: number) => `manual change needed: add ${q} to images.qualities in next.config`;
 
 /** A text range to replace (start === end for an insertion). */

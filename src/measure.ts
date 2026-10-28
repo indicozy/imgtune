@@ -212,13 +212,19 @@ async function collectImages(page: Page): Promise<CollectedImage[]> {
         if (!pending) {
           const probe = new Image();
           probe.src = src;
-          pending = Promise.race([
+          pending = new Promise<number>((resolve) => {
+            const timer = setTimeout(() => resolve(0), probeTimeoutMs);
             probe.decode().then(
-              () => probe.naturalWidth,
-              () => 0,
-            ),
-            new Promise<number>((resolve) => setTimeout(() => resolve(0), probeTimeoutMs)),
-          ]);
+              () => {
+                clearTimeout(timer);
+                resolve(probe.naturalWidth);
+              },
+              () => {
+                clearTimeout(timer);
+                resolve(0);
+              },
+            );
+          });
           widths.set(src, pending);
         }
         return pending;
