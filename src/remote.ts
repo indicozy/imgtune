@@ -5,7 +5,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import type { LookupAddress } from "node:dns";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Browser, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
@@ -371,6 +371,12 @@ export interface ScanArgs {
   quality: boolean;
   /** Viewport names; undefined means all of them. */
   viewports?: string[];
+  /** Where to write the PR-comment Markdown summary. */
+  markdown?: string;
+  /** Exit 3 when a page's exact + est. share is above this percentage. Undefined: never fail. */
+  failOver?: number;
+  /** Where to write one JSON file with every page's status and numbers. */
+  summaryJson?: string;
 }
 
 function parseUrl(text: string): string {
@@ -384,6 +390,12 @@ function parseUrl(text: string): string {
   return url.toString();
 }
 
+function parseFailOver(text: string): number {
+  const value = Number(text);
+  if (!/^\d+(\.\d+)?$/.test(text) || value > 100) throw new Error(`--fail-over needs a percentage from 0 to 100, not ${safeText(text)}`);
+  return value;
+}
+
 function parseViewports(text: string): string[] {
   const names = text.split(",").map((name) => name.trim()).filter((name) => name !== "");
   const known = DEFAULT_VIEWPORTS.map((viewport) => viewport.name);
@@ -394,6 +406,8 @@ function parseViewports(text: string): string[] {
   return names;
 }
 
+const VALUE_OPTIONS: readonly string[] = ["--out", "--viewports", "--markdown", "--fail-over", "--summary-json"];
+
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
   const args: ScanArgs = { urls: [], out: DEFAULT_OUT, aggressive: false, quality: true };
@@ -401,12 +415,15 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     const arg = argv[i];
     if (arg === "--aggressive") args.aggressive = true;
     else if (arg === "--no-quality") args.quality = false;
-    else if (arg === "--out" || arg === "--viewports") {
+    else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
       i++;
       if (arg === "--out") args.out = value;
-      else args.viewports = parseViewports(value);
+      else if (arg === "--viewports") args.viewports = parseViewports(value);
+      else if (arg === "--markdown") args.markdown = value;
+      else if (arg === "--summary-json") args.summaryJson = value;
+      else args.failOver = parseFailOver(value);
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option ${arg}`);
     } else {
@@ -1689,8 +1706,119 @@ export function renderScan(results: PageResult[], aggressive: boolean): string {
   return `${lines.join("\n")}\n`;
 }
 
-/** `imgtune scan`: the arguments after `scan`. Returns the terminal text; the JSON files are written to --out. */
-export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<string> {
+// ---------------------------------------------------------------------------------------------------------------------
+// CI outputs: a Markdown summary for a PR comment, one summary JSON, and the --fail-over exit code
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Markdown-significant characters, replaced by HTML entities so page data cannot format, link or mention anything. */
+const MD_ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  "[": "&#91;",
+  "]": "&#93;",
+  "`": "&#96;",
+  "*": "&#42;",
+  _: "&#95;",
+  "|": "&#124;",
+  "\\": "&#92;",
+  "@": "&#64;",
+};
+
+/** Page-derived text for a Markdown table cell: control characters removed and length limited (safeText), then escaped. */
+export function mdText(text: string): string {
+  return safeText(text).replace(/[&<>[\]`*_|\\@]/g, (ch) => MD_ENTITIES[ch]);
+}
+
+const kbNumber = (bytes: number): string => (bytes / 1024).toFixed(0);
+const SUMMARY_GROUPS = 5;
+
+/** One Markdown table row, padded with empty cells to `width` columns. */
+const mdRow = (cells: string[], width: number): string =>
+  `| ${[...cells, ...Array<string>(width - cells.length).fill("")].join(" | ")} |`;
+
+/** The PR-comment Markdown: one row per page, then each page's top groups. Contains no HTML comment and no mention. */
+export function renderMarkdown(results: PageResult[], aggressive: boolean): string {
+  const width = aggressive ? 7 : 6;
+  const head = ["page", "status", "image KB/view", "exact", "exact + est.", "sharpness"];
+  if (aggressive) head.push(`exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}`);
+  const align = ["---", "---", "---:", "---:", "---:", "---:", "---:"].slice(0, width);
+  const lines: string[] = ["## imgtune scan", "", mdRow(head, width), mdRow(align, width)];
+  for (const result of results) {
+    const url = mdText(result.url);
+    if (result.status !== "ok" || !result.page) {
+      const status = result.error ? `${mdText(result.status)}: ${mdText(result.error)}` : mdText(result.status);
+      lines.push(mdRow([url, status], width));
+      continue;
+    }
+    const n = result.page;
+    const cells = [url, "ok", kbNumber(n.meanImageBytes), pct(n.exactPct), pct(n.exactEstPct), `+${n.sharpnessKB.toFixed(1)} KB`];
+    if (aggressive) cells.push(pct(n.aggressiveExactEstPct ?? 0));
+    lines.push(mdRow(cells, width));
+  }
+  for (const result of results) {
+    if (result.status !== "ok" || !result.page || result.groups.length === 0) continue;
+    lines.push("", `### ${mdText(result.url)}`, "", mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
+    lines.push(mdRow(["---", "---", "---:", "---", "---"], 5));
+    for (const g of result.groups.slice(0, SUMMARY_GROUPS)) {
+      const current = g.sizes === undefined ? "no sizes" : mdText(g.sizes);
+      const suggested = g.suggestedSizes === undefined ? "-" : mdText(g.suggestedSizes);
+      const loader = g.loader ? mdText(g.loader) : "-";
+      const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdText(h)).join("; ");
+      lines.push(mdRow([current, suggested, kbNumber(g.savedBytes), loader, hint || "-"], 5));
+    }
+  }
+  const viewports = [...new Set(results.filter((r) => r.status === "ok").flatMap((r) => r.viewports))];
+  lines.push(
+    "",
+    `Method: savings are shares of each page view's image bytes, averaged over viewports. exact = the site's own smaller srcset candidates, measured; est. = a local re-encode (quality, format or a plain img resize), judged by SSIMULACRA2 at delta ${SCAN_DELTA}. Sharpness is undersized images, reported apart from the savings.`,
+    "",
+    `Viewports: ${viewports.length > 0 ? viewports.map((v) => mdText(v)).join(", ") : "none measured"}.`,
+  );
+  return lines.join("\n");
+}
+
+/** One JSON for other tools: each page's URL, status and numbers, in scan order. */
+export interface ScanSummary {
+  imgtuneVersion: string;
+  pages: { url: string; host: string; status: PageStatus; error?: string; page?: PageNumbers }[];
+}
+
+export function summaryOf(results: PageResult[]): ScanSummary {
+  return {
+    imgtuneVersion: IMGTUNE_VERSION,
+    pages: results.map((r) => ({
+      url: r.url,
+      host: r.host,
+      status: r.status,
+      ...(r.error !== undefined ? { error: r.error } : {}),
+      ...(r.page !== undefined ? { page: r.page } : {}),
+    })),
+  };
+}
+
+/** Exit code of --fail-over: 3 when any scanned page's exact + est. share is above the limit, else 0. */
+export const FAIL_OVER_EXIT = 3;
+
+/** The pages whose exact + est. share is above `failOver`. Pages that were not measured are never over. */
+export function pagesOverBudget(results: PageResult[], failOver: number): PageResult[] {
+  return results.filter((r) => r.status === "ok" && r.page !== undefined && r.page.exactEstPct > failOver);
+}
+
+async function writeOutput(path: string, content: string): Promise<void> {
+  const dir = dirname(path);
+  await mkdir(dir, { recursive: true });
+  await writeFileAtomic(path, content, { root: dir });
+}
+
+export interface ScanCommandResult {
+  /** Terminal text: one block per page, and a line when a budget is exceeded. */
+  output: string;
+  exitCode: number;
+}
+
+/** `imgtune scan`: the arguments after `scan`. The JSON files are written to --out; --markdown and --summary-json too. */
+export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<ScanCommandResult> {
   const args = parseScanArgs(argv);
   const viewports = DEFAULT_VIEWPORTS.filter((v) => !args.viewports || args.viewports.includes(v.name)).map((v) => ({ ...v }));
   const results = await runScan(args.urls, {
@@ -1701,5 +1829,18 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     viewports,
     log,
   });
-  return renderScan(results, args.aggressive);
+  if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);
+  if (args.summaryJson !== undefined) {
+    await writeOutput(resolve(cwd, args.summaryJson), `${JSON.stringify(summaryOf(results), null, 2)}\n`);
+  }
+  let output = renderScan(results, args.aggressive);
+  let exitCode = 0;
+  if (args.failOver !== undefined) {
+    const over = pagesOverBudget(results, args.failOver);
+    if (over.length > 0) {
+      exitCode = FAIL_OVER_EXIT;
+      output += `exact + est. above ${args.failOver}% on ${over.length} of ${results.length} page(s) (--fail-over)\n`;
+    }
+  }
+  return { output, exitCode };
 }

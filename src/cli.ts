@@ -49,6 +49,12 @@ const OPTION_HELP = {
   aggressive: ["--aggressive", "also report a delta 4 column (never used for the claim)"],
   viewports: ["--viewports <names>", "comma-separated viewport names to measure (default: all six)"],
   noQuality: ["--no-quality", "skip the SSIMULACRA2 quality measurement"],
+  markdown: ["--markdown <file>", "write a PR-comment Markdown summary: per page, its top groups and the method"],
+  failOver: [
+    "--fail-over <pct>",
+    "exit 3 when a page's exact + est. share is above this percentage (default: never fail)",
+  ],
+  summaryJson: ["--summary-json <file>", "write one JSON file with every page's status and numbers"],
 } as const;
 
 type OptionKey = keyof typeof OPTION_HELP;
@@ -93,7 +99,7 @@ const COMMAND_HELP: Record<Command | "scan", string> = {
       "Measure live pages by URL, with no source, config or dev server. Writes one JSON file per page to --out.",
       "Needs Chromium for Playwright: npx playwright install chromium.",
     ],
-    ["out", "aggressive", "viewports", "noQuality"],
+    ["out", "aggressive", "viewports", "noQuality", "markdown", "failOver", "summaryJson"],
   ),
 };
 
@@ -128,7 +134,9 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] === "scan") {
-    process.stdout.write(await scanCommand(argv.slice(1), process.cwd(), progress));
+    const outcome = await scanCommand(argv.slice(1), process.cwd(), progress);
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
     return;
   }
 

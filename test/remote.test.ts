@@ -23,15 +23,20 @@ import {
   ruleMatches,
   pageFileName,
   pageNumbers,
+  FAIL_OVER_EXIT,
+  mdText,
+  pagesOverBudget,
   parseScanArgs,
   parseSrcset,
   referenceUrl,
+  renderMarkdown,
   resizedEstimate,
   rightCandidate,
   renderPage,
   robotsAllows,
   safeText,
   siteNumbers,
+  summaryOf,
   viewportTotals,
   type AnalysisContext,
   type ImageFinding,
@@ -303,6 +308,123 @@ describe("parseScanArgs", () => {
   });
 });
 
+
+describe("parseScanArgs for the CI outputs", () => {
+  it("reads --markdown, --fail-over and --summary-json", () => {
+    expect(
+      parseScanArgs(["https://a.example/", "--markdown", "out/pr.md", "--fail-over", "2.5", "--summary-json", "s.json"]),
+    ).toMatchObject({ markdown: "out/pr.md", failOver: 2.5, summaryJson: "s.json" });
+  });
+
+  it("reads --fail-over 0 as a limit, and leaves it unset by default", () => {
+    expect(parseScanArgs(["https://a.example/", "--fail-over", "0"]).failOver).toBe(0);
+    expect(parseScanArgs(["https://a.example/"]).failOver).toBeUndefined();
+  });
+
+  it("rejects a missing or malformed --fail-over, and a missing --markdown value", () => {
+    expect(() => parseScanArgs(["https://a.example/", "--fail-over"])).toThrow(/--fail-over needs a value/);
+    expect(() => parseScanArgs(["https://a.example/", "--fail-over", "-1"])).toThrow(/from 0 to 100/);
+    expect(() => parseScanArgs(["https://a.example/", "--fail-over", "101"])).toThrow(/from 0 to 100/);
+    expect(() => parseScanArgs(["https://a.example/", "--fail-over", "1e2"])).toThrow(/from 0 to 100/);
+    expect(() => parseScanArgs(["https://a.example/", "--markdown", "--out"])).toThrow(/--markdown needs a value/);
+  });
+});
+
+/** A measured page with the given numbers; everything else is empty. */
+function pageResult(over: Partial<PageResult> = {}): PageResult {
+  return {
+    url: "https://shop.example/",
+    host: "shop.example",
+    scannedAt: "",
+    imgtuneVersion: "0",
+    metric: "ssimulacra2",
+    delta: 2,
+    viewports: ["iphone-15", "desktop"],
+    status: "ok",
+    nextjs: false,
+    perViewport: {},
+    groups: [],
+    counts: { images: 1, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
+    page: { meanImageBytes: 3235 * 1024, exactPct: 0, exactEstPct: 33.04, fixablePct: 40, sharpnessKB: 2 },
+    ...over,
+  };
+}
+
+describe("mdText and the Markdown summary", () => {
+  it("escapes every Markdown-significant character of page data, and no mention or HTML survives", () => {
+    const hostile = "a|b `c` @user <!-- x --> [l](u) *b* _i_ \\ & 1";
+    const out = mdText(hostile);
+    expect(out).not.toMatch(/[|`@<\[\]*_\\]/);
+    expect(out).toContain("&#64;user");
+    expect(out).toContain("&#124;");
+    expect(out).not.toContain("<!--");
+    expect(mdText("line\nbreak\u001b[2J")).toBe("linebreak&#91;2J");
+  });
+
+  it("renders one table row per page with the exact figures, and keeps every row at the same width", () => {
+    const md = renderMarkdown([pageResult(), pageResult({ url: "https://shop.example/b", status: "blocked", error: "challenge at desktop", page: undefined })], false);
+    const rows = md.split("\n").filter((line) => line.startsWith("| https://"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("| 3235 | 0.0% | 33.0% | +2.0 KB |");
+    expect(rows[1]).toContain("blocked: challenge at desktop");
+    // Six columns: seven pipes per page row, escaped pipes do not count.
+    for (const row of rows.slice(0, 2)) expect(row.split("|").length - 1).toBe(7);
+    expect(md).toContain("Viewports: iphone-15, desktop.");
+  });
+
+  it("lists the top five groups with current, suggested sizes, loader and hint, with hostile sizes escaped", () => {
+    const groups = Array.from({ length: 6 }, (_, i) => ({
+      key: `k${i}`,
+      sizes: i === 0 ? "33vw | 50vw `@x` <!-- m -->" : undefined,
+      suggestedSizes: "280px",
+      savedBytes: 2048 * (6 - i),
+      members: 1,
+      samples: [],
+      loader: "next/image",
+      hint: i === 0 ? 'set sizes="280px"' : undefined,
+      qualityHint: i === 1 ? "lower quality" : undefined,
+    }));
+    const md = renderMarkdown([pageResult({ groups })], false);
+    expect(md).not.toContain("<!--");
+    expect(md).not.toContain("@x");
+    expect(md).toContain("&#124;");
+    expect(md).toContain("| no sizes | 280px | 10 | next/image | lower quality |");
+    expect(md).toContain('| 33vw &#124; 50vw &#96;&#64;x&#96; &lt;!-- m --&gt; | 280px | 12 | next/image | set sizes="280px" |');
+    expect(md.split("\n").filter((line) => line.startsWith("| ") && line.includes("next/image"))).toHaveLength(5);
+  });
+
+  it("adds the delta 4 column only with --aggressive", () => {
+    const aggressive = pageResult({ page: { meanImageBytes: 1024, exactPct: 1, exactEstPct: 2, fixablePct: 3, sharpnessKB: 0, aggressiveExactEstPct: 4.5 } });
+    expect(renderMarkdown([aggressive], true)).toContain("exact + est. at delta 4");
+    expect(renderMarkdown([aggressive], true)).toContain("| 4.5% |");
+    expect(renderMarkdown([aggressive], false)).not.toContain("delta 4");
+  });
+});
+
+describe("the CI budget and summary", () => {
+  it("exits 3 for a page whose exact + est. share is above the limit, and only for those", () => {
+    const over = pageResult({ url: "https://a.example/", page: { meanImageBytes: 1, exactPct: 0, exactEstPct: 5, fixablePct: 0, sharpnessKB: 0 } });
+    const under = pageResult({ url: "https://b.example/", page: { meanImageBytes: 1, exactPct: 0, exactEstPct: 1, fixablePct: 0, sharpnessKB: 0 } });
+    expect(FAIL_OVER_EXIT).toBe(3);
+    expect(pagesOverBudget([over, under], 0).map((p) => p.url)).toEqual(["https://a.example/", "https://b.example/"]);
+    expect(pagesOverBudget([over, under], 2).map((p) => p.url)).toEqual(["https://a.example/"]);
+    expect(pagesOverBudget([over, under], 5)).toEqual([]);
+  });
+
+  it("never counts a page that was not measured", () => {
+    const blocked = pageResult({ status: "blocked", page: undefined, error: "challenge at desktop" });
+    expect(pagesOverBudget([blocked], 0)).toEqual([]);
+  });
+
+  it("writes the status and the numbers of every page, and the error of a page that failed", () => {
+    const blocked = pageResult({ url: "https://b.example/", status: "blocked", page: undefined, error: "challenge" });
+    const summary = summaryOf([pageResult(), blocked]);
+    expect(summary.pages).toHaveLength(2);
+    expect(summary.pages[0]).toMatchObject({ url: "https://shop.example/", status: "ok", page: { exactEstPct: 33.04 } });
+    expect(summary.pages[1]).toEqual({ url: "https://b.example/", host: "shop.example", status: "blocked", error: "challenge" });
+    expect(summary.pages[1]).not.toHaveProperty("page");
+  });
+});
 
 describe("resizedEstimate", () => {
   it("resizes a JPEG to the needed width and estimates fewer bytes than the served file", async () => {
