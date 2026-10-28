@@ -8,7 +8,7 @@ import { readImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
 import { originalUrlFor } from "./analyse.js";
 import { installRestoreHandlers } from "./instrument.js";
-import { formatScore, makeScorer, metricLabel, type Metric, type Scorer } from "./metric.js";
+import { assertMetricAvailable, formatScore, makeScorer, metricLabel, type Metric, type Scorer } from "./metric.js";
 import { readReport } from "./report.js";
 import { scanFile } from "./scan.js";
 import { loadState, saveState, type StateEntry } from "./state.js";
@@ -450,6 +450,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   const log = opts.log ?? progress;
   const projectDir = config.projectDir;
 
+  await assertMetricAvailable(config.metric, config.ssimulacra2Path);
   await restoreAndReport(projectDir, log);
   installRestoreHandlers(projectDir);
 

@@ -119,11 +119,37 @@ async function isExecutable(path: string): Promise<boolean> {
   );
 }
 
+/** Resolved binary per configured path (`""` for the lookup without one). Only successes are kept. */
+const resolvedBinaries = new Map<string, string>();
+
 /**
  * The ssimulacra2_rs binary: the configured path when one is given (and must exist), else the first match on PATH,
- * else ~/.cargo/bin/ssimulacra2_rs. Throws with the install hint when none is found.
+ * else ~/.cargo/bin/ssimulacra2_rs. Throws with the install hint when none is found. The lookup runs once per
+ * configured path; later calls return the cached path.
  */
 export async function resolveSsimulacra2(configured?: string): Promise<string> {
+  const key = configured ?? "";
+  const cached = resolvedBinaries.get(key);
+  if (cached !== undefined) return cached;
+  const found = await lookUpSsimulacra2(configured);
+  resolvedBinaries.set(key, found);
+  return found;
+}
+
+/** Forgets the cached binaries, so the next resolution looks them up again. For tests. */
+export function clearSsimulacra2Cache(): void {
+  resolvedBinaries.clear();
+}
+
+/**
+ * Fails before any work starts when the metric needs the ssimulacra2 binary and it cannot be found, with the install
+ * hint. Resolving also caches the path for the scores that follow.
+ */
+export async function assertMetricAvailable(metric: Metric, binary?: string): Promise<void> {
+  if (metric === "ssimulacra2") await resolveSsimulacra2(binary);
+}
+
+async function lookUpSsimulacra2(configured?: string): Promise<string> {
   if (configured !== undefined) {
     if (await isExecutable(configured)) return configured;
     throw missing(` at ${configured}`);

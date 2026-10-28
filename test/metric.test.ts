@@ -1,9 +1,9 @@
 import sharp from "sharp";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
-import { makeScorer, resolveSsimulacra2, score } from "../src/metric.js";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { assertMetricAvailable, clearSsimulacra2Cache, makeScorer, resolveSsimulacra2, score } from "../src/metric.js";
 import { decodeRgba, gradientNoise } from "./image-fixtures.js";
 
 const created: string[] = [];
@@ -62,7 +62,37 @@ describe.skipIf(!hasBinary)("score ssimulacra2", () => {
   });
 });
 
+/** A stand-in ssimulacra2_rs that logs how many runs are in flight when it starts, then scores 90 after 200 ms. */
+async function countingBinary(dir: string): Promise<{ bin: string; log: string }> {
+  const active = join(dir, "active");
+  const log = join(dir, "in-flight.log");
+  await mkdir(active);
+  const bin = join(dir, "ssimulacra2_rs");
+  await writeFile(
+    bin,
+    `#!/bin/sh\nmkdir "${active}/$$" || exit 1\necho "$(ls -1 "${active}" | wc -l)" >> "${log}"\nsleep 0.2\nrmdir "${active}/$$"\necho "Score: 90"\n`,
+  );
+  await chmod(bin, 0o755);
+  return { bin, log };
+}
+
 describe("ssimulacra2 binary lookup", () => {
+  beforeEach(() => clearSsimulacra2Cache());
+
+  it("looks a configured binary up once and keeps its path after that", async () => {
+    const { bin } = await countingBinary(await projectDir());
+    expect(await resolveSsimulacra2(bin)).toBe(bin);
+    await unlink(bin);
+    expect(await resolveSsimulacra2(bin)).toBe(bin);
+  });
+
+  it("fails the startup check for a missing binary when the metric is ssimulacra2, and not for ssim", async () => {
+    await expect(assertMetricAvailable("ssimulacra2", "/nonexistent/ssimulacra2_rs")).rejects.toThrow(
+      /ssimulacra2_rs not found at \/nonexistent\/ssimulacra2_rs; install with/,
+    );
+    await expect(assertMetricAvailable("ssim", "/nonexistent/ssimulacra2_rs")).resolves.toBeUndefined();
+  });
+
   it("reports a missing configured binary with the install hint", async () => {
     const img = gradientNoise(16, 16, 0, 12);
     await expect(

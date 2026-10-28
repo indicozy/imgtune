@@ -18,7 +18,7 @@ import {
 } from "./server.js";
 import { listSourceFiles, scanFile } from "./scan.js";
 import { isDone, loadState, type StateEntry } from "./state.js";
-import { makeScorer } from "./metric.js";
+import { assertMetricAvailable, makeScorer } from "./metric.js";
 import type { ImageUsage, ImgtuneConfig } from "./types.js";
 import { fetchSitemapUrls, resolveUrls, sitemapCandidates, type ResolvedUrls } from "./urls.js";
 import type { RawImage } from "./ssim.js";
@@ -373,6 +373,7 @@ export async function audit(config: ImgtuneConfig, opts: { log?: Log } = {}): Pr
   const log = opts.log ?? progress;
   const projectDir = config.projectDir;
 
+  await assertMetricAvailable(config.metric, config.ssimulacra2Path);
   await restoreAndReport(projectDir, log);
   installRestoreHandlers(projectDir);
   await ensureToolDir(projectDir);

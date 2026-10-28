@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertPagesResolved,
+  audit,
   changedSince,
   confirmPlan,
   makeConfirm,
@@ -18,6 +19,7 @@ import { sha1 } from "../src/atomic.js";
 import type { StateEntry } from "../src/state.js";
 import type { ImageUsage } from "../src/types.js";
 import type { ResolvedUrls } from "../src/urls.js";
+import type { ImgtuneConfig } from "../src/types.js";
 
 const emptyDir = () => mkdtempSync(join(tmpdir(), "imgtune-audit-"));
 
@@ -295,3 +297,23 @@ describe("changedSince", () => {
 function readFileText(path: string): string {
   return readFileSync(path, "utf8");
 }
+
+describe("audit with a missing ssimulacra2 binary", () => {
+  it("fails before scanning or starting a server, with the install hint", async () => {
+    const dir = emptyDir();
+    const config = {
+      projectDir: dir,
+      paths: [],
+      metric: "ssimulacra2",
+      ssimulacra2Path: "/nonexistent/ssimulacra2_rs",
+      threshold: 70,
+      tolerance: 2,
+      samplesPerComponent: 5,
+      urls: {},
+      viewports: [],
+    } as unknown as ImgtuneConfig;
+    const logged: string[] = [];
+    await expect(audit(config, { log: (message) => logged.push(message) })).rejects.toThrow(/ssimulacra2_rs not found at/);
+    expect(logged).toEqual([]);
+  });
+});
