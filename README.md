@@ -56,9 +56,9 @@ that imgtune can change.
 | next/image | `/_next/image?url=…` | yes | yes (`q`) |
 | Cloudflare Images | `/cdn-cgi/image/<opts>/<path>` | yes | yes (`quality`) |
 | Contentful | `images.ctfassets.net`, `downloads.ctfassets.net` | yes | yes (`q`) |
-| Sanity | `cdn.sanity.io/images/…` | yes | yes (`q`) |
-| Shopify | `cdn.shopify.com`, `/cdn/shop/…` | yes (size suffix removed) | no |
-| Cloudinary | `res.cloudinary.com/<cloud>/image/upload/…` | yes | yes (`q_<n>`); `q_auto` is left to the CDN |
+| Sanity | `cdn.sanity.io/images/…`, or the same path shape on a custom domain | yes | yes (`q`) |
+| Shopify | `cdn.shopify.com`, `/cdn/shop/…` | yes (size parameters and legacy size suffixes removed) | yes (`quality`) |
+| Cloudinary | `res.cloudinary.com/<cloud>/image/upload/…`, or transformation paths on a custom domain | yes | yes (`q_<n>`); `q_auto` is left to the CDN |
 | imgix (incl. DatoCMS, Prismic) | `*.imgix.net`, `datocms-assets.com`, `images.prismic.io` | yes | yes (`q`) |
 | generic | any other URL | no | only when the URL has `q=` or `quality=` |
 
@@ -76,55 +76,56 @@ for quality.
 
 ## Demand study (2026-10-28)
 
-imgtune was scanned on two groups of sites before it was packaged: production sites, where the question was whether
-the savings justify building it, and open-source apps, which were scanned for comparison. Each site was scanned once:
+Before packaging, imgtune scanned two groups of sites: production sites, which decided whether it was worth building,
+and open-source apps, for comparison. The site list was fixed before the first scan. Each run scans every site once:
 2 pages × 6 viewports, SSIMULACRA2 delta 2. Saving is the share of all image bytes per page view, with the page fully
-scrolled, averaged over viewports and then over the two pages.
+scrolled, averaged over viewports and then over the two pages. When the tool changed, every site was scanned again
+with the same version; v1 is the first run, v4 the current tool (loader adapters and the fixes found since).
 
 ### Production sites (decide)
 
-| site | image KB / view | exact | exact + est. | > 15%? |
+| site | image KB / view | exact | exact + est. (v4) | exact + est. (v1) |
 | --- | --- | --- | --- | --- |
-| A1 fashion retail, UK | 3,235 | 0.0% | 33.0% | est. only |
-| A2 home audio, DK | 1,151 | 5.7% | 47.8% | est. only |
-| A3 home audio, US | 3,355 | 13.1% | 13.1% | no |
-| A4 sportswear, UK | 9,195 | 26.8% | 26.8% | yes |
-| A5 home/rugs, US | 7,750 | 12.7% | 12.7% | no |
-| A6 outdoor stays, US | 9,073 | 20.7% | 20.8% | yes |
+| A1 fashion retail, UK | 3,250 | 0.0% | 33.2% | 33.0% |
+| A2 home audio, DK | 1,263 | 5.7% | 53.1% | 47.8% |
+| A3 home audio, US | 3,355 | 13.1% | 38.2% | 13.1% |
+| A4 sportswear, UK | 9,254 | 26.8% | 35.9% | 26.8% |
+| A5 home/rugs, US | 7,714 | 12.7% | 16.5% | 12.7% |
+| A6 outdoor stays, US | 9,078 | 20.7% | 27.7% | 20.8% |
 
 Sharpness growth: about 2 KB per view on A4, 0 elsewhere.
 
 Kill criterion: a pass needs at least 2 of 6 sites above 15%.
 
-- exact only: 2 of 6, a pass (at the bar)
-- exact + est.: 4 of 6, a pass
+- exact only: 2 of 6 (v1 and v4), a pass at the bar
+- exact + est.: 6 of 6 in v4 (4 of 6 in v1), a pass
 
 ### Open-source apps (do not decide)
 
 | site | image KB / view | exact | exact + est. | of fixable |
 | --- | --- | --- | --- | --- |
-| tailwindcss.com | 4,505 | 0.0% | 4.2% | 9.6% |
-| ui.shadcn.com | 240 | 0.0% | 33.7% | 42.0% |
-| supabase.com | 601 | 1.5% | 21.2% | 48.8% |
-| nextjs.org | 162 | 9.1% | 9.1% | 10.7% |
-| turborepo.com | 77 | 12.0% | 12.0% | 12.0% |
-| langfuse.com | 1,285 | 0.3% | 4.5% | 18.1% |
-| docs.sentry.io | 56 | 0.0% | 0.0% | 0.0% |
-| www.openstatus.dev | 217 | 0.0% | 4.2% | 31.7% |
+| tailwindcss.com | 4,508 | 0.0% | 4.2% | 9.6% |
+| ui.shadcn.com | 238 | 0.0% | 33.7% | 42.0% |
+| supabase.com | 671 | 1.9% | 20.8% | 48.0% |
+| nextjs.org | 162 | 9.1% | 19.2% | 21.4% |
+| turborepo.com | 77 | 12.0% | 21.4% | 21.4% |
+| langfuse.com | 3,149 | 0.2% | 1.8% | 21.7% |
+| docs.sentry.io | 85 | 0.0% | 0.0% | 0.0% |
+| www.openstatus.dev | 152 | 0.0% | 4.2% | 31.7% |
 
-2 of 8 above 15% (exact + est.), 0 of 8 on exact alone. Developer sites carry few image bytes; the waste sits in
+v4: 4 of 8 above 15% (exact + est.), 0 of 8 on exact alone. Developer sites carry few image bytes; the waste sits in
 image-heavy commerce.
 
 ### Limits
 
-- **Six deciders.** A signal, not proof; sample biased to sites without bot walls.
-- **Est. is a floor on 4 of 6 deciders.** Quality/format is only estimated when the original is known
-  (`/_next/image`, Cloudflare `cdn-cgi/image`). Contentful, Sanity, Shopify and Cloudinary loaders → `n/a`.
-  Example: A5's listing serves 640 px WebP product cards at ~200 KB each and shows 0%.
+- **Six deciders.** A signal, not proof; the sample is biased to sites without bot walls.
+- **Exact is measured, est. is estimated.** On measured savings alone, 2 of 6 pass. The est. part
+  is a local re-encode scored with SSIMULACRA2 against the original; it is a floor where images could not be scored
+  (counted per page in the JSON as `qualityNA`, e.g. images that appear only at viewports where no sample was scored).
 - **Plain `<img>` resize** (A1, A2): local resize at the quality that matches the served bytes, so it doesn't add a
   hidden quality saving.
+- A3's jump from v1 to v4 comes from Sanity images on a custom domain served at `q=100`, which v1 could not score.
 - tailwindcss.com/blog rendered no `<img>` at scan time (0 images); counted as 0%.
-- A2's 47.8% is driven by its speakers page (84%): 1440 px product images (~300 KB) in 150–180 CSS px slots.
 
 ## CI
 
