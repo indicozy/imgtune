@@ -16,6 +16,8 @@ export interface WriteOptions {
   followSymlink?: boolean;
   /** Permission bits for a file this call creates. An existing file keeps its own. */
   mode?: number;
+  /** fsync the temp file before the rename, for files a crash must not leave short. */
+  sync?: boolean;
 }
 
 const isNotFound = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === "ENOENT";
@@ -72,6 +74,7 @@ export async function writeFileAtomic(path: string, data: string | Buffer, opts:
     created = true;
     if (mode !== undefined) await handle.chmod(mode);
     await handle.writeFile(typeof data === "string" ? Buffer.from(data, "utf8") : data);
+    if (opts.sync) await handle.sync();
     await handle.close();
     handle = undefined;
     await rename(tmp, target);

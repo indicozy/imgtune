@@ -227,6 +227,36 @@ describe("instrument and restore", () => {
     expect(readFileSync(file, "utf8")).toBe(CARD);
   });
 
+  it("refuses a symlinked source file whose target is outside the project, before any write", async () => {
+    const dir = makeProject({ "src/Card.tsx": CARD });
+    const outside = join(dirname(dir), "outside.tsx");
+    writeFileSync(outside, CARD);
+    const link = join(dir, "src/link.tsx");
+    symlinkSync(outside, link);
+
+    await expect(instrument(dir, scanFile(link, dir))).rejects.toThrow(
+      "refusing to instrument a file outside the project",
+    );
+
+    expect(readFileSync(outside, "utf8")).toBe(CARD);
+    expect(readFileSync(join(dir, "src/Card.tsx"), "utf8")).toBe(CARD);
+    expect(existsSync(join(dir, ".imgtune/backup/manifest.json"))).toBe(false);
+  });
+
+  it("manifest write ignores a planted manifest.json.tmp symlink and leaves its target alone", async () => {
+    const dir = makeProject({ "src/Card.tsx": CARD });
+    const victim = join(dirname(dir), "victim.txt");
+    writeFileSync(victim, "keep me");
+    mkdirSync(join(dir, ".imgtune/backup"), { recursive: true });
+    symlinkSync(victim, join(dir, ".imgtune/backup/manifest.json.tmp"));
+
+    await backupFiles(dir, [join(dir, "src/Card.tsx")]);
+
+    expect(readFileSync(victim, "utf8")).toBe("keep me");
+    expect(existsSync(join(dir, ".imgtune/backup/manifest.json"))).toBe(true);
+    await restore(dir);
+  });
+
   it("refuses a manifest entry that points outside the project and leaves that file alone", async () => {
     const dir = makeProject({ "src/Card.tsx": CARD });
     const outside = join(dir, "..", "outside.txt");

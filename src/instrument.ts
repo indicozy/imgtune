@@ -10,8 +10,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { writeFileAtomic } from "./atomic.js";
 import { scanFile } from "./scan.js";
 import type { ImageUsage } from "./types.js";
 
@@ -224,12 +225,9 @@ async function writeDurable(path: string, data: Buffer | string): Promise<void> 
   }
 }
 
-/** Temp file + rename, so a crash never leaves a half-written manifest. */
+/** Temp file + fsync + rename, so a crash never leaves a half-written manifest. */
 async function writeManifest(root: string, manifest: Manifest): Promise<void> {
-  const path = layout(root).manifest;
-  const tmp = `${path}.tmp`;
-  await writeDurable(tmp, `${JSON.stringify(manifest, null, 2)}\n`);
-  await rename(tmp, path);
+  await writeFileAtomic(layout(root).manifest, `${JSON.stringify(manifest, null, 2)}\n`, { root, sync: true });
 }
 
 /** Synchronous write that refuses to follow a symlink out of `base`. */
@@ -349,6 +347,14 @@ export async function instrument(projectDir: string, usages: ImageUsage[]): Prom
   for (const usage of usages) {
     const file = resolve(root, usage.file);
     byFile.set(file, [...(byFile.get(file) ?? []), usage]);
+  }
+
+  // A symlinked file is written through to its target, so the target must be inside the project too.
+  const realRoot = realpathSync(root);
+  for (const file of byFile.keys()) {
+    if (!within(realRoot, realpathSync(file))) {
+      throw new Error(`refusing to instrument a file outside the project: ${file}`);
+    }
   }
 
   // Validate every file first: the text must be the same before and after the scan, and
