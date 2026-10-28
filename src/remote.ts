@@ -1,5 +1,4 @@
 /// <reference lib="dom" />
-import { readFileSync } from "node:fs";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -21,6 +20,7 @@ import { minPassingQuality } from "./search.js";
 import { deriveSizes, type SizePoint } from "./sizes.js";
 import type { RawImage } from "./ssim.js";
 import type { Viewport } from "./types.js";
+import { IMGTUNE_VERSION } from "./version.js";
 
 /** Thresholds of the report and the local search. */
 const MIN_RENDERED_PX = 16;
@@ -1531,15 +1531,6 @@ export interface ScanOptions {
   resolver?: Resolver;
 }
 
-let cachedVersion: string | undefined;
-function imgtuneVersion(): string {
-  if (cachedVersion === undefined) {
-    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    cachedVersion = pkg.version;
-  }
-  return cachedVersion;
-}
-
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 async function scanPage(
@@ -1554,7 +1545,7 @@ async function scanPage(
     url: pageUrl,
     host: url.host,
     scannedAt: new Date().toISOString(),
-    imgtuneVersion: imgtuneVersion(),
+    imgtuneVersion: IMGTUNE_VERSION,
     metric: "ssimulacra2",
     delta: SCAN_DELTA,
     aggressiveDelta: run.aggressive ? SCAN_AGGRESSIVE_DELTA : undefined,
