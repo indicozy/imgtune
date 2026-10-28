@@ -142,6 +142,27 @@ describe("writeReport / readReport", () => {
     expect((await readReport(dir)).results[0].proposed.quality).toBe(85);
   });
 
+  it("rejects a sizes or sizesFull that is not a sizes value", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imgtune-report-"));
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "Card.tsx"), "export const x = 1;\n");
+    const imageConfig = readImageConfig(dir);
+    const injected = 'x" onError={alert(1)}';
+    for (const proposed of [{ sizesFull: injected }, { sizes: injected }, { sizes: "(orientation: landscape) 50vw" }]) {
+      await writeReport(dir, [result({ usageId: "src/Card.tsx:3:1", proposed: { width: 160, ...proposed } })], {
+        config,
+        imageConfig,
+      });
+      await expect(readReport(dir)).rejects.toThrow(/invalid report .*src\/Card\.tsx:3.*is not a sizes value/);
+    }
+
+    await writeReport(dir, [result({ usageId: "src/Card.tsx:3:1", proposed: { width: 160, sizes: "(max-width: 768px) 33vw, 280px", sizesFull: "calc(50vw - 20px)" } })], {
+      config,
+      imageConfig,
+    });
+    expect((await readReport(dir)).results[0].proposed.sizesFull).toBe("calc(50vw - 20px)");
+  });
+
   it("throws when no report exists", async () => {
     await expect(readReport(mkdtempSync(join(tmpdir(), "imgtune-report-")))).rejects.toThrow(
       "no audit report found; run imgtune audit",

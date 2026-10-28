@@ -114,6 +114,11 @@ function parseSizes(sizes: string): SizesBranch[] | undefined {
   return branches.length > 0 ? branches : undefined;
 }
 
+/** Whether `sizes` is a value this module understands: comma-separated branches of the supported forms only. */
+export function isSizesValue(sizes: string): boolean {
+  return parseSizes(sizes) !== undefined;
+}
+
 /** The first branch whose condition holds at `viewportWidth`, as its raw width value. */
 export function sizesValueAt(sizes: string, viewportWidth: number): string | undefined {
   const branches = parseSizes(sizes);

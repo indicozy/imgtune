@@ -1,6 +1,7 @@
 import { readFile, mkdir } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { ComponentResult } from "./analyse.js";
+import { isSizesValue } from "./sizes.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
 import type { ImageConfig } from "./nextconfig.js";
 import type { ImgtuneConfig } from "./types.js";
@@ -132,12 +133,17 @@ export async function writeReport(projectDir: string, results: ComponentResult[]
 /** A proposal is written into source as an attribute value, so a hand-edited report may carry nothing else. */
 function checkProposals(report: Report): void {
   for (const result of report.results) {
-    const { quality, sizes } = result.proposed;
+    const { quality, sizes, sizesFull } = result.proposed;
     const badQuality = quality !== undefined && !(Number.isInteger(quality) && quality >= 1 && quality <= 100);
-    const badSizes = sizes !== undefined && typeof sizes !== "string";
-    if (badQuality || badSizes) {
-      const field = badQuality ? `quality ${JSON.stringify(quality)}` : `sizes ${JSON.stringify(sizes)}`;
-      throw new Error(`invalid report ${REPORT_DIR}/${REPORT_FILE}: ${result.relFile}:${result.line} proposes ${field}`);
+    if (badQuality) {
+      throw new Error(`invalid report ${REPORT_DIR}/${REPORT_FILE}: ${result.relFile}:${result.line} proposes quality ${JSON.stringify(quality)}`);
+    }
+    for (const [name, value] of [["sizes", sizes], ["sizesFull", sizesFull]] as const) {
+      if (value !== undefined && (typeof value !== "string" || !isSizesValue(value))) {
+        throw new Error(
+          `invalid report ${REPORT_DIR}/${REPORT_FILE}: ${result.relFile}:${result.line} proposed.${name} is not a sizes value`,
+        );
+      }
     }
   }
 }

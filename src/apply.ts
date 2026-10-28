@@ -42,8 +42,11 @@ interface PlannedUsage {
   edits: Edit[];
 }
 
-/** Escapes a value for a double-quoted JSX string attribute. */
-const attrString = (value: string): string => value.replace(/"/g, "&quot;");
+/** Escapes a value for a double-quoted JSX string attribute. Only strings are written into source. */
+const attrString = (value: string): string => {
+  if (typeof value !== "string") throw new TypeError("attribute value must be a string");
+  return value.replace(/"/g, "&quot;");
+};
 
 /**
  * Text that adds one attribute after the tag name. When the tag's attributes start on their own lines, it goes on a new
@@ -61,6 +64,7 @@ function insertText(text: string, usage: ImageUsage, attr: string): string {
  * double-quoted.
  */
 function sizesLiteral(text: string, prop: PropValue, sizes: string): string {
+  if (typeof sizes !== "string") throw new TypeError("sizes must be a string");
   const quote = /^[^=]*=\s*\{?\s*(['"])/.exec(text.slice(prop.start, prop.end))?.[1];
   if (quote === "'" && !sizes.includes("'")) return `sizes='${sizes}'`;
   return `sizes="${attrString(sizes)}"`;
