@@ -15,7 +15,7 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
 import { adapterFor, type QualityParam } from "./loaders.js";
 import { loadSettled, settleWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
-import { assertMetricAvailable, makeScorer, type Scorer } from "./metric.js";
+import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import { deriveSizes, type SizePoint } from "./sizes.js";
 import type { RawImage } from "./ssim.js";
@@ -1589,7 +1589,6 @@ async function scanPage(
 
 /** Scans each page in order and writes its JSON to `outDir`. Nothing else is written, except the scorer's temp files. */
 export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
-  if (opts.quality) await assertMetricAvailable("ssimulacra2");
   const browser = await chromium.launch({ headless: true, args: ["--disable-gpu"] });
   try {
     // The fetches send the desktop viewport's user agent: the default one of a fresh context.

@@ -304,7 +304,7 @@ describe("audit with a missing ssimulacra2 binary", () => {
     const config = {
       projectDir: dir,
       paths: [],
-      metric: "ssimulacra2",
+      metric: "ssimulacra2-native",
       ssimulacra2Path: "/nonexistent/ssimulacra2_rs",
       threshold: 70,
       tolerance: 2,

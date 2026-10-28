@@ -31,7 +31,7 @@ export interface ImgtuneConfig {
   sitemapUrl?: string;
   /** Base URL of an already running server (`--url`). The tool never starts or stops it. */
   url?: string;
-  /** The ssimulacra2_rs binary, resolved against the project. Without it the binary is looked up on PATH. */
+  /** The ssimulacra2_rs binary, resolved against the project. Used by `ssimulacra2-native` only; otherwise looked up on PATH. */
   ssimulacra2Path?: string;
   /** Route pattern -> example URL paths. */
   urls: Record<string, string[]>;

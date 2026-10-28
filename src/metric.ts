@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, constants, mkdir, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import sharp from "sharp";
@@ -9,9 +10,12 @@ import { pixelsKey } from "./encode.js";
 import { LruCache } from "./lru.js";
 import { ssim, type RawImage } from "./ssim.js";
 
-/** `ssimulacra2`: perceptual score, 100 for identical images. `ssim`: the plain SSIM in ssim.ts, 1 for identical. */
-export type Metric = "ssimulacra2" | "ssim";
-export const METRICS: readonly Metric[] = ["ssimulacra2", "ssim"];
+/**
+ * `ssimulacra2`: perceptual score, 100 for identical images, scored in-process by the bundled WebAssembly build.
+ * `ssimulacra2-native`: the same metric through the `ssimulacra2_rs` binary. `ssim`: the plain SSIM in ssim.ts, 1 for identical.
+ */
+export type Metric = "ssimulacra2" | "ssimulacra2-native" | "ssim";
+export const METRICS: readonly Metric[] = ["ssimulacra2", "ssimulacra2-native", "ssim"];
 
 /** Scores a decoded image against its reference on the metric's own scale. Synchronous scorers are fine too. */
 export type Scorer = (ref: RawImage, test: RawImage) => number | Promise<number>;
@@ -19,7 +23,10 @@ export type Scorer = (ref: RawImage, test: RawImage) => number | Promise<number>
 export interface ScoreOptions {
   /** Project root. ssimulacra2 writes its PNG pair under `<projectDir>/.imgtune/tmp`. Defaults to the working directory. */
   projectDir?: string;
-  /** The `ssimulacra2_rs` binary (config `ssimulacra2Path`). Without it the binary is looked up on PATH, then in ~/.cargo/bin. */
+  /**
+   * The `ssimulacra2_rs` binary (config `ssimulacra2Path`), used by `ssimulacra2-native` only. Without it the binary is
+   * looked up on PATH, then in ~/.cargo/bin.
+   */
   binary?: string;
 }
 
@@ -47,7 +54,8 @@ async function withRunSlot<T>(fn: () => Promise<T>): Promise<T> {
 /** Scores `test` against `ref` with the given metric. Dimensions must match. */
 export async function score(metric: Metric, ref: RawImage, test: RawImage, opts: ScoreOptions = {}): Promise<number> {
   if (metric === "ssim") return ssim(ref, test);
-  return ssimulacra2(ref, test, opts);
+  if (metric === "ssimulacra2-native") return ssimulacra2Native(ref, test, opts);
+  return ssimulacra2Wasm(ref, test);
 }
 
 /** Scores of this process by metric and the pixels of both images, at most SCORE_CACHE_MAX. A failed score is not kept. */
@@ -92,10 +100,59 @@ export function formatScore(metric: Metric, value: number): string {
   return value.toFixed(metric === "ssim" ? 3 : 1);
 }
 
-async function ssimulacra2(ref: RawImage, test: RawImage, opts: ScoreOptions): Promise<number> {
+function requireSameSize(ref: RawImage, test: RawImage): void {
   if (ref.width !== test.width || ref.height !== test.height) {
     throw new Error(`ssimulacra2 requires equal dimensions (${ref.width}x${ref.height} vs ${test.width}x${test.height})`);
   }
+}
+
+/** The bundled WebAssembly module: `score(width, height, src, dst)` over RGBA8 buffers. Loaded on first use. */
+interface SsimWasm {
+  score(width: number, height: number, src: Uint8Array, dst: Uint8Array): number;
+}
+let wasmModule: SsimWasm | undefined;
+
+function loadSsimWasm(): SsimWasm {
+  if (wasmModule === undefined) {
+    // The glue is CommonJS (wasm-bindgen --target nodejs) inside a "type": "module" package, so it is required.
+    const require = createRequire(import.meta.url);
+    wasmModule = require("../vendor/ssimulacra2/ssim_wasm.cjs") as SsimWasm;
+  }
+  return wasmModule;
+}
+
+/**
+ * The pixels composited on white, as the native path does through sharp: the binary reads colour only, so the colour
+ * under transparent pixels must not count. Opaque images are passed through without a copy.
+ */
+function flattenOnWhite(img: RawImage): Uint8Array {
+  const src = new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength);
+  let translucent = false;
+  for (let i = 3; i < src.length; i += 4) {
+    if (src[i] !== 255) {
+      translucent = true;
+      break;
+    }
+  }
+  if (!translucent) return src;
+  const out = new Uint8Array(src.length);
+  for (let i = 0; i < src.length; i += 4) {
+    const a = src[i + 3];
+    // Floored, as sharp's flatten does: the native path's pixels come out exactly the same.
+    for (let c = 0; c < 3; c++) out[i + c] = Math.floor((src[i + c] * a + 255 * (255 - a)) / 255);
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
+/** SSIMULACRA2 in-process. Synchronous, so it needs no run limit and no temp files. */
+function ssimulacra2Wasm(ref: RawImage, test: RawImage): number {
+  requireSameSize(ref, test);
+  return loadSsimWasm().score(ref.width, ref.height, flattenOnWhite(ref), flattenOnWhite(test));
+}
+
+async function ssimulacra2Native(ref: RawImage, test: RawImage, opts: ScoreOptions): Promise<number> {
+  requireSameSize(ref, test);
   const binary = await resolveSsimulacra2(opts.binary);
   const projectDir = opts.projectDir ?? process.cwd();
   const dir = join(projectDir, ".imgtune", "tmp");
@@ -171,11 +228,11 @@ export function clearSsimulacra2Cache(): void {
 }
 
 /**
- * Fails before any work starts when the metric needs the ssimulacra2 binary and it cannot be found, with the install
- * hint. Resolving also caches the path for the scores that follow.
+ * Fails before any work starts when the metric needs the ssimulacra2_rs binary (`ssimulacra2-native`) and it cannot be
+ * found, with the install hint. Resolving also caches the path for the scores that follow.
  */
 export async function assertMetricAvailable(metric: Metric, binary?: string): Promise<void> {
-  if (metric === "ssimulacra2") await resolveSsimulacra2(binary);
+  if (metric === "ssimulacra2-native") await resolveSsimulacra2(binary);
 }
 
 async function lookUpSsimulacra2(configured?: string): Promise<string> {

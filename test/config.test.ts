@@ -42,6 +42,13 @@ describe("loadConfig", () => {
     expect(config.tolerance).toBe(3);
   });
 
+  it("ssimulacra2-native takes the same presets as ssimulacra2", async () => {
+    const { config } = await loadConfig(["audit", "--metric", "ssimulacra2-native", "--quality", "strict"], EMPTY);
+    expect(config.metric).toBe("ssimulacra2-native");
+    expect(config.threshold).toBe(80);
+    expect(config.delta).toBe(1);
+  });
+
   it("ssim keeps the 0.975 and 0.99 presets", async () => {
     const relaxed = await loadConfig(["audit", "--metric", "ssim"], EMPTY);
     expect(relaxed.config.threshold).toBe(0.975);
@@ -55,6 +62,7 @@ describe("loadConfig", () => {
     const dir = projectWith({ metric: "ssim" });
     expect((await loadConfig(["audit"], dir)).config.metric).toBe("ssim");
     expect((await loadConfig(["audit", "--metric=ssimulacra2"], dir)).config.metric).toBe("ssimulacra2");
+    expect((await loadConfig(["audit", "--metric=ssimulacra2-native"], dir)).config.metric).toBe("ssimulacra2-native");
   });
 
   it("threshold override", async () => {
@@ -94,7 +102,7 @@ describe("loadConfig", () => {
 
   it("refuses an unknown metric, from a flag or the file", async () => {
     await expect(loadConfig(["audit", "--metric", "psnr"], EMPTY)).rejects.toThrow(
-      'Invalid metric "psnr" (--metric): expected one of ssimulacra2, ssim',
+      'Invalid metric "psnr" (--metric): expected one of ssimulacra2, ssimulacra2-native, ssim',
     );
     await expect(loadConfig(["audit"], projectWith({ metric: 1 }))).rejects.toThrow(
       "Invalid metric 1 (imgtune.config.json)",

@@ -10,15 +10,18 @@ const QUALITY_LEVELS: readonly QualityLevel[] = ["relaxed", "strict"];
 const CONFIG_FILE = "imgtune.config.json";
 
 const DEFAULT_METRIC: Metric = "ssimulacra2";
+type Preset = { threshold: number; delta?: number; tolerance: number };
+const SSIMULACRA2_PRESETS: Record<QualityLevel, Preset> = {
+  relaxed: { threshold: 70, delta: 2, tolerance: 5 },
+  strict: { threshold: 80, delta: 1, tolerance: 3 },
+};
 /**
  * ssimulacra2 presets are relative (R38): `threshold` is the floor and `delta` the allowed drop from the current quality.
  * ssim keeps its absolute bars.
  */
-const QUALITY_PRESETS: Record<Metric, Record<QualityLevel, { threshold: number; delta?: number; tolerance: number }>> = {
-  ssimulacra2: {
-    relaxed: { threshold: 70, delta: 2, tolerance: 5 },
-    strict: { threshold: 80, delta: 1, tolerance: 3 },
-  },
+const QUALITY_PRESETS: Record<Metric, Record<QualityLevel, Preset>> = {
+  ssimulacra2: SSIMULACRA2_PRESETS,
+  "ssimulacra2-native": SSIMULACRA2_PRESETS,
   ssim: {
     relaxed: { threshold: 0.975, tolerance: 5 },
     strict: { threshold: 0.99, tolerance: 3 },
@@ -75,7 +78,7 @@ export async function loadConfig(
   const dropValue = flags.maxDrop ?? file.maxScoreDrop;
   if (dropValue !== undefined) {
     if (explicit) throw new Error("--max-drop has no effect with an absolute --threshold (remove one of them)");
-    if (metric !== "ssimulacra2") throw new Error("--max-drop applies to ssimulacra2 only");
+    if (metric === "ssim") throw new Error("--max-drop applies to ssimulacra2 only");
   }
   const delta =
     dropValue === undefined
@@ -272,7 +275,7 @@ function parseMetric(value: unknown, source: string): Metric {
   return value as Metric;
 }
 
-/** A threshold on the metric's scale: 0-100 for ssimulacra2, 0-1 for ssim. */
+/** A threshold on the metric's scale: 0-100 for ssimulacra2 (either scorer), 0-1 for ssim. */
 function parseThreshold(value: unknown, source: string, metric: Metric): number {
   const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
   const max = metric === "ssim" ? 1 : 100;
