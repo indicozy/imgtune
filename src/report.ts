@@ -27,6 +27,7 @@ export interface Report {
 }
 
 const measured = (r: ComponentResult): boolean => r.current.medianBytes !== undefined;
+const unique = (values: string[]): string[] => [...new Set(values)];
 
 /** Measured rows by saved bytes, descending; not-measured rows last. Ties keep their input order. */
 export function rank(results: ComponentResult[]): ComponentResult[] {
@@ -46,6 +47,24 @@ export function rank(results: ComponentResult[]): ComponentResult[] {
 
 const kb = (bytes: number | undefined): string => (bytes === undefined ? "-" : (bytes / 1024).toFixed(1));
 const change = (now: string, next: string | undefined): string => (next === undefined ? now : `${now} -> ${next}`);
+/** A negative saving is growth, shown with a leading plus. */
+const savedKb = (bytes: number): string => (bytes < 0 ? `+${kb(-bytes)} grow` : kb(bytes));
+
+/** The viewport a phone or desktop column reports: iphone-15 or the first mobile one; desktop or the first other one. */
+function columnViewport(r: ComponentResult, mobile: boolean): string | undefined {
+  const names = unique([...Object.keys(r.current.bytesByViewport), ...Object.keys(r.proposed.bytesByViewport ?? {})]);
+  const mobileNames = r.mobileViewports ?? [];
+  const pool = names.filter((name) => mobileNames.includes(name) === mobile);
+  if (mobile) return pool.includes("iphone-15") ? "iphone-15" : pool[0];
+  return pool.includes("desktop") ? "desktop" : pool[0];
+}
+
+/** KB per image now -> projected at one viewport; "-" when the viewport is not reported. */
+function viewportKb(r: ComponentResult, name: string | undefined): string {
+  if (name === undefined) return "-";
+  const next = r.proposed.bytesByViewport?.[name];
+  return change(kb(r.current.bytesByViewport[name]), next === undefined ? undefined : kb(next));
+}
 
 /** Plain-text table, one row per result in rank order, fixed-width columns. */
 export function renderTable(results: ComponentResult[]): string {
@@ -56,7 +75,8 @@ export function renderTable(results: ComponentResult[]): string {
     "instances",
     "sizes now -> new",
     "quality now -> new",
-    "KB/img now -> new",
+    "phone KB now -> new",
+    "desktop KB now -> new",
     "saved KB",
     "SSIM",
     "est./exact",
@@ -71,8 +91,9 @@ export function renderTable(results: ComponentResult[]): string {
       String(r.instances),
       change(r.current.sizes ?? "-", r.proposed.sizes),
       change(String(r.current.quality), r.proposed.quality === undefined ? undefined : String(r.proposed.quality)),
-      change(kb(r.current.medianBytes), r.proposed.projectedBytes === undefined ? undefined : kb(r.proposed.projectedBytes)),
-      isMeasured ? kb(r.savedBytesTotal) : "-",
+      viewportKb(r, columnViewport(r, true)),
+      viewportKb(r, columnViewport(r, false)),
+      isMeasured ? savedKb(r.savedBytesTotal) : "-",
       r.proposed.ssim === undefined ? "-" : r.proposed.ssim.toFixed(3),
       isMeasured ? (r.estimated ? "est." : "exact") : "-",
       r.notes.join("; "),

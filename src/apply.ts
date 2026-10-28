@@ -21,7 +21,6 @@ const REASON_EDITED_SINCE_AUDIT = "file changed since audit; re-run imgtune audi
 const REASON_IMG = "plain <img> is report-only";
 const REASON_SIZES_MANUAL = "manual change needed: sizes is an expression";
 const REASON_QUALITY_MANUAL = "manual change needed: quality is an expression";
-const REASON_GROWS = "proposal increases bytes; re-run apply with --allow-growth to apply its sizes";
 const reasonQualityNotListed = (q: number) => `manual change needed: add ${q} to images.qualities in next.config`;
 
 /** A text range to replace (start === end for an insertion). */
@@ -82,14 +81,13 @@ function planUsage(
     return edits;
   }
 
-  const sizes = result.proposed.sizes;
+  // The proposal keeps any media branch that grows; --allow-growth writes the full correction instead.
+  const sizes = allowGrowth ? result.proposed.sizesFull : result.proposed.sizes;
   if (sizes !== undefined) {
     const prop = usage.props.sizes;
     const unchanged = prop.kind === "literal" && prop.value === sizes;
     if (prop.kind === "expression" || (usage.hasSpread && prop.kind === "absent")) {
       skip(REASON_SIZES_MANUAL);
-    } else if (!unchanged && result.grows && !allowGrowth) {
-      skip(REASON_GROWS);
     } else if (prop.kind === "literal") {
       if (!unchanged) {
         edits.push({ field: "sizes", value: sizes, splice: { start: prop.start, end: prop.end, text: sizesLiteral(text, prop, sizes) } });
@@ -222,7 +220,8 @@ export async function applyResults(
   // Group the results that have a proposal by the file of their audited usage.
   const byFile = new Map<string, ComponentResult[]>();
   for (const result of results) {
-    if (result.proposed.sizes === undefined && result.proposed.quality === undefined) continue;
+    const sizes = allowGrowth ? result.proposed.sizesFull : result.proposed.sizes;
+    if (sizes === undefined && result.proposed.quality === undefined) continue;
     const audited = byId.get(result.usageId);
     if (!audited) {
       skipped.push({ usageId: result.usageId, reason: REASON_CHANGED });

@@ -40,16 +40,60 @@ describe("rank", () => {
 describe("renderTable", () => {
   it("shows est. for cdn rows and joins notes", () => {
     const table = renderTable([
-      result({ usageId: "a", savedBytesTotal: 2048, notes: ["n1", "n2"] }),
+      result({
+        usageId: "a",
+        savedBytesTotal: 2048,
+        notes: ["n1", "n2"],
+        current: { quality: 75, medianBytes: 100 * 1024, bytesByViewport: { "iphone-15": 100 * 1024 } },
+        proposed: { width: 160, projectedBytes: 60 * 1024, bytesByViewport: { "iphone-15": 60 * 1024 } },
+        mobileViewports: ["iphone-15"],
+      }),
     ]);
     const [header, rule, row] = table.trimEnd().split("\n");
     expect(header).toMatch(/^#\s+component\s+file:line\s+instances\s+sizes now -> new/);
+    expect(header).toContain("phone KB now -> new");
+    expect(header).toContain("desktop KB now -> new");
+    expect(header).not.toContain("KB/img");
     expect(rule).toMatch(/^-+/);
     expect(row).toContain("est.");
     expect(row).toContain("src/Card.tsx:3");
     expect(row).toContain("100.0 -> 60.0");
     expect(row).toContain("2.0");
     expect(row).toContain("n1; n2");
+  });
+
+  it("fills the phone and desktop columns from each viewport and shows growth as +KB grow", () => {
+    const table = renderTable([
+      result({
+        usageId: "a",
+        savedBytesTotal: -3.1 * 1024,
+        current: {
+          quality: 75,
+          medianBytes: 100 * 1024,
+          bytesByViewport: { "iphone-15": 100 * 1024, desktop: 200 * 1024 },
+        },
+        proposed: { width: 160, bytesByViewport: { "iphone-15": 60 * 1024, desktop: 215 * 1024 } },
+        mobileViewports: ["iphone-15"],
+      }),
+    ]);
+    const row = table.trimEnd().split("\n")[2];
+    expect(row).toContain("100.0 -> 60.0");
+    expect(row).toContain("200.0 -> 215.0");
+    expect(row).toContain("+3.1 grow");
+  });
+
+  it("uses the first mobile viewport as the phone when iphone-15 is not measured", () => {
+    const table = renderTable([
+      result({
+        usageId: "a",
+        current: { quality: 75, bytesByViewport: { "pixel-7": 50 * 1024, desktop: 80 * 1024 } },
+        proposed: { width: 160, bytesByViewport: { "pixel-7": 40 * 1024 } },
+        mobileViewports: ["pixel-7"],
+      }),
+    ]);
+    const row = table.trimEnd().split("\n")[2];
+    expect(row).toContain("50.0 -> 40.0");
+    expect(row).toContain("80.0");
   });
 });
 

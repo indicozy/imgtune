@@ -2,7 +2,7 @@ import { calibrationOffset, type CalibrationSample } from "./calibrate.js";
 import { encode, loadReference, type EncoderProfile } from "./encode.js";
 import type { ImageConfig } from "./nextconfig.js";
 import type { ImageObservation } from "./measure.js";
-import { deriveSizes } from "./sizes.js";
+import { deriveSizeBranches, joinSizeBranches, sizesSlotAt, sizesValueAt, type SizeBranches } from "./sizes.js";
 import { componentQuality, minPassingQuality, toTargetQuality, type SearchDeps } from "./search.js";
 import { nextCandidates, pickCandidate, pickForX } from "./srcset.js";
 import { ssim, type RawImage } from "./ssim.js";
@@ -18,11 +18,25 @@ const CALIBRATION_SAMPLES = 5;
 /** Projected bytes above this multiple of the current median count as growth. */
 const GROWTH_RATIO = 1.05;
 const NOTE_NOT_CONFIRMED = "estimated: not confirmed against /_next/image";
+/** The media branches of a `sizes` value, in the order the notes list them. */
+const BRANCHES = ["mobile", "desktop"] as const;
+/** What a `sizes` value means when the usage has none: Next serves the full viewport width. */
+const ABSENT_SIZES = "100vw";
 
 export interface MeasuredWidth {
   page: string;
   viewport: string;
   renderedWidth: number;
+}
+
+/** Growth of one media branch under the full correction. */
+export interface BranchGrowth {
+  /** Mean projected bytes minus mean current bytes over the branch's projected viewports. */
+  deltaBytes: number;
+  /** The corrected branch projects more than GROWTH_RATIO times its current bytes. */
+  grows: boolean;
+  /** A growing branch keeps its current value in `proposed.sizes`. */
+  kept: boolean;
 }
 
 export interface ComponentResult {
@@ -41,16 +55,33 @@ export interface ComponentResult {
     /** Median observed bytes per viewport name (default pass). */
     bytesByViewport: Record<string, number>;
   };
-  /** `width` is the predicted srcset width at the reference viewport; 0 when the usage was not measured. */
-  proposed: { sizes?: string; quality?: number; width: number; projectedBytes?: number; ssim?: number };
+  /**
+   * `width` is the predicted srcset width at the reference viewport under the proposed sizes; 0 when the usage was not
+   * measured. The per-viewport maps are projected bytes (default pass) under the proposed sizes and quality.
+   */
+  proposed: {
+    sizes?: string;
+    /** The full correction: every media branch at its measured width. `apply --allow-growth` writes this. */
+    sizesFull?: string;
+    quality?: number;
+    width: number;
+    projectedBytes?: number;
+    ssim?: number;
+    bytesByViewport?: Record<string, number>;
+    /** `bytesByViewport` under the full correction, to compare with the proposed sizes. */
+    bytesByViewportFull?: Record<string, number>;
+    /** Per media branch, when the branch has a projected viewport. */
+    branches?: { mobile?: BranchGrowth; desktop?: BranchGrowth };
+  };
+  /** Average saving per page view across the projected viewports; negative when the proposal grows bytes. */
   savedBytesTotal: number;
   estimated: boolean;
   servedFormats: string[];
   notes: string[];
   /** Set when `sizes` is an expression or comes from a spread: rendered widths per page and viewport. */
   measuredWidths?: MeasuredWidth[];
-  /** Set when the projected bytes exceed the current median by more than 5%: apply skips `sizes` unless allowed. */
-  grows?: boolean;
+  /** Names of the rendered mobile viewports, so the report can label the phone column. */
+  mobileViewports?: string[];
 }
 
 export interface AnalyseOptions {
@@ -153,6 +184,47 @@ interface Sample {
   buffer: Buffer;
 }
 
+/** Per-viewport facts from the rendered observations of one usage. */
+interface ViewportStat {
+  name: string;
+  mobile: boolean;
+  viewportWidth: number;
+  /** Rendered observations at this viewport (default pass). */
+  instances: number;
+  /** Median rendered width (css px) and device pixel ratio. */
+  slot: number;
+  dpr: number;
+  /** Median observed bytes at this viewport; undefined when no observation has bytes. */
+  bytes?: number;
+  /** Median natural (file) width of the rendered observations that have bytes. */
+  servedWidth?: number;
+  /** Median observed bytes per original. */
+  bytesBySrc: Map<string, number>;
+}
+
+function viewportStats(rendered: ImageObservation[], bytes: Record<string, number>): ViewportStat[] {
+  return unique(rendered.map((o) => o.viewport)).map((name) => {
+    const at = rendered.filter((o) => o.viewport === name);
+    const measured = at.filter((o) => o.bytes !== undefined);
+    const bytesBySrc = new Map<string, number>();
+    for (const src of unique(measured.map((o) => o.originalSrc ?? ""))) {
+      const m = median(measured.flatMap((o) => (o.originalSrc === src ? [o.bytes as number] : [])));
+      if (src && m !== undefined) bytesBySrc.set(src, m);
+    }
+    return {
+      name,
+      mobile: at[0].mobile,
+      viewportWidth: at[0].viewportWidth,
+      instances: at.length,
+      slot: median(at.map((o) => o.renderedWidth)) ?? 0,
+      dpr: at[0].dpr,
+      bytes: bytes[name],
+      servedWidth: median(measured.flatMap((o) => (o.naturalWidth > 0 ? [o.naturalWidth] : []))),
+      bytesBySrc,
+    };
+  });
+}
+
 async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObservation[]): Promise<ComponentResult> {
   const notes: string[] = [];
   const defaultObs = usageObs.filter((o) => o.accept === "default");
@@ -209,6 +281,9 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
     medianWidth,
     format: mode(refMeasured.flatMap((o) => (o.contentType ? [o.contentType] : []))),
   };
+  const stats = viewportStats(rendered, result.current.bytesByViewport);
+  const ref = stats.find((s) => s.name === refName) as ViewportStat;
+  result.mobileViewports = stats.filter((s) => s.mobile).map((s) => s.name);
 
   if (usage.tag === "img") {
     return plainImg(result, refRendered, refSlot, refDpr);
@@ -219,106 +294,177 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
   const qualityManual =
     usage.props.quality.kind === "expression" || (usage.hasSpread && usage.props.quality.kind === "absent");
 
-  let proposedSizes: string | undefined;
   if (sizesManual) {
     notes.push("manual change needed: sizes is an expression");
     result.measuredWidths = defaultObs.map((o) => ({ page: o.page, viewport: o.viewport, renderedWidth: o.renderedWidth }));
-  } else {
-    proposedSizes = deriveSizes(
-      rendered.map((o) => ({ viewportWidth: o.viewportWidth, renderedWidth: o.renderedWidth, mobile: o.mobile })),
-    );
+  }
+  if (qualityManual) notes.push("manual change needed: quality is an expression");
+
+  // The full correction: every media branch at its measured width. Nothing when sizes is manual.
+  const fullBranches: SizeBranches = sizesManual
+    ? {}
+    : deriveSizeBranches(rendered.map((o) => ({ viewportWidth: o.viewportWidth, renderedWidth: o.renderedWidth, mobile: o.mobile })));
+  const sizesFull = sizesManual ? undefined : joinSizeBranches(fullBranches);
+
+  // The width the browser picks at a viewport under `sizes`: the candidate for the slot the sizes give there.
+  const widthAt = (sizes: string | undefined, s: ViewportStat): number => {
+    const candidates = nextCandidates(ctx.imageConfig, sizes, widthLiteral);
+    const slot = (sizes === undefined ? undefined : sizesSlotAt(sizes, s.viewportWidth)) ?? s.slot;
+    return candidates.kind === "w" ? pickCandidate(candidates.widths, slot, s.dpr) : pickForX(candidates.widths, s.dpr);
+  };
+  // Manual sizes keep serving the file's own width, so the projection and the quality search use that width.
+  const widthFor = (sizes: string | undefined, s: ViewportStat): number =>
+    sizesManual ? (s.servedWidth ?? widthAt(sizes, s)) : widthAt(sizes, s);
+
+  const probe = await prepareQuality(ctx, usageObs, quality);
+  if (probe.samples.length === 0) notes.push("quality not proposed: no sample originals could be fetched");
+  const sampleEval = evaluator(ctx, probe.offsets);
+  const served: Format = result.servedFormats.includes("avif") ? "avif" : "webp";
+  const projectionFormat: Format = ctx.profile === "cdn" ? "avif" : served;
+
+  /** Quality searched at the reference viewport's width under `sizes`. Samples are not searched without originals. */
+  const searchAtSizes = (sizes: string | undefined): Promise<QualityOutcome> =>
+    probe.samples.length === 0 ? Promise.resolve({}) : searchAt(ctx, probe, quality, widthFor(sizes, ref));
+
+  /** Projected median bytes per viewport name under `sizes` at quality `qNew`. A viewport that cannot be projected is omitted. */
+  const project = async (sizes: string | undefined, qNew: number): Promise<Record<string, number>> => {
+    const out: Record<string, number> = {};
+    for (const s of stats) {
+      if (s.bytes === undefined || s.servedWidth === undefined) continue;
+      const projectedWidth = widthFor(sizes, s);
+      const values: number[] = [];
+      for (const sample of probe.samples) {
+        const observed = s.bytesBySrc.get(sample.src);
+        if (observed === undefined) continue;
+        try {
+          const projected = await sampleEval(sample, projectionFormat, qNew, projectedWidth);
+          const baseline = await sampleEval(sample, projectionFormat, quality, s.servedWidth);
+          if (projected && baseline && baseline.bytes > 0) values.push(observed * (projected.bytes / baseline.bytes));
+        } catch (err) {
+          logOnce(ctx, `projection ${sample.src}`, `skipping projection for ${sample.src}: ${message(err)}`);
+        }
+      }
+      const m = median(values);
+      if (m !== undefined) out[s.name] = m;
+    }
+    return out;
+  };
+
+  // Growth is judged per media branch, with the full correction at the quality searched for it.
+  const fullSearch = await searchAtSizes(sizesFull);
+  const qFull = fullSearch.proposedQuality ?? quality;
+  const projFull = await project(sizesFull, qFull);
+  const branches: { mobile?: BranchGrowth; desktop?: BranchGrowth } = {};
+  for (const key of BRANCHES) {
+    const members = stats.filter((s) => s.mobile === (key === "mobile") && s.bytes !== undefined && projFull[s.name] !== undefined);
+    if (fullBranches[key] === undefined || members.length === 0) continue;
+    const currentMean = mean(members.map((s) => s.bytes as number));
+    const correctedMean = mean(members.map((s) => projFull[s.name]));
+    branches[key] = { deltaBytes: correctedMean - currentMean, grows: correctedMean > currentMean * GROWTH_RATIO, kept: false };
   }
 
-  const candidates = nextCandidates(ctx.imageConfig, proposedSizes ?? sizesLiteral, widthLiteral);
-  const predict = (slot: number, dpr: number): number =>
-    candidates.kind === "w" ? pickCandidate(candidates.widths, slot, dpr) : pickForX(candidates.widths, dpr);
-  const width = predict(refSlot, refDpr);
-  result.proposed.width = width;
-  result.proposed.sizes = proposedSizes;
+  // A growing branch keeps the current value at its own viewport width; the others take the full correction.
+  const current = sizesLiteral ?? ABSENT_SIZES;
+  const finalBranches: SizeBranches = {};
+  let unresolved = false;
+  for (const key of BRANCHES) {
+    const full = fullBranches[key];
+    if (full === undefined) continue;
+    const decision = branches[key];
+    if (!decision?.grows) {
+      finalBranches[key] = full;
+      continue;
+    }
+    const viewportWidth = (stats.find((s) => s.mobile === (key === "mobile")) as ViewportStat).viewportWidth;
+    const keep = sizesValueAt(current, viewportWidth);
+    if (keep === undefined) {
+      unresolved = true;
+    } else {
+      decision.kept = true;
+      finalBranches[key] = keep;
+    }
+  }
+  // Every present branch keeping its value is no sizes proposal at all.
+  const allKept = BRANCHES.filter((key) => fullBranches[key] !== undefined).every((key) => branches[key]?.kept === true);
+  const proposedSizes = sizesManual || unresolved || allKept ? undefined : joinSizeBranches(finalBranches);
+  for (const key of BRANCHES) {
+    const decision = branches[key];
+    if (!decision?.grows) continue;
+    const delta = (decision.deltaBytes / 1024).toFixed(1);
+    const outcome = decision.kept
+      ? "kept current — use --allow-growth"
+      : "current sizes could not be kept, so no sizes proposed — use --allow-growth";
+    notes.push(`${key}: corrected sizes is sharper but larger (+${delta} KB/img); ${outcome}`);
+  }
 
-  // Width ladder: the candidate offered at a viewport is much larger than the slot needs.
+  // The page's sizes after the proposal: quality and bytes follow them.
+  const finalSizes = proposedSizes ?? sizesLiteral;
+  const sameAsFull = finalSizes === sizesFull;
+  const finalSearch = sameAsFull ? fullSearch : await searchAtSizes(finalSizes);
+  if (finalSearch.reason) notes.push(finalSearch.reason);
+  const proposedQuality = finalSearch.proposedQuality;
+  const qNew = proposedQuality ?? quality;
+  // The projection under the full correction is kept as is; the final projection is copied so a confirmation can change it.
+  const projFinal = { ...(sameAsFull ? projFull : await project(finalSizes, qNew)) };
+
+  // Candidate widths that the ladder offers well above what a slot needs are reported as gaps.
+  const candidates = nextCandidates(ctx.imageConfig, finalSizes, widthLiteral);
   if (candidates.kind === "w") {
     const gaps = new Set<number>();
-    for (const name of names) {
-      const at = rendered.filter((o) => o.viewport === name);
-      const slot = median(at.map((o) => o.renderedWidth)) ?? 0;
-      const dpr = at[0].dpr;
-      const target = Math.ceil(slot * dpr);
-      if (pickCandidate(candidates.widths, slot, dpr) > target * LADDER_GAP_RATIO) gaps.add(target);
+    for (const s of stats) {
+      const target = Math.ceil(s.slot * s.dpr);
+      if (pickCandidate(candidates.widths, s.slot, s.dpr) > target * LADDER_GAP_RATIO) gaps.add(target);
     }
     for (const target of gaps) notes.push(`width ladder gap: add ${target} to deviceSizes`);
   }
 
-  if (qualityManual) notes.push("manual change needed: quality is an expression");
-
-  // A manual `sizes` keeps serving the file's own width, so quality is searched and confirmed at that width.
-  const quoteWidth = sizesManual ? (medianWidth ?? width) : width;
-  const search = await searchQuality(ctx, usageObs, quality, quoteWidth, notes);
-  const proposedQuality = search.proposedQuality;
-  result.proposed.quality = proposedQuality;
-
-  // Bytes are projected at the width the page serves. A manual `sizes` claims no width saving.
-  const qNew = proposedQuality ?? quality;
-  const served: Format = result.servedFormats.includes("avif") ? "avif" : "webp";
-  const projectionFormat: Format = ctx.profile === "cdn" ? "avif" : served;
-
-  // Observed reference-viewport bytes per original, for cdn projection (samples without one are skipped).
-  const observedBySrc = new Map<string, number>();
-  for (const src of unique(refMeasured.map((o) => o.originalSrc ?? ""))) {
-    const m = median(refMeasured.flatMap((o) => (o.originalSrc === src ? [o.bytes as number] : [])));
-    if (src && m !== undefined) observedBySrc.set(src, m);
-  }
-
-  const projectedPerSample: number[] = [];
+  // Scores are taken at the reference viewport's width under the proposed sizes.
+  const scoreWidth = widthFor(finalSizes, ref);
   const ssims: number[] = [];
-  for (const sample of search.samples) {
+  for (const sample of probe.samples) {
     try {
-      const projected = await evaluate(ctx, sample.buffer, projectionFormat, qNew, quoteWidth, search.offsets);
-      if (ctx.profile === "cdn") {
-        const observed = observedBySrc.get(sample.src);
-        const baseline = await evaluate(ctx, sample.buffer, projectionFormat, quality, medianWidth ?? width, search.offsets);
-        if (projected && baseline && baseline.bytes > 0 && observed !== undefined) {
-          projectedPerSample.push(observed * (projected.bytes / baseline.bytes));
-        }
-      } else if (projected) {
-        projectedPerSample.push(projected.bytes);
-      }
-      const scored = projectionFormat === served ? projected : await evaluate(ctx, sample.buffer, served, qNew, quoteWidth, search.offsets);
+      const scored = await sampleEval(sample, served, qNew, scoreWidth);
       if (scored) ssims.push(scored.ssim);
     } catch (err) {
       logOnce(ctx, `projection ${sample.src}`, `skipping projection for ${sample.src}: ${message(err)}`);
     }
   }
-  result.proposed.ssim = median(ssims);
 
-  let projected = median(projectedPerSample);
   let estimated = true;
   if (ctx.profile === "next-default") {
     if (!ctx.opts.confirm) {
       notes.push(NOTE_NOT_CONFIRMED);
-    } else if (proposedQuality !== undefined && search.samples.length > 0) {
+    } else if (proposedQuality !== undefined && probe.samples.length > 0) {
       // A confirmed result uses the served bytes of the primary format (AVIF when searched, else WebP).
       const primary: Format = ctx.searchFormats.includes("avif") ? "avif" : "webp";
-      const outcome = await confirmQuality(ctx, search.samples, proposedQuality, quoteWidth);
+      const outcome = await confirmQuality(ctx, probe.samples, proposedQuality, scoreWidth);
       const confirmedBytes = outcome?.confirmed ? outcome.bytes[primary] : undefined;
       if (confirmedBytes !== undefined) {
-        projected = confirmedBytes;
+        projFinal[ref.name] = confirmedBytes;
         estimated = false;
       }
     }
   }
   result.estimated = estimated;
-  result.proposed.projectedBytes = projected;
 
-  if (projected !== undefined && medianBytes !== undefined) {
-    result.savedBytesTotal = Math.max(0, medianBytes - projected) * result.instances;
-    if (projected > medianBytes * GROWTH_RATIO) {
-      const extraKb = Math.round(((projected - medianBytes) / 1024) * 10) / 10;
-      notes.push(`undersized now: the proposal is sharper but larger (+${extraKb} KB at ${refName})`);
-      result.grows = true;
-    }
-  }
+  // Savings: each projected viewport's saving times its instances, averaged over the projected viewports.
+  const pairs = stats.filter((s) => s.bytes !== undefined && projFinal[s.name] !== undefined);
+  result.savedBytesTotal =
+    pairs.length === 0
+      ? 0
+      : pairs.reduce((sum, s) => sum + ((s.bytes as number) - projFinal[s.name]) * s.instances, 0) / pairs.length;
 
+  result.proposed = {
+    width: widthAt(finalSizes, ref),
+    sizes: proposedSizes,
+    sizesFull,
+    quality: proposedQuality,
+    projectedBytes: projFinal[ref.name],
+    ssim: median(ssims),
+    bytesByViewport: projFinal,
+    bytesByViewportFull: projFull,
+    branches,
+  };
   return result;
 }
 
@@ -337,65 +483,61 @@ function plainImg(result: ComponentResult, refAll: ImageObservation[], refSlot: 
   return result;
 }
 
-interface QualitySearch {
+interface QualityProbe {
+  /** Sample originals that decode. */
   samples: Sample[];
+  /** Calibration offset per format (cdn profile only). */
   offsets: Partial<Record<Format, number>>;
-  proposedQuality?: number;
 }
 
-/** Per-sample bisection per format, then the component's 95th percentile mapped onto the project's quality scale. */
-async function searchQuality(
-  ctx: Context,
-  usageObs: ImageObservation[],
-  quality: number,
-  width: number,
-  notes: string[],
-): Promise<QualitySearch> {
-  const { cfg, deps } = ctx;
-  const sources = unique(usageObs.flatMap((o) => (o.originalSrc ? [o.originalSrc] : []))).slice(0, cfg.samplesPerComponent);
+interface QualityOutcome {
+  proposedQuality?: number;
+  reason?: string;
+}
 
+/** Fetches the sample originals and, for a cdn profile, calibrates each format. Neither depends on the width. */
+async function prepareQuality(ctx: Context, usageObs: ImageObservation[], quality: number): Promise<QualityProbe> {
+  const sources = unique(usageObs.flatMap((o) => (o.originalSrc ? [o.originalSrc] : []))).slice(0, ctx.cfg.samplesPerComponent);
   const samples: Sample[] = [];
-  const perSample: Record<Format, number[]> = { avif: [], webp: [] };
   for (const src of sources) {
     const url = originalUrlFor(src, ctx.baseUrl);
     try {
       const buffer = await ctx.fetchCached(url);
-      const ref = await loadReference(buffer, width);
-      const found: Partial<Record<Format, number>> = {};
-      for (const format of ctx.searchFormats) {
-        found[format] = await minPassingQuality(ref, format, quality, ctx.profile, cfg.threshold, cfg.tolerance, deps);
-      }
+      await loadReference(buffer, 1);
       samples.push({ src, buffer });
-      for (const format of ctx.searchFormats) perSample[format].push(found[format] as number);
     } catch (err) {
       logOnce(ctx, url, `skipping sample ${url}: ${message(err)}`);
     }
   }
 
-  if (samples.length === 0) {
-    notes.push("quality not proposed: no sample originals could be fetched");
-    return { samples, offsets: {} };
-  }
-
   const offsets: Partial<Record<Format, number>> = {};
-  if (ctx.profile === "cdn") {
+  if (samples.length > 0 && ctx.profile === "cdn") {
     for (const format of ctx.searchFormats) {
-      const calibration = await calibrationSamples(ctx, usageObs, format, quality);
-      const fit = await calibrationOffset(calibration, deps);
+      const fit = await calibrationOffset(await calibrationSamples(ctx, usageObs, format, quality), ctx.deps);
       if (fit) offsets[format] = fit.offset;
+    }
+  }
+  return { samples, offsets };
+}
+
+/** Per-sample bisection per format at `width`, then the component's 95th percentile mapped onto the project's quality scale. */
+async function searchAt(ctx: Context, probe: QualityProbe, quality: number, width: number): Promise<QualityOutcome> {
+  const { cfg, deps } = ctx;
+  const perSample: Record<Format, number[]> = { avif: [], webp: [] };
+  for (const sample of probe.samples) {
+    const ref = await loadReference(sample.buffer, width);
+    for (const format of ctx.searchFormats) {
+      perSample[format].push(await minPassingQuality(ref, format, quality, ctx.profile, cfg.threshold, cfg.tolerance, deps));
     }
   }
 
   const targets: number[] = [];
   for (const format of ctx.searchFormats) {
-    const target = toTargetQuality(componentQuality(perSample[format]), offsets[format], ctx.profile, quality);
-    if (target === undefined) {
-      notes.push(`quality not proposed: no CDN ${format} variants observed for calibration`);
-      return { samples, offsets };
-    }
+    const target = toTargetQuality(componentQuality(perSample[format]), probe.offsets[format], ctx.profile, quality);
+    if (target === undefined) return { reason: `quality not proposed: no CDN ${format} variants observed for calibration` };
     targets.push(target);
   }
-  return { samples, offsets, proposedQuality: Math.max(...targets) };
+  return { proposedQuality: Math.max(...targets) };
 }
 
 /** Up to five distinct originals of the usage's observed CDN variants in `format`, with their bytes and quality. */
@@ -443,6 +585,22 @@ async function evaluate(
   const ref = await loadReference(buffer, width);
   const enc = await (ctx.deps.encode ?? encode)(ref, format, local, ctx.profile);
   return { bytes: enc.bytes, ssim: (ctx.deps.ssim ?? ssim)(ref, enc.decoded) };
+}
+
+type Scored = { bytes: number; ssim: number } | undefined;
+
+/** `evaluate` memoised per usage: a (sample, format, quality, width) is encoded once however many viewports share it. */
+function evaluator(ctx: Context, offsets: Partial<Record<Format, number>>) {
+  const memo = new Map<string, Promise<Scored>>();
+  return (sample: Sample, format: Format, cdnQ: number, width: number): Promise<Scored> => {
+    const key = `${sample.src}|${format}|${cdnQ}|${width}`;
+    let pending = memo.get(key);
+    if (!pending) {
+      pending = evaluate(ctx, sample.buffer, format, cdnQ, width, offsets);
+      memo.set(key, pending);
+    }
+    return pending;
+  };
 }
 
 /** `/_next/image` confirmation for a next-default quality. Failures are logged and yield no outcome. */
@@ -523,6 +681,10 @@ function median(values: number[]): number | undefined {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length / 2;
   return sorted.length % 2 === 1 ? sorted[Math.floor(mid)] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function mean(values: number[]): number {
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
 /** Most frequent value; ties go to the value seen first. */

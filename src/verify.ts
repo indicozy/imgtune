@@ -59,8 +59,8 @@ export interface VerifyRow {
   line: number;
   /** Median observed bytes per viewport name (default pass). */
   bytes: Record<string, number>;
-  /** Audit-time median bytes at the reference viewport, when the usage is in the audit report. */
-  beforeBytes?: number;
+  /** Audit-time median bytes per viewport, when the usage is in the audit report. */
+  beforeBytes?: Record<string, number>;
   judgement: Judgement;
 }
 
@@ -272,23 +272,23 @@ function statusOf(judgement: Judgement): string {
   return counts.length === 0 ? status : `${status} (passing ${counts.join(", ")})`;
 }
 
+/** Bytes per viewport as "name KB, name KB", the reference viewport first; "-" when there are none. */
+function byViewport(bytes: Record<string, number> | undefined): string {
+  const names = Object.keys(bytes ?? {}).sort((a, b) => (a === REFERENCE_VIEWPORT ? -1 : b === REFERENCE_VIEWPORT ? 1 : 0));
+  return names.map((name) => `${name} ${fmtBytes((bytes as Record<string, number>)[name])}`).join(", ") || "-";
+}
+
 /**
- * Aligned text table: component, location, bytes before and now (reference viewport before, every viewport now), SSIM
- * per format, status.
+ * Aligned text table: component, location, bytes per viewport before and now, SSIM per format, status.
  */
 export function renderVerifyTable(rows: VerifyRow[]): string {
-  const header = ["component", "location", `bytes before (${REFERENCE_VIEWPORT})`, "bytes now", "SSIM avif", "SSIM webp", "status"];
+  const header = ["component", "location", "bytes before", "bytes now", "SSIM avif", "SSIM webp", "status"];
   const body = rows.map((row) => {
-    const viewports = Object.keys(row.bytes).sort((a, b) =>
-      a === REFERENCE_VIEWPORT ? -1 : b === REFERENCE_VIEWPORT ? 1 : 0,
-    );
-    const now = viewports.map((name) => `${name} ${fmtBytes(row.bytes[name])}`).join(", ") || "-";
-    const before = row.beforeBytes === undefined ? "-" : fmtBytes(row.beforeBytes);
     return [
       row.component,
       `${row.relFile}:${row.line}`,
-      before,
-      now,
+      byViewport(row.beforeBytes),
+      byViewport(row.bytes),
       fmtSsim(row.judgement.ssim.avif),
       fmtSsim(row.judgement.ssim.webp),
       statusOf(row.judgement),
@@ -304,13 +304,12 @@ export interface VerifyOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** Audit-time median bytes at the reference viewport, keyed by usage id; empty when there is no readable report. */
-async function auditBytes(projectDir: string): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
+/** Audit-time median bytes per viewport, keyed by usage id; empty when there is no readable report. */
+async function auditBytes(projectDir: string): Promise<Map<string, Record<string, number>>> {
+  const out = new Map<string, Record<string, number>>();
   const report = await readReport(projectDir).catch(() => undefined);
   for (const result of report?.results ?? []) {
-    const bytes = result.current.bytesByViewport[REFERENCE_VIEWPORT];
-    if (bytes !== undefined) out.set(result.usageId, bytes);
+    if (Object.keys(result.current.bytesByViewport).length > 0) out.set(result.usageId, result.current.bytesByViewport);
   }
   return out;
 }

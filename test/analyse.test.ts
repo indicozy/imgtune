@@ -194,6 +194,95 @@ describe("originalUrlFor", () => {
   });
 });
 
+/** Originals wide enough that the candidate widths differ (the 320px fixtures above cap every width at 320). */
+const wideOriginals = new Map<string, Buffer>();
+const wideFetch = async (url: string): Promise<Buffer> => {
+  const buffer = wideOriginals.get(url);
+  if (!buffer) throw new Error(`404 ${url}`);
+  return buffer;
+};
+
+/** Encoder stand-in whose bytes follow the reference width, with SSIM 0 so quality is never lowered. */
+const widthDeps = {
+  encode: (async (ref: RawImage) => ({ bytes: ref.width * 100, decoded: ref, buffer: Buffer.alloc(0) })) as unknown as NonNullable<
+    AnalyseOptions["deps"]
+  >["encode"],
+  ssim: () => 0,
+};
+
+function viewportObs(spec: { viewport: "iphone-15" | "desktop"; src: string; natural: number; rendered: number; bytes: number; dpr: number }): ImageObservation {
+  return {
+    ...observation({ ...spec, currentSrc: nextSrc(spec.src, spec.natural, 85), contentType: "image/webp" }),
+    dpr: spec.dpr,
+  };
+}
+
+describe("per-viewport projection and media branches", () => {
+  beforeAll(async () => {
+    for (const url of SRC) {
+      wideOriginals.set(url, await sharp({ create: { width: 2400, height: 1600, channels: 3, background: { r: 90, g: 120, b: 150 } } }).jpeg().toBuffer());
+    }
+  });
+
+  const run = (u: ImageUsage, observations: ImageObservation[]) =>
+    analyse([u], observations, nextConfig, cfg, BASE, wideFetch, silent({ deps: widthDeps })).then(([r]) => r);
+
+  it("keeps the current mobile sizes when corrected mobile grows, and applies the desktop correction", async () => {
+    // 33vw is undersized on the phone (280 css px slot) and oversized on desktop (1440 at 2x wants ~950px).
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 280, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1080, rendered: 280, bytes: 20000, dpr: 2 }),
+    ]);
+    const r = await run(usage({ sizes: literal("33vw") }), observations);
+
+    expect(r.proposed.sizesFull).toBe("(max-width: 768px) 280px, 280px");
+    expect(r.proposed.sizes).toBe("(max-width: 768px) 33vw, 280px");
+    expect(r.proposed.bytesByViewport!.desktop).toBeLessThan(r.current.bytesByViewport.desktop);
+    expect(r.proposed.branches!.mobile).toMatchObject({ grows: true, kept: true });
+    expect(r.proposed.branches!.desktop).toMatchObject({ grows: false, kept: false });
+    expect(r.savedBytesTotal).toBeGreaterThan(0);
+    expect(r.notes).toContainEqual(
+      expect.stringMatching(/^mobile: corrected sizes is sharper but larger \(\+\d+\.\d KB\/img\); kept current — use --allow-growth$/),
+    );
+  });
+
+  it("proposes the full correction when both branches shrink", async () => {
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 1920, rendered: 200, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 1920, rendered: 280, bytes: 20000, dpr: 1 }),
+    ]);
+    const r = await run(usage(), observations);
+
+    expect(r.proposed.sizesFull).toBe("(max-width: 768px) 200px, 280px");
+    expect(r.proposed.sizes).toBe(r.proposed.sizesFull);
+    expect(r.notes.some((n) => n.includes("corrected sizes is sharper"))).toBe(false);
+  });
+
+  it("proposes no sizes when both branches grow and keep the current value, but still proposes quality", async () => {
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 256, rendered: 280, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 384, rendered: 600, bytes: 20000, dpr: 1 }),
+    ]);
+    const r = await run(usage({ sizes: literal("20vw") }), observations);
+
+    expect(r.proposed.sizesFull).toBe("(max-width: 768px) 280px, 600px");
+    expect(r.proposed.sizes).toBeUndefined();
+    expect(r.proposed.quality).toBeDefined();
+    expect(r.notes).toContainEqual(expect.stringMatching(/^desktop: corrected sizes is sharper but larger/));
+  });
+
+  it("keeps 100vw for a growing mobile branch when the current sizes is absent", async () => {
+    const observations = SRC.flatMap((src) => [
+      viewportObs({ viewport: "iphone-15", src, natural: 640, rendered: 400, bytes: 20000, dpr: 3 }),
+      viewportObs({ viewport: "desktop", src, natural: 640, rendered: 600, bytes: 20000, dpr: 1 }),
+    ]);
+    const r = await run(usage(), observations);
+
+    expect(r.proposed.sizesFull).toBe("(max-width: 768px) 400px, 600px");
+    expect(r.proposed.sizes).toBe("(max-width: 768px) 100vw, 600px");
+  });
+});
+
 describe("analyse", () => {
   it("proposes sizes and a lower quality for a next-default component, unconfirmed so estimated", async () => {
     const [r] = await analyse([usage()], await nextDefaultObservations(), nextConfig, cfg, BASE, fetchStub, silent());
@@ -209,15 +298,6 @@ describe("analyse", () => {
     expect(r.estimated).toBe(true);
     expect(r.notes).toContain("estimated: not confirmed against /_next/image");
     expect(r.notes).toContain("AVIF not served");
-  });
-
-  it("flags growth when the projected bytes exceed the current median by more than 5%", async () => {
-    // The proposal lowers the quality, but at this width it still projects ~740 bytes, above a 500-byte median.
-    const observed = (await nextDefaultObservations()).map((o) => (o.viewport === "iphone-15" ? { ...o, bytes: 500 } : o));
-    const [r] = await analyse([usage()], observed, nextConfig, cfg, BASE, fetchStub, silent());
-
-    expect(r.grows).toBe(true);
-    expect(r.notes).toContainEqual(expect.stringMatching(/^undersized now: the proposal is sharper but larger \(\+\d+(\.\d)? KB at iphone-15\)$/));
   });
 
   it("marks a next-default result exact when the confirmation passes", async () => {

@@ -275,40 +275,54 @@ describe("applyResults", () => {
     expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain(`sizes="a 'b' c"`);
   });
 
-  describe("growth (sizes that increase bytes)", () => {
+  describe("sizes proposal and the full correction", () => {
     const source = `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} sizes='33vw' />;\n`;
     const config = "export default {\n  images: {\n    formats: ['image/webp'],\n  },\n};\n";
-    const growsReason = "proposal increases bytes; re-run apply with --allow-growth to apply its sizes";
-    const grown = (usage: ImageUsage) => ({
-      ...resultFor(usage, { sizes: "50vw", quality: 60 }),
-      grows: true,
-    });
+    const split = {
+      sizes: "(max-width: 768px) 33vw, 280px",
+      sizesFull: "(max-width: 768px) 280px, 280px",
+      quality: 60,
+    };
 
-    it("skips the sizes edit without allowGrowth and still applies the quality", async () => {
+    it("applies the branch-merged proposal by default and the quality with it", async () => {
       const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
       const usages = scanAll(dir, ["src/A.tsx"]);
-      const out = await applyResults(dir, [grown(usages[0])], usages);
+      const out = await applyResults(dir, [resultFor(usages[0], split)], usages);
       const after = readFileSync(join(dir, "src/A.tsx"), "utf8");
-      expect(after).toContain("sizes='33vw'");
+      expect(after).toContain("sizes='(max-width: 768px) 33vw, 280px'");
+      expect(after).not.toContain("280px, 280px");
       expect(after).toContain("quality={60}");
-      expect(out.skipped).toEqual([{ usageId: usages[0].id, reason: growsReason }]);
+      expect(out.skipped).toEqual([]);
       expect(out.edited).toEqual(["next.config.mjs", "src/A.tsx"]);
     });
 
-    it("applies the sizes edit with allowGrowth, and the quality too", async () => {
+    it("applies the full correction with allowGrowth, and the quality too", async () => {
       const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
       const usages = scanAll(dir, ["src/A.tsx"]);
-      const out = await applyResults(dir, [grown(usages[0])], usages, { allowGrowth: true });
+      const out = await applyResults(dir, [resultFor(usages[0], split)], usages, { allowGrowth: true });
       const after = readFileSync(join(dir, "src/A.tsx"), "utf8");
-      expect(after).toContain("sizes='50vw'");
+      expect(after).toContain("sizes='(max-width: 768px) 280px, 280px'");
       expect(after).toContain("quality={60}");
       expect(out.skipped).toEqual([]);
     });
 
-    it("does not report growth for a sizes value that is already in place", async () => {
+    it("applies the full correction with allowGrowth even when every branch kept its current sizes", async () => {
       const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
       const usages = scanAll(dir, ["src/A.tsx"]);
-      const out = await applyResults(dir, [{ ...resultFor(usages[0], { sizes: "33vw" }), grows: true }], usages);
+      const kept = { sizes: undefined, sizesFull: "(max-width: 768px) 280px, 280px" };
+      const plain = await applyResults(dir, [resultFor(usages[0], kept)], usages);
+      expect(plain.edited).toEqual([]);
+      expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain("sizes='33vw'");
+
+      const full = await applyResults(dir, [resultFor(usages[0], kept)], usages, { allowGrowth: true });
+      expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain("sizes='(max-width: 768px) 280px, 280px'");
+      expect(full.edited).toEqual(["src/A.tsx"]);
+    });
+
+    it("makes no sizes edit when the proposed value is already in place", async () => {
+      const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
+      const usages = scanAll(dir, ["src/A.tsx"]);
+      const out = await applyResults(dir, [resultFor(usages[0], { sizes: "33vw", sizesFull: "33vw" })], usages);
       expect(out.skipped).toEqual([]);
       expect(out.edited).toEqual([]);
     });

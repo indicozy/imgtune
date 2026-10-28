@@ -257,7 +257,7 @@ describe("bytesByViewport and renderVerifyTable", () => {
         relFile: "src/a.tsx",
         line: 12,
         bytes: { desktop: 4096, "iphone-15": 2048 },
-        beforeBytes: 8192,
+        beforeBytes: { "iphone-15": 8192, desktop: 16384 },
         judgement: {
           status: "regressed",
           ssim: { avif: 0.99, webp: 0.9 },
@@ -274,7 +274,9 @@ describe("bytesByViewport and renderVerifyTable", () => {
         judgement: { status: "unmeasured", reason: "insufficient webp samples: 1", ssim: {}, counts: {} },
       },
     ]);
-    const [, row, unmeasured] = table.split("\n");
+    const [header, row, unmeasured] = table.split("\n");
+    expect(header).toContain("bytes before");
+    expect(row).toContain("iphone-15 8.0 KB, desktop 16.0 KB");
     expect(row).toContain("8.0 KB");
     expect(row).toContain("iphone-15 2.0 KB, desktop 4.0 KB");
     expect(unmeasured).toContain("not measured (insufficient webp samples: 1)");

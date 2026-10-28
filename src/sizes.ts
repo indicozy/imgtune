@@ -58,15 +58,80 @@ function expressionFor(points: SizePoint[]): string | undefined {
   return `${Math.ceil(maxWidth)}px`;
 }
 
+/** The width expression of each media branch; a branch with no measured point is undefined. */
+export interface SizeBranches {
+  mobile?: string;
+  desktop?: string;
+}
+
+/**
+ * Derives the mobile and desktop width expressions from measured rendered widths across viewports.
+ * Points with no rendered width (hidden, unscrolled) are ignored.
+ */
+export function deriveSizeBranches(points: SizePoint[]): SizeBranches {
+  const measured = points.filter((p) => p.renderedWidth >= 1);
+  return { mobile: expressionFor(measured.filter((p) => p.mobile)), desktop: expressionFor(measured.filter((p) => !p.mobile)) };
+}
+
+/** Joins the branches into one `sizes` value; undefined when neither is set. */
+export function joinSizeBranches({ mobile, desktop }: SizeBranches): string | undefined {
+  if (mobile && desktop) return `(max-width: ${MOBILE_MAX_WIDTH}px) ${mobile}, ${desktop}`;
+  return mobile ?? desktop;
+}
+
 /**
  * Derives a `sizes` value from measured rendered widths across viewports.
  * Points with no rendered width (hidden, unscrolled) are ignored; returns undefined when none remain.
  */
 export function deriveSizes(points: SizePoint[]): string | undefined {
-  const measured = points.filter((p) => p.renderedWidth >= 1);
-  const mobile = expressionFor(measured.filter((p) => p.mobile));
-  const desktop = expressionFor(measured.filter((p) => !p.mobile));
+  return joinSizeBranches(deriveSizeBranches(points));
+}
 
-  if (mobile && desktop) return `(max-width: ${MOBILE_MAX_WIDTH}px) ${mobile}, ${desktop}`;
-  return mobile ?? desktop;
+/** A `sizes` value with a supported width, e.g. `33vw`, `280px` or `calc(50vw - 20px)`. */
+const WIDTH_RE = /^(\d+(?:\.\d+)?)(px|vw)$/;
+const CALC_RE = /^calc\(\s*(\d+(?:\.\d+)?)vw\s*([+-])\s*(\d+(?:\.\d+)?)px\s*\)$/;
+/** A leading `(max-width: Npx)` or `(min-width: Npx)` condition of one comma-separated branch. */
+const CONDITION_RE = /^\((max|min)-width:\s*(\d+(?:\.\d+)?)px\)\s*/;
+
+interface SizesBranch {
+  condition?: { kind: "max" | "min"; px: number };
+  value: string;
+}
+
+/** The branches of a `sizes` value, or undefined when any branch is outside the supported forms. */
+function parseSizes(sizes: string): SizesBranch[] | undefined {
+  const branches: SizesBranch[] = [];
+  for (const raw of sizes.split(",")) {
+    const text = raw.trim();
+    const condition = CONDITION_RE.exec(text);
+    const value = condition ? text.slice(condition[0].length) : text;
+    if (!WIDTH_RE.test(value) && !CALC_RE.test(value)) return undefined;
+    branches.push({
+      condition: condition ? { kind: condition[1] as "max" | "min", px: Number(condition[2]) } : undefined,
+      value,
+    });
+  }
+  return branches.length > 0 ? branches : undefined;
+}
+
+/** The first branch whose condition holds at `viewportWidth`, as its raw width value. */
+export function sizesValueAt(sizes: string, viewportWidth: number): string | undefined {
+  const branches = parseSizes(sizes);
+  if (!branches) return undefined;
+  const match = branches.find(({ condition }) => {
+    if (!condition) return true;
+    return condition.kind === "max" ? viewportWidth <= condition.px : viewportWidth >= condition.px;
+  });
+  return match?.value;
+}
+
+/** The CSS px width the `sizes` value gives at `viewportWidth`; undefined when unsupported or no branch matches. */
+export function sizesSlotAt(sizes: string, viewportWidth: number): number | undefined {
+  const value = sizesValueAt(sizes, viewportWidth);
+  if (value === undefined) return undefined;
+  const width = WIDTH_RE.exec(value);
+  if (width) return width[2] === "vw" ? (Number(width[1]) / 100) * viewportWidth : Number(width[1]);
+  const calc = CALC_RE.exec(value) as RegExpExecArray;
+  const base = (Number(calc[1]) / 100) * viewportWidth;
+  return Math.max(0, calc[2] === "+" ? base + Number(calc[3]) : base - Number(calc[3]));
 }

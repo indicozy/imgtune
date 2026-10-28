@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveSizes } from "../src/sizes.js";
+import { deriveSizeBranches, deriveSizes, joinSizeBranches, sizesSlotAt, sizesValueAt } from "../src/sizes.js";
 
 const mobile = (viewportWidth: number, renderedWidth: number) => ({
   viewportWidth,
@@ -66,5 +66,78 @@ describe("deriveSizes", () => {
   it("drops mobile points that do not fit a line within 2 px and falls back to the ceiling of max width", () => {
     const points = [mobile(375, 100), mobile(390, 300), mobile(430, 150)];
     expect(deriveSizes(points)).toBe("300px");
+  });
+});
+
+describe("deriveSizeBranches and joinSizeBranches", () => {
+  it("splits the mobile and desktop expressions and joins them back to deriveSizes", () => {
+    const points = [mobile(375, 167.5), mobile(430, 195), desktop(1440, 220)];
+    const branches = deriveSizeBranches(points);
+    expect(branches).toEqual({ mobile: "calc(50vw - 20px)", desktop: "220px" });
+    expect(joinSizeBranches(branches)).toBe(deriveSizes(points));
+  });
+
+  it("leaves the missing branch undefined and joins the other one without a media condition", () => {
+    expect(deriveSizeBranches([desktop(1440, 220)])).toEqual({ mobile: undefined, desktop: "220px" });
+    expect(joinSizeBranches({ desktop: "220px" })).toBe("220px");
+    expect(joinSizeBranches({})).toBeUndefined();
+  });
+
+  it("joins two branches under the 768px media condition", () => {
+    expect(joinSizeBranches({ mobile: "33vw", desktop: "280px" })).toBe("(max-width: 768px) 33vw, 280px");
+  });
+});
+
+describe("sizesSlotAt", () => {
+  it("evaluates a plain vw width at the viewport", () => {
+    expect(sizesSlotAt("33vw", 1440)).toBeCloseTo(475.2, 5);
+  });
+
+  it("evaluates a px width whatever the viewport", () => {
+    expect(sizesSlotAt("280px", 393)).toBe(280);
+  });
+
+  it("evaluates calc(Nvw ± Mpx) and never goes below zero", () => {
+    expect(sizesSlotAt("calc(50vw - 20px)", 375)).toBeCloseTo(167.5, 5);
+    expect(sizesSlotAt("calc(50vw + 8px)", 430)).toBeCloseTo(223, 5);
+    expect(sizesSlotAt("calc(1vw - 20px)", 375)).toBe(0);
+  });
+
+  it("takes the first branch whose media condition holds", () => {
+    const sizes = "(max-width: 768px) calc(50vw - 20px), 280px";
+    expect(sizesSlotAt(sizes, 375)).toBeCloseTo(167.5, 5);
+    expect(sizesSlotAt(sizes, 1440)).toBe(280);
+  });
+
+  it("uses max-width inclusively at the breakpoint", () => {
+    const sizes = "(max-width: 768px) 33vw, 280px";
+    expect(sizesSlotAt(sizes, 768)).toBeCloseTo(253.44, 5);
+    expect(sizesSlotAt(sizes, 769)).toBe(280);
+  });
+
+  it("honours min-width conditions", () => {
+    const sizes = "(min-width: 1024px) 25vw, 100vw";
+    expect(sizesSlotAt(sizes, 1440)).toBeCloseTo(360, 5);
+    expect(sizesSlotAt(sizes, 800)).toBe(800);
+  });
+
+  it("is undefined when no branch matches or a branch is unsupported", () => {
+    expect(sizesSlotAt("(min-width: 1024px) 25vw", 800)).toBeUndefined();
+    expect(sizesSlotAt("(orientation: landscape) 50vw", 800)).toBeUndefined();
+    expect(sizesSlotAt("calc(50vw * 2)", 800)).toBeUndefined();
+    expect(sizesSlotAt("(max-width: 768px) 33vw, bogus", 800)).toBeUndefined();
+  });
+});
+
+describe("sizesValueAt", () => {
+  it("returns the raw value of the first matching branch", () => {
+    const sizes = "(max-width: 768px) calc(50vw - 20px), 280px";
+    expect(sizesValueAt(sizes, 375)).toBe("calc(50vw - 20px)");
+    expect(sizesValueAt(sizes, 1440)).toBe("280px");
+    expect(sizesValueAt("33vw", 1440)).toBe("33vw");
+  });
+
+  it("is undefined when the value is unsupported", () => {
+    expect(sizesValueAt("(orientation: landscape) 50vw", 800)).toBeUndefined();
   });
 });

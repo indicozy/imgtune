@@ -37,7 +37,7 @@ Options:
   --port <n>          port for a dev server the tool starts (default: 3999)
   --url <baseUrl>     measure a server that is already running; the tool never starts or stops it
   --all               also re-measure usages that were already applied
-  --allow-growth      apply: also apply sizes that increase bytes (skipped otherwise)
+  --allow-growth      apply: write the full sizes correction, including media branches that grow bytes
   -h, --help          show this help
 `;
 
