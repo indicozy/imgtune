@@ -59,15 +59,36 @@ function insertText(text: string, usage: ImageUsage, attr: string): string {
   return ownLine ? `\n${indent}${attr}` : ` ${attr}`;
 }
 
+/** A string JSX attribute in `quote`, or in double quotes when `quote` is single and the value has a single quote. */
+function stringAttr(name: string, value: string, quote: "'" | '"'): string {
+  if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  if (quote === "'" && !value.includes("'")) return `${name}='${value}'`;
+  return `${name}="${attrString(value)}"`;
+}
+
 /**
- * The replacement for a sizes literal: single-quoted when the source was and the value has no single quote, else
- * double-quoted.
+ * The quote the file's JSX string attributes mostly use. Single wins only when it is strictly more common, so ties and
+ * files without string attributes get the JSX default, double.
  */
+function dominantAttrQuote(text: string, file: string): "'" | '"' {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+  let single = 0;
+  let double = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxAttribute(node) && node.initializer && ts.isStringLiteral(node.initializer)) {
+      if (text[node.initializer.getStart(sf)] === "'") single++;
+      else double++;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return single > double ? "'" : '"';
+}
+
+/** The replacement for a sizes literal: it keeps the quote the replaced literal had. */
 function sizesLiteral(text: string, prop: PropValue, sizes: string): string {
-  if (typeof sizes !== "string") throw new TypeError("sizes must be a string");
   const quote = /^[^=]*=\s*\{?\s*(['"])/.exec(text.slice(prop.start, prop.end))?.[1];
-  if (quote === "'" && !sizes.includes("'")) return `sizes='${sizes}'`;
-  return `sizes="${attrString(sizes)}"`;
+  return stringAttr("sizes", sizes, quote === "'" ? "'" : '"');
 }
 
 /** Source edits for one usage against its fresh scan. Skips are pushed to `skipped`. */
@@ -97,7 +118,8 @@ function planUsage(
         edits.push({ field: "sizes", value: sizes, splice: { start: prop.start, end: prop.end, text: sizesLiteral(text, prop, sizes) } });
       }
     } else {
-      const splice = { start: usage.tagNameEnd, end: usage.tagNameEnd, text: insertText(text, usage, `sizes="${attrString(sizes)}"`) };
+      const attr = stringAttr("sizes", sizes, dominantAttrQuote(text, usage.file));
+      const splice = { start: usage.tagNameEnd, end: usage.tagNameEnd, text: insertText(text, usage, attr) };
       edits.push({ field: "sizes", value: sizes, splice });
     }
   }

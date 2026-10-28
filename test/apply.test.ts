@@ -275,6 +275,24 @@ describe("applyResults", () => {
     expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain(`sizes="a 'b' c"`);
   });
 
+  it("inserts a new sizes in the file's dominant JSX quote style", async () => {
+    const dir = project({
+      "src/A.tsx": `import Image from "next/image";\nexport const A = () => <div><Image src='/a.png' alt='x' width={1} height={1} /><Image src='/b.png' alt='y' width={1} height={1} /></div>;\n`,
+    });
+    const usages = scanAll(dir, ["src/A.tsx"]);
+    await applyResults(dir, [resultFor(usages[0], { sizes: "300px" })], usages);
+    expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain("sizes='300px'");
+  });
+
+  it("inserts a new sizes in double quotes when single and double quoted attributes tie", async () => {
+    const dir = project({
+      "src/A.tsx": `import Image from "next/image";\nexport const A = () => <div><Image src='/a.png' width={1} height={1} /><Image src="/b.png" width={1} height={1} /></div>;\n`,
+    });
+    const usages = scanAll(dir, ["src/A.tsx"]);
+    await applyResults(dir, [resultFor(usages[0], { sizes: "300px" })], usages);
+    expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain('sizes="300px"');
+  });
+
   describe("sizes proposal and the full correction", () => {
     const source = `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} sizes='33vw' />;\n`;
     const config = "export default {\n  images: {\n    formats: ['image/webp'],\n  },\n};\n";
