@@ -1,10 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { resolve } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config.js";
 
 const EMPTY = resolve(import.meta.dirname, "fixtures/empty");
 const WITH_CONFIG = resolve(import.meta.dirname, "fixtures/with-config");
 const STRING_VALUES = resolve(import.meta.dirname, "fixtures/string-values");
+const created: string[] = [];
+
+/** A project dir whose imgtune.config.json holds `config`. */
+function projectWith(config: Record<string, unknown>): string {
+  const dir = mkdtempSync(join(tmpdir(), "imgtune-config-"));
+  created.push(dir);
+  writeFileSync(join(dir, "imgtune.config.json"), JSON.stringify(config));
+  return dir;
+}
+
+afterAll(async () => {
+  for (const dir of created) await rm(dir, { recursive: true, force: true });
+});
 
 describe("loadConfig", () => {
   it("defaults", async () => {
@@ -43,6 +59,34 @@ describe("loadConfig", () => {
     expect(config.threshold).toBe(0.98);
     expect(typeof config.port).toBe("number");
     expect(typeof config.threshold).toBe("number");
+  });
+
+  it("reads valid counts, tolerance and includeDone from the file", async () => {
+    const { config } = await loadConfig(
+      ["audit"],
+      projectWith({ samplesPerComponent: 5, maxPagesPerPattern: 3, tolerance: 4.5, includeDone: true }),
+    );
+    expect(config.samplesPerComponent).toBe(5);
+    expect(config.maxPagesPerPattern).toBe(3);
+    expect(config.tolerance).toBe(4.5);
+    expect(config.includeDone).toBe(true);
+  });
+
+  it("refuses file values that are not positive integers, positive numbers or booleans", async () => {
+    const bad: [string, unknown][] = [
+      ["samplesPerComponent", 0],
+      ["samplesPerComponent", 2.5],
+      ["maxPagesPerPattern", -1],
+      ["maxPagesPerPattern", "2"],
+      ["tolerance", 0],
+      ["tolerance", "5"],
+      ["includeDone", "false"],
+    ];
+    for (const [key, value] of bad) {
+      await expect(loadConfig(["audit"], projectWith({ [key]: value }))).rejects.toThrow(
+        `Invalid ${key} ${JSON.stringify(value)} (imgtune.config.json)`,
+      );
+    }
   });
 
   it("bad args", async () => {

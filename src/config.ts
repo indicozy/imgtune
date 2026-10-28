@@ -173,7 +173,27 @@ async function readConfigFile(projectDir: string): Promise<FileConfig> {
   if (fileConfig.port !== undefined) {
     fileConfig.port = parsePort(fileConfig.port, CONFIG_FILE);
   }
+  if (fileConfig.tolerance !== undefined) {
+    fileConfig.tolerance = parsePositive(fileConfig.tolerance, "tolerance", false);
+  }
+  if (fileConfig.samplesPerComponent !== undefined) {
+    fileConfig.samplesPerComponent = parsePositive(fileConfig.samplesPerComponent, "samplesPerComponent", true);
+  }
+  if (fileConfig.maxPagesPerPattern !== undefined) {
+    fileConfig.maxPagesPerPattern = parsePositive(fileConfig.maxPagesPerPattern, "maxPagesPerPattern", true);
+  }
+  if (fileConfig.includeDone !== undefined && typeof fileConfig.includeDone !== "boolean") {
+    throw new Error(`Invalid includeDone ${JSON.stringify(fileConfig.includeDone)} (${CONFIG_FILE}): expected true or false`);
+  }
   return fileConfig;
+}
+
+function parsePositive(value: unknown, key: string, integer: boolean): number {
+  if (typeof value !== "number" || !(value > 0) || (integer && !Number.isInteger(value))) {
+    const kind = integer ? "integer" : "number";
+    throw new Error(`Invalid ${key} ${JSON.stringify(value)} (${CONFIG_FILE}): expected a positive ${kind}`);
+  }
+  return value;
 }
 
 function parseQuality(value: unknown, source: string): QualityLevel {

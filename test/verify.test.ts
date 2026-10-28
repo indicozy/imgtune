@@ -81,6 +81,11 @@ describe("judgeVerification", () => {
     expect(judge(passing("webp", 2), ["webp"], { samplesPerComponent: 3 }).reason).toBe("insufficient webp samples: 2");
   });
 
+  it("never verifies a usage with zero samples, even when samplesPerComponent is 0", () => {
+    expect(judge([], ["webp"], { samplesPerComponent: 0 }).status).toBe("unmeasured");
+    expect(judge([], ["webp"], { samplesPerComponent: 0 }).reason).toBe("insufficient webp samples: 0");
+  });
+
   it("does not count unusable samples toward the minimum", () => {
     const verdict = judge([...passing("webp", 4), { format: "webp" }, { format: "webp" }], ["webp"]);
     expect(verdict.status).toBe("unmeasured");

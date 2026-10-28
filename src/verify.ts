@@ -106,7 +106,7 @@ export interface JudgeInput {
  */
 export function judgeVerification(input: JudgeInput): Judgement {
   const { samples, served, threshold } = input;
-  const minimum = Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent);
+  const minimum = Math.max(1, Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent));
   const formats = FORMATS.filter((format) => served.includes(format));
   const judgement: Judgement = { status: "verified", ssim: {}, counts: {} };
   if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
