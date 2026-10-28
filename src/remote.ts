@@ -1104,7 +1104,7 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** One image element at one viewport, with what it saves. */
-interface Instance {
+export interface Instance {
   viewport: Viewport;
   element: number;
   img: ObservedImage;
@@ -1413,8 +1413,11 @@ function toReport(inst: Instance): ImageReport {
   };
 }
 
-/** Groups by saving: the mean over viewports of the group's exact + est. bytes, with two sample URLs and a sizes hint. */
-function groupReports(instances: Instance[]): GroupReport[] {
+/**
+ * Groups by saving: the group's exact + est. bytes per page view, summed over the page's viewports and divided by their
+ * count (as pageNumbers does), with two sample URLs and a sizes hint.
+ */
+export function groupReports(instances: Instance[], viewportCount: number): GroupReport[] {
   const byKey = new Map<string, Instance[]>();
   for (const inst of instances) {
     if (inst.kind === "skipped") continue;
@@ -1429,7 +1432,7 @@ function groupReports(instances: Instance[]): GroupReport[] {
       const name = inst.viewport.name;
       perViewport.set(name, (perViewport.get(name) ?? 0) + inst.exact + inst.est);
     }
-    const savedBytes = mean([...perViewport.values()]);
+    const savedBytes = [...perViewport.values()].reduce((sum, bytes) => sum + bytes, 0) / viewportCount;
     if (savedBytes <= 0) continue;
     const sizes = members[0].img.sizes;
     const points: SizePoint[] = members
@@ -1546,7 +1549,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
     nextjs: observations.some((o) => o.nextjs),
     perViewport,
     page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
-    groups: groupReports(instances),
+    groups: groupReports(instances, observations.length),
     counts: {
       images: elements.size,
       qualityNA: naElements.size,

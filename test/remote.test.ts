@@ -16,6 +16,7 @@ import {
   ipv6Bytes,
   isBlockedAddress,
   duplicatesOf,
+  groupReports,
   makeFetcher,
   netSavings,
   neededWidth,
@@ -41,6 +42,7 @@ import {
   summaryOf,
   viewportTotals,
   type AnalysisContext,
+  type Instance,
   type ImageFinding,
   type ObservedImage,
   type PageResult,
@@ -913,6 +915,35 @@ describe("netSavings", () => {
     for (const [served, right, ratio] of [[1, 2, 0.5], [5, 5, 0.9], [100, 40, 1]]) {
       expect(netSavings(served, right, ratio).est).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("groupReports", () => {
+  const phone = (name: string): Viewport => ({ name, width: 390, height: 844, dpr: 3, mobile: true });
+  const member = (viewport: Viewport, exact: number): Instance => ({
+    viewport,
+    element: 0,
+    img: { index: 0, currentSrc: "https://shop.example/a.jpg", renderedWidth: 390, renderedHeight: 260, srcset: "", classes: "", nextImage: false, inFirstViewport: true },
+    url: "https://shop.example/a.jpg",
+    bytes: 0,
+    pixelWidth: 0,
+    renderedWidth: 390,
+    needed: 1170,
+    kind: "srcset",
+    exact,
+    est: 0,
+    estAggressive: 0,
+    growth: 0,
+    group: "card",
+    loader: "generic",
+    qualityParam: "yes",
+  });
+
+  it("divides a group by the page's viewport count, so a mobile-only group saves its share of each page view", () => {
+    const shown = ["p1", "p2", "p3", "p4"].map((name) => member(phone(name), 1000));
+    const [report] = groupReports(shown, 6);
+    // 4000 bytes over 6 viewports: the page's savings stay the sum over viewports, so the groups add up to at most them.
+    expect(report.savedBytes).toBeCloseTo(4000 / 6, 10);
   });
 });
 
