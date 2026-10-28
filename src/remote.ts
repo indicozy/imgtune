@@ -1163,6 +1163,8 @@ export interface Instance {
   needed: number;
   kind: "srcset" | "plain" | "skipped";
   skipped?: string;
+  /** The served file is undersized: it has growth, and no saving of its own. */
+  undersized?: boolean;
   /** The right candidate (srcset) and its file, kept for the quality step. */
   right?: { url: string; bytes: number; width: number; height: number; format: string; buffer: Buffer };
   exact: number;
@@ -1240,7 +1242,10 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
     if (rightBuffer) {
       const rightPixels = right.url === img.currentSrc ? served : await pixelSize(rightBuffer);
       const rightBytes = rightBuffer.length;
-      if (isUndersized(served.width, need, largest)) instance.growth = Math.max(0, rightBytes - response.bytes);
+      if (isUndersized(served.width, need, largest)) {
+        instance.undersized = true;
+        instance.growth = Math.max(0, rightBytes - response.bytes);
+      }
       if (rightPixels?.format) {
         instance.right = {
           url: right.url,
@@ -1352,8 +1357,17 @@ async function estimateQualities(ctx: AnalysisContext, instances: Instance[], re
   }
 }
 
-/** Turns the quality ratios into savings on top of the right file (est.). */
-function applyQuality(inst: Instance): void {
+/**
+ * Turns the quality ratios into savings on top of the right file (est.). An undersized image saves nothing: its growth is
+ * reported apart, and is never subtracted from another image's saving.
+ */
+export function applyQuality(inst: Instance): void {
+  if (inst.undersized) {
+    inst.exact = 0;
+    inst.est = 0;
+    inst.estAggressive = 0;
+    return;
+  }
   if (!inst.right) return;
   const r2 = inst.qualityRatio?.[SCAN_DELTA] ?? 1;
   const r4 = inst.qualityRatio?.[SCAN_AGGRESSIVE_DELTA] ?? r2;

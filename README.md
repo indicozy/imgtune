@@ -34,8 +34,9 @@ desktop at 1x), scrolls it to the end, and records every image.
   plain `<img>`. They are estimates.
 - Quality is judged with SSIMULACRA2 at a delta of 2 points. `--aggressive` adds a delta 4 column, which is reported
   beside the main numbers and never used for the headline.
-- Undersized images (a file smaller than the slot it fills) are reported as sharpness growth, separately. It is never
-  netted against the savings.
+- Undersized images (a file smaller than the slot it fills) are reported as sharpness growth, separately. Growth from
+  undersized images is never subtracted from other images' savings, and an undersized image itself contributes no
+  saving.
 - Pages are scanned after their `robots.txt` is checked for the `*` user agent. A disallowed page is skipped and
   recorded as `robots`. Pages that return a challenge or bot wall are recorded as `blocked` and not retried. The
   scanner identifies itself with the default Chromium user agent, uses no stealth plugins, and fetches each image URL

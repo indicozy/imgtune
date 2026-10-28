@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import sharp from "sharp";
 import {
   analysePage,
+  applyQuality,
   currentQuality,
   decodeRaw,
   estimateQuality,
@@ -966,6 +967,46 @@ describe("groupReports", () => {
     const [report] = groupReports(shown, 6);
     // 4000 bytes over 6 viewports: the page's savings stay the sum over viewports, so the groups add up to at most them.
     expect(report.savedBytes).toBeCloseTo(4000 / 6, 10);
+  });
+});
+
+describe("applyQuality", () => {
+  const srcsetInstance = (overrides: Partial<Instance>): Instance => ({
+    viewport: { name: "iphone-15", width: 390, height: 844, dpr: 3, mobile: true },
+    element: 0,
+    img: { index: 0, currentSrc: "https://shop.example/a.jpg", renderedWidth: 100, renderedHeight: 60, srcset: "", classes: "", nextImage: false, inFirstViewport: true },
+    url: "https://shop.example/a.jpg",
+    bytes: 30_000,
+    pixelWidth: 384,
+    renderedWidth: 100,
+    needed: 300,
+    kind: "srcset",
+    right: { url: "https://shop.example/b.jpg", bytes: 10_000, width: 640, height: 400, format: "jpeg", buffer: Buffer.alloc(0) },
+    exact: 0,
+    est: 0,
+    estAggressive: 0,
+    growth: 0,
+    group: "card",
+    loader: "generic",
+    qualityParam: "yes",
+    qualityRatio: { 2: 0.5 },
+    ...overrides,
+  });
+
+  it("credits an image that is not undersized with its resolution and quality savings", () => {
+    const inst = srcsetInstance({});
+    applyQuality(inst);
+    expect(inst.exact).toBe(20_000);
+    expect(inst.est).toBe(5_000);
+  });
+
+  it("gives an undersized image no saving at all, though its right file would be smaller at the estimated ratio", () => {
+    const inst = srcsetInstance({ undersized: true, growth: 10_000 });
+    applyQuality(inst);
+    expect(inst.exact).toBe(0);
+    expect(inst.est).toBe(0);
+    expect(inst.estAggressive).toBe(0);
+    expect(inst.growth).toBe(10_000);
   });
 });
 

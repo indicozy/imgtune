@@ -18,7 +18,8 @@ npx imgtune scan <url> [<url> ...] [--markdown out.md] [--summary-json out.json]
 
 Read the JSON files in `--out` (default `.imgtune/scan`). For each page, report the exact and estimated savings
 separately. Never describe an est. number as measured. Say which figure is exact, and that est. comes from a local
-re-encode. Report sharpness growth separately, never netted against savings.
+re-encode. Report sharpness growth separately: growth from undersized images is never subtracted from other images' savings, and
+an undersized image itself contributes no saving.
 
 Scan only the sites the user owns, and scan each one once unless the user asks for more.
 
