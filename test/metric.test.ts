@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import { chmod, mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -53,13 +53,6 @@ describe.skipIf(!hasBinary)("score ssimulacra2", () => {
     await score("ssimulacra2", img, img, { projectDir: dir });
     expect(await readdir(join(dir, ".imgtune", "tmp"))).toEqual([]);
   });
-
-  it("runs more scores than the four-run limit at once and gets every result", async () => {
-    const scorer = makeScorer("ssimulacra2", { projectDir: await projectDir() });
-    const img = gradientNoise(48, 48, 0, 11);
-    const values = await Promise.all(Array.from({ length: 9 }, () => scorer(img, img)));
-    for (const value of values) expect(value).toBeGreaterThan(99.99);
-  });
 });
 
 /** A stand-in ssimulacra2_rs that logs how many runs are in flight when it starts, then scores 90 after 200 ms. */
@@ -75,6 +68,21 @@ async function countingBinary(dir: string): Promise<{ bin: string; log: string }
   await chmod(bin, 0o755);
   return { bin, log };
 }
+
+describe.skipIf(!hasBinary)("ssimulacra2 concurrency", () => {
+  it("never runs more than four binaries at once, and does run several", async () => {
+    const dir = await projectDir();
+    const { bin, log } = await countingBinary(dir);
+    const scorer = makeScorer("ssimulacra2", { projectDir: dir, binary: bin });
+    const img = gradientNoise(48, 48, 0, 11);
+    const values = await Promise.all(Array.from({ length: 9 }, () => scorer(img, img)));
+    expect(values).toEqual(Array(9).fill(90));
+    const inFlight = (await readFile(log, "utf8")).trim().split("\n").map(Number);
+    expect(inFlight).toHaveLength(9);
+    expect(Math.max(...inFlight)).toBeLessThanOrEqual(4);
+    expect(Math.max(...inFlight)).toBeGreaterThanOrEqual(2);
+  });
+});
 
 describe("ssimulacra2 binary lookup", () => {
   beforeEach(() => clearSsimulacra2Cache());
