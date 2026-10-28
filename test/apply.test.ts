@@ -40,36 +40,27 @@ function resultFor(usage: ImageUsage, proposed: Partial<ComponentResult["propose
   };
 }
 
-/** Line-by-line diff: indexes of lines that differ, and whether the line count is unchanged. */
-function lineDiff(before: string, after: string): { changed: number[]; sameLineCount: boolean } {
-  const a = before.split("\n");
-  const b = after.split("\n");
-  const changed: number[] = [];
-  for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) changed.push(i);
-  return { changed, sameLineCount: a.length === b.length };
-}
-
 describe("applyResults", () => {
-  it("edits the ProductItem image block in place: sizes replaced, quality inserted, nothing else", async () => {
+  it("edits the ProductItem image block in place: sizes replaced, quality on its own line, nothing else", async () => {
     const rel = "src/components/ProductItem.tsx";
+    const fixture = readFileSync(FIXTURE, "utf8");
     const dir = project({
-      [rel]: readFileSync(FIXTURE, "utf8"),
+      [rel]: fixture,
       "next.config.mjs": "export default {\n  images: {\n    formats: ['image/avif', 'image/webp'],\n  },\n};\n",
     });
-    const before = readFileSync(join(dir, rel), "utf8");
     const usages = scanAll(dir, [rel]);
     const [usage] = usages;
-    const sizes = "(max-width: 768px) calc(50vw - 20px), 220px";
+    const sizes = "(max-width: 768px) 280px, 280px";
 
     const out = await applyResults(dir, [resultFor(usage, { sizes, quality: 62 })], usages);
 
-    const after = readFileSync(join(dir, rel), "utf8");
-    const diff = lineDiff(before, after);
-    expect(diff.sameLineCount).toBe(true);
-    expect(diff.changed).toHaveLength(2);
-    const lines = after.split("\n");
-    expect(lines[diff.changed[0]]).toBe("              <Image quality={62}");
-    expect(lines[diff.changed[1]]).toBe(`                sizes="${sizes}"`);
+    // The fixture's attributes sit on their own lines: quality goes on a new line at the first attribute's indent,
+    // and the single-quoted sizes literal keeps its quotes.
+    expect(readFileSync(join(dir, rel), "utf8")).toBe(
+      fixture
+        .replace("<Image\n", "<Image\n                quality={62}\n")
+        .replace("sizes='33vw'", `sizes='${sizes}'`),
+    );
     expect(out.skipped).toEqual([]);
     expect(out.edited).toEqual(["next.config.mjs", rel]);
   });
@@ -189,7 +180,7 @@ describe("applyResults", () => {
     );
     expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toBe(
       source
-        .replace(`sizes='33vw'`, `sizes="50vw"`)
+        .replace(`sizes='33vw'`, `sizes='50vw'`)
         .replace(`<Image src="/b.png"`, `<Image quality={60} src="/b.png"`),
     );
     expect(readFileSync(join(dir, "next.config.mjs"), "utf8")).toContain("qualities: [75, 60],");
@@ -220,7 +211,7 @@ describe("applyResults", () => {
       expectedHashes: { "src/A.tsx": sha1(source), "next.config.mjs": "0".repeat(40) },
     });
     expect(readFileSync(join(dir, "next.config.mjs"), "utf8")).toBe(config);
-    expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain('sizes="50vw"');
+    expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain("sizes='50vw'");
     expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).not.toContain("quality={60}");
     expect(out.skipped).toEqual([
       { usageId: usages[0].id, reason: "file changed since audit; re-run imgtune audit" },
@@ -273,5 +264,53 @@ describe("applyResults", () => {
     const usages = scanAll(dir, ["src/A.tsx"]);
     await applyResults(dir, [resultFor(usages[0], { sizes: 'a "b" c' })], usages);
     expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain('sizes="a &quot;b&quot; c"');
+  });
+
+  it("falls back to double quotes for a single-quoted sizes literal when the new value contains a single quote", async () => {
+    const dir = project({
+      "src/A.tsx": `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} sizes='33vw' />;\n`,
+    });
+    const usages = scanAll(dir, ["src/A.tsx"]);
+    await applyResults(dir, [resultFor(usages[0], { sizes: "a 'b' c" })], usages);
+    expect(readFileSync(join(dir, "src/A.tsx"), "utf8")).toContain(`sizes="a 'b' c"`);
+  });
+
+  describe("growth (sizes that increase bytes)", () => {
+    const source = `import Image from "next/image";\nexport const A = () => <Image src="/a.png" width={1} height={1} sizes='33vw' />;\n`;
+    const config = "export default {\n  images: {\n    formats: ['image/webp'],\n  },\n};\n";
+    const growsReason = "sizes change increases bytes; re-run apply with --allow-growth to apply it";
+    const grown = (usage: ImageUsage) => ({
+      ...resultFor(usage, { sizes: "50vw", quality: 60 }),
+      grows: true,
+    });
+
+    it("skips the sizes edit without allowGrowth and still applies the quality", async () => {
+      const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
+      const usages = scanAll(dir, ["src/A.tsx"]);
+      const out = await applyResults(dir, [grown(usages[0])], usages);
+      const after = readFileSync(join(dir, "src/A.tsx"), "utf8");
+      expect(after).toContain("sizes='33vw'");
+      expect(after).toContain("quality={60}");
+      expect(out.skipped).toEqual([{ usageId: usages[0].id, reason: growsReason }]);
+      expect(out.edited).toEqual(["next.config.mjs", "src/A.tsx"]);
+    });
+
+    it("applies the sizes edit with allowGrowth, and the quality too", async () => {
+      const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
+      const usages = scanAll(dir, ["src/A.tsx"]);
+      const out = await applyResults(dir, [grown(usages[0])], usages, { allowGrowth: true });
+      const after = readFileSync(join(dir, "src/A.tsx"), "utf8");
+      expect(after).toContain("sizes='50vw'");
+      expect(after).toContain("quality={60}");
+      expect(out.skipped).toEqual([]);
+    });
+
+    it("does not report growth for a sizes value that is already in place", async () => {
+      const dir = project({ "src/A.tsx": source, "next.config.mjs": config });
+      const usages = scanAll(dir, ["src/A.tsx"]);
+      const out = await applyResults(dir, [{ ...resultFor(usages[0], { sizes: "33vw" }), grows: true }], usages);
+      expect(out.skipped).toEqual([]);
+      expect(out.edited).toEqual([]);
+    });
   });
 });

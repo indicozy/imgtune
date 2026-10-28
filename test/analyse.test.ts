@@ -211,6 +211,15 @@ describe("analyse", () => {
     expect(r.notes).toContain("AVIF not served");
   });
 
+  it("flags growth when the projected bytes exceed the current median by more than 5%", async () => {
+    // The proposal lowers the quality, but at this width it still projects ~740 bytes, above a 500-byte median.
+    const observed = (await nextDefaultObservations()).map((o) => (o.viewport === "iphone-15" ? { ...o, bytes: 500 } : o));
+    const [r] = await analyse([usage()], observed, nextConfig, cfg, BASE, fetchStub, silent());
+
+    expect(r.grows).toBe(true);
+    expect(r.notes).toContainEqual(expect.stringMatching(/^undersized now: corrected sizes is sharper but larger \(\+\d+(\.\d)? KB at iphone-15\)$/));
+  });
+
   it("marks a next-default result exact when the confirmation passes", async () => {
     const calls: { n: number; width: number; q: number; formats: string[] }[] = [];
     const confirm: NonNullable<AnalyseOptions["confirm"]> = async (samples, q, formats) => {

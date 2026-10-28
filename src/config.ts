@@ -38,13 +38,15 @@ interface Flags {
   port?: number;
   url?: string;
   all: boolean;
+  allowGrowth: boolean;
 }
 
 export async function loadConfig(
   argv: string[],
   cwd: string,
-): Promise<{ command: Command; config: ImgtuneConfig }> {
+): Promise<{ command: Command; config: ImgtuneConfig; allowGrowth: boolean }> {
   const { command, flags } = parseArgs(argv);
+  if (flags.allowGrowth && command !== "apply") throw new Error("--allow-growth only applies to apply");
   const projectDir = resolve(cwd, flags.project ?? ".");
   const file = await readConfigFile(projectDir);
 
@@ -68,17 +70,21 @@ export async function loadConfig(
     maxPagesPerPattern: file.maxPagesPerPattern ?? 2,
     includeDone: flags.all || (file.includeDone ?? false),
   };
-  return { command, config };
+  return { command, config, allowGrowth: flags.allowGrowth };
 }
 
 function parseArgs(argv: string[]): { command: Command; flags: Flags } {
   const positionals: string[] = [];
-  const flags: Flags = { paths: [], all: false };
+  const flags: Flags = { paths: [], all: false, allowGrowth: false };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--all") {
       flags.all = true;
+      continue;
+    }
+    if (arg === "--allow-growth") {
+      flags.allowGrowth = true;
       continue;
     }
     if (!arg.startsWith("--")) {

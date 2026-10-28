@@ -15,6 +15,8 @@ const DEFAULT_QUALITY = 75;
 const LADDER_GAP_RATIO = 1.25;
 const CONFIRM_SAMPLES = 5;
 const CALIBRATION_SAMPLES = 5;
+/** Projected bytes above this multiple of the current median count as growth. */
+const GROWTH_RATIO = 1.05;
 const NOTE_NOT_CONFIRMED = "estimated: not confirmed against /_next/image";
 
 export interface MeasuredWidth {
@@ -47,6 +49,8 @@ export interface ComponentResult {
   notes: string[];
   /** Set when `sizes` is an expression or comes from a spread: rendered widths per page and viewport. */
   measuredWidths?: MeasuredWidth[];
+  /** Set when the projected bytes exceed the current median by more than 5%: apply skips `sizes` unless allowed. */
+  grows?: boolean;
 }
 
 export interface AnalyseOptions {
@@ -307,6 +311,11 @@ async function analyseUsage(ctx: Context, usage: ImageUsage, usageObs: ImageObse
 
   if (projected !== undefined && medianBytes !== undefined) {
     result.savedBytesTotal = Math.max(0, medianBytes - projected) * result.instances;
+    if (projected > medianBytes * GROWTH_RATIO) {
+      const extraKb = Math.round(((projected - medianBytes) / 1024) * 10) / 10;
+      notes.push(`undersized now: corrected sizes is sharper but larger (+${extraKb} KB at ${refName})`);
+      result.grows = true;
+    }
   }
 
   return result;

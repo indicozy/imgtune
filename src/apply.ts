@@ -7,7 +7,7 @@ import { withQuality } from "./calibrate.js";
 import { readImageConfig } from "./nextconfig.js";
 import { scanText, scriptKind } from "./scan.js";
 import { saveState, type StateEntry } from "./state.js";
-import type { ImageUsage } from "./types.js";
+import type { ImageUsage, PropValue } from "./types.js";
 
 export interface ApplyResult {
   /** Project-relative paths of the files written, next.config included. */
@@ -21,6 +21,7 @@ const REASON_EDITED_SINCE_AUDIT = "file changed since audit; re-run imgtune audi
 const REASON_IMG = "plain <img> is report-only";
 const REASON_SIZES_MANUAL = "manual change needed: sizes is an expression";
 const REASON_QUALITY_MANUAL = "manual change needed: quality is an expression";
+const REASON_GROWS = "sizes change increases bytes; re-run apply with --allow-growth to apply it";
 const reasonQualityNotListed = (q: number) => `manual change needed: add ${q} to images.qualities in next.config`;
 
 /** A text range to replace (start === end for an insertion). */
@@ -45,8 +46,35 @@ interface PlannedUsage {
 /** Escapes a value for a double-quoted JSX string attribute. */
 const attrString = (value: string): string => value.replace(/"/g, "&quot;");
 
+/**
+ * Text that adds one attribute after the tag name. When the tag's attributes start on their own lines, it goes on a new
+ * line at the first attribute's indent; otherwise it is inline.
+ */
+function insertText(text: string, usage: ImageUsage, attr: string): string {
+  const firstAttr = usage.tagNameEnd + text.slice(usage.tagNameEnd).search(/\S/);
+  const indent = text.slice(text.lastIndexOf("\n", firstAttr) + 1, firstAttr);
+  const ownLine = text.slice(usage.tagNameEnd, firstAttr).includes("\n") && /^\s*$/.test(indent);
+  return ownLine ? `\n${indent}${attr}` : ` ${attr}`;
+}
+
+/**
+ * The replacement for a sizes literal: single-quoted when the source was and the value has no single quote, else
+ * double-quoted.
+ */
+function sizesLiteral(text: string, prop: PropValue, sizes: string): string {
+  const quote = /^[^=]*=\s*\{?\s*(['"])/.exec(text.slice(prop.start, prop.end))?.[1];
+  if (quote === "'" && !sizes.includes("'")) return `sizes='${sizes}'`;
+  return `sizes="${attrString(sizes)}"`;
+}
+
 /** Source edits for one usage against its fresh scan. Skips are pushed to `skipped`. */
-function planUsage(result: ComponentResult, usage: ImageUsage, skipped: ApplyResult["skipped"]): Edit[] {
+function planUsage(
+  result: ComponentResult,
+  usage: ImageUsage,
+  text: string,
+  skipped: ApplyResult["skipped"],
+  allowGrowth: boolean,
+): Edit[] {
   const edits: Edit[] = [];
   const skip = (reason: string) => skipped.push({ usageId: usage.id, reason });
   if (usage.tag === "img") {
@@ -57,13 +85,18 @@ function planUsage(result: ComponentResult, usage: ImageUsage, skipped: ApplyRes
   const sizes = result.proposed.sizes;
   if (sizes !== undefined) {
     const prop = usage.props.sizes;
-    const text = `sizes="${attrString(sizes)}"`;
+    const unchanged = prop.kind === "literal" && prop.value === sizes;
     if (prop.kind === "expression" || (usage.hasSpread && prop.kind === "absent")) {
       skip(REASON_SIZES_MANUAL);
+    } else if (!unchanged && result.grows && !allowGrowth) {
+      skip(REASON_GROWS);
     } else if (prop.kind === "literal") {
-      if (prop.value !== sizes) edits.push({ field: "sizes", value: sizes, splice: { start: prop.start, end: prop.end, text } });
+      if (!unchanged) {
+        edits.push({ field: "sizes", value: sizes, splice: { start: prop.start, end: prop.end, text: sizesLiteral(text, prop, sizes) } });
+      }
     } else {
-      edits.push({ field: "sizes", value: sizes, splice: { start: usage.tagNameEnd, end: usage.tagNameEnd, text: ` ${text}` } });
+      const splice = { start: usage.tagNameEnd, end: usage.tagNameEnd, text: insertText(text, usage, `sizes="${attrString(sizes)}"`) };
+      edits.push({ field: "sizes", value: sizes, splice });
     }
   }
 
@@ -77,7 +110,8 @@ function planUsage(result: ComponentResult, usage: ImageUsage, skipped: ApplyRes
         edits.push({ field: "quality", value: quality, splice: { start: prop.start, end: prop.end, text: `quality={${quality}}` } });
       }
     } else if (quality !== result.current.quality) {
-      edits.push({ field: "quality", value: quality, splice: { start: usage.tagNameEnd, end: usage.tagNameEnd, text: ` quality={${quality}}` } });
+      const splice = { start: usage.tagNameEnd, end: usage.tagNameEnd, text: insertText(text, usage, `quality={${quality}}`) };
+      edits.push({ field: "quality", value: quality, splice });
     }
   }
   return edits;
@@ -164,6 +198,8 @@ function spliceText(text: string, splices: Splice[]): string {
 export interface ApplyOptions {
   /** relFile -> sha1 from the audit report. A file whose current content hashes differently is not edited. */
   expectedHashes?: Record<string, string>;
+  /** Apply a `sizes` change that increases bytes (otherwise it is skipped; quality still applies). */
+  allowGrowth?: boolean;
 }
 
 /**
@@ -180,6 +216,7 @@ export async function applyResults(
   const skipped: ApplyResult["skipped"] = [];
   const edited: string[] = [];
   const expected = opts.expectedHashes;
+  const allowGrowth = opts.allowGrowth ?? false;
   const byId = new Map(usages.map((u) => [u.id, u]));
 
   // Group the results that have a proposal by the file of their audited usage.
@@ -213,7 +250,7 @@ export async function applyResults(
         skipped.push({ usageId: result.usageId, reason: REASON_CHANGED });
         continue;
       }
-      usagesInFile.push({ result, usage, edits: planUsage(result, usage, skipped) });
+      usagesInFile.push({ result, usage, edits: planUsage(result, usage, text, skipped, allowGrowth) });
     }
     planned.set(file, { relFile, text, usages: usagesInFile });
   }

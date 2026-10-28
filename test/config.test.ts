@@ -51,6 +51,16 @@ describe("loadConfig", () => {
     );
   });
 
+  it("--allow-growth is read for apply and refused for other commands", async () => {
+    const applied = await loadConfig(["apply", "--allow-growth"], EMPTY);
+    expect(applied.command).toBe("apply");
+    expect(applied.allowGrowth).toBe(true);
+    expect((await loadConfig(["apply"], EMPTY)).allowGrowth).toBe(false);
+    await expect(loadConfig(["audit", "--allow-growth"], EMPTY)).rejects.toThrow(
+      "--allow-growth only applies to apply",
+    );
+  });
+
   it("url + verify", async () => {
     const { command, config } = await loadConfig(
       ["verify", "--url", "http://localhost:3000"],

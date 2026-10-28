@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-import { applyCommand, audit, restoreCommand } from "./audit.js";
+import { applyCommand, audit, progress, restoreCommand } from "./audit.js";
 import { type Command, loadConfig } from "./config.js";
 import { verify } from "./verify.js";
 import type { ImgtuneConfig } from "./types.js";
 
-type Handler = (config: ImgtuneConfig) => Promise<void>;
+type Handler = (config: ImgtuneConfig, allowGrowth: boolean) => Promise<void>;
 
 const handlers: Record<Command, Handler> = {
   audit: async (config) => {
     await audit(config);
   },
-  apply: async (config) => {
-    await applyCommand(config.projectDir);
+  apply: async (config, allowGrowth) => {
+    await applyCommand(config.projectDir, progress, { allowGrowth });
   },
   verify: async (config) => {
     await verify(config);
@@ -37,6 +37,7 @@ Options:
   --port <n>          port for a dev server the tool starts (default: 3999)
   --url <baseUrl>     measure a server that is already running; the tool never starts or stops it
   --all               also re-measure usages that were already applied
+  --allow-growth      apply: also apply sizes that increase bytes (skipped otherwise)
   -h, --help          show this help
 `;
 
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  await handlers[loaded.command](loaded.config);
+  await handlers[loaded.command](loaded.config, loaded.allowGrowth);
 }
 
 main().catch((err: unknown) => {
