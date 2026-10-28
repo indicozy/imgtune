@@ -19,7 +19,11 @@ const FORMATS: Format[] = ["avif", "webp"];
 
 /** Share of usable samples per format that must reach the threshold, as integer percent. */
 const PASS_PERCENT = 95;
-const VARIANT_TIMEOUT_MS = 30_000;
+/**
+ * A served variant is fetched from the dev server, which compiles it on the first request. 30 s was too short when the
+ * e2e files ran alongside other work; a fetch that times out marks the usage unmeasured, so the budget is generous.
+ */
+const VARIANT_TIMEOUT_MS = 120_000;
 const ACCEPT: Record<Format, string> = {
   avif: "image/avif,*/*",
   webp: "image/webp,*/*",
