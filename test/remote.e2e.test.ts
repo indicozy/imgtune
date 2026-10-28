@@ -125,11 +125,15 @@ beforeAll(async () => {
   await writeFile(join(staticDir, "small.jpg"), await jpeg(400, 267, 12));
   // A separate file for the plain <img>: two elements on one URL are one download, measured once.
   await writeFile(join(staticDir, "huge.jpg"), await jpeg(1200, 800, 13));
+  // A local route shaped like a Contentful URL (?w= and ?q=). Its host is not Contentful's, so it is the generic loader.
+  await mkdir(join(staticDir, "ctf"), { recursive: true });
+  await writeFile(join(staticDir, "ctf/hero.jpg"), await jpeg(400, 267, 14));
   await writeFile(
     join(staticDir, "index.html"),
     `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>static</title></head><body>
 <img src="/huge.jpg" width="200" height="133" alt="">
 <img srcset="/small.jpg 400w, /big.jpg 1200w" sizes="1200px" width="200" height="133" alt="">
+<img src="/ctf/hero.jpg?w=400&q=70" width="200" height="133" alt="">
 </body></html>`,
   );
   staticServer = createHttpServer(async (req, res) => {
@@ -218,6 +222,10 @@ describe("imgtune scan end to end", () => {
     expect(desktopSrcset?.right?.url).toContain("/small.jpg");
     expect(desktopSrcset?.exactSaved ?? 0).toBeGreaterThan(0);
     expect(page.page?.exactPct ?? 0).toBeGreaterThan(0);
+    // The loader of each image and the page's count per loader are recorded (no adapter claims this host).
+    const ctf = images.find((img) => img.url.includes("/ctf/hero.jpg"));
+    expect(ctf?.loader).toBe("generic");
+    expect(page.counts.byLoader.generic).toBeGreaterThan(0);
   }, 10 * MINUTE);
 
   it("measures the Next.js fixture: resolution, quality with a reference, and a second run that agrees", async () => {
