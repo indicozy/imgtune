@@ -1,0 +1,228 @@
+/**
+ * Image loaders: for each URL a page renders, the adapter that made it. An adapter says where the untransformed
+ * original is, what quality the URL asks for, and whether the loader can be told a quality at all. Pure: no network.
+ */
+
+/** Whether the loader takes a quality: "yes" tunable, "auto" a CDN auto quality (q_auto), "none" no knob at all. */
+export type QualityParam = "yes" | "auto" | "none";
+
+export interface LoaderAdapter {
+  name: string;
+  matches(url: URL): boolean;
+  /** The untransformed source; undefined = unknown. Only http(s) originals are returned. */
+  original(url: URL): string | undefined;
+  /** The quality the URL asks for; undefined = not in URL. */
+  quality(url: URL): number | undefined;
+  qualityParam: QualityParam;
+  /** For a loader whose parameter depends on the URL (Cloudinary's q_auto): the parameter of this URL. */
+  qualityParamFor?(url: URL): QualityParam;
+  /** The documented quality when the URL has none. */
+  defaultQuality?: number;
+}
+
+export interface ResolvedLoader {
+  adapter: LoaderAdapter;
+  /** The image URL, resolved against the page. */
+  url: URL;
+}
+
+const DEFAULT_NEXT_QUALITY = 75;
+const DEFAULT_CLOUDFLARE_QUALITY = 85;
+const DEFAULT_IMGIX_QUALITY = 75;
+const DEFAULT_SANITY_QUALITY = 75;
+
+/** `q=` style values: digits only. */
+const toQuality = (text: string | null | undefined): number | undefined =>
+  text !== null && text !== undefined && /^\d+$/.test(text) ? Number(text) : undefined;
+
+/** The URL without its query (and fragment). */
+const withoutQuery = (url: URL): string => `${url.origin}${url.pathname}`;
+
+/** Copies `url` without the given query parameters; no `?` is left when none remain. */
+function withoutParams(url: URL, names: string[]): string {
+  const copy = new URL(url.href);
+  for (const name of names) copy.searchParams.delete(name);
+  copy.hash = "";
+  return copy.toString();
+}
+
+const CDN_CGI = /\/cdn-cgi\/image\/([^/]+)\/(.+)$/;
+
+const cloudflare: LoaderAdapter = {
+  name: "cloudflare",
+  matches: (url) => CDN_CGI.test(url.pathname),
+  original(url) {
+    const m = CDN_CGI.exec(url.pathname);
+    if (!m) return undefined;
+    const rest = m[2] + url.search;
+    if (/^https?:\/\//i.test(rest)) return rest;
+    return new URL(`/${rest}`, url.origin).toString();
+  },
+  quality(url) {
+    const options = /\/cdn-cgi\/image\/([^/]+)\//.exec(url.pathname);
+    const q = options ? /(?:^|,)quality=(\d+)/.exec(options[1]) : null;
+    return q ? Number(q[1]) : undefined;
+  },
+  qualityParam: "yes",
+  defaultQuality: DEFAULT_CLOUDFLARE_QUALITY,
+};
+
+const next: LoaderAdapter = {
+  name: "next",
+  matches: (url) => url.pathname === "/_next/image",
+  original(url) {
+    const inner = url.searchParams.get("url");
+    if (!inner) return undefined;
+    try {
+      return new URL(inner, url).toString();
+    } catch {
+      return undefined;
+    }
+  },
+  quality: (url) => toQuality(url.searchParams.get("q")),
+  qualityParam: "yes",
+  defaultQuality: DEFAULT_NEXT_QUALITY,
+};
+
+const CONTENTFUL_HOSTS = new Set(["images.ctfassets.net", "downloads.ctfassets.net"]);
+const contentful: LoaderAdapter = {
+  name: "contentful",
+  matches: (url) => CONTENTFUL_HOSTS.has(url.hostname),
+  original: withoutQuery,
+  quality: (url) => toQuality(url.searchParams.get("q")),
+  qualityParam: "yes",
+};
+
+const sanity: LoaderAdapter = {
+  name: "sanity",
+  matches: (url) => url.hostname === "cdn.sanity.io" && url.pathname.startsWith("/images/"),
+  original: withoutQuery,
+  quality: (url) => toQuality(url.searchParams.get("q")),
+  qualityParam: "yes",
+  defaultQuality: DEFAULT_SANITY_QUALITY,
+};
+
+/** A legacy `_{w}x{h}` or `_{w}x` before the extension of a Shopify file name. */
+const SHOPIFY_SIZE_SUFFIX = /_\d+x\d*(?=\.[A-Za-z0-9]+$)/;
+const shopify: LoaderAdapter = {
+  name: "shopify",
+  matches: (url) => url.hostname === "cdn.shopify.com" || /\/cdn\/shop\//.test(url.pathname),
+  original(url) {
+    const copy = new URL(withoutParams(url, ["width", "height", "crop"]));
+    copy.pathname = copy.pathname.replace(SHOPIFY_SIZE_SUFFIX, "");
+    return copy.toString();
+  },
+  quality: () => undefined,
+  qualityParam: "none",
+};
+
+/** `/<cloud>/image/upload/<transformations…>/[v123/]<public id>`. */
+const CLOUDINARY_PATH = /^\/([^/]+)\/image\/upload\/(.+)$/;
+/** A transformation segment: comma-separated `key_value` parameters, e.g. `w_400,q_80,f_auto`. */
+const isTransformation = (segment: string): boolean => segment.split(",").every((param) => /^[a-z]{1,3}_/.test(param));
+
+/** The leading transformation segments and the rest (version and public id), which are kept. */
+function splitCloudinary(pathname: string): { cloud: string; transforms: string[]; rest: string[] } | undefined {
+  const m = CLOUDINARY_PATH.exec(pathname);
+  if (!m) return undefined;
+  const segments = m[2].split("/");
+  let i = 0;
+  while (i < segments.length - 1 && isTransformation(segments[i])) i++;
+  return { cloud: m[1], transforms: segments.slice(0, i), rest: segments.slice(i) };
+}
+
+const cloudinary: LoaderAdapter = {
+  name: "cloudinary",
+  matches: (url) => url.hostname === "res.cloudinary.com" && CLOUDINARY_PATH.test(url.pathname),
+  original(url) {
+    const parts = splitCloudinary(url.pathname);
+    if (!parts) return undefined;
+    return `${url.origin}/${parts.cloud}/image/upload/${parts.rest.join("/")}`;
+  },
+  quality(url) {
+    const parts = splitCloudinary(url.pathname);
+    const param = parts?.transforms.flatMap((segment) => segment.split(",")).find((p) => /^q_\d+$/.test(p));
+    return param ? Number(param.slice(2)) : undefined;
+  },
+  qualityParamFor(url) {
+    const parts = splitCloudinary(url.pathname);
+    const auto = parts?.transforms.flatMap((segment) => segment.split(",")).some((p) => p.startsWith("q_auto"));
+    return auto ? "auto" : "yes";
+  },
+  qualityParam: "yes",
+};
+
+const IMGIX_HOSTS = new Set(["datocms-assets.com", "images.prismic.io"]);
+const imgix: LoaderAdapter = {
+  name: "imgix",
+  matches: (url) => url.hostname.endsWith(".imgix.net") || IMGIX_HOSTS.has(url.hostname) || [...IMGIX_HOSTS].some((h) => url.hostname.endsWith(`.${h}`)),
+  original: withoutQuery,
+  quality: (url) => toQuality(url.searchParams.get("q")),
+  qualityParam: "yes",
+  defaultQuality: DEFAULT_IMGIX_QUALITY,
+};
+
+/** Any other URL: no original; a quality only when the query says so. */
+const generic: LoaderAdapter = {
+  name: "generic",
+  matches: () => true,
+  original: () => undefined,
+  quality: (url) => toQuality(url.searchParams.get("q")) ?? toQuality(url.searchParams.get("quality")),
+  qualityParam: "yes",
+};
+
+/** Matched in order: the hosts and paths are disjoint, so the order only matters for the generic fallback last. */
+const ADAPTERS: LoaderAdapter[] = [contentful, sanity, shopify, cloudinary, imgix, cloudflare, next];
+
+/** Only http(s) originals leave an adapter: anything else (javascript:, data:, blob:) is unknown. */
+function httpOnly(adapter: LoaderAdapter): LoaderAdapter {
+  return {
+    ...adapter,
+    original(url) {
+      const found = adapter.original(url);
+      if (found === undefined) return undefined;
+      try {
+        const parsed = new URL(found);
+        return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+/** The adapter for one image URL as the page renders it, with the per-URL quality parameter applied. */
+function specialise(adapter: LoaderAdapter, url: URL): LoaderAdapter {
+  const qualityParam = adapter.qualityParamFor ? adapter.qualityParamFor(url) : adapter.qualityParam;
+  return httpOnly({ ...adapter, qualityParam });
+}
+
+/** The loader of an image URL. `src` is resolved against `pageUrl` first. Throws when the URL does not parse. */
+export function adapterFor(src: string, pageUrl: string): ResolvedLoader {
+  const url = new URL(src, pageUrl);
+  const hit = ADAPTERS.find((adapter) => adapter.matches(url)) ?? generic;
+  return { adapter: specialise(hit, url), url };
+}
+
+/**
+ * The original an observed image was made from. An absolute http(s) `src` prop wins when the currentSrc's adapter does
+ * not contradict it (it has no original, or the same one). Otherwise the adapter's original of currentSrc, else `src`
+ * resolved against `baseUrl`. The result is unwrapped once more when it is itself a transformed URL.
+ */
+export function originalFor(currentSrc: string, src: string | undefined, baseUrl: string): string {
+  const observed = adapterFor(currentSrc, baseUrl);
+  const fromCurrent = observed.adapter.original(observed.url);
+  const srcAbsolute = src !== undefined && /^https?:\/\//i.test(src);
+  const agrees = srcAbsolute && (fromCurrent === undefined || fromCurrent === new URL(src as string).toString());
+  let chosen: string;
+  if (agrees) chosen = src as string;
+  else if (fromCurrent !== undefined) chosen = fromCurrent;
+  else chosen = new URL(src ?? currentSrc, baseUrl).toString();
+  const again = adapterFor(chosen, baseUrl);
+  return new URL(again.adapter.original(again.url) ?? chosen, baseUrl).toString();
+}
+
+/** The Cloudflare rule alone: `/cdn-cgi/image/<opts>/<path>` gives `<path>`, anything else is resolved as it is. */
+export function cloudflareOriginal(url: URL): string | undefined {
+  return cloudflare.original(url);
+}
