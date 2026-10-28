@@ -1,8 +1,10 @@
 /// <reference lib="dom" />
 import { readFileSync } from "node:fs";
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { chromium, type Browser, type Response } from "playwright";
+import { chromium, type Browser, type Response as BrowserResponse } from "playwright";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { originalUrlFor } from "./analyse.js";
@@ -40,18 +42,32 @@ export const ASSUMED_QUALITY = 75;
 interface RobotsRule {
   allow: boolean;
   length: number;
-  pattern: RegExp;
+  pattern: string;
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-}
+/** Rules longer than this are ignored; a robots.txt is read up to MAX_ROBOTS_BYTES. */
+const MAX_RULE_LENGTH = 1024;
+export const MAX_ROBOTS_BYTES = 512 * 1024;
 
-/** A robots path pattern: `*` matches any run of characters, a trailing `$` anchors the end, the rest is a prefix. */
-function patternRegExp(pattern: string): RegExp {
+/**
+ * Whether a robots path pattern matches the start of `path`, in linear-style time: the `*` parts are located greedily
+ * from left to right (no backtracking), and a trailing `$` anchors the end of the path.
+ */
+export function ruleMatches(pattern: string, path: string): boolean {
   const anchored = pattern.endsWith("$");
-  const body = (anchored ? pattern.slice(0, -1) : pattern).split("*").map(escapeRegExp).join(".*");
-  return new RegExp(`^${body}${anchored ? "$" : ""}`);
+  const parts = (anchored ? pattern.slice(0, -1) : pattern).split("*");
+  if (parts.length === 1) return anchored ? path === parts[0] : path.startsWith(parts[0]);
+  if (!path.startsWith(parts[0])) return false;
+  let pos = parts[0].length;
+  const last = parts.length - 1;
+  for (let i = 1; i < last; i++) {
+    const found = path.indexOf(parts[i], pos);
+    if (found === -1) return false;
+    pos = found + parts[i].length;
+  }
+  const tail = parts[last];
+  if (anchored) return path.length - tail.length >= pos && path.endsWith(tail);
+  return path.indexOf(tail, pos) !== -1;
 }
 
 /** The Allow and Disallow rules of the `User-agent: *` group. Empty values allow everything, so they are no rule. */
@@ -72,10 +88,8 @@ function starRules(robotsTxt: string): RobotsRule[] {
       continue;
     }
     afterAgent = false;
-    if (!applies || value === "") continue;
-    if (key === "allow" || key === "disallow") {
-      rules.push({ allow: key === "allow", length: value.length, pattern: patternRegExp(value) });
-    }
+    if (!applies || value === "" || value.length > MAX_RULE_LENGTH) continue;
+    if (key === "allow" || key === "disallow") rules.push({ allow: key === "allow", length: value.length, pattern: value });
   }
   return rules;
 }
@@ -90,7 +104,7 @@ export function robotsAllows(robotsTxt: string | undefined, target: string): boo
   const path = url.pathname + url.search;
   let best: RobotsRule | undefined;
   for (const rule of starRules(robotsTxt)) {
-    if (!rule.pattern.test(path)) continue;
+    if (!ruleMatches(rule.pattern, path)) continue;
     if (!best || rule.length > best.length || (rule.length === best.length && rule.allow)) best = rule;
   }
   return best ? best.allow : true;
@@ -112,8 +126,10 @@ export function parseSrcset(srcset: string, base: string): Candidate[] {
     const [urlText, descriptor] = part.trim().split(/\s+/);
     const match = descriptor ? /^(\d+)w$/.exec(descriptor) : null;
     if (!urlText || !match) continue;
+    const width = Number(match[1]);
+    if (width <= 0 || width > MAX_WIDTH) continue;
     try {
-      out.push({ url: new URL(urlText, base).toString(), width: Number(match[1]) });
+      out.push({ url: new URL(urlText, base).toString(), width });
     } catch {
       // An unparsable candidate is not one the page advertises, so it is left out.
     }
@@ -356,19 +372,102 @@ export function parseScanArgs(argv: string[]): ScanArgs {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Extra fetches: one memo per scan, at most two in flight, 30 s each
+// Extra fetches: one memo per scan, at most two in flight, 30 s each, capped bodies, checked destinations
 // ---------------------------------------------------------------------------------------------------------------------
 
 const EXTRA_FETCH_TIMEOUT_MS = 30_000;
 const EXTRA_FETCH_CONCURRENCY = 2;
+export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_REDIRECTS = 3;
 
-export interface Fetcher {
-  /** The body, or undefined when the URL fails or answers non-2xx. Each URL is fetched at most once. */
-  get(url: string): Promise<Buffer | undefined>;
+/** Largest width the tool decodes or encodes at, and the most input pixels sharp accepts for a downloaded file. */
+export const MAX_WIDTH = 8192;
+export const MAX_INPUT_PIXELS = 100_000_000;
+
+/** A width clamped to 1..MAX_WIDTH. */
+export function clampWidth(width: number): number {
+  return Math.max(1, Math.min(MAX_WIDTH, Math.floor(width)));
 }
 
-export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch }): Fetcher {
+/** sharp over a downloaded file, refusing inputs above `limit` pixels. */
+export function openImage(buffer: Buffer, limit = MAX_INPUT_PIXELS): Sharp {
+  return sharp(buffer, { limitInputPixels: limit });
+}
+
+export type Lookup = (hostname: string) => Promise<{ address: string; family: number }[]>;
+
+/** Loopback, private, link-local and unspecified addresses (IPv4, IPv6, and IPv4-mapped IPv6). */
+export function isBlockedAddress(address: string): boolean {
+  const a = address.toLowerCase();
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+  if (mapped) return isBlockedAddress(mapped[1]);
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
+  if (v4) {
+    const first = Number(v4[1]);
+    const second = Number(v4[2]);
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
+  }
+  // fc00::/7 (unique local), fe80::/10 (link-local), ::1 and :: (loopback, unspecified).
+  return a === "::" || a === "::1" || /^f[cd]/.test(a) || /^fe[89ab]/.test(a);
+}
+
+export interface FetchOptions {
+  /** Largest body accepted; a larger one (declared or streamed) is refused. */
+  maxBytes?: number;
+  /** Whether destinations on loopback or private addresses are allowed (only when the scanned page is on one). */
+  allowPrivate?: boolean;
+}
+
+export interface Fetcher {
+  /**
+   * The body, or undefined when the URL is not http(s), resolves to a blocked address (unless allowed), fails, answers
+   * non-2xx, redirects more than MAX_REDIRECTS times, or is larger than its limit. Each (URL, options) is fetched once.
+   */
+  get(url: string, opts?: FetchOptions): Promise<Buffer | undefined>;
+  /** Whether the host of `url` resolves to a blocked address: a page that does is allowed private destinations. */
+  isPrivateHost(url: string): Promise<boolean>;
+}
+
+async function addressesOf(hostname: string, lookup: Lookup): Promise<string[]> {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  if (isIP(bare)) return [bare];
+  return (await lookup(bare)).map((r) => r.address);
+}
+
+/** The body up to `maxBytes`; undefined when it is larger (checked on Content-Length and while streaming). */
+async function readCapped(res: Response, maxBytes: number): Promise<Buffer | undefined> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total);
+}
+
+export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch; lookup?: Lookup }): Fetcher {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const lookup: Lookup = opts.lookup ?? ((hostname) => dnsLookup(hostname, { all: true }));
   const memo = new Map<string, Promise<Buffer | undefined>>();
   let running = 0;
   const waiting: (() => void)[] = [];
@@ -384,24 +483,56 @@ export function makeFetcher(opts: { userAgent: string; fetchImpl?: typeof fetch 
       else running--;
     }
   };
+
+  /** Each hop is checked before it is requested; redirects are followed here, not by fetch. */
+  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean): Promise<Buffer | undefined> => {
+    let current = start;
+    for (let hop = 0; ; hop++) {
+      const url = new URL(current);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+      if (!allowPrivate) {
+        const addresses = await addressesOf(url.hostname, lookup);
+        if (addresses.length === 0 || addresses.some(isBlockedAddress)) return undefined;
+      }
+      const res = await fetchImpl(url.toString(), {
+        headers: { "User-Agent": opts.userAgent },
+        redirect: "manual",
+        signal: AbortSignal.timeout(EXTRA_FETCH_TIMEOUT_MS),
+      });
+      const location = res.headers.get("location");
+      if (res.status >= 300 && res.status < 400 && location) {
+        await res.body?.cancel().catch(() => undefined);
+        if (hop >= MAX_REDIRECTS) return undefined;
+        current = new URL(location, url).toString();
+        continue;
+      }
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        return undefined;
+      }
+      return readCapped(res, maxBytes);
+    }
+  };
+
   return {
-    get(url) {
-      let pending = memo.get(url);
+    get(url, fetchOpts = {}) {
+      const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
+      const allowPrivate = fetchOpts.allowPrivate ?? false;
+      const key = `${maxBytes}|${allowPrivate}|${url}`;
+      let pending = memo.get(key);
       if (!pending) {
-        pending = withSlot(async () => {
-          const res = await fetchImpl(url, {
-            headers: { "User-Agent": opts.userAgent },
-            signal: AbortSignal.timeout(EXTRA_FETCH_TIMEOUT_MS),
-          });
-          if (!res.ok) {
-            await res.body?.cancel().catch(() => undefined);
-            return undefined;
-          }
-          return Buffer.from(await res.arrayBuffer());
-        }).catch(() => undefined);
-        memo.set(url, pending);
+        pending = withSlot(() => fetchChecked(url, maxBytes, allowPrivate)).catch(() => undefined);
+        memo.set(key, pending);
       }
       return pending;
+    },
+    async isPrivateHost(url) {
+      try {
+        const addresses = await addressesOf(new URL(url).hostname, lookup);
+        return addresses.some(isBlockedAddress);
+      } catch {
+        return false;
+      }
     },
   };
 }
@@ -420,7 +551,7 @@ export interface PixelSize {
 /** The pixel size and format of an image file, as displayed (EXIF orientation applied). Undefined when sharp cannot read it. */
 export async function pixelSize(buffer: Buffer): Promise<PixelSize | undefined> {
   try {
-    const meta = await sharp(buffer).metadata();
+    const meta = await openImage(buffer).metadata();
     if (!meta.width || !meta.height) return undefined;
     const turned = (meta.orientation ?? 1) >= 5;
     const width = turned ? meta.height : meta.width;
@@ -433,7 +564,7 @@ export async function pixelSize(buffer: Buffer): Promise<PixelSize | undefined> 
 
 /** The file decoded to 8-bit RGBA; resized to `size` when given and different (the scorer needs equal dimensions). */
 export async function decodeRaw(buffer: Buffer, size?: PixelSize): Promise<RawImage> {
-  const { data, info } = await sharp(buffer).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await openImage(buffer).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   let out = { data, width: info.width, height: info.height };
   if (size && (size.width !== out.width || size.height !== out.height)) {
     const resized = await sharp(out.data, { raw: { width: out.width, height: out.height, channels: 4 } })
@@ -446,8 +577,9 @@ export async function decodeRaw(buffer: Buffer, size?: PixelSize): Promise<RawIm
 }
 
 /** The original at `width` pixels wide (enlarged when it is smaller), decoded. */
-async function referenceAt(original: Buffer, width: number): Promise<RawImage> {
-  const { data, info } = await sharp(original)
+async function referenceAt(original: Buffer, requestedWidth: number): Promise<RawImage> {
+  const width = clampWidth(requestedWidth);
+  const { data, info } = await openImage(original)
     .rotate()
     .resize({ width, kernel: "lanczos3" })
     .ensureAlpha()
@@ -479,10 +611,11 @@ const QUALITY_BISECT_STEPS = 7;
 export async function resizedEstimate(
   buffer: Buffer,
   format: string,
-  targetWidth: number,
+  requestedWidth: number,
 ): Promise<{ bytes: number; buffer: Buffer } | undefined> {
+  const targetWidth = clampWidth(requestedWidth);
   if (format === "png") {
-    const out = await sharp(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true }).png().toBuffer();
+    const out = await openImage(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true }).png().toBuffer();
     return { bytes: out.length, buffer: out };
   }
   if (!isEstimateFormat(format)) return undefined;
@@ -492,11 +625,11 @@ export async function resizedEstimate(
   let hi = 100;
   for (let step = 0; step < QUALITY_BISECT_STEPS && lo < hi; step++) {
     const mid = Math.floor((lo + hi) / 2);
-    const bytes = (await encodeWith(sharp(buffer).rotate(), format, mid)).length;
+    const bytes = (await encodeWith(openImage(buffer).rotate(), format, mid)).length;
     if (bytes < served) lo = mid + 1;
     else hi = mid;
   }
-  const shrunk = sharp(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true });
+  const shrunk = openImage(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true });
   const out = await encodeWith(shrunk, format, lo);
   return { bytes: out.length, buffer: out };
 }
@@ -658,7 +791,7 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
     });
 
     const page = await context.newPage();
-    const docResponse: Response | null = await loadSettled(page, pageUrl, "img");
+    const docResponse: BrowserResponse | null = await loadSettled(page, pageUrl, "img");
     const seen = await page.evaluate(() => {
       const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
       const images = Array.from(document.querySelectorAll("img"), (img, index) => {
@@ -728,6 +861,8 @@ interface Instance {
 interface AnalysisContext {
   pageUrl: string;
   fetcher: Fetcher;
+  /** The page is on a loopback or private host, so its candidates and originals may be too. */
+  allowPrivate: boolean;
   deps: QualityDeps;
   quality: boolean;
   aggressive: boolean;
@@ -778,7 +913,7 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
       rightBuffer = response.buffer;
     } else {
       // A candidate the browser loaded at this viewport is reused; otherwise it is fetched once, as the page advertises it.
-      rightBuffer = obs.responses.get(right.url)?.buffer ?? (await ctx.fetcher.get(right.url));
+      rightBuffer = obs.responses.get(right.url)?.buffer ?? (await ctx.fetcher.get(right.url, { allowPrivate: ctx.allowPrivate }));
     }
     if (rightBuffer) {
       const rightPixels = right.url === img.currentSrc ? served : await pixelSize(rightBuffer);
@@ -842,7 +977,7 @@ async function estimateQualities(ctx: AnalysisContext, instances: Instance[], re
       const original = referenceUrl(member.url, ctx.pageUrl);
       if (!original) continue;
       attempts++;
-      const buffer = await ctx.fetcher.get(original);
+      const buffer = await ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate });
       if (!buffer || !member.right) continue;
       const current = currentQuality(member.url);
       const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];

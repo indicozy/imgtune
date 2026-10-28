@@ -6,8 +6,12 @@ import {
   groupKey,
   isChallenge,
   isUndersized,
+  clampWidth,
+  isBlockedAddress,
   makeFetcher,
   neededWidth,
+  openImage,
+  ruleMatches,
   pageFileName,
   pageNumbers,
   parseScanArgs,
@@ -246,6 +250,8 @@ describe("parseScanArgs", () => {
   });
 });
 
+const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
 describe("makeFetcher", () => {
   it("fetches each URL once, however often it is asked for", async () => {
     let calls = 0;
@@ -253,7 +259,7 @@ describe("makeFetcher", () => {
       calls++;
       return new Response(Buffer.from("abc"), { status: 200 });
     }) as typeof fetch;
-    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl });
+    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl, lookup: publicLookup });
     const [a, b] = await Promise.all([fetcher.get("https://shop.example/a.jpg"), fetcher.get("https://shop.example/a.jpg")]);
     expect(calls).toBe(1);
     expect(a?.toString()).toBe("abc");
@@ -270,7 +276,7 @@ describe("makeFetcher", () => {
       running--;
       return new Response(Buffer.from("x"), { status: 200 });
     }) as typeof fetch;
-    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl });
+    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl, lookup: publicLookup });
     await Promise.all(["a", "b", "c", "d", "e"].map((name) => fetcher.get(`https://shop.example/${name}.jpg`)));
     expect(peak).toBe(2);
   });
@@ -281,7 +287,7 @@ describe("makeFetcher", () => {
       calls++;
       return new Response("nope", { status: 404 });
     }) as typeof fetch;
-    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl });
+    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl, lookup: publicLookup });
     expect(await fetcher.get("https://shop.example/missing.jpg")).toBeUndefined();
     expect(await fetcher.get("https://shop.example/missing.jpg")).toBeUndefined();
     expect(calls).toBe(1);
@@ -293,7 +299,7 @@ describe("makeFetcher", () => {
       agent = new Headers(init?.headers).get("user-agent");
       return new Response("", { status: 200 });
     }) as typeof fetch;
-    await makeFetcher({ userAgent: "Chrome/125 test", fetchImpl }).get("https://shop.example/robots.txt");
+    await makeFetcher({ userAgent: "Chrome/125 test", fetchImpl, lookup: publicLookup }).get("https://shop.example/robots.txt");
     expect(agent).toBe("Chrome/125 test");
   });
 });
@@ -352,5 +358,144 @@ describe("estimateQuality", () => {
         { score: (ref, test) => ssim(ref, test) * 100 },
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("ruleMatches", () => {
+  it("matches prefixes, * runs and a $ end anchor", () => {
+    expect(ruleMatches("/admin", "/admin/users")).toBe(true);
+    expect(ruleMatches("/admin", "/other")).toBe(false);
+    expect(ruleMatches("/*.json$", "/a/b.json")).toBe(true);
+    expect(ruleMatches("/*.json$", "/a/b.json?x=1")).toBe(false);
+    expect(ruleMatches("/a*b*c", "/a-b-x-c")).toBe(true);
+    expect(ruleMatches("/a*b*c", "/a-c-b")).toBe(false);
+    expect(ruleMatches("/x$", "/x")).toBe(true);
+  });
+
+  it("finishes quickly on inputs built to backtrack", () => {
+    const started = Date.now();
+    expect(ruleMatches("*a*a*a*a*a*a*a*b", "a".repeat(20_000))).toBe(false);
+    expect(ruleMatches("/*a*a*a*a*c$", `/${"a".repeat(20_000)}`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("ignores robots rules longer than 1024 characters", () => {
+    const long = `/${"x".repeat(1100)}`;
+    expect(robotsAllows(`User-agent: *\nDisallow: ${long}`, `https://shop.example${long}`)).toBe(true);
+  });
+});
+
+describe("isBlockedAddress", () => {
+  it("blocks loopback, private, link-local and unspecified addresses", () => {
+    for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.9", "169.254.10.10", "0.0.0.0", "::1", "::", "fc00::1", "fd12::3", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.5"]) {
+      expect(isBlockedAddress(address), address).toBe(true);
+    }
+  });
+
+  it("allows public addresses", () => {
+    for (const address of ["93.184.216.34", "172.32.0.1", "172.15.0.1", "2606:4700::1111", "8.8.8.8"]) {
+      expect(isBlockedAddress(address), address).toBe(false);
+    }
+  });
+});
+
+describe("resource bounds", () => {
+  it("drops srcset candidates above 8192 or not above zero", () => {
+    const candidates = parseSrcset("/a.jpg 0w, /b.jpg 9000w, /c.jpg 640w", "https://shop.example/");
+    expect(candidates.map((c) => c.width)).toEqual([640]);
+  });
+
+  it("clamps target widths to 1..8192", () => {
+    expect(clampWidth(20_000)).toBe(8192);
+    expect(clampWidth(0)).toBe(1);
+    expect(clampWidth(640.7)).toBe(640);
+  });
+
+  it("refuses an image above the pixel limit", async () => {
+    const png = await sharp({ create: { width: 20, height: 20, channels: 3, background: "#000" } }).png().toBuffer();
+    await expect(openImage(png, 100).metadata()).rejects.toThrow();
+    expect((await openImage(png).metadata()).width).toBe(20);
+  });
+});
+
+describe("makeFetcher destinations and bodies", () => {
+  const pub = "https://shop.example/img.jpg";
+  const response = (status: number, body: string | null, headers: Record<string, string> = {}) =>
+    new Response(body, { status, headers });
+
+  it("refuses non-http schemes without a request", async () => {
+    let calls = 0;
+    const fetcher = makeFetcher({ userAgent: "ua", lookup: publicLookup, fetchImpl: (async () => (calls++, response(200, "x"))) as typeof fetch });
+    expect(await fetcher.get("file:///etc/passwd")).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+
+  it("refuses a literal private or loopback host and a name that resolves to one", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => (calls++, response(200, "x"))) as typeof fetch;
+    const fetcher = makeFetcher({ userAgent: "ua", fetchImpl, lookup: async (host) => (host === "internal.example" ? [{ address: "10.0.0.7", family: 4 }] : [{ address: "93.184.216.34", family: 4 }]) });
+    expect(await fetcher.get("http://127.0.0.1/a.jpg")).toBeUndefined();
+    expect(await fetcher.get("http://[::1]/a.jpg")).toBeUndefined();
+    expect(await fetcher.get("http://internal.example/a.jpg")).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+
+  it("allows private destinations when the page itself is private", async () => {
+    const fetcher = makeFetcher({ userAgent: "ua", lookup: publicLookup, fetchImpl: (async () => response(200, "ok")) as typeof fetch });
+    expect((await fetcher.get("http://127.0.0.1/a.jpg", { allowPrivate: true }))?.toString()).toBe("ok");
+  });
+
+  it("reports whether a page host is private", async () => {
+    const fetcher = makeFetcher({ userAgent: "ua", lookup: async () => [{ address: "127.0.0.1", family: 4 }], fetchImpl: fetch });
+    expect(await fetcher.isPrivateHost("http://localhost:3000/")).toBe(true);
+    const pubFetcher = makeFetcher({ userAgent: "ua", lookup: publicLookup, fetchImpl: fetch });
+    expect(await pubFetcher.isPrivateHost(pub)).toBe(false);
+  });
+
+  it("checks every redirect hop and refuses one that lands on a private address", async () => {
+    const fetcher = makeFetcher({
+      userAgent: "ua",
+      lookup: async (host) => (host === "internal.example" ? [{ address: "192.168.0.4", family: 4 }] : [{ address: "93.184.216.34", family: 4 }]),
+      fetchImpl: (async () => response(302, null, { location: "http://internal.example/x.jpg" })) as typeof fetch,
+    });
+    expect(await fetcher.get(pub)).toBeUndefined();
+  });
+
+  it("follows redirects by hand, up to three", async () => {
+    const hops: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      hops.push(url);
+      expect(init?.redirect).toBe("manual");
+      if (url.endsWith("/3")) return response(200, "done");
+      return response(301, null, { location: `https://shop.example/${Number(url.split("/").pop()) + 1}` });
+    }) as typeof fetch;
+    const ok = makeFetcher({ userAgent: "ua", fetchImpl, lookup: publicLookup });
+    expect((await ok.get("https://shop.example/0"))?.toString()).toBe("done");
+    expect(hops).toEqual(["https://shop.example/0", "https://shop.example/1", "https://shop.example/2", "https://shop.example/3"]);
+
+    const tooMany = makeFetcher({
+      userAgent: "ua",
+      lookup: publicLookup,
+      fetchImpl: (async (url: string) => response(301, null, { location: `https://shop.example/${url.split("/").pop()}0` })) as typeof fetch,
+    });
+    expect(await tooMany.get("https://shop.example/1")).toBeUndefined();
+  });
+
+  it("refuses a body whose declared length is over the limit", async () => {
+    const fetcher = makeFetcher({ userAgent: "ua", lookup: publicLookup, fetchImpl: (async () => response(200, "abc", { "content-length": "999" })) as typeof fetch });
+    expect(await fetcher.get(pub, { maxBytes: 10 })).toBeUndefined();
+  });
+
+  it("aborts a streamed body once it passes the limit", async () => {
+    const chunk = new Uint8Array(6);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk);
+      },
+    });
+    const fetcher = makeFetcher({ userAgent: "ua", lookup: publicLookup, fetchImpl: (async () => new Response(stream, { status: 200 })) as typeof fetch });
+    expect(await fetcher.get(pub, { maxBytes: 10 })).toBeUndefined();
+    const small = makeFetcher({ userAgent: "ua", lookup: publicLookup, fetchImpl: (async () => response(200, "0123456789")) as typeof fetch });
+    expect((await small.get(pub, { maxBytes: 10 }))?.length).toBe(10);
   });
 });
