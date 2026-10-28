@@ -9,7 +9,7 @@ inputs:
     required: false
     default: ""
   comment:
-    description: "Post or update the pull request comment (pull_request events only)"
+    description: "Post or update the pull request comment. On pull_request events the event's pull request is used; on other events (such as deployment_status) the open pull request of the commit is used"
     required: false
     default: "true"
   viewports:
@@ -73,27 +73,38 @@ runs:
         exit 0
 
     - name: Comment on the pull request
-      if: always() && inputs.comment == 'true' && github.event_name == 'pull_request'
+      if: always() && inputs.comment == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         IMGTUNE_RESULTS: ${{ runner.temp }}/imgtune
         IMGTUNE_REPO: ${{ github.repository }}
+        IMGTUNE_EVENT: ${{ github.event_name }}
         IMGTUNE_PR: ${{ github.event.pull_request.number }}
+        IMGTUNE_SHA: ${{ github.event.deployment_status.deployment.sha || github.sha }}
         IMGTUNE_AUTHOR: ${{ inputs.comment-author }}
       run: |
         if [ ! -s "$IMGTUNE_RESULTS/comment.md" ]; then
           echo "::warning::imgtune wrote no summary, so no comment was posted"
           exit 0
         fi
+        pr="$IMGTUNE_PR"
+        if [ "$IMGTUNE_EVENT" != "pull_request" ]; then
+          pr=$(gh api "repos/$IMGTUNE_REPO/commits/$IMGTUNE_SHA/pulls" \
+            --jq '[.[] | select(.state=="open")][0].number // empty')
+        fi
+        if [ -z "$pr" ]; then
+          echo "imgtune: no open pull request for commit $IMGTUNE_SHA, so no comment was posted"
+          exit 0
+        fi
         body="$IMGTUNE_RESULTS/comment-body.md"
         { echo "<!-- imgtune-scan -->"; cat "$IMGTUNE_RESULTS/comment.md"; } > "$body"
-        id=$(gh api --paginate "repos/$IMGTUNE_REPO/issues/$IMGTUNE_PR/comments" \
+        id=$(gh api --paginate "repos/$IMGTUNE_REPO/issues/$pr/comments" \
           --jq '.[] | select(.user.login == env.IMGTUNE_AUTHOR and (.body | startswith("<!-- imgtune-scan -->"))) | .id' | head -n 1)
         if [ -n "$id" ]; then
           gh api --method PATCH "repos/$IMGTUNE_REPO/issues/comments/$id" -F "body=@$body" > /dev/null
         else
-          gh api --method POST "repos/$IMGTUNE_REPO/issues/$IMGTUNE_PR/comments" -F "body=@$body" > /dev/null
+          gh api --method POST "repos/$IMGTUNE_REPO/issues/$pr/comments" -F "body=@$body" > /dev/null
         fi
 
     - name: Exit with the scan's code

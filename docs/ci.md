@@ -10,7 +10,7 @@ request. One comment per pull request is created, then updated on each push. It 
 | --- | --- | --- |
 | `urls` | required | page URLs, separated by newlines or spaces |
 | `fail-over` | none | exit 3 when a page's exact + est. share is above this percentage |
-| `comment` | `true` | post or update the pull request comment (pull_request events only) |
+| `comment` | `true` | post or update the pull request comment (see below for which pull request) |
 | `viewports` | all six | comma-separated viewport names |
 | `github-token` | `github.token` | token that posts the comment |
 | `comment-author` | `github-actions[bot]` | login whose comments the action may update |
@@ -22,12 +22,20 @@ account's login: the action cannot look it up from the token.
 The job's result is the scan's exit code: 0 when it passed, 3 when a `fail-over` budget was exceeded, 1 or 2 when the
 scan itself failed (2 when Chromium is missing).
 
+## Which pull request gets the comment
+
+- On a `pull_request` event, the comment goes to that pull request.
+- On any other event (for example `deployment_status`, which Vercel sends for each preview), the action looks up the
+  open pull request of the commit (`github.event.deployment_status.deployment.sha`, or `github.sha`). If there is none,
+  it logs a line and posts nothing; the scan result still sets the job's exit code.
+
 ## Permissions
 
 ```yaml
 permissions:
   contents: read
   pull-requests: write
+  deployments: read # the deployment_status example only
 ```
 
 ## Example: Vercel previews
@@ -42,10 +50,12 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  deployments: read
 
 jobs:
   scan:
     # Vercel reports a preview as a successful deployment_status event; scan the URL it reports.
+    # The comment goes to the open pull request of the deployed commit.
     if: github.event.deployment_status.state == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -55,8 +65,8 @@ jobs:
           fail-over: "5"
 ```
 
-A `deployment_status` event is not a pull_request event, so the action does not comment on it. Use this workflow for
-the budget check; to get the comment, run the scan from a `pull_request` workflow instead (below).
+The comment goes to the open pull request of the deployed commit. If the commit has no open pull request (for example
+a deploy from a branch with no PR), the job logs that and posts nothing.
 
 ## Example: a local build on the runner
 

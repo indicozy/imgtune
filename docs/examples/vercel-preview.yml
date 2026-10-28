@@ -5,10 +5,12 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  deployments: read
 
 jobs:
   scan:
     # Vercel reports a preview as a successful deployment_status event; scan the URL it reports.
+    # The comment goes to the open pull request of the deployed commit.
     if: github.event.deployment_status.state == 'success'
     runs-on: ubuntu-latest
     steps:
