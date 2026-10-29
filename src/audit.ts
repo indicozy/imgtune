@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { analyse, type ComponentResult } from "./analyse.js";
-import { applyResults, raiseQuality, type ApplyResult, type RaiseResult } from "./apply.js";
+import { applyResults, raiseQuality, renderApplyChanges, type ApplyResult, type RaiseResult } from "./apply.js";
 import { sha1, writeFileAtomic } from "./atomic.js";
 import { confirmNextDefault, withQuality, type ConfirmSample } from "./calibrate.js";
 import { backupFiles, installRestoreHandlers, instrument, restore } from "./instrument.js";
@@ -464,6 +464,7 @@ export async function applyCommand(
     allowGrowth: opts.allowGrowth,
   });
   for (const file of result.edited) process.stdout.write(`edited ${file}\n`);
+  process.stdout.write(renderApplyChanges(result.changes));
   for (const skip of result.skipped) process.stdout.write(`skipped ${skip.usageId}: ${skip.reason}\n`);
   process.stdout.write(`review with: git diff\n`);
   return result;

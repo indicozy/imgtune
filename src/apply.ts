@@ -9,10 +9,23 @@ import { scanText, scriptKind } from "./scan.js";
 import { loadState, saveState, type StateEntry } from "./state.js";
 import type { ImageUsage, PropValue, QualityRaise } from "./types.js";
 
+/** One attribute change written to a source file. `from` is undefined when the attribute was absent before. */
+export interface ApplyChange {
+  usageId: string;
+  component: string;
+  field: "sizes" | "quality";
+  from?: string | number;
+  to: string | number;
+  /** A quality lowered below the value an earlier apply or --raise recorded for this usage. */
+  lowersApplied: boolean;
+}
+
 export interface ApplyResult {
   /** Project-relative paths of the files written, next.config included. */
   edited: string[];
   skipped: { usageId: string; reason: string }[];
+  /** Every attribute change written, in file order (sizes before quality within a usage). */
+  changes: ApplyChange[];
 }
 
 const NEXT_DEFAULT_QUALITY = 75;
@@ -33,6 +46,8 @@ interface Splice {
 interface Edit {
   field: "sizes" | "quality";
   value: string | number;
+  /** The value the literal held before the edit; undefined when the attribute was inserted. */
+  from?: string | number;
   splice: Splice;
 }
 
@@ -116,7 +131,7 @@ function planUsage(
       skip(REASON_SIZES_MANUAL);
     } else if (prop.kind === "literal") {
       if (!unchanged) {
-        edits.push({ field: "sizes", value: sizes, splice: { start: prop.start, end: prop.end, text: sizesLiteral(text, prop, sizes) } });
+        edits.push({ field: "sizes", value: sizes, from: prop.value as string, splice: { start: prop.start, end: prop.end, text: sizesLiteral(text, prop, sizes) } });
       }
     } else {
       const attr = stringAttr("sizes", sizes, attrQuote);
@@ -133,7 +148,7 @@ function planUsage(
       skip(REASON_QUALITY_MANUAL);
     } else if (prop.kind === "literal") {
       if (prop.value !== quality) {
-        edits.push({ field: "quality", value: quality, splice: { start: prop.start, end: prop.end, text: `quality={${quality}}` } });
+        edits.push({ field: "quality", value: quality, from: prop.value as number, splice: { start: prop.start, end: prop.end, text: `quality={${quality}}` } });
       }
     } else if (quality !== result.current.quality) {
       const splice = { start: usage.tagNameEnd, end: usage.tagNameEnd, text: insertText(text, usage, `quality={${quality}}`) };
@@ -244,6 +259,9 @@ export async function applyResults(
   const expected = opts.expectedHashes;
   const allowGrowth = opts.allowGrowth ?? false;
   const byId = new Map(usages.map((u) => [u.id, u]));
+  // The quality each usage's state entry records: an earlier apply or --raise set it.
+  const appliedQuality = new Map((await loadState(projectDir)).map((entry) => [entry.usageId, entry.applied.quality]));
+  const changes: ApplyChange[] = [];
 
   // Group the results that have a proposal by the file of their audited usage.
   const byFile = new Map<string, ComponentResult[]>();
@@ -344,6 +362,21 @@ export async function applyResults(
       edited.push(relFile);
       const fileHash = sha1(next);
       for (const planUse of applied) {
+        for (const edit of planUse.edits) {
+          const lowersApplied =
+            edit.field === "quality" &&
+            edit.from !== undefined &&
+            (edit.value as number) < (edit.from as number) &&
+            appliedQuality.get(planUse.usage.id) === edit.from;
+          changes.push({
+            usageId: planUse.usage.id,
+            component: planUse.usage.component,
+            field: edit.field,
+            from: edit.from,
+            to: edit.value,
+            lowersApplied,
+          });
+        }
         const sizes = planUse.edits.find((e) => e.field === "sizes");
         const quality = planUse.edits.find((e) => e.field === "quality");
         entries.push({
@@ -364,7 +397,21 @@ export async function applyResults(
   } finally {
     if (entries.length > 0) await saveState(projectDir, entries);
   }
-  return { edited, skipped };
+  return { edited, skipped, changes };
+}
+
+const shownValue = (value: string | number | undefined): string =>
+  value === undefined ? "(none)" : typeof value === "string" ? JSON.stringify(value) : String(value);
+
+/** The apply report: one line per change, and a warning line under each change that lowers an applied quality. */
+export function renderApplyChanges(changes: ApplyChange[]): string {
+  return changes
+    .map((c) => {
+      const line = `${c.component} ${c.field} ${shownValue(c.from)} → ${shownValue(c.to)}\n`;
+      if (!c.lowersApplied) return line;
+      return `${line}warning: ${c.component} quality was set to ${c.from} by an earlier apply or --raise; lowering it to ${c.to}\n`;
+    })
+    .join("");
 }
 
 /** Result of `raiseQuality`: the files written and the usages whose applied quality moved. */

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ComponentResult } from "../src/analyse.js";
-import { applyResults, raiseQuality } from "../src/apply.js";
+import { applyResults, raiseQuality, renderApplyChanges } from "../src/apply.js";
 import { scanFile } from "../src/scan.js";
 import { sha1 } from "../src/atomic.js";
 import { isDone, loadState, saveState, type StateEntry } from "../src/state.js";
@@ -359,6 +359,74 @@ describe("applyResults", () => {
       expect(out.skipped).toEqual([]);
       expect(out.edited).toEqual([]);
     });
+  });
+});
+
+describe("apply reports each change", () => {
+  const HERO_SOURCE =
+    'import Image from "next/image";\nexport const Hero = () => <Image src="/a.png" width={480} height={320} quality={70} />;\n';
+  const CONFIG_70 = "export default {\n  images: {\n    qualities: [70],\n  },\n};\n";
+
+  it("lists every written change with its old and new value", async () => {
+    const rel = "src/components/ProductItem.tsx";
+    const dir = project({
+      [rel]: readFileSync(FIXTURE, "utf8"),
+      "next.config.mjs": "export default {\n  images: {\n    formats: ['image/avif', 'image/webp'],\n  },\n};\n",
+    });
+    const usages = scanAll(dir, [rel]);
+    const sizes = "(max-width: 768px) 280px, 280px";
+
+    const out = await applyResults(dir, [resultFor(usages[0], { sizes, quality: 62 })], usages);
+
+    expect(out.changes).toEqual([
+      { usageId: usages[0].id, component: usages[0].component, field: "sizes", from: "33vw", to: sizes, lowersApplied: false },
+      { usageId: usages[0].id, component: usages[0].component, field: "quality", to: 62, lowersApplied: false },
+    ]);
+  });
+
+  it("warns when a change lowers a quality that an earlier apply recorded", async () => {
+    const dir = project({ "next.config.mjs": CONFIG_70, "src/Hero.tsx": HERO_SOURCE });
+    const usage = scanAll(dir, ["src/Hero.tsx"])[0];
+    await saveState(dir, [
+      {
+        usageId: usage.id,
+        relFile: "src/Hero.tsx",
+        component: "Hero",
+        fileHash: sha1(HERO_SOURCE),
+        applied: { quality: 70 },
+        at: "2026-10-29T00:00:00.000Z",
+      },
+    ]);
+
+    const out = await applyResults(dir, [resultFor(usage, { quality: 65 }, 70)], [usage]);
+
+    expect(out.changes).toEqual([
+      expect.objectContaining({ component: "Hero", field: "quality", from: 70, to: 65, lowersApplied: true }),
+    ]);
+    expect(renderApplyChanges(out.changes)).toContain(
+      "warning: Hero quality was set to 70 by an earlier apply or --raise; lowering it to 65\n",
+    );
+  });
+
+  it("does not warn when the quality goes up, or when the source held a value no apply recorded", async () => {
+    const dir = project({ "next.config.mjs": CONFIG_70, "src/Hero.tsx": HERO_SOURCE });
+    const usage = scanAll(dir, ["src/Hero.tsx"])[0];
+
+    const out = await applyResults(dir, [resultFor(usage, { quality: 75 }, 70)], [usage]);
+
+    expect(out.changes).toEqual([expect.objectContaining({ field: "quality", from: 70, to: 75, lowersApplied: false })]);
+    expect(renderApplyChanges(out.changes)).not.toContain("warning");
+  });
+
+  it("renders one line per change, with quoted sizes and (none) for an attribute that was absent", () => {
+    const text = renderApplyChanges([
+      { usageId: "a", component: "IndexPage", field: "sizes", from: "100vw", to: "(max-width: 768px) 100vw, 50vw", lowersApplied: false },
+      { usageId: "a", component: "IndexPage", field: "quality", from: 70, to: 65, lowersApplied: false },
+      { usageId: "b", component: "Card", field: "quality", to: 60, lowersApplied: false },
+    ]);
+    expect(text).toBe(
+      'IndexPage sizes "100vw" → "(max-width: 768px) 100vw, 50vw"\nIndexPage quality 70 → 65\nCard quality (none) → 60\n',
+    );
   });
 });
 
