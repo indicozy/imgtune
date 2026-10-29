@@ -48,8 +48,9 @@ Scan only the sites the user owns, and scan each one once unless the user asks f
    npx imgtune verify [--url <baseUrl>] [--path <path>]
    ```
 
-   `verify` changes no files. Each usage is `verified`, `regressed`, or `unmeasured`. A usage with fewer than five
-   distinct images is judged on those, and its status shows `n`, for example `verified (n=2)`.
+   `verify` changes no files. Each usage is `verified`, `regressed`, or `unmeasured`. Every status shows `n`, the
+   number of distinct images the usage was judged on, for example `verified (n=2)`. A usage with fewer than five
+   distinct images is judged on those.
 5. Show `git diff`. Do not commit. Leave the commit to the user.
 
 If `verify` reports `regressed (raise quality to N)`, raise that usage with the command `verify` prints under the
