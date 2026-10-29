@@ -9,8 +9,10 @@ import {
   confirmPlan,
   makeConfirm,
   makeFetchOriginal,
+  alreadyAppliedUsages,
   pagesFor,
   pendingUsages,
+  renderAlreadyApplied,
   resolveScopeUrls,
   unresolvedPatterns,
   type ConfirmDeps,
@@ -50,6 +52,28 @@ describe("pendingUsages", () => {
 
   it("keeps usages with no state entry", () => {
     expect(pendingUsages(usages, [], hashOf, false)).toHaveLength(2);
+  });
+});
+
+describe("already applied usages", () => {
+  const named = (id: string, component: string, relFile: string, line: number) =>
+    ({ id, component, relFile, line }) as unknown as ImageUsage;
+
+  it("returns the usages that are not pending, in scan order", () => {
+    const usages = [named("a:1:1", "Card", "src/a.tsx", 1), named("b:9:1", "Hero", "src/b.tsx", 9)];
+    const pending = [usages[1]];
+    expect(alreadyAppliedUsages(usages, pending).map((u) => u.id)).toEqual(["a:1:1"]);
+  });
+
+  it("names each one with the use --all hint, and never calls it not measured", () => {
+    const done = [named("a:1:1", "Card", "src/a.tsx", 1)];
+    const text = renderAlreadyApplied(done);
+    expect(text).toBe("already applied (use --all to re-measure):\n  Card  src/a.tsx:1\n");
+    expect(text).not.toMatch(/not measured/);
+  });
+
+  it("prints nothing when no usage was left out", () => {
+    expect(renderAlreadyApplied([])).toBe("");
   });
 });
 

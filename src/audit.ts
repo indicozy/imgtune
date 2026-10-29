@@ -67,6 +67,19 @@ export function pendingUsages(
   return usages.filter((usage) => !isDone(byId.get(usage.id), hashOf(usage.file)));
 }
 
+/** Usages the audit leaves out because their state entry already matches the file: the already applied ones. */
+export function alreadyAppliedUsages(usages: ImageUsage[], pending: ImageUsage[]): ImageUsage[] {
+  const pendingIds = new Set(pending.map((usage) => usage.id));
+  return usages.filter((usage) => !pendingIds.has(usage.id));
+}
+
+/** The already applied usages as a listing, one per line, under a heading. Empty when there are none. */
+export function renderAlreadyApplied(done: ImageUsage[]): string {
+  if (done.length === 0) return "";
+  const lines = done.map((usage) => `  ${usage.component}  ${usage.relFile}:${usage.line}`);
+  return ["already applied (use --all to re-measure):", ...lines].join("\n") + "\n";
+}
+
 /** Unique resolved paths of the given route patterns, in first-seen order. */
 export function pagesFor(patterns: Iterable<string>, resolved: Map<string, ResolvedUrls>): string[] {
   return unique([...patterns].flatMap((pattern) => resolved.get(pattern)?.paths ?? []));
@@ -386,7 +399,9 @@ export async function audit(config: ImgtuneConfig, opts: { log?: Log } = {}): Pr
     hashes.set(file, sha1(await readFile(file)));
   }
   const pending = pendingUsages(usages, state, (file) => hashes.get(file) ?? "", config.includeDone);
+  const done = alreadyAppliedUsages(usages, pending);
   if (pending.length === 0) {
+    process.stdout.write(renderAlreadyApplied(done));
     log("nothing to measure: every usage is already done (use --all to re-measure)");
     return [];
   }
@@ -424,6 +439,7 @@ export async function audit(config: ImgtuneConfig, opts: { log?: Log } = {}): Pr
   }
 
   process.stdout.write(`${renderTable(ranked, config.metric)}\n`);
+  process.stdout.write(renderAlreadyApplied(done));
   await writeReport(projectDir, ranked, { config, imageConfig, sitemapSource: measured.sitemapSource });
   log("done");
   return ranked;
