@@ -18,6 +18,7 @@ import {
   undersizedFile,
   scoreVariant,
   selectApplied,
+  raiseCommandHint,
   verify,
   type VerifySample,
 } from "../src/verify.js";
@@ -26,6 +27,23 @@ import type { measureUsages } from "../src/audit.js";
 import { loadState, saveState, type StateEntry } from "../src/state.js";
 import type { ImageUsage, ImgtuneConfig } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
+
+
+describe("raiseCommandHint", () => {
+  it("is the plain npx command when the project is the working directory", () => {
+    expect(raiseCommandHint("Card", 75, "/work/app", "/work/app")).toBe("npx imgtune apply --raise Card=75");
+  });
+
+  it("names the project when it is another directory, so the command applies to the right tree", () => {
+    expect(raiseCommandHint("Card", 75, "/work/app", "/work")).toBe("npx imgtune apply --project /work/app --raise Card=75");
+  });
+
+  it("quotes a project path that has spaces", () => {
+    expect(raiseCommandHint("Card", 75, "/work/my app", "/work")).toBe(
+      "npx imgtune apply --project '/work/my app' --raise Card=75",
+    );
+  });
+});
 
 describe("judgeVerification", () => {
   const applied = { sizes: "33vw", quality: 70 };
@@ -827,7 +845,7 @@ describe("verify with fake measurement, originals and scorer", () => {
     await verify(config(dir), deps);
 
     const printed = stdout.mock.calls.map((call) => String(call[0])).join("");
-    expect(printed).toContain("run: npx imgtune apply --raise A=32\n");
+    expect(printed).toContain(`run: npx imgtune apply --project ${dir} --raise A=32\n`);
   });
 
   it("fails with the audit's error for a --path that does not exist, measuring nothing", async () => {

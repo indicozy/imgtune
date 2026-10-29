@@ -390,6 +390,19 @@ export function renderVerifyTable(rows: VerifyRow[], metric: Metric): string {
   return table.map((cells) => cells.map((cell, col) => cell.padEnd(widths[col])).join("  ").trimEnd()).join("\n");
 }
 
+/** A string safe to paste into a POSIX shell: bare when it has no special characters, else single-quoted. */
+const shellWord = (value: string): string =>
+  /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The command a verify hint prints for a regressed usage. `--project` is named when the project is not the working
+ * directory the command will run from, so the raise lands in the project verify measured.
+ */
+export function raiseCommandHint(component: string, quality: number, projectDir: string, cwd: string): string {
+  const project = resolve(projectDir) === resolve(cwd) ? "" : ` --project ${shellWord(projectDir)}`;
+  return `npx imgtune apply${project} --raise ${component}=${quality}`;
+}
+
 export interface VerifyOptions {
   log?: Log;
   fetchImpl?: typeof fetch;
@@ -714,7 +727,7 @@ export async function verify(config: ImgtuneConfig, opts: VerifyOptions = {}): P
   process.stdout.write(`${renderVerifyTable(rows, config.metric)}\n`);
   for (const row of rows) {
     if (row.judgement.status === "regressed" && row.judgement.raiseTo !== undefined) {
-      process.stdout.write(`run: npx imgtune apply --raise ${row.component}=${row.judgement.raiseTo}\n`);
+      process.stdout.write(`run: ${raiseCommandHint(row.component, row.judgement.raiseTo, config.projectDir, process.cwd())}\n`);
     }
   }
   log("done");
