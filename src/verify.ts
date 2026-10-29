@@ -64,7 +64,7 @@ export interface Judgement {
   counts: { avif?: FormatCounts; webp?: FormatCounts };
   /** Set for a regression when a quality raise can help: applied quality + tolerance, capped at the pre-apply quality. */
   raiseTo?: number;
-  /** Set when the usage was judged on fewer than MIN_USABLE_SAMPLES samples: the distinct images it was judged on. */
+  /** The distinct images the usage was judged on (n in the table), set whenever the caller knows them. */
   sampleSize?: number;
 }
 
@@ -121,7 +121,7 @@ export interface JudgeInput {
 /**
  * Decides an applied usage from its scored samples. Every format the page served for the usage is judged, and each
  * needs at least min(MIN_USABLE_SAMPLES, samplesPerComponent, distinct images) usable samples, else the usage is
- * unmeasured. A usage with fewer distinct images than that is judged on them and reports its n (`sampleSize`). It is
+ * unmeasured. A usage with fewer distinct images than that is judged on them. Its n (`sampleSize`) is the distinct image count. It is
  * verified when every judged format has at least 95% of its usable samples at or above `threshold`, otherwise
  * regressed. Unusable samples never count against a format.
  */
@@ -130,7 +130,8 @@ export function judgeVerification(input: JudgeInput): Judgement {
   const minimum = Math.max(1, Math.min(MIN_USABLE_SAMPLES, input.samplesPerComponent, input.distinctImages ?? MIN_USABLE_SAMPLES));
   const formats = FORMATS.filter((format) => served.includes(format));
   const judgement: Judgement = { status: "verified", ssim: {}, counts: {} };
-  if (minimum < MIN_USABLE_SAMPLES) judgement.sampleSize = minimum;
+  // n is the distinct images the usage was judged on. Every row prints it, not only the ones judged on fewer than five.
+  if (input.distinctImages !== undefined) judgement.sampleSize = input.distinctImages;
   if (formats.length === 0) return { ...judgement, status: "unmeasured", reason: "no avif or webp image served" };
 
   let failed = false;
@@ -353,7 +354,7 @@ function statusOf(judgement: Judgement): string {
   else if (judgement.status === "verified") status = "verified";
   else if (judgement.reason !== undefined) status = `regressed (${judgement.reason})`;
   else status = judgement.raiseTo === undefined ? "regressed" : `regressed (raise quality to ${judgement.raiseTo})`;
-  if (judgement.status !== "unmeasured" && judgement.sampleSize !== undefined) status += ` (n=${judgement.sampleSize})`;
+  if (judgement.sampleSize !== undefined) status += ` (n=${judgement.sampleSize})`;
   // The 95% rule decides the verdict, so the table shows the passing counts behind it.
   const counts = FORMATS.flatMap((format) => {
     const count = judgement.counts[format];

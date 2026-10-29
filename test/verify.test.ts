@@ -20,6 +20,7 @@ import {
   selectApplied,
   raiseCommandHint,
   verify,
+  type VerifyRow,
   type VerifySample,
 } from "../src/verify.js";
 import { listSourceFiles, scanFile } from "../src/scan.js";
@@ -144,7 +145,24 @@ describe("judgeVerification", () => {
     const verdict = judge(passing("webp", 4), ["webp"], { distinctImages: 9 });
     expect(verdict.status).toBe("unmeasured");
     expect(verdict.reason).toBe("insufficient webp samples: 4");
-    expect(verdict.sampleSize).toBeUndefined();
+    expect(verdict.sampleSize).toBe(9);
+  });
+
+  it("reports n as the distinct images judged, on a verified usage with 5 or more of them", () => {
+    const verdict = judge(passing("webp", 20), ["webp"], { distinctImages: 9 });
+    expect(verdict.status).toBe("verified");
+    expect(verdict.sampleSize).toBe(9);
+  });
+
+  it("prints n on every judged row, verified, regressed and not measured alike", () => {
+    const row = (judgement: ReturnType<typeof judge>) =>
+      ({ usageId: "a", component: "A", relFile: "src/A.tsx", line: 1, bytes: {}, judgement }) as VerifyRow;
+    const verified = judge(passing("webp", 20), ["webp"], { distinctImages: 9 });
+    const regressed = judge([...passing("webp", 1), { format: "webp", ssim: 0.5 }], ["webp"], { distinctImages: 9 });
+    const unmeasured = judge(passing("webp", 4), ["webp"], { distinctImages: 9 });
+    const table = renderVerifyTable([row(verified), row(regressed), row(unmeasured)], "ssim");
+    const lines = table.split("\n").slice(1);
+    expect(lines.every((line) => line.includes("(n=9)"))).toBe(true);
   });
 
   it("is unmeasured when the page served neither avif nor webp", () => {
