@@ -8,9 +8,11 @@ import { sha1 } from "../src/atomic.js";
 import { scanFile } from "../src/scan.js";
 import { saveState } from "../src/state.js";
 
-// Runs the built CLI (dist/cli.js), the same file the npm bin points at. Run `npm run build` first.
+// Runs the built CLI (dist/cli.js), the same file the npm bin points at. The suite builds it first, so a missing or
+// stale dist cannot make it pass or fail for the wrong reason.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(ROOT, "dist/cli.js");
+const TSC = join(ROOT, "node_modules/typescript/bin/tsc");
 
 const CARD = `import Image from "next/image";
 
@@ -46,8 +48,11 @@ function cli(args: string[], cwd: string) {
 
 describe("imgtune apply --raise (built CLI)", () => {
   beforeAll(() => {
-    if (!existsSync(CLI)) throw new Error(`${CLI} is missing: run npm run build first`);
-  });
+    const built = spawnSync(process.execPath, [TSC, "-p", join(ROOT, "tsconfig.build.json")], { encoding: "utf8" });
+    if (built.status !== 0 || !existsSync(CLI)) {
+      throw new Error(`building ${CLI} failed:\n${built.stdout}${built.stderr}`);
+    }
+  }, 120_000);
 
   it("parses Component=quality and raises the applied quality, from the project directory", async () => {
     const dir = await appliedProject();
@@ -58,7 +63,7 @@ describe("imgtune apply --raise (built CLI)", () => {
     expect(out.stdout).toContain("raised Card quality 70 -> 75\n");
     expect(out.stdout).toContain("run imgtune verify to measure it\n");
     expect(readFileSync(join(dir, "src/Card.tsx"), "utf8")).toContain("quality={75}");
-  });
+  }, 60_000);
 
   it("parses the --project form the verify hint prints, from another working directory", async () => {
     const dir = await appliedProject();
@@ -68,7 +73,7 @@ describe("imgtune apply --raise (built CLI)", () => {
     expect(out.status).toBe(0);
     expect(out.stdout).toContain("raised Card quality 70 -> 75\n");
     expect(readFileSync(join(dir, "src/Card.tsx"), "utf8")).toContain("quality={75}");
-  });
+  }, 60_000);
 
   it("rejects a malformed --raise before it touches any file", async () => {
     const dir = await appliedProject();
@@ -78,7 +83,7 @@ describe("imgtune apply --raise (built CLI)", () => {
     expect(out.status).toBe(2);
     expect(out.stderr).toContain("--raise expects Component=quality with a quality from 1 to 100");
     expect(readFileSync(join(dir, "src/Card.tsx"), "utf8")).toBe(CARD);
-  });
+  }, 60_000);
 
   it("reports a component with no applied usage by name", async () => {
     const dir = await appliedProject();
@@ -87,5 +92,5 @@ describe("imgtune apply --raise (built CLI)", () => {
 
     expect(out.status).toBe(1);
     expect(out.stderr).toContain("imgtune: Nope: no applied quality in the state");
-  });
+  }, 60_000);
 });
