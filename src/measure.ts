@@ -174,6 +174,39 @@ async function measureOne(
  */
 export async function loadSettled(page: Page, url: string, imageSelector: string): Promise<Response | null> {
   const response = await page.goto(url, { waitUntil: "load", timeout: PAGE_LOAD_TIMEOUT_MS });
+  await settlePage(page, imageSelector);
+  return response;
+}
+
+/**
+ * Navigates to `url` and returns once the document is parsed (`domcontentloaded`). Then waits up to `loadCapMs` for the
+ * `load` event. `loadTimedOut` is true when `load` did not come in time, and the caller continues either way.
+ */
+export async function gotoParsed(
+  page: Page,
+  url: string,
+  loadCapMs: number,
+): Promise<{ response: Response | null; loadTimedOut: boolean }> {
+  const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: PAGE_LOAD_TIMEOUT_MS });
+  return { response, loadTimedOut: !(await waitForLoadWithin(page, loadCapMs)) };
+}
+
+/** Resolves true when the page's `load` event has happened within `ms`, false when it timed out. Other errors throw. */
+export async function waitForLoadWithin(page: Page, ms: number): Promise<boolean> {
+  try {
+    await page.waitForLoadState("load", { timeout: ms });
+    return true;
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") return false;
+    throw err;
+  }
+}
+
+/**
+ * The settle step of every measurement: scrolls the page to its bottom and back so lazy images start, then waits for the
+ * network and for the images matched by `imageSelector` to complete.
+ */
+export async function settlePage(page: Page, imageSelector: string): Promise<void> {
   await scrollThrough(page);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
@@ -185,7 +218,6 @@ export async function loadSettled(page: Page, url: string, imageSelector: string
       { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
     )
     .catch(() => {});
-  return response;
 }
 
 /** Waits for the promises to settle, but never longer than `ms`. */

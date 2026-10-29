@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import {
   analysePage,
@@ -38,7 +41,9 @@ import {
   rightCandidate,
   renderPage,
   robotsAllows,
+  runScan,
   safeText,
+  sameSite,
   siteNumbers,
   summaryOf,
   viewportTotals,
@@ -1162,4 +1167,123 @@ describe.each(["webp", "avif"] as const)("analysePage with a Contentful-shaped %
     expect(report.quality).toMatchObject({ current: 70, qualityAssumed: false, sampled: true });
     expect(page.counts.byLoader).toEqual({ contentful: 1 });
   }, 120_000);
+});
+
+describe("sameSite", () => {
+  it("compares registrable domains, so subdomains of one site match and other domains do not", () => {
+    expect(sameSite("www.shop-example.com.mx", "listado.shop-example.com.mx")).toBe(true);
+    expect(sameSite("shop.example", "cdn.shop.example")).toBe(true);
+    expect(sameSite("www.news-example.co.uk", "www.news-example.com")).toBe(false);
+    expect(sameSite("a.example.co.uk", "b.example.co.uk")).toBe(true);
+    expect(sameSite("example.co.uk", "other.co.uk")).toBe(false);
+    expect(sameSite("127.0.0.1", "localhost")).toBe(false);
+    expect(sameSite("127.0.0.1", "127.0.0.1")).toBe(true);
+  });
+});
+
+describe("scan of pages that navigate or load slowly", () => {
+  const desktopView: Viewport = { name: "desktop", width: 1280, height: 800, dpr: 1, mobile: false };
+  let base = "";
+  let other = "";
+  let server: Server | undefined;
+  const hung: ServerResponse[] = [];
+
+  const page = (body: string) =>
+    `<!doctype html><html><head><meta charset="utf-8"><title>fixture</title></head><body>${body}</body></html>`;
+
+  beforeAll(async () => {
+    const png = await sharp({ create: { width: 320, height: 200, channels: 3, background: "#6a8" } }).png().toBuffer();
+    const started = await localServer((req, res) => {
+      const url = req.url ?? "";
+      const html = (body: string) => {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(page(body));
+      };
+      if (url === "/pic.png" || url === "/pic-landed.png") {
+        res.writeHead(200, { "content-type": "image/png" });
+        return res.end(png);
+      }
+      if (url === "/plain") return html('<img src="/pic.png" width="320" height="200" alt="">');
+      if (url === "/navigate") {
+        return html(`<img src="/pic.png" width="320" height="200" alt="">
+          <script>window.addEventListener("load", () => setTimeout(() => location.replace("/landed"), 200));</script>`);
+      }
+      if (url === "/landed") return html('<img src="/pic-landed.png" width="320" height="200" alt="">');
+      if (url === "/elsewhere") {
+        return html(`<img src="/pic.png" width="320" height="200" alt="">
+          <script>window.addEventListener("load", () => setTimeout(() => location.replace("${other}/landed"), 200));</script>`);
+      }
+      if (url === "/hang") {
+        // An async script that never answers keeps the load event from firing, as the ad requests of some sites do.
+        return html('<img src="/pic.png" width="320" height="200" alt=""><script async src="/never.js"></script>');
+      }
+      if (url === "/never.js") {
+        hung.push(res);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    server = started.server;
+    base = started.base;
+    // The same server under another host name: another site for the scan's purposes.
+    other = base.replace("127.0.0.1", "localhost");
+  });
+
+  afterAll(async () => {
+    for (const res of hung) res.destroy();
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  const scanOne = async (path: string, loadCapMs?: number) => {
+    const out = mkdtempSync(join(tmpdir(), "imgtune-nav-"));
+    const [result] = await runScan([`${base}${path}`], {
+      outDir: out,
+      cwd: out,
+      aggressive: false,
+      quality: false,
+      viewports: [desktopView],
+      log: () => {},
+      loadCapMs,
+    });
+    return result;
+  };
+
+  it("keeps a page that does not navigate or stall as it was: no finalUrl or loadTimedOut key", async () => {
+    const result = await scanOne("/plain");
+    expect(result.status).toBe("ok");
+    expect(result).not.toHaveProperty("finalUrl");
+    expect(result).not.toHaveProperty("loadTimedOut");
+    expect(result.page).toBeDefined();
+  }, 60_000);
+
+  it("measures the page a script moves to after load, and records the final URL", async () => {
+    const result = await scanOne("/navigate");
+    expect(result.status).toBe("ok");
+    expect(result.finalUrl).toBe(`${base}/landed`);
+    expect(result.page).toBeDefined();
+    const urls = Object.values(result.perViewport).flatMap((v) => v.images.map((i) => i.url));
+    expect(urls.some((u) => u.endsWith("/pic-landed.png"))).toBe(true);
+  }, 60_000);
+
+  it("reports redirected with the final URL, and measures nothing, when the page moves to another site", async () => {
+    const result = await scanOne("/elsewhere");
+    expect(result.status).toBe("redirected");
+    expect(result.finalUrl).toBe(`${other}/landed`);
+    expect(result.error).toContain(`${other}/landed`);
+    expect(result.page).toBeUndefined();
+  }, 60_000);
+
+  it("continues past a load event that never comes, and records loadTimedOut", async () => {
+    const result = await scanOne("/hang", 1_000);
+    expect(result.status).toBe("ok");
+    expect(result.loadTimedOut).toBe(true);
+    expect(result.page).toBeDefined();
+  }, 60_000);
+
+  it("summary keeps the final URL of a redirected page", () => {
+    const summary = summaryOf([pageResult({ status: "redirected", finalUrl: "https://other.example/", error: "redirected to https://other.example/", page: undefined })]);
+    expect(summary.pages[0]).toMatchObject({ status: "redirected", finalUrl: "https://other.example/" });
+  });
 });

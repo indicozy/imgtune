@@ -6,7 +6,7 @@ import type { LookupAddress } from "node:dns";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { Browser, Response as BrowserResponse } from "playwright";
+import type { Browser, Page, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
@@ -14,7 +14,7 @@ import { calibrationOffset } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
-import { loadSettled, settleWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
+import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import { MAX_WIDTH, parseSrcset, type Candidate } from "./srcset-parse.js";
@@ -33,6 +33,10 @@ const TOP_GROUPS = 10;
 
 /** Default output directory, relative to the working directory. */
 export const DEFAULT_OUT = ".imgtune/scan";
+/** How long a page may take to fire `load` after its document is parsed; the scan continues either way. */
+export const LOAD_EVENT_CAP_MS = 30_000;
+/** After load, a page that navigates (a reload, a script's location change) is observed again, at most this many times. */
+export const MAX_POST_LOAD_NAVIGATIONS = 3;
 /** A srcset candidate that is this far below the need (and below the largest) is an undersized file. */
 const UNDERSIZED_RATIO = 0.9;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
@@ -927,6 +931,39 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Same site: a page that ends on another URL is measured only when it stays on the same registrable domain
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Second-level labels that sit under a country code (co.uk, com.mx, ...). A small list, not the full public suffix list. */
+const CC_SECOND_LEVEL = new Set(["ac", "co", "com", "edu", "gov", "go", "gob", "mil", "ne", "net", "nic", "or", "org"]);
+
+/**
+ * The registrable domain of a host name: its last two labels, or three under a country code with a second-level label
+ * such as co.uk or com.mx. Hosts that are IP addresses, or have no dot, are their own domain.
+ */
+export function registrableDomain(host: string): string {
+  const name = host.toLowerCase();
+  if (isIP(name) !== 0 || !name.includes(".")) return name;
+  const labels = name.split(".");
+  const n = labels.length;
+  const countryCode = n >= 3 && labels[n - 1].length === 2 && CC_SECOND_LEVEL.has(labels[n - 2]);
+  return labels.slice(n - (countryCode ? 3 : 2)).join(".");
+}
+
+/** Whether two URLs or host names belong to the same registrable domain. */
+export function sameSite(a: string, b: string): boolean {
+  return registrableDomain(hostOf(a)) === registrableDomain(hostOf(b));
+}
+
+function hostOf(urlOrHost: string): string {
+  try {
+    return new URL(urlOrHost).hostname;
+  } catch {
+    return urlOrHost;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Browser observation: one fresh context per page and viewport
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -955,6 +992,10 @@ export interface ResponseRecord {
 export interface ViewportObservation {
   viewport: Viewport;
   status?: number;
+  /** The URL the page ends on, after any navigation of its own. Absent in old observations: the page URL. */
+  finalUrl?: string;
+  /** True when the page's `load` event did not come within the cap; the figures were taken anyway. */
+  loadTimedOut?: boolean;
   blocked: boolean;
   /** Requests the browser was stopped from making (the page is public and they reach a blocked address). */
   blockedRequests: number;
@@ -974,7 +1015,73 @@ export interface RequestGuard {
   isBlocked(url: string): Promise<boolean>;
 }
 
-async function observeViewport(browser: Browser, pageUrl: string, viewport: Viewport, guard?: RequestGuard): Promise<ViewportObservation> {
+/** A navigation that destroyed the page's execution context in the middle of a read: the read is taken again. */
+function isNavigationError(err: unknown): boolean {
+  return err instanceof Error && /Execution context was destroyed|Frame was detached/i.test(err.message);
+}
+
+interface PageView {
+  seen: { nextjs: boolean; images: ObservedImage[] };
+  html: string;
+}
+
+/** One read of the page as it stands: its images and whether it is a Next.js app. */
+async function readView(page: Page): Promise<PageView> {
+  const seen = await page.evaluate(() => {
+    const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
+    const images = Array.from(document.querySelectorAll("img"), (img, index) => {
+      const rect = img.getBoundingClientRect();
+      return {
+        index,
+        currentSrc: img.currentSrc,
+        renderedWidth: rect.width,
+        renderedHeight: rect.height,
+        srcset: img.getAttribute("srcset") ?? "",
+        sizes: img.getAttribute("sizes") ?? undefined,
+        classes: img.getAttribute("class") ?? "",
+        nextImage: img.hasAttribute("data-nimg"),
+        inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
+      };
+    });
+    return { nextjs, images };
+  });
+  const html = seen.images.length === 0 ? await page.content() : "";
+  return { seen, html };
+}
+
+/**
+ * The settle step, then one read, taken again whenever the page navigated while it ran (a reload or a script's
+ * location change after load). At most MAX_POST_LOAD_NAVIGATIONS repeats; past that, the last complete read is used.
+ */
+async function settledView(page: Page, navigations: () => number, loadCapMs: number): Promise<PageView> {
+  let last: PageView | undefined;
+  for (let repeat = 0; ; repeat++) {
+    const start = navigations();
+    let view: PageView | undefined;
+    try {
+      await settlePage(page, "img");
+      view = await readView(page);
+    } catch (err) {
+      if (!isNavigationError(err)) throw err;
+    }
+    if (view) last = view;
+    if (view && navigations() === start) return view;
+    if (repeat === MAX_POST_LOAD_NAVIGATIONS) {
+      if (last) return last;
+      throw new Error(`the page kept navigating after load (${MAX_POST_LOAD_NAVIGATIONS + 1} attempts)`);
+    }
+    // The new document settles first: its load event, or the cap if it never comes.
+    await waitForLoadWithin(page, loadCapMs).catch(() => false);
+  }
+}
+
+async function observeViewport(
+  browser: Browser,
+  pageUrl: string,
+  viewport: Viewport,
+  guard?: RequestGuard,
+  loadCapMs: number = LOAD_EVENT_CAP_MS,
+): Promise<ViewportObservation> {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: viewport.dpr,
@@ -1038,26 +1145,14 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
     });
 
     const page = await context.newPage();
-    const docResponse: BrowserResponse | null = await loadSettled(page, pageUrl, "img");
-    const seen = await page.evaluate(() => {
-      const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
-      const images = Array.from(document.querySelectorAll("img"), (img, index) => {
-        const rect = img.getBoundingClientRect();
-        return {
-          index,
-          currentSrc: img.currentSrc,
-          renderedWidth: rect.width,
-          renderedHeight: rect.height,
-          srcset: img.getAttribute("srcset") ?? "",
-          sizes: img.getAttribute("sizes") ?? undefined,
-          classes: img.getAttribute("class") ?? "",
-          nextImage: img.hasAttribute("data-nimg"),
-          inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
-        };
-      });
-      return { nextjs, images };
+    // Main-frame navigations are counted, so the figures are taken once the page has stopped moving.
+    let navigations = 0;
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigations++;
     });
-    const html = seen.images.length === 0 ? await page.content() : "";
+    const loaded = await gotoParsed(page, pageUrl, loadCapMs);
+    const docResponse: BrowserResponse | null = loaded.response;
+    const { seen, html } = await settledView(page, () => navigations, loadCapMs);
     const status = docResponse?.status();
     await settleWithin(bodyReads, BODY_READ_TIMEOUT_MS);
     for (const record of responses.values()) {
@@ -1066,6 +1161,8 @@ async function observeViewport(browser: Browser, pageUrl: string, viewport: View
     return {
       viewport,
       status,
+      finalUrl: page.url(),
+      loadTimedOut: loaded.loadTimedOut,
       blocked: isChallenge(status, seen.images.length, html),
       blockedRequests,
       nextjs: seen.nextjs,
@@ -1358,7 +1455,11 @@ export interface GroupReport {
   hint?: string;
 }
 
-export type PageStatus = "ok" | "blocked" | "robots" | "failed";
+/**
+ * ok: measured. blocked: a challenge page. robots: robots.txt disallows the page. redirected: the page ends on another
+ * site, or on a URL robots.txt disallows, so nothing is measured (finalUrl says where it went). failed: an error.
+ */
+export type PageStatus = "ok" | "blocked" | "robots" | "redirected" | "failed";
 
 /** The `robots` value recorded for a page on a loopback or private host: its owner's own server is not checked. */
 export const ROBOTS_SKIPPED_LOCAL = "skipped (local host)";
@@ -1376,6 +1477,10 @@ export interface PageResult {
   error?: string;
   /** Set when robots.txt was not checked: the page is on a loopback or private host. */
   robots?: string;
+  /** The URL the page ended on, when it differs from `url` (a navigation of its own). */
+  finalUrl?: string;
+  /** True when the page's `load` event did not come within the cap; its figures were taken anyway. */
+  loadTimedOut?: boolean;
   nextjs: boolean;
   perViewport: Record<string, ViewportReport>;
   page?: PageNumbers;
@@ -1568,6 +1673,8 @@ export interface ScanOptions {
   quality: boolean;
   viewports: Viewport[];
   log: (message: string) => void;
+  /** How long a page may take to fire `load` (default LOAD_EVENT_CAP_MS). */
+  loadCapMs?: number;
   /** Host resolver for the connect-time check (tests inject one; production uses the system resolver). */
   resolver?: Resolver;
 }
@@ -1590,7 +1697,7 @@ export async function checkRobots(
 
 async function scanPage(
   browser: Browser,
-  run: { viewports: Viewport[]; aggressive: boolean; quality: boolean; fetcher: Fetcher; deps: QualityDeps },
+  run: { viewports: Viewport[]; aggressive: boolean; quality: boolean; fetcher: Fetcher; deps: QualityDeps; loadCapMs: number },
   pageUrl: string,
   robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
 ): Promise<PageResult> {
@@ -1615,24 +1722,45 @@ async function scanPage(
   if (!robots.allowed) return { ...base, status: "robots" };
   if (robots.skipped !== undefined) base.robots = robots.skipped;
 
+  // A page that ends on another URL is measured only when that URL is on the same registrable domain and robots.txt
+  // allows it; otherwise the page is reported as redirected, with the URL it ended on.
+  const landedOk = async (landing: string): Promise<boolean> => {
+    if (!sameSite(landing, pageUrl)) return false;
+    const landingOrigin = new URL(landing).origin;
+    const landingRobots = await checkRobots(landing, allowPrivate, () => robotsFor(landingOrigin, false));
+    return landingRobots.allowed;
+  };
+
   // One pass per viewport; a challenge stops the page at once, with no retry.
   const guard: RequestGuard | undefined = allowPrivate ? undefined : { isBlocked: (u) => run.fetcher.hostIsBlocked(u) };
   const observations: ViewportObservation[] = [];
+  let finalUrl: string | undefined;
+  let loadTimedOut = false;
   try {
     for (const viewport of run.viewports) {
-      const obs = await observeViewport(browser, pageUrl, viewport, guard);
+      const obs = await observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs);
       if (obs.blocked) {
         return { ...base, status: "blocked", error: `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}` };
+      }
+      if (obs.loadTimedOut) loadTimedOut = true;
+      if (obs.finalUrl !== undefined && new URL(obs.finalUrl).href !== url.href) {
+        if (!(await landedOk(obs.finalUrl))) {
+          return { ...base, status: "redirected", finalUrl: obs.finalUrl, error: `redirected to ${obs.finalUrl}` };
+        }
+        if (finalUrl === undefined) finalUrl = obs.finalUrl;
       }
       observations.push(obs);
     }
   } catch (err) {
     return { ...base, status: "failed", error: messageOf(err) };
   }
+  const described: PageResult = { ...base };
+  if (finalUrl !== undefined) described.finalUrl = finalUrl;
+  if (loadTimedOut) described.loadTimedOut = true;
   return analysePage(
     { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map() },
     observations,
-    base,
+    described,
   );
 }
 
@@ -1646,7 +1774,14 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     await probe.close();
     const fetcher = makeFetcher({ userAgent, resolver: opts.resolver });
     const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd }) };
-    const run = { viewports: opts.viewports, aggressive: opts.aggressive, quality: opts.quality, fetcher, deps };
+    const run = {
+      viewports: opts.viewports,
+      aggressive: opts.aggressive,
+      quality: opts.quality,
+      fetcher,
+      deps,
+      loadCapMs: opts.loadCapMs ?? LOAD_EVENT_CAP_MS,
+    };
 
     const robotsCache = new Map<string, Promise<string | undefined>>();
     const robotsFor = (origin: string, allowPrivate: boolean) => {
@@ -1844,7 +1979,15 @@ export function renderMarkdown(results: PageResult[], aggressive: boolean): stri
 /** One JSON for other tools: each page's URL, status and numbers, in scan order. */
 export interface ScanSummary {
   imgtuneVersion: string;
-  pages: { url: string; host: string; status: PageStatus; error?: string; page?: PageNumbers }[];
+  pages: {
+    url: string;
+    host: string;
+    status: PageStatus;
+    error?: string;
+    finalUrl?: string;
+    loadTimedOut?: boolean;
+    page?: PageNumbers;
+  }[];
 }
 
 export function summaryOf(results: PageResult[]): ScanSummary {
@@ -1855,6 +1998,8 @@ export function summaryOf(results: PageResult[]): ScanSummary {
       host: r.host,
       status: r.status,
       ...(r.error !== undefined ? { error: r.error } : {}),
+      ...(r.finalUrl !== undefined ? { finalUrl: r.finalUrl } : {}),
+      ...(r.loadTimedOut !== undefined ? { loadTimedOut: r.loadTimedOut } : {}),
       ...(r.page !== undefined ? { page: r.page } : {}),
     })),
   };
