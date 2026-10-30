@@ -60,17 +60,24 @@ async function readCapped(res: IncomingMessage, maxBytes: number): Promise<Buffe
   return Buffer.concat(chunks, total);
 }
 
-function requestOnce(url: URL, headers: Record<string, string>, allowPrivate: boolean, resolver: Resolver, signal: AbortSignal): Promise<IncomingMessage> {
+function requestOnce(
+  url: URL,
+  headers: Record<string, string>,
+  allowPrivate: boolean,
+  resolver: Resolver,
+  signal: AbortSignal,
+  connectAddress?: (address: string) => string,
+): Promise<IncomingMessage> {
   const send = url.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
     // agent: false, so no pooled socket skips the connect-time lookup.
-    const req = send(url, { method: "GET", headers, signal, agent: false, lookup: guardedLookup(resolver, allowPrivate) }, resolve);
+    const req = send(url, { method: "GET", headers, signal, agent: false, lookup: guardedLookup(resolver, allowPrivate, connectAddress) }, resolve);
     req.on("error", reject);
     req.end();
   });
 }
 
-export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): Fetcher {
+export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; connectAddress?: (address: string) => string }): Fetcher {
   const resolver = opts.resolver ?? systemResolver;
   const memo = new Map<string, Promise<Buffer | undefined>>();
   let running = 0;
@@ -100,7 +107,14 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
         // An IP literal never reaches the lookup, so it is checked here as well.
         const bare = url.hostname.replace(/^\[|\]$/g, "");
         if (isIP(bare) !== 0 && refusedAddress(bare, allowPrivate)) return undefined;
-        const res = await requestOnce(url, { "User-Agent": opts.userAgent, Accept: IMAGE_ACCEPT }, allowPrivate, resolver, controller.signal);
+        const res = await requestOnce(
+          url,
+          { "User-Agent": opts.userAgent, Accept: IMAGE_ACCEPT },
+          allowPrivate,
+          resolver,
+          controller.signal,
+          opts.connectAddress,
+        );
         const status = res.statusCode ?? 0;
         const location = res.headers.location;
         if (status >= 300 && status < 400 && location) {

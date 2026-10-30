@@ -5,7 +5,8 @@ import type { Browser, Page, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
-import { isLocalTarget, type Resolver } from "./address.js";
+import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
+import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
 import { calibrationOffset } from "./calibrate.js";
@@ -699,6 +700,8 @@ export interface ViewportObservation {
  */
 export interface RequestGuard {
   isBlocked(url: string): Promise<boolean>;
+  /** What the egress proxy checks each destination against. */
+  policy: EgressPolicy;
 }
 
 /** A navigation that destroyed the page's execution context in the middle of a read: the read is taken again. */
@@ -768,21 +771,28 @@ async function observeViewport(
   guard: RequestGuard,
   loadCapMs: number = LOAD_EVENT_CAP_MS,
 ): Promise<ViewportObservation> {
-  const context = await browser.newContext({
-    viewport: { width: viewport.width, height: viewport.height },
-    deviceScaleFactor: viewport.dpr,
-    isMobile: viewport.mobile,
-    hasTouch: viewport.mobile,
-    userAgent: viewport.userAgent,
-    // A service worker could answer requests the route guard never sees, and would change what is measured.
-    serviceWorkers: "block",
+  const responses = new Map<string, ResponseRecord>();
+  const bodyReads: Promise<void>[] = [];
+  let blockedRequests = 0;
+  // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
+  // time. Chromium gives the route handler no route for a redirect hop, so the route guard alone would miss them.
+  const egress = await startEgressProxy(guard.policy, () => {
+    blockedRequests++;
   });
   try {
-    const responses = new Map<string, ResponseRecord>();
-    const bodyReads: Promise<void>[] = [];
-    let blockedRequests = 0;
-    if (guard) {
-      // Every request of the page goes through the guard, so a sub-resource cannot reach a blocked address either.
+    const context = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+      deviceScaleFactor: viewport.dpr,
+      isMobile: viewport.mobile,
+      hasTouch: viewport.mobile,
+      userAgent: viewport.userAgent,
+      // A service worker could answer requests the route guard never sees, and would change what is measured.
+      serviceWorkers: "block",
+      // Loopback is proxied as well, so a request to 127.0.0.1 from a public page is checked like any other.
+      proxy: { server: egress.url, bypass: "<-loopback>" },
+    });
+    try {
+      // The route guard decides the URL of each request and aborts it when refused. The proxy checks what it cannot see.
       await context.route("**/*", async (route) => {
         const url = route.request().url();
         if (url.startsWith("data:") || url.startsWith("blob:")) return route.continue();
@@ -812,51 +822,53 @@ async function observeViewport(
           socket.connectToServer();
         }
       });
-    }
-    context.on("response", (response) => {
-      const contentType = response.headers()["content-type"];
-      const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
-      if (!isImage) return;
-      const record: ResponseRecord = { url: response.url(), contentType, bytes: 0 };
-      responses.set(response.url(), record);
-      bodyReads.push(
-        response.body().then(
-          (body) => {
-            record.bytes = body.length;
-            record.buffer = body;
-          },
-          () => {},
-        ),
-      );
-    });
+      context.on("response", (response) => {
+        const contentType = response.headers()["content-type"];
+        const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
+        if (!isImage) return;
+        const record: ResponseRecord = { url: response.url(), contentType, bytes: 0 };
+        responses.set(response.url(), record);
+        bodyReads.push(
+          response.body().then(
+            (body) => {
+              record.bytes = body.length;
+              record.buffer = body;
+            },
+            () => {},
+          ),
+        );
+      });
 
-    const page = await context.newPage();
-    // Main-frame navigations are counted, so the figures are taken once the page has stopped moving.
-    let navigations = 0;
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) navigations++;
-    });
-    const loaded = await gotoParsed(page, pageUrl, loadCapMs);
-    const docResponse: BrowserResponse | null = loaded.response;
-    const { seen, html } = await settledView(page, () => navigations, loadCapMs);
-    const status = docResponse?.status();
-    await settleWithin(bodyReads, BODY_READ_TIMEOUT_MS);
-    for (const record of responses.values()) {
-      if (record.buffer) record.pixels = await pixelSize(record.buffer);
+      const page = await context.newPage();
+      // Main-frame navigations are counted, so the figures are taken once the page has stopped moving.
+      let navigations = 0;
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) navigations++;
+      });
+      const loaded = await gotoParsed(page, pageUrl, loadCapMs);
+      const docResponse: BrowserResponse | null = loaded.response;
+      const { seen, html } = await settledView(page, () => navigations, loadCapMs);
+      const status = docResponse?.status();
+      await settleWithin(bodyReads, BODY_READ_TIMEOUT_MS);
+      for (const record of responses.values()) {
+        if (record.buffer) record.pixels = await pixelSize(record.buffer);
+      }
+      return {
+        viewport,
+        status,
+        finalUrl: page.url(),
+        loadTimedOut: loaded.loadTimedOut,
+        blocked: isChallenge(status, seen.images.length, html),
+        blockedRequests,
+        nextjs: seen.nextjs,
+        images: seen.images,
+        responses,
+      };
+    } finally {
+      await context.close();
     }
-    return {
-      viewport,
-      status,
-      finalUrl: page.url(),
-      loadTimedOut: loaded.loadTimedOut,
-      blocked: isChallenge(status, seen.images.length, html),
-      blockedRequests,
-      nextjs: seen.nextjs,
-      images: seen.images,
-      responses,
-    };
   } finally {
-    await context.close();
+    await egress.close();
   }
 }
 
@@ -1363,6 +1375,10 @@ export interface ScanOptions {
   loadCapMs?: number;
   /** Host resolver for the connect-time check (tests inject one; production uses the system resolver). */
   resolver?: Resolver;
+  /**
+   * Test seam: the address a checked destination is really connected to (see EgressPolicy). Production leaves it unset.
+   */
+  connectAddress?: (address: string) => string;
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -1383,7 +1399,16 @@ export async function checkRobots(
 
 async function scanPage(
   browser: Browser,
-  run: { viewports: Viewport[]; aggressive: boolean; quality: boolean; fetcher: Fetcher; deps: QualityDeps; loadCapMs: number },
+  run: {
+    viewports: Viewport[];
+    aggressive: boolean;
+    quality: boolean;
+    fetcher: Fetcher;
+    deps: QualityDeps;
+    loadCapMs: number;
+    resolver: Resolver;
+    connectAddress?: (address: string) => string;
+  },
   pageUrl: string,
   robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
 ): Promise<PageResult> {
@@ -1418,7 +1443,8 @@ async function scanPage(
   };
 
   // One pass per viewport; a challenge stops the page at once, with no retry.
-  const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate) };
+  const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
+  const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
   let loadTimedOut = false;
@@ -1458,7 +1484,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const probe = await browser.newContext();
     const userAgent = await (await probe.newPage()).evaluate(() => navigator.userAgent);
     await probe.close();
-    const fetcher = makeFetcher({ userAgent, resolver: opts.resolver });
+    const resolver = opts.resolver ?? systemResolver;
+    const fetcher = makeFetcher({ userAgent, resolver, connectAddress: opts.connectAddress });
     const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd }) };
     const run = {
       viewports: opts.viewports,
@@ -1467,6 +1494,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       fetcher,
       deps,
       loadCapMs: opts.loadCapMs ?? LOAD_EVENT_CAP_MS,
+      resolver,
+      connectAddress: opts.connectAddress,
     };
 
     const robotsCache = new Map<string, Promise<string | undefined>>();
