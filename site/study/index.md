@@ -63,26 +63,37 @@ Developer sites carry few image bytes. The waste sits in image-heavy commerce.
 ## More production sites (anonymous) {#more-sites}
 
 These are {{ survey.count }} real public sites, scanned on {{ scanWhen }} with the same CLI: 2 pages each, 6 viewports, the same rules as the
-six above. The owners were not asked, so the sites stay anonymous. Labels P01 onward are assigned by rank (highest exact + est.
+six above. The owners were not asked, so the sites stay anonymous. Labels P001 onward are assigned by rank (highest exact + est.
 first), not by name or scan order. KB values are rounded to the nearest 10. All of them run Next.js, because that is how
 they were picked, so this is a sample of Next.js sites, not of the web at large.
 
-<p class="survey-summary">
-  Median: <b>{{ survey.summary.medianKbPerView.toLocaleString("en-US") }} KB</b> of images per view. Median exact + est.:
-  <b>{{ survey.summary.medianExactEstPct.toFixed(1) }}%</b>. Sites at 20% or more (exact + est.):
-  <b>{{ survey.summary.shareAtLeast20Pct.toFixed(1) }}%</b>.
-</p>
+**How the sites were picked.** Next.js sites from public directories and showcases. Each was scanned on its homepage and on one
+image-heavy inner page. robots.txt was respected. Sites that block bots were dropped, so the sample leans toward sites without
+bot walls.
+
+<SurveyStats />
+
+<SavingDistribution />
+
+<CategoryBars />
+
+<WeightVsSaving />
+
+<details class="survey-all">
+<summary>All {{ survey.count }} sites</summary>
 
 <table class="study-table">
   <thead>
-    <tr><th>id</th><th>type</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th></tr>
+    <tr><th>id</th><th>category</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th></tr>
   </thead>
   <tbody>
     <tr v-for="r in survey.sites" :key="r.id">
-      <th>{{ r.id }}</th><td>{{ r.segment }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
+      <th>{{ r.id }}</th><td>{{ r.category }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
     </tr>
   </tbody>
 </table>
+
+</details>
 
 Est. is judged as in the method above: a local re-encode or resize, scored with SSIMULACRA2 at a delta of 2.
 
