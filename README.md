@@ -1,9 +1,21 @@
 # imgtune
 
-imgtune answers one question: how much image traffic can your pages stop sending? It finds images served larger
-than the space they fill, at a higher quality than anyone can see, or in an older format, and tells you how to make
-them smaller without making them look worse. Most image tools compress the files you give them; imgtune measures what
-your live page actually sends against the space each image fills.
+Your images waste bytes three ways: served larger than the space they fill, encoded at a quality nobody can see, and
+in an older format, usually all at once. Image tools fix one of these at a time. imgtune measures all three together on
+your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact
+`sizes` and `quality` to change. Your pages send the fewest image bytes that still look the same.
+
+### Why one lever is not enough
+
+- **Compressors** squeeze the file you hand them, but never learn how wide it is shown. A 6,000 px logo in a 150 px
+  slot stays 6,000 px, only better compressed.
+- **Image CDNs and `next/image`** resize on request, but only to the widths your `sizes` attribute asks for. A wrong or
+  missing `sizes` makes every phone fetch a file several times too wide.
+- **Lighthouse** flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate.
+  It tells you something is wrong, not which `sizes` or quality to set.
+- **imgtune** measures size, quality and format together, per image, on the live page at six viewports, accepts a
+  saving only when SSIMULACRA2 says nobody can see it, and in Next.js writes the fix, verifies it against the server
+  and can undo it.
 
 It looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the
 encoder setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per

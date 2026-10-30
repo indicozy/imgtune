@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>imgtune: send fewer image bytes</title>
-<meta name="description" content="How much image traffic can your pages stop sending? imgtune measures what a live page sends against the space each image fills, at six viewports. Open source, MIT.">
+<title>imgtune: size, quality and format in one pass</title>
+<meta name="description" content="Images waste bytes three ways: size, quality and format. imgtune measures all three together on your live page at six viewports and gives the exact fix. Open source, MIT.">
 <link rel="canonical" href="https://indicozy.github.io/imgtune/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -180,8 +180,8 @@
     <span><a href="https://github.com/indicozy/imgtune">GitHub</a></span>
   </div>
 
-  <h1>Send fewer image bytes.</h1>
-  <p class="lede col">How much image traffic can your pages stop sending? Most image tools compress the files you give them; imgtune measures what your live page actually sends against the space each image fills. It loads the page at six viewports, finds every image, and measures how many bytes a smaller size, a lower quality or a newer format would save. In a Next.js project it also gives the exact <code>sizes</code> and <code>quality</code> to change in your code.</p>
+  <h1>Your images waste bytes three ways. imgtune fixes all three.</h1>
+  <p class="lede col">Most images are served too large for the space they fill, encoded at a quality nobody can see, and in an older format, usually all at once. Image tools fix one of these at a time. imgtune measures all three together on your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact <code>sizes</code> and <code>quality</code> to change. The result: your pages send the fewest image bytes that still look the same.</p>
 
   <div class="cmd" role="group" aria-label="Run a scan">
     <code id="scan-cmd">npx imgtune scan https://your-site</code>
@@ -211,6 +211,19 @@
       exact figure comes from the site's own smaller candidate, fetched and measured.</figcaption>
   </figure>
 </header>
+
+<section id="why">
+  <div class="col">
+    <h2>One lever is not enough</h2>
+    <p>An image is as heavy as its pixels, its quality and its format together. Fix one and the other two keep the waste.</p>
+    <ol class="steps">
+      <li><span class="n">1</span><p><strong>Compressors</strong> squeeze the file you hand them, but never learn how wide it is shown. A 6,000&nbsp;px logo in a 150&nbsp;px slot stays 6,000&nbsp;px, only better compressed.</p></li>
+      <li><span class="n">2</span><p><strong>Image CDNs and <code>next/image</code></strong> resize on request, but only to the widths your <code>sizes</code> attribute asks for. Get <code>sizes</code> wrong, or leave it out, and the browser fetches a file several times too wide, on every phone.</p></li>
+      <li><span class="n">3</span><p><strong>Lighthouse</strong> flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate. It tells you something is wrong; it does not tell you which <code>sizes</code> or quality to set.</p></li>
+      <li><span class="n">&rarr;</span><p>Measures <strong>size, quality and format together</strong>, per image, on the live page at six viewports. Every candidate is checked with SSIMULACRA2, so a saving only counts when nobody can see the difference. In Next.js it then writes the fix, verifies it against the server and can undo it.</p></li>
+    </ol>
+  </div>
+</section>
 
 <section id="how">
   <div class="col">
