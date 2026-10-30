@@ -308,7 +308,8 @@ function updateCompare() {
       </p>
       <p class="scan-note">
         On a mid-range phone expect about 9–13 s for a 1200 px photo, and up to about 56 s at 4000 px, with AVIF on (13–19 s at
-        4000 px with the phone-only set). These are proxies measured on a desktop CPU, not a real phone.
+        4000 px with the phone-only set). Measured on two cores of a desktop CPU as a stand-in for a phone, not on a real one; older or
+        budget phones will be slower.
       </p>
       <div class="tablewrap">
         <table>
