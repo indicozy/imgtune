@@ -7,10 +7,11 @@ export interface Sample {
   height: number;
 }
 
+// The first sample is the most photo-like; the gradient is last because it compresses unrealistically well.
 export const SAMPLES: Sample[] = [
-  { id: "gradient", label: "gradient, 2400 x 1600", width: 2400, height: 1600 },
-  { id: "shapes", label: "shapes, 2000 x 1334", width: 2000, height: 1334 },
   { id: "portrait", label: "portrait, 1200 x 1600", width: 1200, height: 1600 },
+  { id: "shapes", label: "shapes, 2000 x 1334", width: 2000, height: 1334 },
+  { id: "gradient", label: "gradient, 2400 x 1600", width: 2400, height: 1600 },
 ];
 
 function paint(id: string, w: number, h: number, ctx: CanvasRenderingContext2D): void {

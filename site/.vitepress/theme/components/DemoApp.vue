@@ -212,11 +212,14 @@ function updateCompare() {
 </script>
 
 <template>
-  <div class="demo">
+  <div class="demo-page">
+    <p class="kicker">demo · runs in this browser · nothing is uploaded</p>
+    <h1 class="scan-h1">Demo.</h1>
     <p class="intro">
-      Drop an image, or try a sample. The file is encoded and scored in this browser, nothing is uploaded, and the numbers are
-      <b>browser estimates</b>. The CLI measures the live page.
+      Drop an image, or try a sample. It is encoded and scored here, and the numbers are <b>browser estimates</b>. The CLI measures
+      the live page.
     </p>
+  <div class="demo">
 
     <div
       class="drop"
@@ -250,8 +253,10 @@ function updateCompare() {
     </div>
 
     <div class="samples" aria-label="Sample images">
-      <span class="scan-note">Samples, made in this page:</span>
-      <button v-for="s in SAMPLES" :key="s.id" type="button" :disabled="running" @click="useSample(s.id)">{{ s.label }}</button>
+      <span class="scan-note">Samples:</span>
+      <button v-for="s in SAMPLES" :key="s.id" type="button" :disabled="running" @click="useSample(s.id)">
+        {{ s.label }}<small>synthetic sample, made in this page</small>
+      </button>
     </div>
 
     <section class="panel">
@@ -355,9 +360,31 @@ function updateCompare() {
       keeps them only while it is open.
     </p>
   </div>
+  </div>
 </template>
 
 <style scoped>
+.demo-page {
+  max-width: 74rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+  color: var(--scan-ink);
+}
+.kicker {
+  font: 500 0.75rem var(--scan-mono);
+  color: var(--scan-accent);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0 0 1rem;
+}
+.scan-h1 {
+  font-family: var(--scan-display);
+  font-weight: 650;
+  font-size: clamp(2.6rem, 1.1rem + 5.6vw, 5.25rem);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  margin: 0 0 1rem;
+}
 .demo {
   display: grid;
   gap: 1rem;
@@ -432,6 +459,13 @@ function updateCompare() {
   border-radius: 3px;
   padding: 0.4rem 0.6rem;
   cursor: pointer;
+}
+.samples button small {
+  display: block;
+  font-weight: 400;
+  font-size: 0.68rem;
+  color: var(--scan-muted);
+  margin-top: 0.15rem;
 }
 .samples button,
 .tabs button {
