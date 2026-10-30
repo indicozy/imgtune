@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>imgtune: find the image bytes your pages don't need</title>
-<meta name="description" content="imgtune scans a live page at six viewports, finds its images, and measures the bytes a smaller size or quality would save. Open source, MIT.">
+<title>imgtune: send fewer image bytes</title>
+<meta name="description" content="How much image traffic can your pages stop sending? imgtune measures what a live page sends against the space each image fills, at six viewports. Open source, MIT.">
 <link rel="canonical" href="https://indicozy.github.io/imgtune/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -180,8 +180,8 @@
     <span><a href="https://github.com/indicozy/imgtune">GitHub</a></span>
   </div>
 
-  <h1>Find the image bytes your pages don't need.</h1>
-  <p class="lede col">imgtune loads a live page at six viewports, finds every image, and measures how many bytes a smaller size or a lower quality would save. In a Next.js project it also gives the exact <code>sizes</code> and <code>quality</code> to change in your code.</p>
+  <h1>Send fewer image bytes.</h1>
+  <p class="lede col">How much image traffic can your pages stop sending? Most image tools compress the files you give them; imgtune measures what your live page actually sends against the space each image fills. It loads the page at six viewports, finds every image, and measures how many bytes a smaller size, a lower quality or a newer format would save. In a Next.js project it also gives the exact <code>sizes</code> and <code>quality</code> to change in your code.</p>
 
   <div class="cmd" role="group" aria-label="Run a scan">
     <code id="scan-cmd">npx imgtune scan https://your-site</code>

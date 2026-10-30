@@ -1,9 +1,13 @@
 # imgtune
 
-imgtune measures the images of a site and tells you how to make them smaller without making them look worse. It
-looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the encoder
-setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per viewport, and
-quality is scored with SSIMULACRA2.
+imgtune answers one question: how much image traffic can your pages stop sending? It finds images served larger
+than the space they fill, at a higher quality than anyone can see, or in an older format, and tells you how to make
+them smaller without making them look worse. Most image tools compress the files you give them; imgtune measures what
+your live page actually sends against the space each image fills.
+
+It looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the
+encoder setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per
+viewport, and quality is scored with SSIMULACRA2.
 
 ## Quick start
 
