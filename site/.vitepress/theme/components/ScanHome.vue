@@ -77,7 +77,7 @@ function copy() {
       </ol>
       <a class="survey-strip" href="/imgtune/study/#more-sites">
         <span class="survey-kicker">survey</span>
-        <span>Across {{ survey.count }} more production sites: median {{ survey.summary.medianKbPerView.toLocaleString("en-US") }} KB of images per view, {{ survey.summary.medianExactEstPct.toFixed(1) }}% could be saved (exact + est.).</span>
+        <span>Across {{ survey.count }} more production sites: the median site sends {{ survey.summary.medianKbPerView.toLocaleString("en-US") }} KB of images per view and could cut {{ survey.summary.medianExactEstPct.toFixed(1) }}% of it (exact + est.).</span>
         <span class="survey-go">See the study &rarr;</span>
       </a>
     </section>

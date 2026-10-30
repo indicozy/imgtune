@@ -60,11 +60,12 @@ Kill criterion: exact only, **2 of 6** above 15%, which is a pass at the bar. Ex
 
 Developer sites carry few image bytes. The waste sits in image-heavy commerce.
 
-## {{ survey.count }} more production sites (anonymous) {#more-sites}
+## More production sites (anonymous) {#more-sites}
 
-These are real public sites, scanned on {{ scanWhen }} with the same CLI: 2 pages each, 6 viewports, the same rules as the
+These are {{ survey.count }} real public sites, scanned on {{ scanWhen }} with the same CLI: 2 pages each, 6 viewports, the same rules as the
 six above. The owners were not asked, so the sites stay anonymous. Labels P01 onward are assigned by rank (highest exact + est.
-first), not by name or scan order. KB values are rounded to the nearest 10.
+first), not by name or scan order. KB values are rounded to the nearest 10. All of them run Next.js, because that is how
+they were picked, so this is a sample of Next.js sites, not of the web at large.
 
 <p class="survey-summary">
   Median: <b>{{ survey.summary.medianKbPerView.toLocaleString("en-US") }} KB</b> of images per view. Median exact + est.:
@@ -74,11 +75,11 @@ first), not by name or scan order. KB values are rounded to the nearest 10.
 
 <table class="study-table">
   <thead>
-    <tr><th>id</th><th>type</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th><th>Next.js</th></tr>
+    <tr><th>id</th><th>type</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th></tr>
   </thead>
   <tbody>
     <tr v-for="r in survey.sites" :key="r.id">
-      <th>{{ r.id }}</th><td>{{ r.segment }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td><td>{{ r.nextjs ? "yes" : "no" }}</td>
+      <th>{{ r.id }}</th><td>{{ r.segment }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
     </tr>
   </tbody>
 </table>
