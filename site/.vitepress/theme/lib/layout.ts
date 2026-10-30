@@ -17,6 +17,9 @@ export const VIEWPORTS: Viewport[] = [
   { name: "desktop-1280", width: 1280, dpr: 1 },
 ];
 
+/** The four phone viewports. On a low-memory device the demo computes only these until the desktop ones are turned on. */
+export const PHONE_VIEWPORTS = ["iphone-se", "iphone-15", "pixel-7", "iphone-15-pro-max"];
+
 export type PresetId = "hero" | "half" | "grid3" | "thumb";
 
 export const PRESETS: { id: PresetId; label: string; note: string }[] = [

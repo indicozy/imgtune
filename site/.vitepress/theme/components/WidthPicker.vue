@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { PRESETS, VIEWPORTS, neededPx, presetWidth, sizesWidth, type PresetId, type WidthRow } from "../lib/layout";
+import { PHONE_VIEWPORTS, PRESETS, VIEWPORTS, neededPx, presetWidth, sizesWidth, type PresetId, type WidthRow } from "../lib/layout";
 
 // Layout presets or a `sizes` value, turned into device pixels at the CLI's six viewports.
 // `fileWidth` (optional) caps the needed pixels at what the file has, as the CLI does.
-const props = defineProps<{ fileWidth?: number }>();
+const props = defineProps<{ fileWidth?: number; phonesOnly?: boolean }>();
 const emit = defineEmits<{
   (e: "update", value: { rows: WidthRow[]; targets: number[]; error: string | null }): void;
 }>();
@@ -35,9 +35,10 @@ const error = computed(() => {
 });
 
 watch(
-  [rows, error],
+  [rows, error, () => props.phonesOnly],
   () => {
-    const targets = [...new Set(rows.value.map((r) => r.needed).filter((n): n is number => n !== null))].sort((a, b) => a - b);
+    const shown = rows.value.filter((r) => !props.phonesOnly || PHONE_VIEWPORTS.includes(r.name));
+    const targets = [...new Set(shown.map((r) => r.needed).filter((n): n is number => n !== null))].sort((a, b) => a - b);
     emit("update", { rows: rows.value, targets, error: error.value });
   },
   { immediate: true },

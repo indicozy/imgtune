@@ -6,6 +6,7 @@ import { takePendingFile } from "../demo/pending";
 import { SAMPLES, makeSample } from "../demo/samples";
 import type { Candidate, FileInfo } from "../demo/types";
 import { MAX_SIDE, PASS_FLOOR } from "../demo/types";
+import { PHONE_VIEWPORTS } from "../lib/layout";
 import type { WidthRow } from "../lib/layout";
 
 // The demo. Everything runs in this browser: the file is read, encoded and scored locally. Numbers are browser
@@ -31,6 +32,11 @@ const candidates = ref<Candidate[]>([]);
 const ranWidths = ref<number[]>([]);
 const ranTotalMs = ref(0);
 const viewportName = ref("desktop");
+// Low-memory guard: a device that reports 4 GB or less gets the four phone viewports until the desktop ones are turned on.
+const lowMemory = ref(false);
+const deviceGb = ref(0);
+const includeDesktop = ref(false);
+const phonesOnly = computed(() => lowMemory.value && !includeDesktop.value);
 const pickedKey = ref("");
 const split = ref(55);
 const compareUrl = ref("");
@@ -70,7 +76,8 @@ function bestAt(width: number): Candidate | undefined {
 const viewportRows = computed(() =>
   rows.value.map((r) => {
     const best = r.needed !== null ? bestAt(r.needed) : undefined;
-    return { ...r, best, ran: r.needed !== null && ranWidths.value.includes(r.needed) };
+    const skipped = phonesOnly.value && !PHONE_VIEWPORTS.includes(r.name);
+    return { ...r, best, skipped, ran: r.needed !== null && ranWidths.value.includes(r.needed) };
   }),
 );
 
@@ -194,6 +201,12 @@ function onPick(e: Event) {
 watch(pickedKey, updateCompare);
 
 onMounted(() => {
+  const dm = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  if (dm !== undefined && dm <= 4) {
+    lowMemory.value = true;
+    deviceGb.value = dm;
+    viewportName.value = "pixel-7";
+  }
   const pending = takePendingFile();
   if (pending) acceptFile(pending);
 });
@@ -262,7 +275,12 @@ function updateCompare() {
     <section class="panel">
       <h2>1. Display width</h2>
       <p class="scan-note">The image's width on the page, at each viewport. The demo encodes at the widths these rows need.</p>
-      <WidthPicker :file-width="bigWidth || undefined" @update="onWidths" />
+      <p v-if="lowMemory" class="scan-note">
+        This device reports {{ deviceGb }} GB of memory or less, so the demo computes the four phone
+        viewports. The desktop rows are skipped until you turn them on below: they are the heaviest steps.
+      </p>
+      <WidthPicker :file-width="bigWidth || undefined" :phones-only="phonesOnly" @update="onWidths" />
+      <label v-if="lowMemory" class="check"><input v-model="includeDesktop" type="checkbox" :disabled="running" /> turn on the desktop viewports (needs more memory)</label>
     </section>
 
     <section class="panel">
@@ -299,6 +317,7 @@ function updateCompare() {
               <td>{{ r.needed ?? "n/a" }}</td>
               <td v-if="r.ran && r.best && r.best.bytes !== null">{{ r.best.label.replace(/ at \d+ px/, "") }}</td>
               <td v-else-if="r.ran">none passes</td>
+              <td v-else-if="r.skipped" class="muted">skipped on this device, turn on above</td>
               <td v-else class="muted">not run</td>
               <td>{{ r.ran && r.best?.bytes ? kb(r.best.bytes) : "-" }}</td>
               <td>{{ r.ran && r.best?.bytes ? saving(r.best.bytes) : "-" }}</td>
