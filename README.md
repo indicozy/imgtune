@@ -1,7 +1,7 @@
-# imgtune
+# ImgTune
 
 Your images waste bytes three ways: served larger than the space they fill, encoded at a quality nobody can see, and
-in an older format, usually all at once. Image tools fix one of these at a time. imgtune measures all three together on
+in an older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on
 your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact
 `sizes` and `quality` to change. Your pages send the fewest image bytes that still look the same.
 
@@ -13,7 +13,7 @@ your live page, at six viewports, against a perceptual quality bar, and in a Nex
   missing `sizes` makes every phone fetch a file several times too wide.
 - **Lighthouse** flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate.
   It tells you something is wrong, not which `sizes` or quality to set.
-- **imgtune** measures size, quality and format together, per image, on the live page at six viewports, accepts a
+- **ImgTune** measures size, quality and format together, per image, on the live page at six viewports, accepts a
   saving only when SSIMULACRA2 says nobody can see it, and in Next.js writes the fix, verifies it against the server
   and can undo it.
 
@@ -75,9 +75,9 @@ desktop at 1x), scrolls it to the end, and records every image.
 
 ## Supported loaders
 
-Loaders are detected from the URL each image renders. `original known?` means imgtune can find the untransformed
+Loaders are detected from the URL each image renders. `original known?` means ImgTune can find the untransformed
 source, which is what quality is measured against. `quality settable?` means the URL carries a quality parameter
-that imgtune can change.
+that ImgTune can change.
 
 | loader | matches | original known? | quality settable? |
 | --- | --- | --- | --- |
@@ -90,21 +90,21 @@ that imgtune can change.
 | imgix (incl. DatoCMS, Prismic) | `*.imgix.net`, `datocms-assets.com`, `images.prismic.io` | yes | yes (`q`) |
 | generic | any other URL | no | only when the URL has `q=` or `quality=` |
 
-Where the original is unknown, imgtune still measures resolution, and reports the count of images it could not score
+Where the original is unknown, ImgTune still measures resolution, and reports the count of images it could not score
 for quality.
 
 ## Safety
 
-- imgtune never commits. `apply` writes the proposed sizes and quality into your files and leaves git to you.
+- ImgTune never commits. `apply` writes the proposed sizes and quality into your files and leaves git to you.
 - Measuring a project adds temporary instrumentation to the source files. A run that is interrupted (for example with
   Ctrl-C) restores the files; if one was killed harder, `npx imgtune restore` undoes what it left behind.
 - Progress is kept in `imgtune.state.json` in the project, so a second `audit` skips usages that were already applied.
   Use `--all` to measure them again.
-- `--url` measures a server you already run; imgtune never starts or stops it.
+- `--url` measures a server you already run; ImgTune never starts or stops it.
 
 ## Demand study (2026-10-28)
 
-Before packaging, imgtune scanned two groups of sites: production sites, which decided whether it was worth building,
+Before packaging, ImgTune scanned two groups of sites: production sites, which decided whether it was worth building,
 and open-source apps, for comparison. The site list was fixed before the first scan. Each run scans every site once:
 2 pages × 6 viewports, SSIMULACRA2 delta 2. Saving is the share of all image bytes per page view, with the page fully
 scrolled, averaged over viewports and then over the two pages. When the tool changed, every site was scanned again
@@ -166,14 +166,14 @@ numbers) and `--fail-over <pct>` (exit 3 above the budget).
 
 ## Use with a coding agent
 
-`skills/imgtune/SKILL.md` teaches a coding agent (Claude Code, or any tool that reads `SKILL.md` skills) to run imgtune
+`skills/imgtune/SKILL.md` teaches a coding agent (Claude Code, or any tool that reads `SKILL.md` skills) to run ImgTune
 safely: scan a live URL, or audit, apply and verify in a Next.js project. It ships in the npm package under `skills/`.
 Copy the `skills/imgtune` folder into your agent's skills directory to use it.
 
 ## Requirements
 
 - Node.js 20 or later.
-- Chromium for Playwright. Install it once with `npx playwright install chromium`. If it is missing, imgtune prints
+- Chromium for Playwright. Install it once with `npx playwright install chromium`. If it is missing, ImgTune prints
   that command and exits with status 2.
 - `audit` and `verify` start your dev server (`next dev`) unless you pass `--url`.
 

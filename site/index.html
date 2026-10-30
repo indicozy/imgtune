@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>imgtune: your images waste your traffic</title>
-<meta name="description" content="Images waste bytes three ways: size, quality and format. imgtune measures all three together on your live page at six viewports and gives the exact fix. Open source, MIT.">
+<title>ImgTune: your images waste your traffic</title>
+<meta name="description" content="Images waste bytes three ways: size, quality and format. ImgTune measures all three together on your live page at six viewports and gives the exact fix. Open source, MIT.">
 <link rel="canonical" href="https://indicozy.github.io/imgtune/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -176,12 +176,12 @@
 
 <header class="hero">
   <div class="brand">
-    <span class="mark">imgtune</span>
+    <span class="mark">ImgTune</span>
     <span><a href="https://github.com/indicozy/imgtune">GitHub</a></span>
   </div>
 
-  <h1>Your images waste your traffic. imgtune fixes that.</h1>
-  <p class="lede col">Most images are served too large for the space they fill, encoded at a quality nobody can see, and in an older format, usually all at once. Image tools fix one of these at a time. imgtune measures all three together on your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact <code>sizes</code> and <code>quality</code> to change. The result: your pages send the fewest image bytes that still look the same.</p>
+  <h1>Your images waste your traffic. ImgTune fixes that.</h1>
+  <p class="lede col">Most images are served too large for the space they fill, encoded at a quality nobody can see, and in an older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact <code>sizes</code> and <code>quality</code> to change. The result: your pages send the fewest image bytes that still look the same.</p>
 
   <div class="cmd" role="group" aria-label="Run a scan">
     <code id="scan-cmd">npx imgtune scan https://your-site</code>
@@ -235,7 +235,7 @@
       <li><span class="n">4</span><p><strong>Est.</strong> savings come from a local re-encode at another quality or format, or a resize of a plain <code>img</code>. Quality is judged with SSIMULACRA2 at a delta of 2 points. Estimates are never presented as measured.</p></li>
       <li><span class="n">5</span><p>An image smaller than its slot is reported as sharpness growth, separately. It contributes no saving, and its growth is never netted against other images.</p></li>
     </ol>
-    <p class="note sub">Pages whose <code>robots.txt</code> disallows them are skipped and recorded as such. Pages behind a bot wall are recorded as blocked and not retried. imgtune uses the default Chromium user agent and no stealth plugins.</p>
+    <p class="note sub">Pages whose <code>robots.txt</code> disallows them are skipped and recorded as such. Pages behind a bot wall are recorded as blocked and not retried. ImgTune uses the default Chromium user agent and no stealth plugins.</p>
   </div>
 </section>
 
@@ -253,7 +253,7 @@
       </div>
       <div>
         <dt>apply</dt>
-        <dd>Write the proposals into your source files. imgtune never commits; git stays yours.<br><code>npx imgtune apply</code></dd>
+        <dd>Write the proposals into your source files. ImgTune never commits; git stays yours.<br><code>npx imgtune apply</code></dd>
       </div>
       <div>
         <dt>verify</dt>
