@@ -3,6 +3,7 @@ import { ref } from "vue";
 import DropTarget from "./DropTarget.vue";
 import ReplayViewer from "./ReplayViewer.vue";
 import WidthPicker from "./WidthPicker.vue";
+import survey from "../../../data/survey.json";
 
 const CMD = "npx imgtune scan https://your-site";
 const copied = ref(false);
@@ -74,6 +75,11 @@ function copy() {
         <li><span class="n">3</span><p><strong>Lighthouse</strong> flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate. It tells you something is wrong; it does not tell you which <code>sizes</code> or quality to set.</p></li>
         <li class="us"><span class="n">&rarr;</span><p>ImgTune measures <strong>size, quality and format together</strong>, per image, on the live page at six viewports. Every candidate is checked with SSIMULACRA2, so a saving only counts when nobody can see the difference. In Next.js it then writes the fix, verifies it against the server and can undo it.</p></li>
       </ol>
+      <a class="survey-strip" href="/imgtune/study/#more-sites">
+        <span class="survey-kicker">survey</span>
+        <span>Across {{ survey.count }} more production sites: median {{ survey.summary.medianKbPerView.toLocaleString("en-US") }} KB of images per view, {{ survey.summary.medianExactEstPct.toFixed(1) }}% could be saved (exact + est.).</span>
+        <span class="survey-go">See the study &rarr;</span>
+      </a>
     </section>
 
     <section id="cta" class="blk cta">
@@ -221,6 +227,34 @@ function copy() {
 }
 .levers li.us p {
   color: var(--scan-ink);
+}
+.survey-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.9rem;
+  max-width: 46rem;
+  border: 1px solid var(--scan-rule);
+  background: var(--scan-panel);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  color: var(--scan-ink);
+  text-decoration: none;
+  font-size: 0.9375rem;
+}
+.survey-strip:hover {
+  border-color: var(--scan-accent);
+}
+.survey-kicker {
+  font: 500 0.75rem var(--scan-mono);
+  color: var(--scan-accent);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.survey-go {
+  color: var(--scan-accent);
+  font-weight: 500;
+  white-space: nowrap;
 }
 .cta-grid {
   display: grid;

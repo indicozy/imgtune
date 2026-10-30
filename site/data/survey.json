@@ -1,0 +1,504 @@
+{
+  "scannedFrom": "2026-10-29",
+  "scannedTo": "2026-10-29",
+  "count": 49,
+  "sites": [
+    {
+      "id": "P01",
+      "segment": "saas",
+      "imageKbPerView": 860,
+      "exactPct": 0,
+      "exactEstPct": 87.5,
+      "fixablePct": 90.5,
+      "savedKbPerView": 750,
+      "nextjs": true
+    },
+    {
+      "id": "P02",
+      "segment": "saas",
+      "imageKbPerView": 4560,
+      "exactPct": 0,
+      "exactEstPct": 85.9,
+      "fixablePct": 92.3,
+      "savedKbPerView": 3940,
+      "nextjs": true
+    },
+    {
+      "id": "P03",
+      "segment": "saas",
+      "imageKbPerView": 5510,
+      "exactPct": 0,
+      "exactEstPct": 83.6,
+      "fixablePct": 88.7,
+      "savedKbPerView": 4900,
+      "nextjs": true
+    },
+    {
+      "id": "P04",
+      "segment": "saas",
+      "imageKbPerView": 1890,
+      "exactPct": 0,
+      "exactEstPct": 81,
+      "fixablePct": 86.6,
+      "savedKbPerView": 1520,
+      "nextjs": true
+    },
+    {
+      "id": "P05",
+      "segment": "saas",
+      "imageKbPerView": 12910,
+      "exactPct": 0,
+      "exactEstPct": 78.2,
+      "fixablePct": 82.5,
+      "savedKbPerView": 10400,
+      "nextjs": true
+    },
+    {
+      "id": "P06",
+      "segment": "shop",
+      "imageKbPerView": 9490,
+      "exactPct": 0,
+      "exactEstPct": 71.9,
+      "fixablePct": 79.9,
+      "savedKbPerView": 6420,
+      "nextjs": true
+    },
+    {
+      "id": "P07",
+      "segment": "other",
+      "imageKbPerView": 3500,
+      "exactPct": 0,
+      "exactEstPct": 67.2,
+      "fixablePct": 72.6,
+      "savedKbPerView": 2390,
+      "nextjs": true
+    },
+    {
+      "id": "P08",
+      "segment": "saas",
+      "imageKbPerView": 8150,
+      "exactPct": 0,
+      "exactEstPct": 66.5,
+      "fixablePct": 72.9,
+      "savedKbPerView": 5230,
+      "nextjs": true
+    },
+    {
+      "id": "P09",
+      "segment": "saas",
+      "imageKbPerView": 4340,
+      "exactPct": 0,
+      "exactEstPct": 56.7,
+      "fixablePct": 73.8,
+      "savedKbPerView": 2170,
+      "nextjs": true
+    },
+    {
+      "id": "P10",
+      "segment": "saas",
+      "imageKbPerView": 6550,
+      "exactPct": 0,
+      "exactEstPct": 54.7,
+      "fixablePct": 69.5,
+      "savedKbPerView": 2700,
+      "nextjs": true
+    },
+    {
+      "id": "P11",
+      "segment": "saas",
+      "imageKbPerView": 700,
+      "exactPct": 1.9,
+      "exactEstPct": 52.9,
+      "fixablePct": 80.7,
+      "savedKbPerView": 350,
+      "nextjs": true
+    },
+    {
+      "id": "P12",
+      "segment": "saas",
+      "imageKbPerView": 800,
+      "exactPct": 0,
+      "exactEstPct": 44.8,
+      "fixablePct": 53.9,
+      "savedKbPerView": 400,
+      "nextjs": true
+    },
+    {
+      "id": "P13",
+      "segment": "saas",
+      "imageKbPerView": 7490,
+      "exactPct": 0,
+      "exactEstPct": 43.3,
+      "fixablePct": 63.5,
+      "savedKbPerView": 2920,
+      "nextjs": true
+    },
+    {
+      "id": "P14",
+      "segment": "saas",
+      "imageKbPerView": 13560,
+      "exactPct": 0,
+      "exactEstPct": 41.5,
+      "fixablePct": 85.6,
+      "savedKbPerView": 7530,
+      "nextjs": true
+    },
+    {
+      "id": "P15",
+      "segment": "saas",
+      "imageKbPerView": 1330,
+      "exactPct": 0.1,
+      "exactEstPct": 40.7,
+      "fixablePct": 66.8,
+      "savedKbPerView": 550,
+      "nextjs": true
+    },
+    {
+      "id": "P16",
+      "segment": "saas",
+      "imageKbPerView": 90,
+      "exactPct": 0,
+      "exactEstPct": 40.6,
+      "fixablePct": 50.5,
+      "savedKbPerView": 40,
+      "nextjs": true
+    },
+    {
+      "id": "P17",
+      "segment": "saas",
+      "imageKbPerView": 18420,
+      "exactPct": 0,
+      "exactEstPct": 37.9,
+      "fixablePct": 70.4,
+      "savedKbPerView": 10530,
+      "nextjs": true
+    },
+    {
+      "id": "P18",
+      "segment": "shop",
+      "imageKbPerView": 12320,
+      "exactPct": 0,
+      "exactEstPct": 36.4,
+      "fixablePct": 92.6,
+      "savedKbPerView": 4560,
+      "nextjs": true
+    },
+    {
+      "id": "P19",
+      "segment": "saas",
+      "imageKbPerView": 11540,
+      "exactPct": 0.1,
+      "exactEstPct": 36.1,
+      "fixablePct": 66.1,
+      "savedKbPerView": 4540,
+      "nextjs": true
+    },
+    {
+      "id": "P20",
+      "segment": "saas",
+      "imageKbPerView": 1090,
+      "exactPct": 3.3,
+      "exactEstPct": 34.3,
+      "fixablePct": 90.2,
+      "savedKbPerView": 360,
+      "nextjs": true
+    },
+    {
+      "id": "P21",
+      "segment": "saas",
+      "imageKbPerView": 420,
+      "exactPct": 0,
+      "exactEstPct": 29.6,
+      "fixablePct": 68.2,
+      "savedKbPerView": 130,
+      "nextjs": true
+    },
+    {
+      "id": "P22",
+      "segment": "other",
+      "imageKbPerView": 420,
+      "exactPct": 8.7,
+      "exactEstPct": 25,
+      "fixablePct": 32.4,
+      "savedKbPerView": 130,
+      "nextjs": true
+    },
+    {
+      "id": "P23",
+      "segment": "other",
+      "imageKbPerView": 830,
+      "exactPct": 0.2,
+      "exactEstPct": 21.9,
+      "fixablePct": 36.8,
+      "savedKbPerView": 120,
+      "nextjs": true
+    },
+    {
+      "id": "P24",
+      "segment": "saas",
+      "imageKbPerView": 380,
+      "exactPct": 2.6,
+      "exactEstPct": 21,
+      "fixablePct": 52.8,
+      "savedKbPerView": 80,
+      "nextjs": true
+    },
+    {
+      "id": "P25",
+      "segment": "saas",
+      "imageKbPerView": 260,
+      "exactPct": 3.2,
+      "exactEstPct": 20.4,
+      "fixablePct": 30.8,
+      "savedKbPerView": 60,
+      "nextjs": true
+    },
+    {
+      "id": "P26",
+      "segment": "saas",
+      "imageKbPerView": 870,
+      "exactPct": 0,
+      "exactEstPct": 19.8,
+      "fixablePct": 40.4,
+      "savedKbPerView": 160,
+      "nextjs": true
+    },
+    {
+      "id": "P27",
+      "segment": "saas",
+      "imageKbPerView": 2120,
+      "exactPct": 0,
+      "exactEstPct": 17.9,
+      "fixablePct": 77.9,
+      "savedKbPerView": 360,
+      "nextjs": true
+    },
+    {
+      "id": "P28",
+      "segment": "saas",
+      "imageKbPerView": 280,
+      "exactPct": 0.4,
+      "exactEstPct": 16.7,
+      "fixablePct": 64.4,
+      "savedKbPerView": 50,
+      "nextjs": true
+    },
+    {
+      "id": "P29",
+      "segment": "saas",
+      "imageKbPerView": 380,
+      "exactPct": 0,
+      "exactEstPct": 16.4,
+      "fixablePct": 35,
+      "savedKbPerView": 50,
+      "nextjs": true
+    },
+    {
+      "id": "P30",
+      "segment": "saas",
+      "imageKbPerView": 1150,
+      "exactPct": 5.2,
+      "exactEstPct": 15.7,
+      "fixablePct": 56.4,
+      "savedKbPerView": 200,
+      "nextjs": true
+    },
+    {
+      "id": "P31",
+      "segment": "saas",
+      "imageKbPerView": 1000,
+      "exactPct": 0,
+      "exactEstPct": 12.4,
+      "fixablePct": 35.4,
+      "savedKbPerView": 160,
+      "nextjs": true
+    },
+    {
+      "id": "P32",
+      "segment": "agency",
+      "imageKbPerView": 680,
+      "exactPct": 0,
+      "exactEstPct": 12.2,
+      "fixablePct": 35.1,
+      "savedKbPerView": 80,
+      "nextjs": true
+    },
+    {
+      "id": "P33",
+      "segment": "saas",
+      "imageKbPerView": 8320,
+      "exactPct": 0,
+      "exactEstPct": 11.8,
+      "fixablePct": 64.5,
+      "savedKbPerView": 1240,
+      "nextjs": true
+    },
+    {
+      "id": "P34",
+      "segment": "saas",
+      "imageKbPerView": 540,
+      "exactPct": 8.3,
+      "exactEstPct": 10.8,
+      "fixablePct": 23.5,
+      "savedKbPerView": 70,
+      "nextjs": true
+    },
+    {
+      "id": "P35",
+      "segment": "saas",
+      "imageKbPerView": 770,
+      "exactPct": 0,
+      "exactEstPct": 9.4,
+      "fixablePct": 21.3,
+      "savedKbPerView": 70,
+      "nextjs": true
+    },
+    {
+      "id": "P36",
+      "segment": "saas",
+      "imageKbPerView": 1490,
+      "exactPct": 2.7,
+      "exactEstPct": 8.6,
+      "fixablePct": 49.6,
+      "savedKbPerView": 160,
+      "nextjs": true
+    },
+    {
+      "id": "P37",
+      "segment": "saas",
+      "imageKbPerView": 1110,
+      "exactPct": 4.6,
+      "exactEstPct": 8.4,
+      "fixablePct": 30.9,
+      "savedKbPerView": 60,
+      "nextjs": true
+    },
+    {
+      "id": "P38",
+      "segment": "saas",
+      "imageKbPerView": 4960,
+      "exactPct": 1.4,
+      "exactEstPct": 8.1,
+      "fixablePct": 24.3,
+      "savedKbPerView": 390,
+      "nextjs": true
+    },
+    {
+      "id": "P39",
+      "segment": "saas",
+      "imageKbPerView": 880,
+      "exactPct": 4.5,
+      "exactEstPct": 8,
+      "fixablePct": 27.6,
+      "savedKbPerView": 70,
+      "nextjs": true
+    },
+    {
+      "id": "P40",
+      "segment": "other",
+      "imageKbPerView": 3640,
+      "exactPct": 7.2,
+      "exactEstPct": 7.5,
+      "fixablePct": 38.4,
+      "savedKbPerView": 280,
+      "nextjs": true
+    },
+    {
+      "id": "P41",
+      "segment": "agency",
+      "imageKbPerView": 1000,
+      "exactPct": 5.6,
+      "exactEstPct": 7.3,
+      "fixablePct": 58.6,
+      "savedKbPerView": 60,
+      "nextjs": true
+    },
+    {
+      "id": "P42",
+      "segment": "saas",
+      "imageKbPerView": 2770,
+      "exactPct": 0,
+      "exactEstPct": 6.6,
+      "fixablePct": 72.5,
+      "savedKbPerView": 190,
+      "nextjs": true
+    },
+    {
+      "id": "P43",
+      "segment": "saas",
+      "imageKbPerView": 2440,
+      "exactPct": 0,
+      "exactEstPct": 5.7,
+      "fixablePct": 72.4,
+      "savedKbPerView": 150,
+      "nextjs": true
+    },
+    {
+      "id": "P44",
+      "segment": "shop",
+      "imageKbPerView": 1230,
+      "exactPct": 0,
+      "exactEstPct": 2.6,
+      "fixablePct": 11.1,
+      "savedKbPerView": 20,
+      "nextjs": true
+    },
+    {
+      "id": "P45",
+      "segment": "other",
+      "imageKbPerView": 1400,
+      "exactPct": 0,
+      "exactEstPct": 2.5,
+      "fixablePct": 2.6,
+      "savedKbPerView": 10,
+      "nextjs": true
+    },
+    {
+      "id": "P46",
+      "segment": "saas",
+      "imageKbPerView": 1500,
+      "exactPct": 1.2,
+      "exactEstPct": 1.8,
+      "fixablePct": 23.7,
+      "savedKbPerView": 40,
+      "nextjs": true
+    },
+    {
+      "id": "P47",
+      "segment": "saas",
+      "imageKbPerView": 1220,
+      "exactPct": 0,
+      "exactEstPct": 1.2,
+      "fixablePct": 35.2,
+      "savedKbPerView": 30,
+      "nextjs": true
+    },
+    {
+      "id": "P48",
+      "segment": "saas",
+      "imageKbPerView": 230,
+      "exactPct": 0.1,
+      "exactEstPct": 0.2,
+      "fixablePct": 7.4,
+      "savedKbPerView": 0,
+      "nextjs": true
+    },
+    {
+      "id": "P49",
+      "segment": "saas",
+      "imageKbPerView": 3450,
+      "exactPct": 0,
+      "exactEstPct": 0,
+      "fixablePct": 0,
+      "savedKbPerView": 0,
+      "nextjs": true
+    }
+  ],
+  "summary": {
+    "medianKbPerView": 1330,
+    "medianExactEstPct": 20.4,
+    "medianFixablePct": 58.6,
+    "shareAtLeast20Pct": 51,
+    "totalSavedKbPerView": 76570
+  }
+}
