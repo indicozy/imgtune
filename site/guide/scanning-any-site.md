@@ -37,6 +37,20 @@ The six viewport names are `iphone-se`, `iphone-15`, `pixel-7`, `iphone-15-pro-m
 
 Scan only the sites you own, and scan each one once unless you need more.
 
+## Security
+
+- **Private addresses.** `scan` refuses loopback, private and link-local addresses, and names that resolve to them, unless
+  the URL you give is itself local (`localhost`, or a loopback or private IP address). Then loopback and private addresses
+  are allowed. Cloud metadata and link-local addresses (`169.254.0.0/16`, `fd00:ec2::/64`, `100.100.100.200`) are refused
+  even for a local URL.
+- **Every hop.** Every request the browser makes is checked before it connects: each redirect, each image, script and
+  other sub-resource, and each tunnel. The check is made on the address the connection goes to, so a DNS answer that
+  changes later does not help. A refused request is dropped and counted as blocked.
+- **Sitemaps.** `audit` and `verify` read sitemaps, `scan` does not. A child sitemap is read only when it is on the same
+  registrable domain as the sitemap that lists it, and every redirect of it stays on that domain. Each file is capped at
+  50 MB, at most two levels of index are followed, at most 50 children are read, and each request has a 30 second
+  timeout. Compressed `.xml.gz` sitemaps are not read.
+
 ## CPU use
 
 `scan` keeps Chrome on the CPUs it was started on, so you can keep it off the cores you need: `taskset -c 8-19 npx imgtune scan …` on Linux.

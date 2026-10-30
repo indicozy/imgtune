@@ -76,6 +76,9 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Besides the page itself, scan fetches the page's own srcset candidates and, for quality estimates, the original of a
   sampled image (derived from the loader URL), each at most once per scan. It never requests new transformations from
   the CDN.
+- Security: `scan` refuses private and loopback addresses unless the URL you give is itself local, checks every redirect
+  hop and sub-resource at connection time, and `audit`/`verify` read sitemaps only from the same site, with size and depth
+  limits. See the [scanning guide](site/guide/scanning-any-site.md#security).
 
 ## Supported loaders
 
