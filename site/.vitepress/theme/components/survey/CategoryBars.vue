@@ -95,9 +95,9 @@ const takeaway = computed(() => {
   if (!top) return "";
   const all =
     metric.value === "saving"
-      ? `${fmtPct(survey.summary.medianExactEstPct)} across all ${survey.count} sites`
-      : `${fmtInt(survey.summary.medianKbPerView)} KB across all ${survey.count} sites`;
-  return `${top.name} ranks highest at ${fmtVal(value(top))} (n=${top.count}). The median over ${all}.`;
+      ? fmtPct(survey.summary.medianExactEstPct)
+      : `${fmtInt(survey.summary.medianKbPerView)} KB`;
+  return `${top.name} ranks highest at ${fmtVal(value(top))} (n=${top.count}). The median across all ${survey.count} sites is ${all}.`;
 });
 
 const tip = computed(() => {
