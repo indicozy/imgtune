@@ -17,6 +17,11 @@ import SurveyStats from "../.vitepress/theme/components/survey/SurveyStats.vue";
 import SavingDistribution from "../.vitepress/theme/components/survey/SavingDistribution.vue";
 import CategoryBars from "../.vitepress/theme/components/survey/CategoryBars.vue";
 import WeightVsSaving from "../.vitepress/theme/components/survey/WeightVsSaving.vue";
+import TechBars from "../.vitepress/theme/components/survey/TechBars.vue";
+
+const stacks = survey.summary.byTech.filter((t) => t.tech !== "Other / unknown");
+const unknownCount = survey.summary.byTech.find((t) => t.tech === "Other / unknown")?.count ?? 0;
+const stackNames = stacks.map((t) => t.tech).join(", ");
 
 const scanWhen =
   survey.scannedFrom === survey.scannedTo ? survey.scannedFrom : `${survey.scannedFrom} to ${survey.scannedTo}`;
@@ -68,12 +73,12 @@ Developer sites carry few image bytes. The waste sits in image-heavy commerce.
 
 These are {{ survey.count }} real public sites, scanned on {{ scanWhen }} with the same CLI: 2 pages each, 6 viewports, the same rules as the
 six above. The owners were not asked, so the sites stay anonymous. Labels P001 onward are assigned by rank (highest exact + est.
-first), not by name or scan order. KB values are rounded to the nearest 10. All of them run Next.js, because that is how
-they were picked, so this is a sample of Next.js sites, not of the web at large.
+first), not by name or scan order. KB values are rounded to the nearest 10. The sites are a mix of stacks: {{ stacks.length }} named ones ({{ stackNames }}),
+and {{ unknownCount }} that no named stack covers.
 
-**How the sites were picked.** Next.js sites from public directories and showcases. Each was scanned on its homepage and on one
-image-heavy inner page. robots.txt was respected. Sites that block bots were dropped, so the sample leans toward sites without
-bot walls.
+**How the sites were picked.** Public directories, showcases and company lists, any stack. Each was scanned on its homepage and
+on one image-heavy inner page. robots.txt was respected. Sites that block bots were dropped, so the sample leans toward sites
+without bot walls. The scan measures the live page in a browser, so it works on any site, whatever built it.
 
 <SurveyStats />
 
@@ -83,16 +88,18 @@ bot walls.
 
 <WeightVsSaving />
 
+<TechBars />
+
 <details class="survey-all">
 <summary>All {{ survey.count }} sites</summary>
 
 <table class="study-table">
   <thead>
-    <tr><th>id</th><th>category</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th></tr>
+    <tr><th>id</th><th>category</th><th>stack</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th></tr>
   </thead>
   <tbody>
     <tr v-for="r in survey.sites" :key="r.id">
-      <th>{{ r.id }}</th><td>{{ r.category }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
+      <th>{{ r.id }}</th><td>{{ r.category }}</td><td>{{ r.tech }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
     </tr>
   </tbody>
 </table>

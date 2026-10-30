@@ -46,8 +46,9 @@ const xTicks = computed(() => {
 });
 const yTicks = [0, 20, 40, 60, 80, 100];
 
-// Category filter. Chips follow the data's count order; "All" is the default.
+// Two filter rows: category and tech stack. A site is highlighted when it matches every active filter.
 const selected = ref<string | null>(null);
+const selectedTech = ref<string | null>(null);
 const chips = computed(() => [
   { key: null as string | null, label: "All sites", n: survey.count },
   ...survey.categories.map((c) => ({
@@ -56,7 +57,13 @@ const chips = computed(() => [
     n: survey.byCategory.find((b) => b.category === c)?.count ?? 0,
   })),
 ]);
-const isSel = (s: SurveySite) => selected.value === null || s.category === selected.value;
+const techChips = computed(() => [
+  { key: null as string | null, label: "All stacks", n: survey.count },
+  ...survey.summary.byTech.map((t) => ({ key: t.tech as string | null, label: t.tech, n: t.count })),
+]);
+const filtering = computed(() => selected.value !== null || selectedTech.value !== null);
+const isSel = (s: SurveySite) =>
+  (selected.value === null || s.category === selected.value) && (selectedTech.value === null || s.tech === selectedTech.value);
 
 const selStats = computed(() => {
   const subset = sites.filter(isSel);
@@ -66,6 +73,9 @@ const selStats = computed(() => {
     kb: median(subset.map((s) => s.imageKbPerView)),
   };
 });
+const selDescription = computed(() =>
+  [selected.value, selectedTech.value].filter((x): x is string => x !== null).join(" · "),
+);
 
 const heavy = computed(() => sites.filter((s) => s.imageKbPerView >= HEAVY_KB));
 const light = computed(() => sites.filter((s) => s.imageKbPerView < HEAVY_KB));
@@ -103,26 +113,43 @@ const label = (s: SurveySite) =>
       <div class="survey-title" role="heading" aria-level="3">Image weight against saving</div>
       <p class="survey-takeaway">{{ takeaway }}</p>
     </div>
-    <div class="chips" role="group" aria-label="Filter sites by category">
-      <button
-        v-for="c in chips"
-        :key="c.label"
-        type="button"
-        class="chip"
-        :aria-pressed="selected === c.key"
-        :class="{ on: selected === c.key }"
-        @click="selected = c.key"
-      >
-        {{ c.label }} <span class="chip-n">{{ c.n }}</span>
-      </button>
+    <div class="chip-rows">
+      <div class="chips" role="group" aria-label="Filter sites by category">
+        <span class="chip-label">Category</span>
+        <button
+          v-for="c in chips"
+          :key="c.label"
+          type="button"
+          class="chip"
+          :aria-pressed="selected === c.key"
+          :class="{ on: selected === c.key }"
+          @click="selected = c.key"
+        >
+          {{ c.label }} <span class="chip-n">{{ c.n }}</span>
+        </button>
+      </div>
+      <div class="chips" role="group" aria-label="Filter sites by tech stack">
+        <span class="chip-label">Stack</span>
+        <button
+          v-for="t in techChips"
+          :key="t.label"
+          type="button"
+          class="chip"
+          :aria-pressed="selectedTech === t.key"
+          :class="{ on: selectedTech === t.key }"
+          @click="selectedTech = t.key"
+        >
+          {{ t.label }} <span class="chip-n">{{ t.n }}</span>
+        </button>
+      </div>
     </div>
     <p class="sel-line" aria-live="polite">
-      <template v-if="selected">
-        {{ selected }}: n={{ selStats.n }}, median saving {{ fmtPct(selStats.med) }}, median {{ fmtInt(selStats.kb) }} KB per
+      <template v-if="filtering">
+        {{ selDescription }}: n={{ selStats.n }}, median saving {{ fmtPct(selStats.med) }}, median {{ fmtInt(selStats.kb) }} KB per
         view.
         <span v-if="selStats.n < SMALL_N" class="small">small sample</span>
       </template>
-      <template v-else>All {{ survey.count }} sites. Pick a category to highlight it.</template>
+      <template v-else>All {{ survey.count }} sites. Pick a category or a stack to highlight it.</template>
     </p>
     <div ref="root" class="survey-chart">
       <svg
@@ -161,7 +188,7 @@ const label = (s: SurveySite) =>
           :key="s.id"
           role="img"
           class="dot"
-          :class="{ dim: !isSel(s), hi: selected !== null && isSel(s), focus: roving.focused.value === i }"
+          :class="{ dim: !isSel(s), hi: filtering && isSel(s), focus: roving.focused.value === i }"
           :tabindex="roving.current.value === i ? 0 : -1"
           :aria-label="label(s)"
           :ref="roving.setNode(i)"
@@ -175,7 +202,7 @@ const label = (s: SurveySite) =>
           <circle
             :cx="xOf(s.imageKbPerView)"
             :cy="yOf(s.exactEstPct)"
-            :r="roving.shown.value === i ? 6 : isSel(s) && selected !== null ? 5.5 : 4.5"
+            :r="roving.shown.value === i ? 6 : isSel(s) && filtering ? 5.5 : 4.5"
             class="mark"
           />
           <circle
@@ -198,16 +225,28 @@ const label = (s: SurveySite) =>
     </div>
     <figcaption :id="`${id}-desc`" class="survey-caption">
       One dot per site: image KB per view on a log scale against exact + est. saving. Selecting a category highlights its
-      sites in the accent color and grays the others.
+      sites in the accent color and grays the others. The stack row works the same way and combines with the category.
     </figcaption>
   </figure>
 </template>
 
 <style scoped>
+.chip-rows {
+  display: grid;
+  gap: 0.5rem;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.4rem;
+}
+.chip-label {
+  font: 600 0.6875rem var(--scan-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--scan-muted);
+  min-width: 4.5rem;
 }
 .chip {
   font: 500 0.8125rem var(--scan-sans);

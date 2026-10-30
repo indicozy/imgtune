@@ -3,11 +3,19 @@ import data from "../../../../data/survey.json";
 export interface SurveySite {
   id: string;
   category: string;
+  tech: string;
   imageKbPerView: number;
   exactPct: number;
   exactEstPct: number;
   fixablePct: number;
   savedKbPerView: number;
+}
+
+export interface SurveyTech {
+  tech: string;
+  count: number;
+  medianKbPerView: number;
+  medianExactEstPct: number;
 }
 
 export interface SurveyCategory {
@@ -33,6 +41,7 @@ export interface Survey {
     totalSavedKbPerView: number;
     p25ExactEstPct: number;
     p75ExactEstPct: number;
+    byTech: SurveyTech[];
   };
   byCategory: SurveyCategory[];
 }
@@ -43,6 +52,8 @@ export const survey = data as unknown as Survey;
 export const SMALL_N = 3;
 /** The saving threshold the study names. */
 export const THRESHOLD_PCT = 20;
+/** Tech label for sites no named stack covers. The data folds small stacks into it. */
+export const UNKNOWN_TECH = "Other / unknown";
 /** Weight split used in the takeaway on the scatter (image KB per view). */
 export const HEAVY_KB = 1000;
 

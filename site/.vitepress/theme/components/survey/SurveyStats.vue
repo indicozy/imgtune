@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { survey, median, fmtInt, fmtPct, scanWhen } from "./shared";
+import { survey, median, fmtInt, fmtPct, scanWhen, UNKNOWN_TECH } from "./shared";
 
 // Tile keys; `tiles` picks a subset (the homepage shows three).
 type TileKey = "sites" | "medianKb" | "medianSaving" | "share20" | "totalSaved";
@@ -14,10 +14,11 @@ const medianExact = median(survey.sites.map((x) => x.exactPct));
 const totalKb = s.totalSavedKbPerView;
 const totalValue = totalKb >= 10000 ? (totalKb / 1000).toFixed(1) : fmtInt(totalKb);
 const totalUnit = totalKb >= 10000 ? "MB" : "KB";
+const namedStacks = s.byTech ? survey.summary.byTech.filter((t) => t.tech !== UNKNOWN_TECH).length : 0;
 const countAt20 = survey.sites.filter((x) => x.exactEstPct >= 20).length;
 
 const all = computed(() => [
-  { key: "sites" as TileKey, value: fmtInt(survey.count), unit: "", label: "sites scanned", sub: `Next.js, ${scanWhen}` },
+  { key: "sites" as TileKey, value: fmtInt(survey.count), unit: "", label: "sites scanned", sub: `${namedStacks} named stacks, ${scanWhen}` },
   { key: "medianKb" as TileKey, value: fmtInt(s.medianKbPerView), unit: "KB", label: "median image weight per view", sub: "" },
   {
     key: "medianSaving" as TileKey,

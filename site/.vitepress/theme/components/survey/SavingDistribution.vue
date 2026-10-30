@@ -65,7 +65,7 @@ const tip = computed(() => {
   return {
     x: cxOf(d.bin),
     y: cyOf(d.row),
-    title: `${s.id} · ${s.category}`,
+    title: `${s.id} · ${s.category} · ${s.tech}`,
     rows: [
       { label: "image KB / view", value: fmtInt(s.imageKbPerView) },
       { label: "exact", value: fmtPct(s.exactPct) },
@@ -76,7 +76,7 @@ const tip = computed(() => {
   };
 });
 const label = (s: SurveySite) =>
-  `${s.id}, ${s.category}, ${fmtInt(s.imageKbPerView)} KB per view, exact ${fmtPct(s.exactPct)}, exact plus est. ${fmtPct(s.exactEstPct)}, fixable ${fmtPct(s.fixablePct)}`;
+  `${s.id}, ${s.category}, stack ${s.tech}, ${fmtInt(s.imageKbPerView)} KB per view, exact ${fmtPct(s.exactPct)}, exact plus est. ${fmtPct(s.exactEstPct)}, fixable ${fmtPct(s.fixablePct)}`;
 </script>
 
 <template>

@@ -75,12 +75,12 @@ function copy() {
         <li><span class="n">1</span><p><strong>Compressors</strong> squeeze the file you hand them, but never learn how wide it is shown. A 6,000&nbsp;px logo in a 150&nbsp;px slot stays 6,000&nbsp;px, only better compressed.</p></li>
         <li><span class="n">2</span><p><strong>Image CDNs and <code>next/image</code></strong> resize on request, but only to the widths your <code>sizes</code> attribute asks for. Get <code>sizes</code> wrong, or leave it out, and the browser fetches a file several times too wide, on every phone.</p></li>
         <li><span class="n">3</span><p><strong>Lighthouse</strong> flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate. It tells you something is wrong; it does not tell you which <code>sizes</code> or quality to set.</p></li>
-        <li class="us"><span class="n">&rarr;</span><p>ImgTune measures <strong>size, quality and format together</strong>, per image, on the live page at six viewports. Every candidate is checked with SSIMULACRA2, so a saving only counts when nobody can see the difference. In Next.js it then writes the fix, verifies it against the server and can undo it.</p></li>
+        <li class="us"><span class="n">&rarr;</span><p>ImgTune measures <strong>size, quality and format together</strong>, per image, on the live page at six viewports. Every candidate is checked with SSIMULACRA2, so a saving only counts when nobody can see the difference. Scanning works on any site. The audit, apply, verify and restore flow is Next.js only: there it writes the fix, verifies it against the server and can undo it.</p></li>
       </ol>
       <div class="survey-home">
         <p class="survey-line">
           <span class="survey-kicker">survey</span>
-          <span>{{ survey.count }} production sites, all Next.js, anonymous. The median site could cut its image bytes by {{ survey.summary.medianExactEstPct.toFixed(1) }}%.</span>
+          <span>{{ survey.count }} production sites on many stacks, anonymous. The median site could cut its image bytes by {{ survey.summary.medianExactEstPct.toFixed(1) }}%.</span>
         </p>
         <SurveyStats :tiles="['medianKb', 'medianSaving', 'share20']" />
         <SavingDistribution compact />
