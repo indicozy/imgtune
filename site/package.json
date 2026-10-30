@@ -1,0 +1,29 @@
+{
+  "name": "imgtune-site",
+  "private": true,
+  "description": "ImgTune website: VitePress homepage, in-browser demo and docs",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.8.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "node scripts/build-replay-data.mjs --check && vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "@jsquash/avif": "2.1.1",
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/resize": "2.1.1",
+    "@jsquash/webp": "1.5.0",
+    "vitepress": "1.6.4",
+    "wasm-feature-detect": "1.9.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

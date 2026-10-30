@@ -1,0 +1,106 @@
+{
+  "version": "v4",
+  "tag": "study-v4-2026-10-28",
+  "production": [
+    {
+      "id": "A1",
+      "kb": 3250,
+      "exactPct": 0,
+      "exactEstPct": 33.2,
+      "fixablePct": 50.4
+    },
+    {
+      "id": "A2",
+      "kb": 1263,
+      "exactPct": 5.7,
+      "exactEstPct": 53.1,
+      "fixablePct": 64.8
+    },
+    {
+      "id": "A3",
+      "kb": 3355,
+      "exactPct": 13.1,
+      "exactEstPct": 38.2,
+      "fixablePct": 50.1
+    },
+    {
+      "id": "A4",
+      "kb": 9254,
+      "exactPct": 26.8,
+      "exactEstPct": 35.9,
+      "fixablePct": 62
+    },
+    {
+      "id": "A5",
+      "kb": 7714,
+      "exactPct": 12.7,
+      "exactEstPct": 16.5,
+      "fixablePct": 21.9
+    },
+    {
+      "id": "A6",
+      "kb": 9078,
+      "exactPct": 20.7,
+      "exactEstPct": 27.7,
+      "fixablePct": 43.9
+    }
+  ],
+  "openSource": [
+    {
+      "site": "tailwindcss.com",
+      "kb": 4508,
+      "exactPct": 0,
+      "exactEstPct": 4.2,
+      "fixablePct": 9.6
+    },
+    {
+      "site": "ui.shadcn.com",
+      "kb": 238,
+      "exactPct": 0,
+      "exactEstPct": 33.7,
+      "fixablePct": 42
+    },
+    {
+      "site": "supabase.com",
+      "kb": 671,
+      "exactPct": 1.9,
+      "exactEstPct": 20.8,
+      "fixablePct": 48
+    },
+    {
+      "site": "nextjs.org",
+      "kb": 162,
+      "exactPct": 9.1,
+      "exactEstPct": 19.2,
+      "fixablePct": 21.4
+    },
+    {
+      "site": "turborepo.com",
+      "kb": 77,
+      "exactPct": 12,
+      "exactEstPct": 21.4,
+      "fixablePct": 21.4
+    },
+    {
+      "site": "langfuse.com",
+      "kb": 3149,
+      "exactPct": 0.2,
+      "exactEstPct": 1.8,
+      "fixablePct": 21.7
+    },
+    {
+      "site": "docs.sentry.io",
+      "kb": 85,
+      "exactPct": 0,
+      "exactEstPct": 0,
+      "fixablePct": 0
+    },
+    {
+      "site": "www.openstatus.dev",
+      "kb": 152,
+      "exactPct": 0,
+      "exactEstPct": 4.2,
+      "fixablePct": 31.7
+    }
+  ]
+}

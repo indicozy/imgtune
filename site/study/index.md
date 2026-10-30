@@ -1,0 +1,73 @@
+---
+title: Study
+description: "The demand study behind ImgTune: which sites were scanned, how savings are counted, and what the numbers do and do not show."
+outline: [2, 3]
+---
+
+# Study: results and method
+
+ImgTune was checked against real sites before it was packaged. Six production sites decided whether it was worth building;
+eight open-source apps were scanned for comparison and do not decide. The site list was fixed before the first scan and
+kept private, because it names the production sites. Here they are anonymous: A1 to A6.
+
+<script setup>
+import study from "../data/study.json";
+</script>
+
+## Method
+
+- Every site is scanned once with the same tool version: 2 pages, 6 viewports (four phones, a 1440 px desktop at 2x and a
+  1280 px desktop at 1x), SSIMULACRA2 at a delta of 2.
+- Each page is loaded in headless Chromium, scrolled to the end, and every image is recorded with the size it renders at.
+- **Saving** is the share of all image bytes per page view. It is averaged over the viewports, then over the two pages.
+- **Exact** is the site's own smaller `srcset` candidate, fetched and measured.
+- **Est.** is a local re-encode at another quality or format, or a resize of a plain `img`, judged by SSIMULACRA2 against the original.
+- Sharpness growth (images smaller than their slot) is reported apart and never subtracted from another image's saving.
+
+The kill criterion was fixed in advance: a pass needs at least 2 of the 6 production sites above 15%.
+
+## Production sites (v4)
+
+<table class="study-table">
+  <thead>
+    <tr><th>site</th><th>KB / view</th><th>exact</th><th>exact + est.</th><th>of fixable</th></tr>
+  </thead>
+  <tbody>
+    <tr v-for="r in study.production" :key="r.id">
+      <th>{{ r.id }}</th><td>{{ r.kb.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td>
+    </tr>
+  </tbody>
+</table>
+
+Kill criterion: exact only, **2 of 6** above 15%, which is a pass at the bar. Exact with estimates, **6 of 6**.
+
+## Open-source apps (v4, do not decide)
+
+<table class="study-table">
+  <thead>
+    <tr><th>site</th><th>KB / view</th><th>exact</th><th>exact + est.</th><th>of fixable</th></tr>
+  </thead>
+  <tbody>
+    <tr v-for="r in study.openSource" :key="r.site">
+      <th>{{ r.site }}</th><td>{{ r.kb.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td>
+    </tr>
+  </tbody>
+</table>
+
+Developer sites carry few image bytes. The waste sits in image-heavy commerce.
+
+## Limits
+
+- **Six deciders** is a signal, not proof. The sample leans toward sites without bot walls.
+- **Exact is measured, est. is estimated.** On measured savings alone, 2 of 6 pass. Est. is a floor where an image could not be scored
+  (counted per page as `qualityNA`).
+- Quality and format are only estimated when the original is known. Where the loader is not known, the estimate is not made.
+- A3 rose from 13% to 38% between v1 and v4, because its images sit on a custom domain at quality 100, which v1 could not score.
+- A rescan of the open-source sites on 2026-10-30 matched v4 to the rounding shown for three of them. Two moved: supabase.com's
+  exact share rose from 1.9% to 4.5%, and langfuse.com's image bytes rose by about 16%. Part of the difference may come from
+  tool changes since v4, not only from the sites. See the [replay](/replay) page.
+
+## Reproduce it
+
+The study used the CLI at tag `study-v4-2026-10-28`. Run `npx imgtune scan <url> <url> --summary-json summary.json` on your own
+sites to get the same measures. See the [CLI reference](/reference/cli).

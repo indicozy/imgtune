@@ -1,0 +1,367 @@
+{
+  "sites": [
+    {
+      "site": "tailwindcss.com",
+      "scannedAt": "2026-10-30",
+      "imgtuneVersion": "0.1.0",
+      "metric": "SSIMULACRA2, delta 2",
+      "viewports": [
+        "iphone-se",
+        "iphone-15",
+        "pixel-7",
+        "iphone-15-pro-max",
+        "desktop",
+        "desktop-1280"
+      ],
+      "kbPerView": 4508,
+      "exactPct": 0,
+      "exactEstPct": 4.2,
+      "pages": [
+        {
+          "path": "/",
+          "kbPerView": 4267,
+          "exactPct": 0,
+          "exactEstPct": 8.39,
+          "groups": [
+            {
+              "loader": "generic",
+              "members": 1,
+              "slotCssPx": 192,
+              "neededPx": 288,
+              "servedPx": 384,
+              "exactKb": 0,
+              "estKb": 65.8
+            },
+            {
+              "loader": "generic",
+              "members": 2,
+              "slotCssPx": 192,
+              "neededPx": 444,
+              "servedPx": 384,
+              "exactKb": 0,
+              "estKb": 57.4
+            },
+            {
+              "loader": "generic",
+              "members": 1,
+              "slotCssPx": 392,
+              "neededPx": 907,
+              "servedPx": 784,
+              "exactKb": 0,
+              "estKb": 46.3
+            },
+            {
+              "loader": "generic",
+              "members": 1,
+              "slotCssPx": 341,
+              "neededPx": 808,
+              "servedPx": 632,
+              "exactKb": 0,
+              "estKb": 38.6
+            },
+            {
+              "loader": "generic",
+              "members": 1,
+              "slotCssPx": 256,
+              "neededPx": 592,
+              "servedPx": 516,
+              "exactKb": 0,
+              "estKb": 34.7
+            }
+          ]
+        },
+        {
+          "path": "/blog",
+          "kbPerView": 4748,
+          "exactPct": 0,
+          "exactEstPct": 0,
+          "groups": []
+        }
+      ]
+    },
+    {
+      "site": "ui.shadcn.com",
+      "scannedAt": "2026-10-30",
+      "imgtuneVersion": "0.1.0",
+      "metric": "SSIMULACRA2, delta 2",
+      "viewports": [
+        "iphone-se",
+        "iphone-15",
+        "pixel-7",
+        "iphone-15-pro-max",
+        "desktop",
+        "desktop-1280"
+      ],
+      "kbPerView": 240,
+      "exactPct": 0,
+      "exactEstPct": 33.7,
+      "pages": [
+        {
+          "path": "/",
+          "kbPerView": 312,
+          "exactPct": 0,
+          "exactEstPct": 16.41,
+          "groups": [
+            {
+              "loader": "next",
+              "members": 1,
+              "slotCssPx": 561,
+              "neededPx": 1577,
+              "servedPx": 2560,
+              "exactKb": 0,
+              "estKb": 51
+            }
+          ]
+        },
+        {
+          "path": "/blocks",
+          "kbPerView": 168,
+          "exactPct": 0,
+          "exactEstPct": 50.97,
+          "groups": [
+            {
+              "loader": "next",
+              "members": 5,
+              "slotCssPx": 351,
+              "neededPx": 986,
+              "servedPx": 2880,
+              "exactKb": 0,
+              "estKb": 124.7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "site": "supabase.com",
+      "scannedAt": "2026-10-30",
+      "imgtuneVersion": "0.1.0",
+      "metric": "SSIMULACRA2, delta 2",
+      "viewports": [
+        "iphone-se",
+        "iphone-15",
+        "pixel-7",
+        "iphone-15-pro-max",
+        "desktop",
+        "desktop-1280"
+      ],
+      "kbPerView": 683,
+      "exactPct": 4.5,
+      "exactEstPct": 21.8,
+      "pages": [
+        {
+          "path": "/",
+          "kbPerView": 729,
+          "exactPct": 0,
+          "exactEstPct": 34.53,
+          "groups": [
+            {
+              "loader": "generic",
+              "members": 5,
+              "slotCssPx": 28,
+              "neededPx": 42,
+              "servedPx": 800,
+              "exactKb": 0,
+              "estKb": 118.5
+            },
+            {
+              "loader": "generic",
+              "members": 1,
+              "slotCssPx": 24,
+              "neededPx": 68,
+              "servedPx": 800,
+              "exactKb": 0,
+              "estKb": 80.2
+            },
+            {
+              "loader": "next",
+              "members": 2,
+              "slotCssPx": 355,
+              "neededPx": 1021,
+              "servedPx": 2421,
+              "exactKb": 0,
+              "estKb": 47.8
+            },
+            {
+              "loader": "next",
+              "members": 26,
+              "slotCssPx": 38,
+              "neededPx": 76,
+              "servedPx": 128,
+              "exactKb": 0,
+              "estKb": 5.5
+            },
+            {
+              "loader": "next",
+              "members": 7,
+              "slotCssPx": 38,
+              "neededPx": 100,
+              "servedPx": 128,
+              "exactKb": 0,
+              "estKb": 1.3
+            }
+          ]
+        },
+        {
+          "path": "/blog",
+          "kbPerView": 637,
+          "exactPct": 9.06,
+          "exactEstPct": 9.06,
+          "groups": [
+            {
+              "loader": "next",
+              "members": 237,
+              "slotCssPx": 20,
+              "neededPx": 40,
+              "servedPx": 460,
+              "exactKb": 6.3,
+              "estKb": 0
+            },
+            {
+              "loader": "next",
+              "members": 4,
+              "slotCssPx": 355,
+              "neededPx": 941,
+              "servedPx": 1200,
+              "exactKb": 4.9,
+              "estKb": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "site": "nextjs.org",
+      "scannedAt": "2026-10-30",
+      "imgtuneVersion": "0.1.0",
+      "metric": "SSIMULACRA2, delta 2",
+      "viewports": [
+        "iphone-se",
+        "iphone-15",
+        "pixel-7",
+        "iphone-15-pro-max",
+        "desktop",
+        "desktop-1280"
+      ],
+      "kbPerView": 162,
+      "exactPct": 9.1,
+      "exactEstPct": 19.2,
+      "pages": [
+        {
+          "path": "/",
+          "kbPerView": 223,
+          "exactPct": 18.3,
+          "exactEstPct": 23.18,
+          "groups": [
+            {
+              "loader": "next",
+              "members": 20,
+              "slotCssPx": 342,
+              "neededPx": 956,
+              "servedPx": 1200,
+              "exactKb": 58.3,
+              "estKb": 9.5
+            }
+          ]
+        },
+        {
+          "path": "/showcase",
+          "kbPerView": 101,
+          "exactPct": 0,
+          "exactEstPct": 15.26,
+          "groups": [
+            {
+              "loader": "next",
+              "members": 16,
+              "slotCssPx": 319,
+              "neededPx": 736,
+              "servedPx": 750,
+              "exactKb": 0,
+              "estKb": 14.2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "site": "langfuse.com",
+      "scannedAt": "2026-10-30",
+      "imgtuneVersion": "0.1.0",
+      "metric": "SSIMULACRA2, delta 2",
+      "viewports": [
+        "iphone-se",
+        "iphone-15",
+        "pixel-7",
+        "iphone-15-pro-max",
+        "desktop",
+        "desktop-1280"
+      ],
+      "kbPerView": 3643,
+      "exactPct": 0.1,
+      "exactEstPct": 1.7,
+      "pages": [
+        {
+          "path": "/",
+          "kbPerView": 4539,
+          "exactPct": 0.26,
+          "exactEstPct": 3.47,
+          "groups": [
+            {
+              "loader": "generic",
+              "members": 5,
+              "slotCssPx": 273,
+              "neededPx": 404,
+              "servedPx": 576,
+              "exactKb": 0,
+              "estKb": 96.1
+            },
+            {
+              "loader": "generic",
+              "members": 3,
+              "slotCssPx": 202,
+              "neededPx": 202,
+              "servedPx": 428,
+              "exactKb": 0,
+              "estKb": 53.2
+            },
+            {
+              "loader": "next",
+              "members": 3,
+              "slotCssPx": 324,
+              "neededPx": 909,
+              "servedPx": 1200,
+              "exactKb": 6.4,
+              "estKb": 13.9
+            },
+            {
+              "loader": "next",
+              "members": 3,
+              "slotCssPx": 369,
+              "neededPx": 1036,
+              "servedPx": 766,
+              "exactKb": 0,
+              "estKb": 9.9
+            },
+            {
+              "loader": "next",
+              "members": 1,
+              "slotCssPx": 364,
+              "neededPx": 1092,
+              "servedPx": 2205,
+              "exactKb": 5,
+              "estKb": 0
+            }
+          ]
+        },
+        {
+          "path": "/blog",
+          "kbPerView": 2747,
+          "exactPct": 0,
+          "exactEstPct": 0,
+          "groups": []
+        }
+      ]
+    }
+  ],
+  "note": "Browser-free data: produced by scripts/build-replay-data.mjs from imgtune scan JSON."
+}

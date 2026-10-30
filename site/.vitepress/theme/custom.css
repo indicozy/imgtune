@@ -1,0 +1,126 @@
+/*
+ * ImgTune "Scan" design: dark console, Space Grotesk display, Geist body, Geist Mono for data.
+ * Light values sit on :root, dark values on html.dark (VitePress sets .dark from the system setting
+ * on first load and from the appearance toggle afterwards).
+ */
+:root {
+  color-scheme: light;
+  --scan-paper: #f1f3ef;
+  --scan-panel: #fbfcfa;
+  --scan-ink: #151a1b;
+  --scan-muted: #5c6765;
+  --scan-rule: #cdd5d1;
+  --scan-track: #e1e7e4;
+  --scan-accent: #00737b;
+  --scan-accent-soft: rgba(0, 115, 123, 0.12);
+  --scan-exact: #1d6b3c;
+  --scan-est: #8a5200;
+  --scan-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --scan-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --scan-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --vp-c-brand-1: var(--scan-accent);
+  --vp-c-brand-2: #00606a;
+  --vp-c-brand-3: #00535c;
+  --vp-c-brand-soft: var(--scan-accent-soft);
+  --vp-c-bg: var(--scan-paper);
+  --vp-c-bg-alt: var(--scan-panel);
+  --vp-c-bg-soft: var(--scan-panel);
+  --vp-c-bg-elv: var(--scan-panel);
+  --vp-c-text-1: var(--scan-ink);
+  --vp-c-text-2: var(--scan-muted);
+  --vp-c-text-3: var(--scan-muted);
+  --vp-c-divider: var(--scan-rule);
+  --vp-c-gutter: var(--scan-rule);
+  --vp-font-family-base: var(--scan-sans);
+  --vp-font-family-mono: var(--scan-mono);
+  --vp-code-block-bg: var(--scan-track);
+  --vp-c-default-soft: var(--scan-track);
+}
+
+html.dark {
+  color-scheme: dark;
+  --scan-paper: #0b0f10;
+  --scan-panel: #111819;
+  --scan-ink: #e4eae7;
+  --scan-muted: #8e9b97;
+  --scan-rule: #263130;
+  --scan-track: #1a2322;
+  --scan-accent: #5ed0d6;
+  --scan-accent-soft: rgba(94, 208, 214, 0.14);
+  --scan-exact: #7cd79b;
+  --scan-est: #e8b45c;
+
+  --vp-c-brand-1: var(--scan-accent);
+  --vp-c-brand-2: #7adbe0;
+  --vp-c-brand-3: #94e5e9;
+}
+
+body {
+  background: var(--scan-paper);
+  color: var(--scan-ink);
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+/* Display headings across the docs and the homepage. */
+.VPDoc h1,
+.VPDoc h2,
+.VPHome h1,
+.scan-h1,
+.scan-h2 {
+  font-family: var(--scan-display);
+}
+.VPDoc h1 {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.VPDoc h2 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  border-top: 1px solid var(--scan-rule);
+  padding-top: 1.5rem;
+}
+.VPDoc h3 {
+  font-family: var(--scan-sans);
+  font-weight: 600;
+}
+.VPDoc table {
+  font-variant-numeric: tabular-nums;
+}
+.vp-doc code {
+  font-family: var(--scan-mono);
+}
+.vp-doc a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.VPNavBarTitle .title {
+  font-family: var(--scan-mono);
+  font-weight: 600;
+}
+.VPNavBarTitle .title::before {
+  content: "> ";
+  color: var(--scan-accent);
+}
+.VPNav .VPNavBarTitle .logo {
+  display: none;
+}
+
+/* Shared small pieces: the replay, the width picker and the demo use the same tokens. */
+.scan-note {
+  color: var(--scan-muted);
+  font-family: var(--scan-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.scan-sample {
+  font: 600 0.6875rem/1 var(--scan-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--scan-est);
+  border: 1px solid currentColor;
+  padding: 0.22rem 0.4rem;
+  border-radius: 2px;
+  white-space: nowrap;
+}
