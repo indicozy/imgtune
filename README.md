@@ -1,6 +1,8 @@
 # ImgTune
 
-Your images waste bytes three ways: served larger than the space they fill, encoded at a quality nobody can see, and
+**Your images waste your traffic. ImgTune fixes that.**
+
+They waste it three ways: served larger than the space they fill, encoded at a quality nobody can see, and
 in an older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on
 your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact
 `sizes` and `quality` to change. Your pages send the fewest image bytes that still look the same.
