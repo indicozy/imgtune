@@ -7,12 +7,12 @@ WebAssembly build of SSIMULACRA2 used by imgtune's default `ssimulacra2` metric.
 
     scripts/build-wasm.sh
 
-The script runs these steps on the E-cores (`taskset -c 16-19`, 4 jobs at most):
+The script runs these steps with 4 jobs at most:
 
     rustup target add wasm32-unknown-unknown
     cargo install wasm-bindgen-cli --version 0.2.129 --locked
-    CARGO_BUILD_JOBS=4 taskset -c 16-19 cargo build --manifest-path native/ssimulacra2-wasm/Cargo.toml --lib --release --locked --target wasm32-unknown-unknown
-    taskset -c 16-19 wasm-bindgen --target nodejs --out-dir vendor/ssimulacra2 --out-name ssim_wasm native/ssimulacra2-wasm/target/wasm32-unknown-unknown/release/ssim_wasm.wasm
+    CARGO_BUILD_JOBS=4 cargo build --manifest-path native/ssimulacra2-wasm/Cargo.toml --lib --release --locked --target wasm32-unknown-unknown
+    wasm-bindgen --target nodejs --out-dir vendor/ssimulacra2 --out-name ssim_wasm native/ssimulacra2-wasm/target/wasm32-unknown-unknown/release/ssim_wasm.wasm
 
 and renames the CommonJS glue to `ssim_wasm.cjs`, because the imgtune package is `"type": "module"`.
 

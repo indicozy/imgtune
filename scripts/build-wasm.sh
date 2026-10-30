@@ -29,10 +29,10 @@ CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
 export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="--remap-path-prefix=$CARGO_HOME_DIR/registry/src=/cargo-registry --remap-path-prefix=$RUSTUP_HOME_DIR=/rustup --remap-path-prefix=$ROOT=/build"
 
-CARGO_BUILD_JOBS=4 taskset -c 16-19 cargo build --manifest-path "$CRATE/Cargo.toml" --lib --release --locked --target "$TARGET"
+CARGO_BUILD_JOBS=4 cargo build --manifest-path "$CRATE/Cargo.toml" --lib --release --locked --target "$TARGET"
 
 mkdir -p "$OUT"
-taskset -c 16-19 wasm-bindgen --target nodejs --out-dir "$OUT" --out-name ssim_wasm \
+wasm-bindgen --target nodejs --out-dir "$OUT" --out-name ssim_wasm \
   "$CRATE/target/$TARGET/release/ssim_wasm.wasm"
 # The package is "type": "module", so the CommonJS glue needs the .cjs extension to load.
 mv "$OUT/ssim_wasm.js" "$OUT/ssim_wasm.cjs"
