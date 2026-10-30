@@ -1,6 +1,7 @@
 .superpowers/
 node_modules/
 dist/
+.vitepress/cache/
 .imgtune/
 *.tsbuildinfo
 native/ssimulacra2-wasm/target/
