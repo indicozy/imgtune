@@ -39,7 +39,7 @@ Scan only the sites you own, and scan each one once unless you need more.
 
 ## CPU use
 
-scan keeps Chrome on the CPUs it was started with (e.g. `taskset -c 8-19 npx imgtune scan …`).
+`scan` keeps Chrome on the CPUs it was started on, so you can keep it off the cores you need: `taskset -c 8-19 npx imgtune scan …` on Linux.
 
 ## Reading the result
 
