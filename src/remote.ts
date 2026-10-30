@@ -693,10 +693,14 @@ export interface ViewportObservation {
 }
 
 /**
- * Whether a browser request may be made. Only consulted when the scanned page is public. Failing to decide counts as
- * blocked. Residual risk, accepted: in-browser HTTP redirects and DNS rebinding can still reach a private address; the
- * browser guard is defense in depth for a CLI that visits user-chosen URLs, comparable to opening them in a normal
- * browser. The Node-side fetcher (originals, candidates) is fully guarded at connect time.
+ * The browser's requests are guarded in two layers, for every scan (a local target gets the same layers, with private
+ * addresses allowed):
+ * - the route guard decides the URL of each request and aborts a refused one, and it blocks refused websockets;
+ * - the egress proxy (egress-proxy.ts) carries every request and tunnel the browser makes. It checks each destination at
+ *   connect time, so every redirect hop, subresource and CONNECT is checked, and DNS rebinding cannot move a connection
+ *   to a refused address. A refused request is dropped and counted as blocked.
+ * Failing to decide counts as blocked. The Node-side fetcher (originals, candidates, robots, sitemaps) is checked at
+ * connect time too, with each redirect hop checked.
  */
 export interface RequestGuard {
   isBlocked(url: string): Promise<boolean>;
