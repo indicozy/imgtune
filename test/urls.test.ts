@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   fetchSitemapUrls,
+  MAX_SITEMAP_BYTES,
+  sitemapMayBeFetched,
   patternToRegExp,
   resolveUrls,
   sitemapCandidates,
@@ -315,5 +317,80 @@ describe("sitemapCandidates", () => {
     expect(sitemapCandidates(emptyDir, {}, "http://localhost:3999")).toEqual([
       "http://localhost:3999/sitemap.xml",
     ]);
+  });
+});
+
+describe("sitemap fetches are guarded (sameSite, connect-time check, size cap)", () => {
+  let base = "";
+  let server: import("node:http").Server | undefined;
+  const gzipBody = Buffer.from("H4sIAAAAAAAAA0tMzEsBAOJ6n2cIAAAA", "base64"); // gzip of a short string, not a sitemap
+
+  beforeAll(async () => {
+    const { createServer } = await import("node:http");
+    const started = await new Promise<{ server: import("node:http").Server; port: number }>((resolve) => {
+      const s = createServer((req, res) => {
+        const url = req.url ?? "";
+        if (url === "/sitemap.xml") {
+          res.writeHead(200, { "content-type": "application/xml" });
+          return res.end(sitemapIndex(`${base}/child.xml`, `${base}/big.xml`, `${base}/gz.xml.gz`, `${base}/redirect.xml`, "http://169.254.169.254/latest.xml"));
+        }
+        if (url === "/child.xml") {
+          res.writeHead(200, { "content-type": "application/xml" });
+          return res.end(urlset("https://shop.test/ae-en/from-child"));
+        }
+        if (url === "/big.xml") {
+          res.writeHead(200, { "content-type": "application/xml" });
+          return res.end(Buffer.alloc(MAX_SITEMAP_BYTES + 1024, 0x20));
+        }
+        if (url === "/gz.xml.gz") {
+          res.writeHead(200, { "content-type": "application/gzip" });
+          return res.end(gzipBody);
+        }
+        if (url === "/redirect.xml") {
+          res.writeHead(302, { location: "http://other.test/elsewhere.xml" });
+          return res.end();
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      s.listen(0, "127.0.0.1", () => resolve({ server: s, port: (s.address() as import("node:net").AddressInfo).port }));
+    });
+    server = started.server;
+    base = `http://127.0.0.1:${started.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  it("reads a local sitemap index: follows its same-site child, and skips the over-cap body, the gzip file, the redirect off-site and the metadata address", async () => {
+    const paths = await fetchSitemapUrls(`${base}/sitemap.xml`);
+    expect(paths).toEqual(["/ae-en/from-child"]);
+  });
+
+  it("refuses a top sitemap on a metadata address, with no request", async () => {
+    await expect(fetchSitemapUrls("http://169.254.169.254/latest/sitemap.xml")).rejects.toThrow();
+  });
+
+  it("does not fetch a child sitemap on another site, whatever the top sitemap is", () => {
+    expect(sitemapMayBeFetched("https://shop.test/a.xml", "https://shop.test/sitemap.xml")).toBe(true);
+    expect(sitemapMayBeFetched("https://www.shop.test/a.xml", "https://shop.test/sitemap.xml")).toBe(true);
+    expect(sitemapMayBeFetched("https://evil.test/a.xml", "https://shop.test/sitemap.xml")).toBe(false);
+    expect(sitemapMayBeFetched("http://169.254.169.254/a.xml", "https://shop.test/sitemap.xml")).toBe(false);
+    expect(sitemapMayBeFetched("file:///etc/passwd", "https://shop.test/sitemap.xml")).toBe(false);
+    expect(sitemapMayBeFetched("not a url", "https://shop.test/sitemap.xml")).toBe(false);
+  });
+
+  it("does not fetch a child on another site through the injected fetch either", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "https://shop.test/sitemap.xml": sitemapIndex("https://evil.test/a.xml", "https://shop.test/ok.xml"),
+      "https://shop.test/ok.xml": urlset("https://shop.test/ae-en/ok"),
+    });
+    await expect(fetchSitemapUrls("https://shop.test/sitemap.xml", fetchImpl)).resolves.toEqual(["/ae-en/ok"]);
+    expect(calls).not.toContain("https://evil.test/a.xml");
+  });
+
+  it("does not read a gzip sitemap as XML: compressed .xml.gz is not supported, so the top one throws", async () => {
+    await expect(fetchSitemapUrls(`${base}/gz.xml.gz`)).rejects.toThrow();
   });
 });

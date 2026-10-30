@@ -2,6 +2,7 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { guardedLookup, refusedAddress, systemResolver, type Resolver } from "./address.js";
+import { sameSite } from "./site.js";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Extra fetches: one memo per scan, at most two in flight, 30 s each, capped bodies, checked destinations
@@ -19,6 +20,8 @@ export interface FetchOptions {
   maxBytes?: number;
   /** Whether destinations on loopback or private addresses are allowed (only when the scanned page is on one). */
   allowPrivate?: boolean;
+  /** Every hop, redirects included, must stay on the registrable domain of this URL; a hop off it is refused. */
+  sameSiteAs?: string;
 }
 
 export interface Fetcher {
@@ -96,7 +99,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
   };
 
   /** Each hop is checked at connect time (guardedLookup); redirects are followed here, not by the client. */
-  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean): Promise<Buffer | undefined> => {
+  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean, sameSiteAs?: string): Promise<Buffer | undefined> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRA_FETCH_TIMEOUT_MS);
     try {
@@ -104,6 +107,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
       for (let hop = 0; ; hop++) {
         const url = new URL(current);
         if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+        if (sameSiteAs !== undefined && !sameSite(url.href, sameSiteAs)) return undefined;
         // An IP literal never reaches the lookup, so it is checked here as well.
         const bare = url.hostname.replace(/^\[|\]$/g, "");
         if (isIP(bare) !== 0 && refusedAddress(bare, allowPrivate)) return undefined;
@@ -156,10 +160,10 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
     get(url, fetchOpts = {}) {
       const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
       const allowPrivate = fetchOpts.allowPrivate ?? false;
-      const key = `${maxBytes}|${allowPrivate}|${url}`;
+      const key = `${maxBytes}|${allowPrivate}|${fetchOpts.sameSiteAs ?? ""}|${url}`;
       let pending = memo.get(key);
       if (!pending) {
-        pending = withSlot(() => fetchChecked(url, maxBytes, allowPrivate)).catch(() => undefined);
+        pending = withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs)).catch(() => undefined);
         memo.set(key, pending);
       }
       return pending;

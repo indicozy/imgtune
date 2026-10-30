@@ -1,7 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { XMLParser } from "fast-xml-parser";
+import { isLocalTarget } from "./address.js";
+import { makeFetcher, type Fetcher } from "./fetch.js";
+import { sameSite } from "./site.js";
 import type { ImgtuneConfig } from "./types.js";
+import { IMGTUNE_VERSION } from "./version.js";
 
 export type UrlSource = "config" | "sitemap" | "static" | "none";
 
@@ -14,7 +18,10 @@ export interface ResolvedUrls {
 const MAX_INDEX_DEPTH = 2;
 const MAX_CHILD_SITEMAPS = 50;
 const CHILD_CONCURRENCY = 4;
+/** Timeout for a sitemap read through an injected fetch (the default guarded fetch has its own). */
 const SITEMAP_TIMEOUT_MS = 15_000;
+/** A sitemap is read up to this many bytes (the sitemap protocol's uncompressed limit). Compressed files are not read. */
+export const MAX_SITEMAP_BYTES = 50 * 1024 * 1024;
 const ENV_FILES = [".env.local", ".env.development.local", ".env.development", ".env"];
 const DOMAIN_KEY = "NEXT_PUBLIC_DOMAIN_BASE_URL";
 
@@ -162,21 +169,46 @@ function parseSitemap(xml: string): SitemapDocument | undefined {
   return undefined;
 }
 
-async function fetchXml(url: string, fetchImpl: typeof fetch): Promise<string | undefined> {
-  const res = await fetchImpl(url, { signal: AbortSignal.timeout(SITEMAP_TIMEOUT_MS) });
-  return res.ok ? res.text() : undefined;
+/**
+ * The text of one sitemap. Without an injected fetch, the sitemap is read through the checked fetcher: the destination is
+ * checked at connect time, every redirect hop must stay on the top sitemap's site, the body is capped, and the request
+ * has the fetcher's 30 s timeout. Private addresses are allowed only when the sitemap URL itself is local.
+ */
+async function fetchXml(url: string, top: string, fetchImpl: typeof fetch | undefined, guarded: Fetcher | undefined): Promise<string | undefined> {
+  if (fetchImpl) {
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(SITEMAP_TIMEOUT_MS) });
+    return res.ok ? res.text() : undefined;
+  }
+  const body = await guarded!.get(url, { maxBytes: MAX_SITEMAP_BYTES, allowPrivate: isLocalTarget(url), sameSiteAs: top });
+  return body?.toString("utf8");
 }
 
 /**
- * Pathnames listed by a sitemap. A `<sitemapindex>` is followed into its children (at most
- * MAX_INDEX_DEPTH levels and MAX_CHILD_SITEMAPS children). A top-level failure throws; a child that
- * fails to fetch or parse contributes nothing.
+ * A child sitemap is fetched only when it is http(s) and on the same registrable domain as the top sitemap. Page URLs
+ * are not fetched from their own host at all: they are reduced to paths on the scanned server (see fetchSitemapUrls).
+ */
+export function sitemapMayBeFetched(child: string, top: string): boolean {
+  try {
+    const protocol = new URL(child).protocol;
+    if (protocol !== "http:" && protocol !== "https:") return false;
+  } catch {
+    return false;
+  }
+  return sameSite(child, top);
+}
+
+/**
+ * Pathnames listed by a sitemap. A `<sitemapindex>` is followed into its children (at most MAX_INDEX_DEPTH levels and
+ * MAX_CHILD_SITEMAPS children, on the top sitemap's registrable domain only). A top-level failure throws; a child that
+ * is refused, fails to fetch, or does not parse contributes nothing. Page `<loc>`s are never requested: each is reduced
+ * to its pathname, which is then measured on the scanned server.
  */
 export async function fetchSitemapUrls(
   sitemapUrl: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
 ): Promise<string[]> {
-  const topXml = await fetchXml(sitemapUrl, fetchImpl);
+  const guarded = fetchImpl === undefined ? makeFetcher({ userAgent: `imgtune/${IMGTUNE_VERSION}` }) : undefined;
+  const topXml = await fetchXml(sitemapUrl, sitemapUrl, fetchImpl, guarded);
   const top = topXml === undefined ? undefined : parseSitemap(topXml);
   if (!top) throw new Error(`${sitemapUrl} is not an XML sitemap`);
 
@@ -191,10 +223,10 @@ export async function fetchSitemapUrls(
       return;
     }
     if (depth >= MAX_INDEX_DEPTH) return;
-    const children = doc.locs.slice(0, remainingChildren);
+    const children = doc.locs.filter((loc) => sitemapMayBeFetched(loc, sitemapUrl)).slice(0, remainingChildren);
     remainingChildren -= children.length;
     const childDocs = await mapWithConcurrency(children, CHILD_CONCURRENCY, (child) =>
-      loadChild(child, fetchImpl),
+      loadChild(child, sitemapUrl, fetchImpl, guarded),
     );
     for (const childDoc of childDocs) {
       if (childDoc) await visit(childDoc, depth + 1);
@@ -218,9 +250,14 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
-async function loadChild(url: string, fetchImpl: typeof fetch): Promise<SitemapDocument | undefined> {
+async function loadChild(
+  url: string,
+  top: string,
+  fetchImpl: typeof fetch | undefined,
+  guarded: Fetcher | undefined,
+): Promise<SitemapDocument | undefined> {
   try {
-    const xml = await fetchXml(url, fetchImpl);
+    const xml = await fetchXml(url, top, fetchImpl, guarded);
     return xml === undefined ? undefined : parseSitemap(xml);
   } catch {
     return undefined;
