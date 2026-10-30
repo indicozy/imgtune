@@ -39,8 +39,8 @@ export default defineConfig({
     nav: [
       { text: "Demo", link: "/demo" },
       { text: "Replay", link: "/replay" },
-      { text: "Guide", link: "/guide/getting-started", activeMatch: "/guide/" },
-      { text: "Reference", link: "/reference/cli", activeMatch: "/reference/" },
+      { text: "Guide", link: "/guide/", activeMatch: "/guide/" },
+      { text: "Reference", link: "/reference/", activeMatch: "/reference/" },
       { text: "Study", link: "/study/", activeMatch: "/study/" },
       { text: "GitHub", link: REPO },
     ],
