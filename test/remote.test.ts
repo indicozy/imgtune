@@ -17,6 +17,7 @@ import {
   isUndersized,
   clampWidth,
   guardedLookup,
+  isLocalTarget,
   ipv6Bytes,
   isBlockedAddress,
   duplicatesOf,
@@ -688,6 +689,68 @@ describe("resource bounds", () => {
   });
 });
 
+describe("isLocalTarget (private access comes from the target literal only)", () => {
+  it("is true for the loopback, private and localhost spellings a user types", () => {
+    for (const url of [
+      "http://localhost:3000/",
+      "http://localhost./",
+      "http://LOCALHOST/",
+      "http://app.localhost:3000/",
+      "http://127.0.0.1:3000/",
+      "http://127.1/",
+      "http://2130706433/",
+      "http://0x7f000001/",
+      "http://0177.0.0.1/",
+      "http://[::1]/",
+      "http://[::ffff:127.0.0.1]/",
+      "http://[::ffff:7f00:1]/",
+      "http://10.0.0.5/",
+      "http://172.16.4.2/",
+      "http://192.168.1.9/",
+      "http://[fd12::1]/",
+    ]) {
+      expect(isLocalTarget(url), url).toBe(true);
+    }
+  });
+
+  it("is false for public names, link-local and metadata addresses, unspecified, and anything unparsable", () => {
+    for (const url of [
+      "https://shop.example/",
+      "http://attacker.test/",
+      "http://169.254.169.254/",
+      "http://[fe80::1]/",
+      "http://100.64.0.1/",
+      "http://0.0.0.0/",
+      "http://[::]/",
+      "http://[::ffff:8.8.8.8]/",
+      "http:///",
+      "http://",
+      "file:///etc/passwd",
+      "not a url",
+      "",
+    ]) {
+      expect(isLocalTarget(url), url).toBe(false);
+    }
+  });
+});
+
+describe("a public page never gets private access, whatever it resolves to", () => {
+  it("scans a public-named page that resolves to loopback without the robots skip that private access grants", async () => {
+    const out = mkdtempSync(join(tmpdir(), "imgtune-private-"));
+    const [result] = await runScan(["http://attacker.test:9/page"], {
+      outDir: out,
+      cwd: out,
+      aggressive: false,
+      quality: false,
+      viewports: [{ name: "desktop", width: 1280, height: 800, dpr: 1, mobile: false }],
+      log: () => {},
+      resolver: async () => [{ address: "127.0.0.1", family: 4 }],
+      loadCapMs: 2_000,
+    });
+    expect(result.robots).toBeUndefined();
+  }, 60_000);
+});
+
 describe("isBlockedAddress", () => {
   it("blocks every IPv4 range of the list", () => {
     for (const address of [
@@ -730,6 +793,12 @@ describe("isBlockedAddress", () => {
       "2606:4700::1111", "2a00:1450::1",
     ]) {
       expect(isBlockedAddress(address), address).toBe(false);
+    }
+  });
+
+  it("blocks IPv4-compatible addresses whole, deprecated ::/96 included", () => {
+    for (const address of ["::8.8.8.8", "::808:808", "::0.0.0.1"]) {
+      expect(isBlockedAddress(address), address).toBe(true);
     }
   });
 
@@ -905,12 +974,31 @@ describe("makeFetcher over a local server", () => {
     expect((await fetcher.get(`${base}/ok`, { allowPrivate: true, maxBytes: 10 }))?.length).toBe(3);
   });
 
-  it("reports whether a page host is private", async () => {
-    const privateFetcher = makeFetcher({ userAgent: "ua", resolver: async () => [{ address: "127.0.0.1", family: 4 }] });
-    expect(await privateFetcher.isPrivateHost("http://localhost:3000/")).toBe(true);
-    const publicFetcher = makeFetcher({ userAgent: "ua", resolver: async () => [{ address: "93.184.216.34", family: 4 }] });
-    expect(await publicFetcher.isPrivateHost("https://shop.example/")).toBe(false);
-    expect(await publicFetcher.isPrivateHost("http://[::1]/")).toBe(true);
+  it("refuses a name that resolves to loopback unless the target itself is local, and refuses a resolver failure", async () => {
+    hits.length = 0;
+    const port = new URL(base).port;
+    const rebinding = makeFetcher({ userAgent: "ua", resolver: async () => [{ address: "127.0.0.1", family: 4 }] });
+    expect(await rebinding.get(`http://attacker.test:${port}/ok`)).toBeUndefined();
+    const failing = makeFetcher({
+      userAgent: "ua",
+      resolver: async () => {
+        throw new Error("ENOTFOUND");
+      },
+    });
+    expect(await failing.get(`http://attacker.test:${port}/ok`)).toBeUndefined();
+    expect(await rebinding.hostIsBlocked("http://attacker.test/", false)).toBe(true);
+    expect(await rebinding.hostIsBlocked("http://attacker.test/", true)).toBe(false);
+    expect(hits).toHaveLength(0);
+  });
+
+  it("refuses odd spellings of a loopback literal with no request", async () => {
+    hits.length = 0;
+    const port = new URL(base).port;
+    const fetcher = makeFetcher({ userAgent: "ua" });
+    for (const host of ["2130706433", "0x7f000001", "0177.0.0.1", "127.1", "[::ffff:7f00:1]", "localhost."]) {
+      expect(await fetcher.get(`http://${host}:${port}/ok`), host).toBeUndefined();
+    }
+    expect(hits).toHaveLength(0);
   });
 });
 
@@ -1099,7 +1187,6 @@ describe.each(["webp", "avif"] as const)("analysePage with a Contentful-shaped %
         gets.push(url);
         return url === ORIGIN ? original : undefined;
       },
-      isPrivateHost: async () => false,
       hostIsBlocked: async () => false,
     };
     const viewport: Viewport = { name: "iphone-15", width: 390, height: 844, dpr: 3, mobile: true };

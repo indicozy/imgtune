@@ -1,7 +1,7 @@
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
-import { guardedLookup, isBlockedAddress, systemResolver, type Resolver } from "./address.js";
+import { guardedLookup, refusedAddress, systemResolver, type Resolver } from "./address.js";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Extra fetches: one memo per scan, at most two in flight, 30 s each, capped bodies, checked destinations
@@ -28,10 +28,11 @@ export interface Fetcher {
    * limit. Each (URL, options) is fetched once.
    */
   get(url: string, opts?: FetchOptions): Promise<Buffer | undefined>;
-  /** Whether the host of `url` resolves to a blocked address: a page that does is allowed private destinations. */
-  isPrivateHost(url: string): Promise<boolean>;
-  /** Like isPrivateHost, but a resolver failure rejects instead of answering: the caller decides (the browser guard blocks). */
-  hostIsBlocked(url: string): Promise<boolean>;
+  /**
+   * Whether the host of `url` has an address refused for this target (see refusedAddress). A resolver failure rejects:
+   * the caller decides, and the browser guard blocks.
+   */
+  hostIsBlocked(url: string, allowPrivate: boolean): Promise<boolean>;
 }
 
 /** The body up to `maxBytes`; undefined when it is larger (checked on Content-Length and while streaming). */
@@ -63,7 +64,7 @@ function requestOnce(url: URL, headers: Record<string, string>, allowPrivate: bo
   const send = url.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
     // agent: false, so no pooled socket skips the connect-time lookup.
-    const req = send(url, { method: "GET", headers, signal, agent: false, lookup: allowPrivate ? undefined : guardedLookup(resolver) }, resolve);
+    const req = send(url, { method: "GET", headers, signal, agent: false, lookup: guardedLookup(resolver, allowPrivate) }, resolve);
     req.on("error", reject);
     req.end();
   });
@@ -98,7 +99,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
         if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
         // An IP literal never reaches the lookup, so it is checked here as well.
         const bare = url.hostname.replace(/^\[|\]$/g, "");
-        if (!allowPrivate && isIP(bare) !== 0 && isBlockedAddress(bare)) return undefined;
+        if (isIP(bare) !== 0 && refusedAddress(bare, allowPrivate)) return undefined;
         const res = await requestOnce(url, { "User-Agent": opts.userAgent, Accept: IMAGE_ACCEPT }, allowPrivate, resolver, controller.signal);
         const status = res.statusCode ?? 0;
         const location = res.headers.location;
@@ -122,16 +123,17 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
   // One lookup per host for the whole scan: the route guard and the fetches share it. Only successful answers are kept;
   // a failed lookup is asked again next time.
   const hostMemo = new Map<string, Promise<boolean>>();
-  const hostIsPrivate = (bare: string): Promise<boolean> => {
-    let pending = hostMemo.get(bare);
+  const hostRefused = (bare: string, allowPrivate: boolean): Promise<boolean> => {
+    const key = `${allowPrivate}|${bare}`;
+    let pending = hostMemo.get(key);
     if (!pending) {
       pending = (async () => {
         const addresses = isIP(bare) !== 0 ? [{ address: bare, family: isIP(bare) }] : await resolver(bare);
         if (addresses.length === 0) throw new Error(`no address for ${bare}`);
-        return addresses.some((a) => isBlockedAddress(a.address));
+        return addresses.some((a) => refusedAddress(a.address, allowPrivate));
       })();
-      hostMemo.set(bare, pending);
-      pending.catch(() => hostMemo.delete(bare));
+      hostMemo.set(key, pending);
+      pending.catch(() => hostMemo.delete(key));
     }
     return pending;
   };
@@ -149,18 +151,11 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver }): F
       return pending;
     },
     /**
-     * Whether the page's own host is private, which allows private destinations for its fetches. Used only as that
-     * allowance: an error answers false, the safe direction. Never a request guard: the browser guard uses hostIsBlocked.
+     * Whether the host of `url` has an address that is refused for this target (see refusedAddress). A resolver failure
+     * rejects: the caller decides, and the browser guard blocks.
      */
-    async isPrivateHost(url) {
-      try {
-        return await hostIsPrivate(new URL(url).hostname.replace(/^\[|\]$/g, ""));
-      } catch {
-        return false;
-      }
-    },
-    hostIsBlocked(url) {
-      return hostIsPrivate(new URL(url).hostname.replace(/^\[|\]$/g, ""));
+    hostIsBlocked(url, allowPrivate) {
+      return hostRefused(new URL(url).hostname.replace(/^\[|\]$/g, ""), allowPrivate);
     },
   };
 }

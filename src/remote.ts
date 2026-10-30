@@ -5,7 +5,7 @@ import type { Browser, Page, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
-import { isBlockedAddress, type Resolver } from "./address.js";
+import { isLocalTarget, type Resolver } from "./address.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
 import { calibrationOffset } from "./calibrate.js";
@@ -21,7 +21,7 @@ import type { RawImage } from "./ssim.js";
 import type { Viewport } from "./types.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
-export { ipv6Bytes, isBlockedAddress, guardedLookup, type Resolver } from "./address.js";
+export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
 export { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 export { registrableDomain, sameSite } from "./site.js";
 
@@ -765,7 +765,7 @@ async function observeViewport(
   browser: Browser,
   pageUrl: string,
   viewport: Viewport,
-  guard?: RequestGuard,
+  guard: RequestGuard,
   loadCapMs: number = LOAD_EVENT_CAP_MS,
 ): Promise<ViewportObservation> {
   const context = await browser.newContext({
@@ -1388,7 +1388,7 @@ async function scanPage(
   robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
 ): Promise<PageResult> {
   const url = new URL(pageUrl);
-  const allowPrivate = await run.fetcher.isPrivateHost(pageUrl);
+  const allowPrivate = isLocalTarget(pageUrl);
   const base: PageResult = {
     url: pageUrl,
     host: url.host,
@@ -1418,7 +1418,7 @@ async function scanPage(
   };
 
   // One pass per viewport; a challenge stops the page at once, with no retry.
-  const guard: RequestGuard | undefined = allowPrivate ? undefined : { isBlocked: (u) => run.fetcher.hostIsBlocked(u) };
+  const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate) };
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
   let loadTimedOut = false;

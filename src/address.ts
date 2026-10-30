@@ -99,22 +99,74 @@ export function isBlockedAddress(address: string): boolean {
   // ::ffff:0:0/96 (IPv4-mapped) is blocked as a whole. It is not a BlockList entry: an IPv6 subnet there also matches
   // plain IPv4 checks, which would block public IPv4 addresses.
   if (mapped && zeroPrefix) return true;
-  if ((zeroPrefix && compatible) || nat64) {
+  // ::/96 (IPv4-compatible, deprecated) is blocked as a whole: no routable address needs it.
+  if (zeroPrefix && compatible) return true;
+  if (nat64) {
     const embedded = `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
     if (BLOCKED.check(embedded, "ipv4")) return true;
   }
   return BLOCKED.check(address, "ipv6");
 }
 
+/** Loopback, RFC 1918 and unique-local addresses: where a dev server on this machine or the LAN is reached. */
+const PRIVATE = new BlockList();
+for (const [net, prefix] of [["127.0.0.0", 8], ["10.0.0.0", 8], ["172.16.0.0", 12], ["192.168.0.0", 16]] as const) {
+  PRIVATE.addSubnet(net, prefix, "ipv4");
+}
+PRIVATE.addSubnet("::1", 128, "ipv6");
+PRIVATE.addSubnet("fc00::", 7, "ipv6");
+
+/** Whether an address is a private one (IPv4-mapped IPv6 unwrapped). Unparsable text is not private. */
+export function isPrivateAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return PRIVATE.check(address, "ipv4");
+  if (family !== 6) return false;
+  const bytes = ipv6Bytes(address);
+  if (!bytes) return false;
+  const mapped = bytes.subarray(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  if (mapped) return PRIVATE.check(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`, "ipv4");
+  return PRIVATE.check(address, "ipv6");
+}
+
 /**
- * A `lookup` for a socket that resolves the host with `resolver` and refuses the connection when any address is blocked.
- * The socket then connects to the address that was checked, so a DNS answer that changes later cannot redirect it.
+ * Whether a connection to `address` is refused. A blocked address is refused, except that a private one is allowed
+ * when the scan's own target is local (`allowPrivate`). Link-local, metadata, unspecified and multicast addresses are
+ * refused in every case.
  */
-export function guardedLookup(resolver: Resolver): LookupFunction {
+export function refusedAddress(address: string, allowPrivate: boolean): boolean {
+  if (!isBlockedAddress(address)) return false;
+  return !(allowPrivate && isPrivateAddress(address));
+}
+
+/**
+ * Whether the scan's target URL is itself local: its host is localhost (or a name under it), or a literal private or
+ * loopback address in any spelling the URL parser accepts. Private access is granted from this alone. It never asks
+ * DNS, so a public name that resolves to loopback is not local. A URL that does not parse, or is not http(s), is not.
+ */
+export function isLocalTarget(url: string): boolean {
+  let host: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    host = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "") return false;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  return isIP(host) !== 0 && isPrivateAddress(host);
+}
+
+/**
+ * A `lookup` for a socket that resolves the host with `resolver` and refuses the connection when any address is refused
+ * (see refusedAddress). The socket then connects to the address that was checked, so a DNS answer that changes later
+ * cannot redirect it.
+ */
+export function guardedLookup(resolver: Resolver, allowPrivate = false): LookupFunction {
   return ((hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
     resolver(hostname).then(
       (addresses) => {
-        if (addresses.length === 0 || addresses.some((a) => isBlockedAddress(a.address))) {
+        if (addresses.length === 0 || addresses.some((a) => refusedAddress(a.address, allowPrivate))) {
           callback(new Error(`refused: ${hostname} resolves to a blocked address`));
           return;
         }
