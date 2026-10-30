@@ -4,3 +4,7 @@ dist/
 .imgtune/
 *.tsbuildinfo
 native/ssimulacra2-wasm/target/
+docs/superpowers/
+docs/study/sites*.md
+docs/RUN-SUMMARY-*
+docs/acceptance-*
