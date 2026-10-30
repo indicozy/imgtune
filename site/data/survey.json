@@ -1,504 +1,1206 @@
 {
   "scannedFrom": "2026-10-29",
-  "scannedTo": "2026-10-29",
-  "count": 49,
+  "scannedTo": "2026-10-30",
+  "count": 104,
+  "categories": [
+    "AI & SaaS",
+    "E-commerce & brands",
+    "Finance",
+    "Developer tools",
+    "Education",
+    "Marketplaces",
+    "Health & wellness",
+    "Real estate",
+    "Agencies & portfolios",
+    "Media & publishing",
+    "Travel & hospitality",
+    "Other"
+  ],
   "sites": [
     {
-      "id": "P01",
-      "segment": "saas",
+      "id": "P001",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 860,
       "exactPct": 0,
       "exactEstPct": 87.5,
       "fixablePct": 90.5,
-      "savedKbPerView": 750,
-      "nextjs": true
+      "savedKbPerView": 750
     },
     {
-      "id": "P02",
-      "segment": "saas",
+      "id": "P002",
+      "category": "Finance",
+      "tech": "Next.js",
       "imageKbPerView": 4560,
       "exactPct": 0,
       "exactEstPct": 85.9,
       "fixablePct": 92.3,
-      "savedKbPerView": 3940,
-      "nextjs": true
+      "savedKbPerView": 3940
     },
     {
-      "id": "P03",
-      "segment": "saas",
+      "id": "P003",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 5510,
       "exactPct": 0,
       "exactEstPct": 83.6,
       "fixablePct": 88.7,
-      "savedKbPerView": 4900,
-      "nextjs": true
+      "savedKbPerView": 4900
     },
     {
-      "id": "P04",
-      "segment": "saas",
+      "id": "P004",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1890,
       "exactPct": 0,
       "exactEstPct": 81,
       "fixablePct": 86.6,
-      "savedKbPerView": 1520,
-      "nextjs": true
+      "savedKbPerView": 1520
     },
     {
-      "id": "P05",
-      "segment": "saas",
+      "id": "P005",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 12910,
       "exactPct": 0,
       "exactEstPct": 78.2,
       "fixablePct": 82.5,
-      "savedKbPerView": 10400,
-      "nextjs": true
+      "savedKbPerView": 10400
     },
     {
-      "id": "P06",
-      "segment": "shop",
+      "id": "P006",
+      "category": "E-commerce & brands",
+      "tech": "Next.js",
       "imageKbPerView": 9490,
       "exactPct": 0,
       "exactEstPct": 71.9,
       "fixablePct": 79.9,
-      "savedKbPerView": 6420,
-      "nextjs": true
+      "savedKbPerView": 6420
     },
     {
-      "id": "P07",
-      "segment": "other",
+      "id": "P007",
+      "category": "Media & publishing",
+      "tech": "Next.js",
       "imageKbPerView": 3500,
       "exactPct": 0,
       "exactEstPct": 67.2,
       "fixablePct": 72.6,
-      "savedKbPerView": 2390,
-      "nextjs": true
+      "savedKbPerView": 2390
     },
     {
-      "id": "P08",
-      "segment": "saas",
+      "id": "P008",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 8150,
       "exactPct": 0,
       "exactEstPct": 66.5,
       "fixablePct": 72.9,
-      "savedKbPerView": 5230,
-      "nextjs": true
+      "savedKbPerView": 5230
     },
     {
-      "id": "P09",
-      "segment": "saas",
+      "id": "P009",
+      "category": "Agencies & portfolios",
+      "tech": "Other / unknown",
+      "imageKbPerView": 5810,
+      "exactPct": 0,
+      "exactEstPct": 59.8,
+      "fixablePct": 66.8,
+      "savedKbPerView": 4310
+    },
+    {
+      "id": "P010",
+      "category": "Media & publishing",
+      "tech": "Other / unknown",
+      "imageKbPerView": 2970,
+      "exactPct": 0,
+      "exactEstPct": 59.4,
+      "fixablePct": 63.8,
+      "savedKbPerView": 1700
+    },
+    {
+      "id": "P011",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 4340,
       "exactPct": 0,
       "exactEstPct": 56.7,
       "fixablePct": 73.8,
-      "savedKbPerView": 2170,
-      "nextjs": true
+      "savedKbPerView": 2170
     },
     {
-      "id": "P10",
-      "segment": "saas",
+      "id": "P012",
+      "category": "Education",
+      "tech": "Next.js",
+      "imageKbPerView": 5110,
+      "exactPct": 55,
+      "exactEstPct": 55.7,
+      "fixablePct": 76.1,
+      "savedKbPerView": 3160
+    },
+    {
+      "id": "P013",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 6550,
       "exactPct": 0,
       "exactEstPct": 54.7,
       "fixablePct": 69.5,
-      "savedKbPerView": 2700,
-      "nextjs": true
+      "savedKbPerView": 2700
     },
     {
-      "id": "P11",
-      "segment": "saas",
+      "id": "P014",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 700,
       "exactPct": 1.9,
       "exactEstPct": 52.9,
       "fixablePct": 80.7,
-      "savedKbPerView": 350,
-      "nextjs": true
+      "savedKbPerView": 350
     },
     {
-      "id": "P12",
-      "segment": "saas",
+      "id": "P015",
+      "category": "E-commerce & brands",
+      "tech": "Shopify",
+      "imageKbPerView": 20780,
+      "exactPct": 2.2,
+      "exactEstPct": 51.1,
+      "fixablePct": 64,
+      "savedKbPerView": 11160
+    },
+    {
+      "id": "P016",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 800,
       "exactPct": 0,
       "exactEstPct": 44.8,
       "fixablePct": 53.9,
-      "savedKbPerView": 400,
-      "nextjs": true
+      "savedKbPerView": 400
     },
     {
-      "id": "P13",
-      "segment": "saas",
+      "id": "P017",
+      "category": "Finance",
+      "tech": "Next.js",
+      "imageKbPerView": 1190,
+      "exactPct": 1.4,
+      "exactEstPct": 44.7,
+      "fixablePct": 66.3,
+      "savedKbPerView": 680
+    },
+    {
+      "id": "P018",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 7490,
       "exactPct": 0,
       "exactEstPct": 43.3,
       "fixablePct": 63.5,
-      "savedKbPerView": 2920,
-      "nextjs": true
+      "savedKbPerView": 2920
     },
     {
-      "id": "P14",
-      "segment": "saas",
+      "id": "P019",
+      "category": "Real estate",
+      "tech": "Webflow",
+      "imageKbPerView": 1230,
+      "exactPct": 20.3,
+      "exactEstPct": 42.6,
+      "fixablePct": 65.8,
+      "savedKbPerView": 530
+    },
+    {
+      "id": "P020",
+      "category": "Health & wellness",
+      "tech": "Nuxt",
+      "imageKbPerView": 3240,
+      "exactPct": 0,
+      "exactEstPct": 41.7,
+      "fixablePct": 58,
+      "savedKbPerView": 1410
+    },
+    {
+      "id": "P021",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 13560,
       "exactPct": 0,
       "exactEstPct": 41.5,
       "fixablePct": 85.6,
-      "savedKbPerView": 7530,
-      "nextjs": true
+      "savedKbPerView": 7530
     },
     {
-      "id": "P15",
-      "segment": "saas",
+      "id": "P022",
+      "category": "Health & wellness",
+      "tech": "Next.js",
+      "imageKbPerView": 2470,
+      "exactPct": 1,
+      "exactEstPct": 41.2,
+      "fixablePct": 48.6,
+      "savedKbPerView": 1490
+    },
+    {
+      "id": "P023",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1330,
       "exactPct": 0.1,
       "exactEstPct": 40.7,
       "fixablePct": 66.8,
-      "savedKbPerView": 550,
-      "nextjs": true
+      "savedKbPerView": 550
     },
     {
-      "id": "P16",
-      "segment": "saas",
+      "id": "P024",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 90,
       "exactPct": 0,
       "exactEstPct": 40.6,
       "fixablePct": 50.5,
-      "savedKbPerView": 40,
-      "nextjs": true
+      "savedKbPerView": 40
     },
     {
-      "id": "P17",
-      "segment": "saas",
+      "id": "P025",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 18420,
       "exactPct": 0,
       "exactEstPct": 37.9,
       "fixablePct": 70.4,
-      "savedKbPerView": 10530,
-      "nextjs": true
+      "savedKbPerView": 10530
     },
     {
-      "id": "P18",
-      "segment": "shop",
+      "id": "P026",
+      "category": "E-commerce & brands",
+      "tech": "Next.js",
       "imageKbPerView": 12320,
       "exactPct": 0,
       "exactEstPct": 36.4,
       "fixablePct": 92.6,
-      "savedKbPerView": 4560,
-      "nextjs": true
+      "savedKbPerView": 4560
     },
     {
-      "id": "P19",
-      "segment": "saas",
+      "id": "P027",
+      "category": "Other",
+      "tech": "Next.js",
       "imageKbPerView": 11540,
       "exactPct": 0.1,
       "exactEstPct": 36.1,
       "fixablePct": 66.1,
-      "savedKbPerView": 4540,
-      "nextjs": true
+      "savedKbPerView": 4540
     },
     {
-      "id": "P20",
-      "segment": "saas",
+      "id": "P028",
+      "category": "Education",
+      "tech": "Nuxt",
+      "imageKbPerView": 500,
+      "exactPct": 0,
+      "exactEstPct": 35.3,
+      "fixablePct": 80.9,
+      "savedKbPerView": 230
+    },
+    {
+      "id": "P029",
+      "category": "Finance",
+      "tech": "Next.js",
+      "imageKbPerView": 1700,
+      "exactPct": 1.3,
+      "exactEstPct": 34.5,
+      "fixablePct": 49.7,
+      "savedKbPerView": 590
+    },
+    {
+      "id": "P030",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1090,
       "exactPct": 3.3,
       "exactEstPct": 34.3,
       "fixablePct": 90.2,
-      "savedKbPerView": 360,
-      "nextjs": true
+      "savedKbPerView": 360
     },
     {
-      "id": "P21",
-      "segment": "saas",
+      "id": "P031",
+      "category": "Travel & hospitality",
+      "tech": "Nuxt",
+      "imageKbPerView": 3370,
+      "exactPct": 0,
+      "exactEstPct": 31.1,
+      "fixablePct": 58.8,
+      "savedKbPerView": 790
+    },
+    {
+      "id": "P032",
+      "category": "E-commerce & brands",
+      "tech": "Next.js",
+      "imageKbPerView": 3890,
+      "exactPct": 0.1,
+      "exactEstPct": 30,
+      "fixablePct": 49.6,
+      "savedKbPerView": 1420
+    },
+    {
+      "id": "P033",
+      "category": "Education",
+      "tech": "Next.js",
+      "imageKbPerView": 890,
+      "exactPct": 0.6,
+      "exactEstPct": 29.6,
+      "fixablePct": 59.6,
+      "savedKbPerView": 220
+    },
+    {
+      "id": "P034",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 420,
       "exactPct": 0,
       "exactEstPct": 29.6,
       "fixablePct": 68.2,
-      "savedKbPerView": 130,
-      "nextjs": true
+      "savedKbPerView": 130
     },
     {
-      "id": "P22",
-      "segment": "other",
+      "id": "P035",
+      "category": "Media & publishing",
+      "tech": "Other / unknown",
+      "imageKbPerView": 1790,
+      "exactPct": 27.3,
+      "exactEstPct": 29.1,
+      "fixablePct": 62.9,
+      "savedKbPerView": 940
+    },
+    {
+      "id": "P036",
+      "category": "Education",
+      "tech": "WordPress",
+      "imageKbPerView": 1300,
+      "exactPct": 0,
+      "exactEstPct": 27.7,
+      "fixablePct": 67.4,
+      "savedKbPerView": 490
+    },
+    {
+      "id": "P037",
+      "category": "Health & wellness",
+      "tech": "Shopify",
+      "imageKbPerView": 2250,
+      "exactPct": 11,
+      "exactEstPct": 26.9,
+      "fixablePct": 42.7,
+      "savedKbPerView": 590
+    },
+    {
+      "id": "P038",
+      "category": "Agencies & portfolios",
+      "tech": "Next.js",
+      "imageKbPerView": 2360,
+      "exactPct": 20.9,
+      "exactEstPct": 25.7,
+      "fixablePct": 54.5,
+      "savedKbPerView": 390
+    },
+    {
+      "id": "P039",
+      "category": "E-commerce & brands",
+      "tech": "Shopify",
+      "imageKbPerView": 2670,
+      "exactPct": 2.7,
+      "exactEstPct": 25.3,
+      "fixablePct": 41.6,
+      "savedKbPerView": 610
+    },
+    {
+      "id": "P040",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 420,
       "exactPct": 8.7,
       "exactEstPct": 25,
       "fixablePct": 32.4,
-      "savedKbPerView": 130,
-      "nextjs": true
+      "savedKbPerView": 130
     },
     {
-      "id": "P23",
-      "segment": "other",
+      "id": "P041",
+      "category": "Media & publishing",
+      "tech": "Shopify",
+      "imageKbPerView": 5310,
+      "exactPct": 5.2,
+      "exactEstPct": 24.8,
+      "fixablePct": 57.9,
+      "savedKbPerView": 1490
+    },
+    {
+      "id": "P042",
+      "category": "E-commerce & brands",
+      "tech": "Shopify",
+      "imageKbPerView": 2170,
+      "exactPct": 8.2,
+      "exactEstPct": 24.5,
+      "fixablePct": 46.7,
+      "savedKbPerView": 490
+    },
+    {
+      "id": "P043",
+      "category": "Health & wellness",
+      "tech": "Shopify",
+      "imageKbPerView": 5100,
+      "exactPct": 4.2,
+      "exactEstPct": 23.7,
+      "fixablePct": 45.4,
+      "savedKbPerView": 1280
+    },
+    {
+      "id": "P044",
+      "category": "E-commerce & brands",
+      "tech": "Shopify",
+      "imageKbPerView": 1290,
+      "exactPct": 1.6,
+      "exactEstPct": 23.1,
+      "fixablePct": 33.5,
+      "savedKbPerView": 260
+    },
+    {
+      "id": "P045",
+      "category": "Other",
+      "tech": "Next.js",
       "imageKbPerView": 830,
       "exactPct": 0.2,
       "exactEstPct": 21.9,
       "fixablePct": 36.8,
-      "savedKbPerView": 120,
-      "nextjs": true
+      "savedKbPerView": 120
     },
     {
-      "id": "P24",
-      "segment": "saas",
+      "id": "P046",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 380,
       "exactPct": 2.6,
       "exactEstPct": 21,
       "fixablePct": 52.8,
-      "savedKbPerView": 80,
-      "nextjs": true
+      "savedKbPerView": 80
     },
     {
-      "id": "P25",
-      "segment": "saas",
+      "id": "P047",
+      "category": "Marketplaces",
+      "tech": "Next.js",
       "imageKbPerView": 260,
       "exactPct": 3.2,
       "exactEstPct": 20.4,
       "fixablePct": 30.8,
-      "savedKbPerView": 60,
-      "nextjs": true
+      "savedKbPerView": 60
     },
     {
-      "id": "P26",
-      "segment": "saas",
+      "id": "P048",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 870,
       "exactPct": 0,
       "exactEstPct": 19.8,
       "fixablePct": 40.4,
-      "savedKbPerView": 160,
-      "nextjs": true
+      "savedKbPerView": 160
     },
     {
-      "id": "P27",
-      "segment": "saas",
+      "id": "P049",
+      "category": "Marketplaces",
+      "tech": "Shopify",
+      "imageKbPerView": 2660,
+      "exactPct": 3.7,
+      "exactEstPct": 19.6,
+      "fixablePct": 51.2,
+      "savedKbPerView": 460
+    },
+    {
+      "id": "P050",
+      "category": "Education",
+      "tech": "Next.js",
+      "imageKbPerView": 1810,
+      "exactPct": 8.5,
+      "exactEstPct": 19.5,
+      "fixablePct": 38.3,
+      "savedKbPerView": 410
+    },
+    {
+      "id": "P051",
+      "category": "Media & publishing",
+      "tech": "WordPress",
+      "imageKbPerView": 3120,
+      "exactPct": 7.7,
+      "exactEstPct": 18.8,
+      "fixablePct": 72.1,
+      "savedKbPerView": 680
+    },
+    {
+      "id": "P052",
+      "category": "Real estate",
+      "tech": "Next.js",
+      "imageKbPerView": 480,
+      "exactPct": 4.3,
+      "exactEstPct": 18.6,
+      "fixablePct": 21.9,
+      "savedKbPerView": 90
+    },
+    {
+      "id": "P053",
+      "category": "Finance",
+      "tech": "Other / unknown",
+      "imageKbPerView": 1610,
+      "exactPct": 10.2,
+      "exactEstPct": 18.5,
+      "fixablePct": 74.2,
+      "savedKbPerView": 240
+    },
+    {
+      "id": "P054",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 2120,
       "exactPct": 0,
       "exactEstPct": 17.9,
       "fixablePct": 77.9,
-      "savedKbPerView": 360,
-      "nextjs": true
+      "savedKbPerView": 360
     },
     {
-      "id": "P28",
-      "segment": "saas",
+      "id": "P055",
+      "category": "E-commerce & brands",
+      "tech": "Shopify",
+      "imageKbPerView": 3070,
+      "exactPct": 13.9,
+      "exactEstPct": 17.3,
+      "fixablePct": 68,
+      "savedKbPerView": 470
+    },
+    {
+      "id": "P056",
+      "category": "Travel & hospitality",
+      "tech": "WordPress",
+      "imageKbPerView": 1650,
+      "exactPct": 7.9,
+      "exactEstPct": 16.9,
+      "fixablePct": 52.5,
+      "savedKbPerView": 320
+    },
+    {
+      "id": "P057",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 280,
       "exactPct": 0.4,
       "exactEstPct": 16.7,
       "fixablePct": 64.4,
-      "savedKbPerView": 50,
-      "nextjs": true
+      "savedKbPerView": 50
     },
     {
-      "id": "P29",
-      "segment": "saas",
+      "id": "P058",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 380,
       "exactPct": 0,
       "exactEstPct": 16.4,
       "fixablePct": 35,
-      "savedKbPerView": 50,
-      "nextjs": true
+      "savedKbPerView": 50
     },
     {
-      "id": "P30",
-      "segment": "saas",
+      "id": "P059",
+      "category": "Marketplaces",
+      "tech": "Next.js",
+      "imageKbPerView": 4090,
+      "exactPct": 0,
+      "exactEstPct": 16.3,
+      "fixablePct": 51.9,
+      "savedKbPerView": 830
+    },
+    {
+      "id": "P060",
+      "category": "Real estate",
+      "tech": "Next.js",
+      "imageKbPerView": 1070,
+      "exactPct": 14,
+      "exactEstPct": 15.9,
+      "fixablePct": 39.9,
+      "savedKbPerView": 170
+    },
+    {
+      "id": "P061",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1150,
       "exactPct": 5.2,
       "exactEstPct": 15.7,
       "fixablePct": 56.4,
-      "savedKbPerView": 200,
-      "nextjs": true
+      "savedKbPerView": 200
     },
     {
-      "id": "P31",
-      "segment": "saas",
+      "id": "P062",
+      "category": "Finance",
+      "tech": "Next.js",
+      "imageKbPerView": 260,
+      "exactPct": 6.1,
+      "exactEstPct": 15.7,
+      "fixablePct": 36.7,
+      "savedKbPerView": 60
+    },
+    {
+      "id": "P063",
+      "category": "Agencies & portfolios",
+      "tech": "Next.js",
+      "imageKbPerView": 820,
+      "exactPct": 2.5,
+      "exactEstPct": 14.2,
+      "fixablePct": 16,
+      "savedKbPerView": 120
+    },
+    {
+      "id": "P064",
+      "category": "Health & wellness",
+      "tech": "Next.js",
+      "imageKbPerView": 2710,
+      "exactPct": 0.6,
+      "exactEstPct": 13.3,
+      "fixablePct": 42.7,
+      "savedKbPerView": 50
+    },
+    {
+      "id": "P065",
+      "category": "Education",
+      "tech": "Next.js",
+      "imageKbPerView": 110,
+      "exactPct": 0,
+      "exactEstPct": 13.3,
+      "fixablePct": 17.9,
+      "savedKbPerView": 10
+    },
+    {
+      "id": "P066",
+      "category": "E-commerce & brands",
+      "tech": "Next.js",
+      "imageKbPerView": 470,
+      "exactPct": 11.2,
+      "exactEstPct": 12.8,
+      "fixablePct": 26.8,
+      "savedKbPerView": 60
+    },
+    {
+      "id": "P067",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 1000,
       "exactPct": 0,
       "exactEstPct": 12.4,
       "fixablePct": 35.4,
-      "savedKbPerView": 160,
-      "nextjs": true
+      "savedKbPerView": 160
     },
     {
-      "id": "P32",
-      "segment": "agency",
+      "id": "P068",
+      "category": "Agencies & portfolios",
+      "tech": "Next.js",
       "imageKbPerView": 680,
       "exactPct": 0,
       "exactEstPct": 12.2,
       "fixablePct": 35.1,
-      "savedKbPerView": 80,
-      "nextjs": true
+      "savedKbPerView": 80
     },
     {
-      "id": "P33",
-      "segment": "saas",
+      "id": "P069",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 8320,
       "exactPct": 0,
       "exactEstPct": 11.8,
       "fixablePct": 64.5,
-      "savedKbPerView": 1240,
-      "nextjs": true
+      "savedKbPerView": 1240
     },
     {
-      "id": "P34",
-      "segment": "saas",
+      "id": "P070",
+      "category": "Finance",
+      "tech": "Other / unknown",
+      "imageKbPerView": 1640,
+      "exactPct": 0,
+      "exactEstPct": 11.4,
+      "fixablePct": 24.6,
+      "savedKbPerView": 330
+    },
+    {
+      "id": "P071",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 540,
       "exactPct": 8.3,
       "exactEstPct": 10.8,
       "fixablePct": 23.5,
-      "savedKbPerView": 70,
-      "nextjs": true
+      "savedKbPerView": 70
     },
     {
-      "id": "P35",
-      "segment": "saas",
+      "id": "P072",
+      "category": "Education",
+      "tech": "Webflow",
+      "imageKbPerView": 820,
+      "exactPct": 8,
+      "exactEstPct": 10.4,
+      "fixablePct": 28.9,
+      "savedKbPerView": 100
+    },
+    {
+      "id": "P073",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 770,
       "exactPct": 0,
       "exactEstPct": 9.4,
       "fixablePct": 21.3,
-      "savedKbPerView": 70,
-      "nextjs": true
+      "savedKbPerView": 70
     },
     {
-      "id": "P36",
-      "segment": "saas",
+      "id": "P074",
+      "category": "Real estate",
+      "tech": "Other / unknown",
+      "imageKbPerView": 50,
+      "exactPct": 0,
+      "exactEstPct": 9,
+      "fixablePct": 26.5,
+      "savedKbPerView": 10
+    },
+    {
+      "id": "P075",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 1490,
       "exactPct": 2.7,
       "exactEstPct": 8.6,
       "fixablePct": 49.6,
-      "savedKbPerView": 160,
-      "nextjs": true
+      "savedKbPerView": 160
     },
     {
-      "id": "P37",
-      "segment": "saas",
+      "id": "P076",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1110,
       "exactPct": 4.6,
       "exactEstPct": 8.4,
       "fixablePct": 30.9,
-      "savedKbPerView": 60,
-      "nextjs": true
+      "savedKbPerView": 60
     },
     {
-      "id": "P38",
-      "segment": "saas",
+      "id": "P077",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 4960,
       "exactPct": 1.4,
       "exactEstPct": 8.1,
       "fixablePct": 24.3,
-      "savedKbPerView": 390,
-      "nextjs": true
+      "savedKbPerView": 390
     },
     {
-      "id": "P39",
-      "segment": "saas",
+      "id": "P078",
+      "category": "Other",
+      "tech": "Next.js",
       "imageKbPerView": 880,
       "exactPct": 4.5,
       "exactEstPct": 8,
       "fixablePct": 27.6,
-      "savedKbPerView": 70,
-      "nextjs": true
+      "savedKbPerView": 70
     },
     {
-      "id": "P40",
-      "segment": "other",
+      "id": "P079",
+      "category": "Real estate",
+      "tech": "Next.js",
       "imageKbPerView": 3640,
       "exactPct": 7.2,
       "exactEstPct": 7.5,
       "fixablePct": 38.4,
-      "savedKbPerView": 280,
-      "nextjs": true
+      "savedKbPerView": 280
     },
     {
-      "id": "P41",
-      "segment": "agency",
+      "id": "P080",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 1000,
       "exactPct": 5.6,
       "exactEstPct": 7.3,
       "fixablePct": 58.6,
-      "savedKbPerView": 60,
-      "nextjs": true
+      "savedKbPerView": 60
     },
     {
-      "id": "P42",
-      "segment": "saas",
+      "id": "P081",
+      "category": "Agencies & portfolios",
+      "tech": "Other / unknown",
+      "imageKbPerView": 760,
+      "exactPct": 0,
+      "exactEstPct": 6.8,
+      "fixablePct": 7.8,
+      "savedKbPerView": 100
+    },
+    {
+      "id": "P082",
+      "category": "Real estate",
+      "tech": "Next.js",
       "imageKbPerView": 2770,
       "exactPct": 0,
       "exactEstPct": 6.6,
       "fixablePct": 72.5,
-      "savedKbPerView": 190,
-      "nextjs": true
+      "savedKbPerView": 190
     },
     {
-      "id": "P43",
-      "segment": "saas",
+      "id": "P083",
+      "category": "Marketplaces",
+      "tech": "Next.js",
+      "imageKbPerView": 6180,
+      "exactPct": 0,
+      "exactEstPct": 6.2,
+      "fixablePct": 19.7,
+      "savedKbPerView": 150
+    },
+    {
+      "id": "P084",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 2440,
       "exactPct": 0,
       "exactEstPct": 5.7,
       "fixablePct": 72.4,
-      "savedKbPerView": 150,
-      "nextjs": true
+      "savedKbPerView": 150
     },
     {
-      "id": "P44",
-      "segment": "shop",
+      "id": "P085",
+      "category": "Travel & hospitality",
+      "tech": "Other / unknown",
+      "imageKbPerView": 4100,
+      "exactPct": 0,
+      "exactEstPct": 5.4,
+      "fixablePct": 39.9,
+      "savedKbPerView": 130
+    },
+    {
+      "id": "P086",
+      "category": "Marketplaces",
+      "tech": "Other / unknown",
+      "imageKbPerView": 1660,
+      "exactPct": 4.8,
+      "exactEstPct": 5.3,
+      "fixablePct": 27.7,
+      "savedKbPerView": 130
+    },
+    {
+      "id": "P087",
+      "category": "Real estate",
+      "tech": "Other / unknown",
+      "imageKbPerView": 150,
+      "exactPct": 0,
+      "exactEstPct": 5.3,
+      "fixablePct": 20.5,
+      "savedKbPerView": 10
+    },
+    {
+      "id": "P088",
+      "category": "Education",
+      "tech": "Webflow",
+      "imageKbPerView": 1010,
+      "exactPct": 4.5,
+      "exactEstPct": 4.5,
+      "fixablePct": 11.4,
+      "savedKbPerView": 90
+    },
+    {
+      "id": "P089",
+      "category": "Agencies & portfolios",
+      "tech": "Nuxt",
+      "imageKbPerView": 210,
+      "exactPct": 0,
+      "exactEstPct": 3.3,
+      "fixablePct": 3.3,
+      "savedKbPerView": 20
+    },
+    {
+      "id": "P090",
+      "category": "Health & wellness",
+      "tech": "Other / unknown",
+      "imageKbPerView": 1800,
+      "exactPct": 0,
+      "exactEstPct": 3,
+      "fixablePct": 34,
+      "savedKbPerView": 80
+    },
+    {
+      "id": "P091",
+      "category": "Health & wellness",
+      "tech": "Next.js",
       "imageKbPerView": 1230,
       "exactPct": 0,
       "exactEstPct": 2.6,
       "fixablePct": 11.1,
-      "savedKbPerView": 20,
-      "nextjs": true
+      "savedKbPerView": 20
     },
     {
-      "id": "P45",
-      "segment": "other",
+      "id": "P092",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1400,
       "exactPct": 0,
       "exactEstPct": 2.5,
       "fixablePct": 2.6,
-      "savedKbPerView": 10,
-      "nextjs": true
+      "savedKbPerView": 10
     },
     {
-      "id": "P46",
-      "segment": "saas",
+      "id": "P093",
+      "category": "Finance",
+      "tech": "Next.js",
+      "imageKbPerView": 240,
+      "exactPct": 0.5,
+      "exactEstPct": 2.2,
+      "fixablePct": 11.6,
+      "savedKbPerView": 10
+    },
+    {
+      "id": "P094",
+      "category": "Travel & hospitality",
+      "tech": "WordPress",
+      "imageKbPerView": 1840,
+      "exactPct": 1.8,
+      "exactEstPct": 1.8,
+      "fixablePct": 25.1,
+      "savedKbPerView": 50
+    },
+    {
+      "id": "P095",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 1500,
       "exactPct": 1.2,
       "exactEstPct": 1.8,
       "fixablePct": 23.7,
-      "savedKbPerView": 40,
-      "nextjs": true
+      "savedKbPerView": 40
     },
     {
-      "id": "P47",
-      "segment": "saas",
+      "id": "P096",
+      "category": "Developer tools",
+      "tech": "Next.js",
       "imageKbPerView": 1220,
       "exactPct": 0,
       "exactEstPct": 1.2,
       "fixablePct": 35.2,
-      "savedKbPerView": 30,
-      "nextjs": true
+      "savedKbPerView": 30
     },
     {
-      "id": "P48",
-      "segment": "saas",
+      "id": "P097",
+      "category": "Agencies & portfolios",
+      "tech": "WordPress",
+      "imageKbPerView": 1200,
+      "exactPct": 0.2,
+      "exactEstPct": 1.1,
+      "fixablePct": 12.4,
+      "savedKbPerView": 20
+    },
+    {
+      "id": "P098",
+      "category": "Marketplaces",
+      "tech": "Other / unknown",
+      "imageKbPerView": 780,
+      "exactPct": 0,
+      "exactEstPct": 1.1,
+      "fixablePct": 8,
+      "savedKbPerView": 10
+    },
+    {
+      "id": "P099",
+      "category": "AI & SaaS",
+      "tech": "Next.js",
       "imageKbPerView": 230,
       "exactPct": 0.1,
       "exactEstPct": 0.2,
       "fixablePct": 7.4,
-      "savedKbPerView": 0,
-      "nextjs": true
+      "savedKbPerView": 0
     },
     {
-      "id": "P49",
-      "segment": "saas",
+      "id": "P100",
+      "category": "Travel & hospitality",
+      "tech": "Other / unknown",
+      "imageKbPerView": 2840,
+      "exactPct": 0,
+      "exactEstPct": 0.1,
+      "fixablePct": 5.5,
+      "savedKbPerView": 0
+    },
+    {
+      "id": "P101",
+      "category": "Finance",
+      "tech": "Next.js",
       "imageKbPerView": 3450,
       "exactPct": 0,
       "exactEstPct": 0,
       "fixablePct": 0,
-      "savedKbPerView": 0,
-      "nextjs": true
+      "savedKbPerView": 0
+    },
+    {
+      "id": "P102",
+      "category": "Media & publishing",
+      "tech": "Next.js",
+      "imageKbPerView": 1560,
+      "exactPct": 0,
+      "exactEstPct": 0,
+      "fixablePct": 0,
+      "savedKbPerView": 0
+    },
+    {
+      "id": "P103",
+      "category": "Finance",
+      "tech": "Next.js",
+      "imageKbPerView": 110,
+      "exactPct": 0,
+      "exactEstPct": 0,
+      "fixablePct": 0,
+      "savedKbPerView": 0
+    },
+    {
+      "id": "P104",
+      "category": "Marketplaces",
+      "tech": "Other / unknown",
+      "imageKbPerView": 30,
+      "exactPct": 0,
+      "exactEstPct": 0,
+      "fixablePct": 0,
+      "savedKbPerView": 0
     }
   ],
   "summary": {
-    "medianKbPerView": 1330,
-    "medianExactEstPct": 20.4,
-    "medianFixablePct": 58.6,
-    "shareAtLeast20Pct": 51,
-    "totalSavedKbPerView": 76570
-  }
+    "medianKbPerView": 1590,
+    "medianExactEstPct": 18.6,
+    "medianFixablePct": 49.1,
+    "shareAtLeast20Pct": 45.2,
+    "totalSavedKbPerView": 115980,
+    "p25ExactEstPct": 7.9,
+    "p75ExactEstPct": 36.2,
+    "byTech": [
+      {
+        "tech": "Next.js",
+        "count": 69,
+        "medianKbPerView": 1330,
+        "medianExactEstPct": 18.6
+      },
+      {
+        "tech": "Other / unknown",
+        "count": 14,
+        "medianKbPerView": 1650,
+        "medianExactEstPct": 6.1
+      },
+      {
+        "tech": "Shopify",
+        "count": 9,
+        "medianKbPerView": 2670,
+        "medianExactEstPct": 24.5
+      },
+      {
+        "tech": "WordPress",
+        "count": 5,
+        "medianKbPerView": 1650,
+        "medianExactEstPct": 16.9
+      },
+      {
+        "tech": "Nuxt",
+        "count": 4,
+        "medianKbPerView": 1870,
+        "medianExactEstPct": 33.2
+      },
+      {
+        "tech": "Webflow",
+        "count": 3,
+        "medianKbPerView": 1010,
+        "medianExactEstPct": 10.4
+      }
+    ]
+  },
+  "byCategory": [
+    {
+      "category": "AI & SaaS",
+      "count": 28,
+      "medianKbPerView": 1450,
+      "medianExactEstPct": 32,
+      "medianFixablePct": 67.5,
+      "medianSavedKbPerView": 360
+    },
+    {
+      "category": "E-commerce & brands",
+      "count": 9,
+      "medianKbPerView": 3070,
+      "medianExactEstPct": 25.3,
+      "medianFixablePct": 49.6,
+      "medianSavedKbPerView": 610
+    },
+    {
+      "category": "Finance",
+      "count": 9,
+      "medianKbPerView": 1610,
+      "medianExactEstPct": 15.7,
+      "medianFixablePct": 36.7,
+      "medianSavedKbPerView": 240
+    },
+    {
+      "category": "Developer tools",
+      "count": 8,
+      "medianKbPerView": 930,
+      "medianExactEstPct": 10.1,
+      "medianFixablePct": 37.9,
+      "medianSavedKbPerView": 110
+    },
+    {
+      "category": "Education",
+      "count": 8,
+      "medianKbPerView": 950,
+      "medianExactEstPct": 23.6,
+      "medianFixablePct": 49,
+      "medianSavedKbPerView": 220
+    },
+    {
+      "category": "Marketplaces",
+      "count": 7,
+      "medianKbPerView": 1660,
+      "medianExactEstPct": 6.2,
+      "medianFixablePct": 27.7,
+      "medianSavedKbPerView": 130
+    },
+    {
+      "category": "Health & wellness",
+      "count": 7,
+      "medianKbPerView": 2470,
+      "medianExactEstPct": 23.7,
+      "medianFixablePct": 42.7,
+      "medianSavedKbPerView": 590
+    },
+    {
+      "category": "Real estate",
+      "count": 7,
+      "medianKbPerView": 1070,
+      "medianExactEstPct": 9,
+      "medianFixablePct": 38.4,
+      "medianSavedKbPerView": 170
+    },
+    {
+      "category": "Agencies & portfolios",
+      "count": 7,
+      "medianKbPerView": 820,
+      "medianExactEstPct": 12.2,
+      "medianFixablePct": 16,
+      "medianSavedKbPerView": 100
+    },
+    {
+      "category": "Media & publishing",
+      "count": 6,
+      "medianKbPerView": 3050,
+      "medianExactEstPct": 27,
+      "medianFixablePct": 63.4,
+      "medianSavedKbPerView": 1220
+    },
+    {
+      "category": "Travel & hospitality",
+      "count": 5,
+      "medianKbPerView": 2840,
+      "medianExactEstPct": 5.4,
+      "medianFixablePct": 39.9,
+      "medianSavedKbPerView": 130
+    },
+    {
+      "category": "Other",
+      "count": 3,
+      "medianKbPerView": 880,
+      "medianExactEstPct": 21.9,
+      "medianFixablePct": 36.8,
+      "medianSavedKbPerView": 120
+    }
+  ]
 }
