@@ -33,3 +33,7 @@ loads the pages a browser loads, and it checks robots.txt first.
 
 **Is there a demo that needs no install?** Yes. The [demo](/demo) runs in your browser and measures a file you drop. Its numbers are
 browser estimates and are not the CLI's.
+
+**How long does the demo take on a phone?** On a mid-range phone, expect about 9–13 s for a 1200 px photo, and up to about 56 s at
+4000 px, with AVIF on. With the phone-only set (devices reporting 4 GB or less), a 4000 px photo takes 13–19 s. These are proxies
+measured on a desktop CPU, not on a real phone. AVIF is the slowest codec, so skipping it is the quickest way to a result.
