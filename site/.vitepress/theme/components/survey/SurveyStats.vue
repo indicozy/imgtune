@@ -10,6 +10,10 @@ const props = withDefaults(defineProps<{ tiles?: TileKey[] }>(), {
 
 const s = survey.summary;
 const medianExact = median(survey.sites.map((x) => x.exactPct));
+// KB = 1000 bytes, as everywhere on the site. From 10,000 KB the total reads in MB.
+const totalKb = s.totalSavedKbPerView;
+const totalValue = totalKb >= 10000 ? (totalKb / 1000).toFixed(1) : fmtInt(totalKb);
+const totalUnit = totalKb >= 10000 ? "MB" : "KB";
 const countAt20 = survey.sites.filter((x) => x.exactEstPct >= 20).length;
 
 const all = computed(() => [
@@ -31,10 +35,10 @@ const all = computed(() => [
   },
   {
     key: "totalSaved" as TileKey,
-    value: fmtInt(s.totalSavedKbPerView),
-    unit: "KB",
-    label: "saved per view, all sites together",
-    sub: "sum over every site",
+    value: totalValue,
+    unit: totalUnit,
+    label: "saved per page view, summed over all sites",
+    sub: "",
   },
 ]);
 
@@ -44,7 +48,7 @@ const visible = computed(() => all.value.filter((t) => props.tiles.includes(t.ke
 <template>
   <ul class="stats" :style="{ '--cols': visible.length }">
     <li v-for="t in visible" :key="t.key" class="tile">
-      <span class="value">{{ t.value }}<span v-if="t.unit" class="unit">{{ t.unit }}</span></span>
+      <span class="value"><span class="num">{{ t.value }}</span><span v-if="t.unit" class="unit">{{ t.unit }}</span></span>
       <span class="label">{{ t.label }}</span>
       <span v-if="t.sub" class="sub">{{ t.sub }}</span>
     </li>
@@ -74,12 +78,13 @@ const visible = computed(() => all.value.filter((t) => props.tiles.includes(t.ke
   grid-column: 1 / -1;
 }
 .value {
+  white-space: nowrap;
   font: 600 clamp(1.25rem, 1.05rem + 0.6vw, 1.45rem) / 1 var(--scan-mono);
   color: var(--scan-ink);
   letter-spacing: -0.02em;
-  overflow-wrap: anywhere;
 }
 .unit {
+  white-space: nowrap;
   margin-left: 0.2em;
   font-size: 0.5em;
   color: var(--scan-muted);

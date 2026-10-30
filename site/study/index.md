@@ -13,6 +13,10 @@ kept private, because it names the production sites. Here they are anonymous: A1
 <script setup>
 import study from "../data/study.json";
 import survey from "../data/survey.json";
+import SurveyStats from "../.vitepress/theme/components/survey/SurveyStats.vue";
+import SavingDistribution from "../.vitepress/theme/components/survey/SavingDistribution.vue";
+import CategoryBars from "../.vitepress/theme/components/survey/CategoryBars.vue";
+import WeightVsSaving from "../.vitepress/theme/components/survey/WeightVsSaving.vue";
 
 const scanWhen =
   survey.scannedFrom === survey.scannedTo ? survey.scannedFrom : `${survey.scannedFrom} to ${survey.scannedTo}`;

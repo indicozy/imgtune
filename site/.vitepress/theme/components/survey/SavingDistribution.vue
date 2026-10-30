@@ -83,7 +83,7 @@ const label = (s: SurveySite) =>
   <figure class="survey-figure">
     <div class="survey-head">
       <div class="survey-title" role="heading" aria-level="3">How much each site could save</div>
-      <p class="survey-takeaway">{{ takeaway }}</p>
+      <p v-if="!compact" class="survey-takeaway">{{ takeaway }}</p>
     </div>
     <div ref="root" class="survey-chart">
       <svg
