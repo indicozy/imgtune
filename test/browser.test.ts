@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ChromiumMissingError, MISSING_CHROMIUM_MESSAGE, mapLaunchError } from "../src/browser.js";
+import { CHROMIUM_ARGS, ChromiumMissingError, MISSING_CHROMIUM_MESSAGE, mapLaunchError } from "../src/browser.js";
 
 describe("mapLaunchError", () => {
   it("maps Playwright's missing-executable error to the one-line install hint", () => {
@@ -20,5 +20,12 @@ describe("mapLaunchError", () => {
     const err = new Error("Target page, context or browser has been closed");
     expect(mapLaunchError(err)).toBe(err);
     expect(mapLaunchError("boom")).toBe("boom");
+  });
+});
+
+describe("CHROMIUM_ARGS", () => {
+  it("keeps the GPU process and SwiftShader out of the measuring browser", () => {
+    expect(CHROMIUM_ARGS).toContain("--disable-gpu");
+    expect(CHROMIUM_ARGS).toContain("--disable-software-rasterizer");
   });
 });

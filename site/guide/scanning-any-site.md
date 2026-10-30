@@ -37,6 +37,10 @@ The six viewport names are `iphone-se`, `iphone-15`, `pixel-7`, `iphone-15-pro-m
 
 Scan only the sites you own, and scan each one once unless you need more.
 
+## CPU use
+
+scan keeps Chrome on the CPUs it was started with (e.g. `taskset -c 8-19 npx imgtune scan …`).
+
 ## Reading the result
 
 The JSON for each page has the numbers listed in [Output JSON fields](/reference/output-json). The short version:
