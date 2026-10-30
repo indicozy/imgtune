@@ -18,6 +18,7 @@ import {
   clampWidth,
   guardedLookup,
   isLocalTarget,
+  refusedAddress,
   ipv6Bytes,
   isBlockedAddress,
   duplicatesOf,
@@ -730,6 +731,27 @@ describe("isLocalTarget (private access comes from the target literal only)", ()
       "",
     ]) {
       expect(isLocalTarget(url), url).toBe(false);
+    }
+  });
+});
+
+describe("the private allowance excludes cloud metadata endpoints", () => {
+  it("refuses metadata, link-local and unspecified addresses for a local target, and allows loopback and RFC 1918", () => {
+    for (const address of [
+      "169.254.169.254",
+      "fd00:ec2::254",
+      "::ffff:169.254.169.254",
+      "100.100.100.200",
+      "169.254.1.1",
+      "fe80::1",
+      "0.0.0.0",
+      "224.0.0.1",
+      "::ffff:100.100.100.200",
+    ]) {
+      expect(refusedAddress(address, true), address).toBe(true);
+    }
+    for (const address of ["127.0.0.1", "192.168.1.10", "10.0.0.5", "::1", "fd12:3456::1"]) {
+      expect(refusedAddress(address, true), address).toBe(false);
     }
   });
 });

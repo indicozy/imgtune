@@ -135,7 +135,34 @@ export function isPrivateAddress(address: string): boolean {
  */
 export function refusedAddress(address: string, allowPrivate: boolean): boolean {
   if (!isBlockedAddress(address)) return false;
-  return !(allowPrivate && isPrivateAddress(address));
+  if (!allowPrivate) return true;
+  // The private allowance is narrower than the private ranges: cloud metadata endpoints sit inside them (fd00:ec2::/64
+  // inside fc00::/7), so they are refused even for a local target.
+  if (ALWAYS_REFUSED.check(address, ipFamily(address))) return true;
+  const unwrapped = mappedIPv4(address);
+  if (unwrapped !== undefined && ALWAYS_REFUSED.check(unwrapped, "ipv4")) return true;
+  return !isPrivateAddress(address);
+}
+
+/** Refused for a local target too: link-local, cloud metadata endpoints and the unspecified network. */
+const ALWAYS_REFUSED = new BlockList();
+for (const [net, prefix] of [["169.254.0.0", 16], ["100.100.100.200", 32], ["0.0.0.0", 8]] as const) {
+  ALWAYS_REFUSED.addSubnet(net, prefix, "ipv4");
+}
+for (const [net, prefix] of [["fe80::", 10], ["fd00:ec2::", 64]] as const) {
+  ALWAYS_REFUSED.addSubnet(net, prefix, "ipv6");
+}
+
+/** The IPv4 address inside an IPv4-mapped IPv6 address (::ffff:a.b.c.d), or undefined. */
+function mappedIPv4(address: string): string | undefined {
+  const bytes = isIP(address) === 6 ? ipv6Bytes(address) : undefined;
+  if (!bytes || !bytes.subarray(0, 10).every((b) => b === 0) || bytes[10] !== 0xff || bytes[11] !== 0xff) return undefined;
+  return `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+}
+
+/** Family of a parsed address, for BlockList checks. Unparsable text is treated as IPv6 (no entry matches it). */
+function ipFamily(address: string): "ipv4" | "ipv6" {
+  return isIP(address) === 4 ? "ipv4" : "ipv6";
 }
 
 /**
@@ -162,7 +189,11 @@ export function isLocalTarget(url: string): boolean {
  * (see refusedAddress). The socket then connects to the address that was checked, so a DNS answer that changes later
  * cannot redirect it.
  */
-export function guardedLookup(resolver: Resolver, allowPrivate = false): LookupFunction {
+export function guardedLookup(
+  resolver: Resolver,
+  allowPrivate = false,
+  connectAddress?: (address: string) => string,
+): LookupFunction {
   return ((hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
     resolver(hostname).then(
       (addresses) => {
@@ -170,8 +201,10 @@ export function guardedLookup(resolver: Resolver, allowPrivate = false): LookupF
           callback(new Error(`refused: ${hostname} resolves to a blocked address`));
           return;
         }
-        if (options.all) callback(null, addresses);
-        else callback(null, addresses[0].address, addresses[0].family);
+        // The checked addresses are what the socket connects to; connectAddress maps them only in tests.
+        const connect = connectAddress ? addresses.map((a) => ({ ...a, address: connectAddress(a.address) })) : addresses;
+        if (options.all) callback(null, connect);
+        else callback(null, connect[0].address, connect[0].family);
       },
       (err: unknown) => callback(err),
     );
