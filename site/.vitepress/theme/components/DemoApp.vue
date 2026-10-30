@@ -306,6 +306,10 @@ function updateCompare() {
         Browser estimate. Bytes of the best candidate that scores at least {{ PASS_FLOOR }} on SSIMULACRA2, against the file's
         size. Ran in {{ (ranTotalMs / 1000).toFixed(1) }} s on this device.
       </p>
+      <p class="scan-note">
+        On a mid-range phone expect about 9–13 s for a 1200 px photo, and up to about 56 s at 4000 px, with AVIF on (13–19 s at
+        4000 px with the phone-only set). These are proxies measured on a desktop CPU, not a real phone.
+      </p>
       <div class="tablewrap">
         <table>
           <thead>
