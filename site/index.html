@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>imgtune: find the image bytes your pages don't need</title>
+<meta name="description" content="imgtune scans a live page at six viewports, finds its images, and measures the bytes a smaller size or quality would save. Open source, MIT.">
+<link rel="canonical" href="https://indicozy.github.io/imgtune/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: light dark;
+    --paper: #F5F6F3;
+    --ink: #171B1C;
+    --muted: #5A6462;
+    --rule: #D3D9D5;
+    --track: #E3E8E5;
+    --accent: #00737B;
+    --exact: #1D6B3C;
+    --est: #8A5200;
+    --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+    --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0E1213;
+      --ink: #E4EAE7;
+      --muted: #9AA6A2;
+      --rule: #2A3331;
+      --track: #1B2220;
+      --accent: #5ED0D6;
+      --exact: #7CD79B;
+      --est: #E8B45C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0E1213;
+    --ink: #E4EAE7;
+    --muted: #9AA6A2;
+    --rule: #2A3331;
+    --track: #1B2220;
+    --accent: #5ED0D6;
+    --exact: #7CD79B;
+    --est: #E8B45C;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 1rem/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-wrap: break-word;
+  }
+  a { color: inherit; text-decoration-color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { text-decoration-thickness: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+  code, pre, .mono { font-family: var(--mono); font-size: 0.875em; }
+  img, svg { display: block; max-width: 100%; }
+
+  .wrap { width: 100%; max-width: 60rem; margin: 0 auto; padding: 0 1rem; }
+  .col { max-width: 40rem; }
+  section { padding: 3.5rem 0; border-top: 1px solid var(--rule); }
+  h1, h2, h3 { margin: 0; font-weight: 400; line-height: 1.05; }
+  h2 { font-family: var(--serif); font-size: clamp(2rem, 1.4rem + 2.6vw, 2.75rem); letter-spacing: -0.01em; }
+  h3 { font: 600 1rem/1.3 var(--sans); }
+  p { margin: 0 0 1rem; }
+  p.lede { font-size: 1.125rem; line-height: 1.55; color: var(--muted); }
+  .note { font-size: 0.9375rem; color: var(--muted); }
+
+  /* hero */
+  header.hero { padding: 2.5rem 0 3rem; }
+  .brand { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; font: 500 0.9375rem var(--sans); margin-bottom: 3rem; }
+  .brand .mark { font-family: var(--mono); }
+  h1 { font-family: var(--serif); font-size: clamp(2.5rem, 1.2rem + 6vw, 4.75rem); letter-spacing: -0.02em; line-height: 0.98; max-width: 14ch; }
+  header.hero p.lede { margin-top: 1.5rem; max-width: 36rem; }
+
+  .cmd {
+    position: relative;
+    margin: 2rem 0 0;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--track);
+    padding: 0.875rem 1rem;
+    padding-right: 4.5rem;
+  }
+  .cmd code { display: block; white-space: pre; overflow-x: auto; color: var(--ink); }
+  .cmd .copy {
+    position: absolute; top: 0.5rem; right: 0.5rem;
+    font: 500 0.8125rem var(--sans); color: var(--muted);
+    background: transparent; border: 1px solid var(--rule); border-radius: 4px;
+    padding: 0.25rem 0.5rem; cursor: pointer;
+  }
+  .cmd .copy:hover { color: var(--ink); }
+
+  .links { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; margin: 1.5rem 0 0; font-weight: 500; }
+
+  .gauge { margin: 3.5rem 0 0; }
+  .gauge figcaption { margin-top: 0.75rem; }
+  .gauge svg text { font: 400 13px var(--mono); fill: var(--muted); }
+  .gauge svg .big { fill: var(--ink); }
+  .gauge svg text { fill: var(--muted); }
+
+  /* how */
+  ol.steps { list-style: none; margin: 2rem 0 0; padding: 0; counter-reset: s; }
+  ol.steps li {
+    display: grid; grid-template-columns: 2rem 1fr; gap: 0.25rem 0.75rem;
+    padding: 1rem 0; border-top: 1px solid var(--rule);
+  }
+  ol.steps li:last-child { border-bottom: 1px solid var(--rule); }
+  ol.steps .n { font-family: var(--mono); color: var(--accent); font-size: 0.875rem; padding-top: 0.2rem; }
+  ol.steps p { margin: 0; }
+
+  /* commands */
+  dl.cmds { margin: 2rem 0 0; }
+  dl.cmds > div { padding: 1.25rem 0; border-top: 1px solid var(--rule); }
+  dl.cmds > div:last-child { border-bottom: 1px solid var(--rule); }
+  dl.cmds dt { font-family: var(--mono); font-size: 1rem; font-weight: 500; color: var(--accent); }
+  dl.cmds dd { margin: 0.25rem 0 0; }
+  dl.cmds dd code { display: inline-block; margin-top: 0.5rem; white-space: pre-wrap; word-break: break-all; color: var(--ink); }
+  .sub { margin-top: 2rem; }
+
+  /* study */
+  .table-wrap { margin-top: 2rem; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+  thead th { font-weight: 500; color: var(--muted); font-size: 0.875rem; border-bottom: 1px solid var(--ink); }
+  td .sm { display: block; color: var(--muted); font-size: 0.8125rem; }
+  td.est { color: var(--est); font-weight: 600; }
+  td.exact { color: var(--exact); font-weight: 600; }
+  tbody tr.group th { text-align: left; padding: 1.25rem 0 0.5rem; font-family: var(--serif); font-weight: 400; font-size: 1.25rem; border: 0; color: var(--ink); }
+  .bars { display: grid; gap: 0.5rem; margin-top: 2rem; }
+  .bars .row { display: grid; grid-template-columns: 2.25rem 1fr 3.5rem; align-items: center; gap: 0.75rem; font: 400 0.875rem var(--mono); }
+  .bars .track { position: relative; height: 0.75rem; background: var(--track); border-radius: 2px; }
+  .bars .fill { position: absolute; inset: 0 auto 0 0; background: var(--exact); border-radius: 2px; }
+  .bars .est-fill { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: repeating-linear-gradient(135deg, var(--est) 0 2px, transparent 2px 5px); }
+  .bars .threshold { position: absolute; top: -0.35rem; bottom: -0.35rem; width: 1px; background: var(--ink); }
+  .bars .val { text-align: right; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; margin-top: 1rem; font-size: 0.875rem; color: var(--muted); }
+  .legend i { display: inline-block; width: 0.75rem; height: 0.75rem; vertical-align: -0.1rem; margin-right: 0.4rem; border-radius: 2px; }
+  .verdict { margin: 2rem 0 0; padding-left: 1rem; border-left: 2px solid var(--accent); }
+  .verdict p:last-child { margin-bottom: 0; }
+
+  /* ci & agent */
+  pre.block {
+    margin: 1.5rem 0 0; padding: 1rem; overflow-x: auto;
+    background: var(--track); border: 1px solid var(--rule); border-radius: 6px;
+    font: 400 0.8125rem/1.55 var(--mono); color: var(--ink);
+  }
+
+  footer { border-top: 1px solid var(--rule); padding: 2rem 0 3rem; font-size: 0.9375rem; color: var(--muted); }
+  footer .row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem 1.5rem; }
+  footer a { color: var(--ink); }
+
+  /* wide enough: side-by-side */
+  @media (min-width: 46rem) {
+    section { padding: 4.5rem 0; }
+    ol.steps li { grid-template-columns: 3rem 1fr; }
+    .bars .row { grid-template-columns: 2.5rem 1fr 4rem; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .cmd .copy { transition: color 150ms ease, border-color 150ms ease; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="brand">
+    <span class="mark">imgtune</span>
+    <span><a href="https://github.com/indicozy/imgtune">GitHub</a></span>
+  </div>
+
+  <h1>Find the image bytes your pages don't need.</h1>
+  <p class="lede col">imgtune loads a live page at six viewports, finds every image, and measures how many bytes a smaller size or a lower quality would save. In a Next.js project it also gives the exact <code>sizes</code> and <code>quality</code> to change in your code.</p>
+
+  <div class="cmd" role="group" aria-label="Run a scan">
+    <code id="scan-cmd">npx imgtune scan https://your-site</code>
+    <button class="copy" type="button" data-copy="scan-cmd">Copy</button>
+  </div>
+
+  <div class="links">
+    <a href="https://github.com/indicozy/imgtune">Source on GitHub</a>
+    <a href="https://www.npmjs.com/package/imgtune">Package on npm</a>
+    <a href="#study">Study results</a>
+  </div>
+
+  <figure class="gauge col">
+    <svg viewBox="0 0 360 120" role="img" aria-labelledby="gauge-title gauge-desc" >
+      <title id="gauge-title">Served width against needed width</title>
+      <desc id="gauge-desc">One product image served at 1440 pixels, where its slot needs 360 pixels at 2x. Only a quarter of the served width is shown on screen.</desc>
+      <text x="0" y="14">served</text>
+      <rect x="0" y="22" width="360" height="22" rx="2" style="fill:var(--track)"/>
+      <rect x="0" y="22" width="360" height="22" rx="2" style="fill:none;stroke:var(--rule)"/>
+      <text class="big" x="8" y="37">1440 px</text>
+      <text x="0" y="68">needed</text>
+      <rect x="0" y="76" width="90" height="22" rx="2" style="fill:var(--accent)"/>
+      <text x="98" y="92" style="fill:var(--ink)">360 px</text>
+      <text x="0" y="116" font-size="12">slot 180 CSS px at 2x</text>
+    </svg>
+    <figcaption class="note">Illustration from a production scan: one image whose slot takes a quarter of the bytes served. The
+      exact figure comes from the site's own smaller candidate, fetched and measured.</figcaption>
+  </figure>
+</header>
+
+<section id="how">
+  <div class="col">
+    <h2>How a scan works</h2>
+    <ol class="steps">
+      <li><span class="n">1</span><p>Chromium loads each page at six viewports: four phones, a 1440 px desktop at 2x, and a 1280 px desktop at 1x. The page is scrolled to the end, so lazy images load.</p></li>
+      <li><span class="n">2</span><p>Every image is recorded with the size it renders at and the file the browser fetched, including its <code>srcset</code> candidates.</p></li>
+      <li><span class="n">3</span><p><strong>Exact</strong> savings come from the site's own smaller candidates. Each one is fetched and measured, so the number is the real byte difference.</p></li>
+      <li><span class="n">4</span><p><strong>Est.</strong> savings come from a local re-encode at another quality or format, or a resize of a plain <code>img</code>. Quality is judged with SSIMULACRA2 at a delta of 2 points. Estimates are never presented as measured.</p></li>
+      <li><span class="n">5</span><p>An image smaller than its slot is reported as sharpness growth, separately. It contributes no saving, and its growth is never netted against other images.</p></li>
+    </ol>
+    <p class="note sub">Pages whose <code>robots.txt</code> disallows them are skipped and recorded as such. Pages behind a bot wall are recorded as blocked and not retried. imgtune uses the default Chromium user agent and no stealth plugins.</p>
+  </div>
+</section>
+
+<section id="commands">
+  <div class="col">
+    <h2>Five commands</h2>
+    <dl class="cmds">
+      <div>
+        <dt>scan</dt>
+        <dd>Measure any live site with no access to its source.<br><code>npx imgtune scan https://your-site</code></dd>
+      </div>
+      <div>
+        <dt>audit</dt>
+        <dd>In a Next.js project, measure the running app and propose sizes and quality. Writes <code>.imgtune/report.json</code>.<br><code>npx imgtune audit</code></dd>
+      </div>
+      <div>
+        <dt>apply</dt>
+        <dd>Write the proposals into your source files. imgtune never commits; git stays yours.<br><code>npx imgtune apply</code></dd>
+      </div>
+      <div>
+        <dt>verify</dt>
+        <dd>Re-check the applied changes against the images the server now serves. Changes no files.<br><code>npx imgtune verify</code></dd>
+      </div>
+      <div>
+        <dt>restore</dt>
+        <dd>Undo the temporary instrumentation an interrupted run left in your source.<br><code>npx imgtune restore</code></dd>
+      </div>
+    </dl>
+    <p class="note sub">When <code>verify</code> reports a usage as regressed, it prints the exact command to raise its quality:
+      <code>npx imgtune apply --raise &lt;Component&gt;=&lt;N&gt;</code>, then <code>verify</code> again. Run <code>npx imgtune --help</code> for every option.</p>
+  </div>
+</section>
+
+<section id="study">
+  <div class="col">
+    <h2>What the study found</h2>
+    <p>We scanned six production sites and eight open-source apps with the same tool version, two pages each, six viewports each.
+      The site list was fixed before the first scan. Sites are anonymous here. Savings are the share of all image bytes per page
+      view, with the page fully scrolled, averaged over viewports and then over pages.</p>
+    <p class="note">Current tool (v4). Exact is measured. Est. is a local estimate, and where an image could not be scored it is a floor.</p>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <caption class="note" style="caption-side: top; text-align: left; padding-bottom: 0.5rem;">Production sites (decide)</caption>
+      <thead>
+        <tr><th scope="col">Site</th><th scope="col">KB / view</th><th scope="col">Exact</th><th scope="col">Exact + est.</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row" style="font-weight:400">A1 fashion retail, UK</th><td>3,250</td><td class="exact">0.0%</td><td class="est">33.2%</td></tr>
+        <tr><th scope="row" style="font-weight:400">A2 home audio, DK</th><td>1,263</td><td class="exact">5.7%</td><td class="est">53.1%</td></tr>
+        <tr><th scope="row" style="font-weight:400">A3 home audio, US</th><td>3,355</td><td class="exact">13.1%</td><td class="est">38.2%</td></tr>
+        <tr><th scope="row" style="font-weight:400">A4 sportswear, UK</th><td>9,254</td><td class="exact">26.8%</td><td class="est">35.9%</td></tr>
+        <tr><th scope="row" style="font-weight:400">A5 home and rugs, US</th><td>7,714</td><td class="exact">12.7%</td><td class="est">16.5%</td></tr>
+        <tr><th scope="row" style="font-weight:400">A6 outdoor stays, US</th><td>9,078</td><td class="exact">20.7%</td><td class="est">27.7%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <div class="bars" aria-label="Exact and exact plus estimate for the six production sites">
+      <div class="row"><span>A1</span><div class="track"><span class="est-fill" style="width:33.2%"></span><span class="fill" style="width:0"></span><span class="threshold" style="left:15%"></span></div><span class="val">33.2%</span></div>
+      <div class="row"><span>A2</span><div class="track"><span class="est-fill" style="width:53.1%"></span><span class="fill" style="width:5.7%"></span><span class="threshold" style="left:15%"></span></div><span class="val">53.1%</span></div>
+      <div class="row"><span>A3</span><div class="track"><span class="est-fill" style="width:38.2%"></span><span class="fill" style="width:13.1%"></span><span class="threshold" style="left:15%"></span></div><span class="val">38.2%</span></div>
+      <div class="row"><span>A4</span><div class="track"><span class="est-fill" style="width:35.9%"></span><span class="fill" style="width:26.8%"></span><span class="threshold" style="left:15%"></span></div><span class="val">35.9%</span></div>
+      <div class="row"><span>A5</span><div class="track"><span class="est-fill" style="width:16.5%"></span><span class="fill" style="width:12.7%"></span><span class="threshold" style="left:15%"></span></div><span class="val">16.5%</span></div>
+      <div class="row"><span>A6</span><div class="track"><span class="est-fill" style="width:27.7%"></span><span class="fill" style="width:20.7%"></span><span class="threshold" style="left:15%"></span></div><span class="val">27.7%</span></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--exact)"></i>exact</span>
+      <span><i style="background:repeating-linear-gradient(135deg, var(--est) 0 2px, transparent 2px 5px)"></i>est. on top of exact</span>
+      <span><i style="background:var(--ink);width:2px"></i>15% bar</span>
+    </div>
+
+    <div class="verdict">
+      <p><strong>Kill criterion:</strong> a pass needs at least 2 of 6 production sites above 15%.</p>
+      <p>Exact alone: 2 of 6, exactly at the bar. Exact plus estimates: 6 of 6.</p>
+      <p class="note">The first run (v1) gave 2 of 6 on exact and 4 of 6 with estimates. A3 moved from 13% to 38% in v4 because its
+        images sit on a custom domain at quality 100, which v1 could not score.</p>
+    </div>
+
+    <h3 class="sub">Open-source apps (do not decide)</h3>
+    <p class="note">Developer sites carry few image bytes. The waste sits in image-heavy commerce.</p>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th scope="col">App</th><th scope="col">KB / view</th><th scope="col">Exact</th><th scope="col">Exact + est.</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row" style="font-weight:400">B1</th><td>4,508</td><td class="exact">0.0%</td><td class="est">4.2%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B2</th><td>238</td><td class="exact">0.0%</td><td class="est">33.7%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B3</th><td>671</td><td class="exact">1.9%</td><td class="est">20.8%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B4</th><td>162</td><td class="exact">9.1%</td><td class="est">19.2%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B5</th><td>77</td><td class="exact">12.0%</td><td class="est">21.4%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B6</th><td>3,149</td><td class="exact">0.2%</td><td class="est">1.8%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B7</th><td>85</td><td class="exact">0.0%</td><td class="est">0.0%</td></tr>
+        <tr><th scope="row" style="font-weight:400">B8</th><td>152</td><td class="exact">0.0%</td><td class="est">4.2%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <div class="verdict">
+      <p><strong>Limits.</strong> Six deciders is a signal, not proof, and the sample leans toward sites without bot walls.
+        Estimates are local re-encodes scored against the original, not bytes a server sent. Where a loader could not be
+        scored, the estimate is a floor; the page JSON counts those images as <code>qualityNA</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="ci">
+  <div class="col">
+    <h2>In CI</h2>
+    <p>The composite action at the root of the repository scans the pages of each pull request and posts the result as one
+      comment, updated on each push. Set <code>fail-over</code> to fail the job when a page is above a budget.</p>
+    <p class="note">Each Vercel preview is a <code>deployment_status</code> event. This workflow scans the preview's URL and comments on
+      the open pull request of the deployed commit.</p>
+  </div>
+  <div class="col">
+<pre class="block">name: imgtune preview
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  pull-requests: write
+  deployments: read
+
+jobs:
+  scan:
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: indicozy/imgtune@main
+        with:
+          urls: ${{ github.event.deployment_status.environment_url }}
+          fail-over: "5"</pre>
+    <p class="note sub">Two more examples, one for a local <code>next start</code> on the runner, are in
+      <a href="https://github.com/indicozy/imgtune/blob/main/docs/ci.md">docs/ci.md</a>.</p>
+  </div>
+</section>
+
+<section id="agents">
+  <div class="col">
+    <h2>For coding agents</h2>
+    <p><code>skills/imgtune/SKILL.md</code> teaches Claude Code, and any tool that reads <code>SKILL.md</code> skills, to run
+      scan, audit, apply and verify safely. It states the same rules as this page: exact and est. are reported separately, and
+      nothing is committed.</p>
+    <p class="sub">Copy the <code>skills/imgtune</code> folder into your agent's skills directory.
+      <a href="https://github.com/indicozy/imgtune/tree/main/skills/imgtune">Read it on GitHub</a>.</p>
+    <p class="note sub">Requirements: Node.js 20 or later, and Chromium for Playwright, installed once with
+      <code>npx playwright install chromium</code>.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="row">
+    <span>MIT License. See <a href="https://github.com/indicozy/imgtune/blob/main/LICENSE">LICENSE</a> and
+      <a href="https://github.com/indicozy/imgtune/blob/main/NOTICE">NOTICE</a> for third-party code.</span>
+    <span>made by &lt;AUTHOR_NAME&gt;</span>
+  </div>
+</footer>
+
+</div>
+
+<script>
+  (function () {
+    var btn = document.querySelector('.copy');
+    if (!btn || !navigator.clipboard) { if (btn) btn.hidden = true; return; }
+    btn.addEventListener('click', function () {
+      var text = document.getElementById(btn.getAttribute('data-copy')).textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+      }, function () {});
+    });
+  })();
+</script>
+</body>
+</html>
