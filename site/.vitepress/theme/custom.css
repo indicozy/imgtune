@@ -13,6 +13,7 @@
   --scan-track: #e1e7e4;
   --scan-accent: #00737b;
   --scan-accent-soft: rgba(0, 115, 123, 0.12);
+  --scan-dim: #c5cdc9;
   --scan-exact: #1d6b3c;
   --scan-est: #8a5200;
   --scan-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -48,6 +49,7 @@ html.dark {
   --scan-track: #1a2322;
   --scan-accent: #5ed0d6;
   --scan-accent-soft: rgba(94, 208, 214, 0.14);
+  --scan-dim: #34413f;
   --scan-exact: #7cd79b;
   --scan-est: #e8b45c;
 
@@ -123,4 +125,47 @@ body {
   padding: 0.22rem 0.4rem;
   border-radius: 2px;
   white-space: nowrap;
+}
+
+/* Survey charts (components/survey): figure card, text roles and the chart wrapper.
+   Marks take --scan-accent or --scan-dim; text takes ink or muted only. */
+.survey-figure {
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid var(--scan-rule);
+  background: var(--scan-panel);
+  border-radius: 4px;
+  padding: 1rem;
+  min-width: 0;
+}
+.survey-head {
+  display: grid;
+  gap: 0.3rem;
+}
+.survey-title {
+  font: 600 1.25rem/1.15 var(--scan-display);
+  letter-spacing: -0.01em;
+  color: var(--scan-ink);
+}
+.survey-takeaway {
+  margin: 0;
+  font: 400 0.9375rem/1.5 var(--scan-sans);
+  color: var(--scan-muted);
+}
+.survey-caption {
+  margin: 0;
+  font: 500 0.75rem/1.5 var(--scan-mono);
+  color: var(--scan-muted);
+}
+.survey-chart {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+.survey-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
 }
