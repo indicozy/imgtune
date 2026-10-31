@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { scanCommand } from "./remote.js";
 import { hintsCommand } from "./hints.js";
+import { recheckScan } from "./recheck.js";
+import { imageCommand } from "./image-file.js";
 import { ChromiumMissingError } from "./browser.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
@@ -57,6 +59,8 @@ const SCAN_HELP = commandHelp(
   "imgtune scan <url> [<url> ...] [options]",
   [
     "Measure live pages by URL, with no source, config or dev server. Writes one JSON file per page to --out.",
+    "With --recheck <scan.json> [--ids a,b,c]: rescans only the named images of an earlier scan, at the viewports where they",
+    "rendered, and prints before and after. Exits 1 when an image became undersized or bytes rose without a sharpness fix.",
     "Needs Chromium for Playwright: npx playwright install chromium.",
   ],
   [
@@ -92,13 +96,30 @@ Options:
   -h, --help          show this help
 `;
 
+const IMAGE_HELP = `Usage: imgtune image <file|url|glob> [<file|url|glob> ...] [options]
+
+Measures image files without a page: the bytes now, the lowest quality per format (avif, webp, jpeg) that keeps the file's
+SSIMULACRA2 bar, and, with --width, the bytes at the width the image is needed at (width x dpr). Files are read, never
+written, unless --write names a folder for optimised copies (existing names are never overwritten).
+Evidence is "file-mode". Globs: ** walks folders (node_modules and dot folders are skipped).
+
+Options:
+  --width <css px>      the CSS width the image is shown at (the width is then the user's, not the file's)
+  --dpr <list>          device pixel ratios for --width (default 1,2)
+  --formats <list>      avif, webp, jpeg (default all three)
+  --write <dir>         write optimised copies (best format, at the largest needed width) into this folder
+  --format <text|json>  text (default) or JSON
+  -h, --help            show this help
+`;
+
 const USAGE = `Usage: imgtune <command> [options]
 
 Commands:
   scan      measure live pages by URL, with no source, config or dev server (writes JSON to --out)
   hints     print a batch of the per-image fix hints of a scan file
+  image     measure image files or URLs without a page (--width, --dpr, --formats, --write)
 
-Run "imgtune scan --help" for the options of the scan, and "imgtune hints --help" for those of hints.
+Run "imgtune scan --help", "imgtune hints --help" or "imgtune image --help" for the options of each command.
 
 Options:
   --version           print the version
@@ -113,7 +134,22 @@ async function main(): Promise<void> {
   }
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
     if (argv[0] === "hints") process.stdout.write(HINTS_HELP);
+    else if (argv[0] === "image") process.stdout.write(IMAGE_HELP);
     else process.stdout.write(argv.includes("scan") ? SCAN_HELP : USAGE);
+    return;
+  }
+
+  if (argv[0] === "scan" && argv.includes("--recheck")) {
+    const outcome = await recheckScan(argv.slice(1), process.cwd(), progress);
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
+    return;
+  }
+
+  if (argv[0] === "image") {
+    const outcome = await imageCommand(argv.slice(1), process.cwd());
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
     return;
   }
 
