@@ -1,38 +1,58 @@
 {
   "name": "imgtune",
   "version": "0.1.0",
-  "description": "Measures images in a Next.js app and tunes next/image sizes and quality",
+  "description": "Measures the image waste of live pages per view and viewport, and tunes next/image sizes and quality, checked with SSIMULACRA2",
   "license": "MIT",
+  "author": "indicozy",
   "keywords": [
+    "images",
+    "image-optimization",
     "nextjs",
     "next-image",
-    "images",
     "srcset",
-    "image-optimization",
+    "avif",
+    "webp",
     "ssimulacra2",
     "ssim",
-    "performance"
+    "performance",
+    "lighthouse",
+    "core-web-vitals",
+    "cli"
   ],
-  "repository": "TODO",
+  "homepage": "https://indicozy.github.io/imgtune/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/indicozy/imgtune.git"
+  },
+  "bugs": {
+    "url": "https://github.com/indicozy/imgtune/issues"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "type": "module",
   "bin": {
     "imgtune": "dist/cli.js"
   },
-  "main": "dist/cli.js",
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "vendor",
     "skills",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsc -p tsconfig.json"
