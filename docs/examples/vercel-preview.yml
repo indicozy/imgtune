@@ -14,7 +14,7 @@ jobs:
     if: github.event.deployment_status.state == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: OWNER/imgtune@main # replace OWNER/imgtune with the repository the action is published from
+      - uses: indicozy/imgtune@main
         with:
           urls: ${{ github.event.deployment_status.environment_url }}
           fail-over: "5"

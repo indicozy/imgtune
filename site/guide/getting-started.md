@@ -4,9 +4,19 @@ ImgTune measures the images of a page per view and per viewport, and reports the
 quality check. It runs on your machine. It has two ways in: a scan of any live URL, and a tuning pass for a Next.js
 project.
 
+## Install
+
+Add ImgTune to your project as a dev dependency, then run it with `npx`:
+
+```sh
+npm i -D imgtune
+```
+
+You can also run `npx imgtune` without installing it. The commands below work either way.
+
 ## Requirements
 
-- Node.js 20 or later.
+- Node.js 20.9 or later.
 - Chromium for Playwright. Install it once:
 
 ```sh

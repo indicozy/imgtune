@@ -1,5 +1,7 @@
 # ImgTune
 
+[![npm version](https://img.shields.io/npm/v/imgtune.svg)](https://www.npmjs.com/package/imgtune)
+
 **Your images waste your traffic. ImgTune fixes that.**
 
 Website: https://indicozy.github.io/imgtune/ · [Try the demo](https://indicozy.github.io/imgtune/demo) · [Docs](https://indicozy.github.io/imgtune/guide/getting-started)
@@ -24,6 +26,15 @@ your live page, at six viewports, against a perceptual quality bar, and in a Nex
 It looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the
 encoder setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per
 viewport, and quality is scored with SSIMULACRA2.
+
+## Install
+
+```sh
+npm i -D imgtune
+```
+
+Then run it with `npx imgtune`. Without installing, `npx imgtune` fetches it for one run. ImgTune needs Chromium for
+Playwright; see [Requirements](#requirements).
 
 ## Quick start
 
@@ -181,7 +192,7 @@ Copy the `skills/imgtune` folder into your agent's skills directory to use it.
 
 ## Requirements
 
-- Node.js 20 or later.
+- Node.js 20.9 or later.
 - Chromium for Playwright. Install it once with `npx playwright install chromium`. If it is missing, ImgTune prints
   that command and exits with status 2.
 - `audit` and `verify` start your dev server (`next dev`) unless you pass `--url`.

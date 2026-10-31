@@ -25,7 +25,7 @@ jobs:
           done
           cat "$RUNNER_TEMP/next.log"
           exit 1
-      - uses: OWNER/imgtune@main # replace OWNER/imgtune with the repository the action is published from
+      - uses: indicozy/imgtune@main
         with:
           urls: |
             http://127.0.0.1:3000/

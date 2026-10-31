@@ -10,7 +10,7 @@
 - **Bot walls.** A page behind a challenge is recorded as `blocked`, and it is not retried.
 - **Chromium is required** for `scan`, `audit` and `verify`. Install it with `npx playwright install chromium`.
 - **Next.js projects.** The project commands (`audit`, `apply`, `verify`) are written for Next.js. `scan` works on any URL.
-- **Node.js 20 or later.**
+- **Node.js 20.9 or later.**
 
 ## FAQ
 

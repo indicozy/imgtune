@@ -7,7 +7,7 @@ npx imgtune <command> --help
 npx imgtune --version
 ```
 
-ImgTune needs Node.js 20 or later and Chromium for Playwright (`npx playwright install chromium`). When Chromium is missing,
+ImgTune needs Node.js 20.9 or later and Chromium for Playwright (`npx playwright install chromium`). When Chromium is missing,
 ImgTune prints that command and exits with status 2.
 
 ## Commands
