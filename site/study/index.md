@@ -25,7 +25,30 @@ const stackNames = stacks.map((t) => t.tech).join(", ");
 
 const scanWhen =
   survey.scannedFrom === survey.scannedTo ? survey.scannedFrom : `${survey.scannedFrom} to ${survey.scannedTo}`;
+
+const fmt = (n) => n.toLocaleString("en-US");
+const tldr = survey.summary;
+const shareCount = survey.sites.filter((s) => s.exactEstPct >= 20).length;
 </script>
+
+## TL;DR {#tldr}
+
+**Results**
+
+- **6 production sites (the deciders):** exact savings alone put **2 of 6** above 15%, a pass at the bar set in advance. With
+  estimates, **6 of 6** pass, at 16.5% to 53.1% of image bytes per view.
+- **{{ survey.count }} more production sites, anonymous:** the median site loads {{ fmt(tldr.medianKbPerView) }} KB of images per view
+  and could cut **{{ tldr.medianExactEstPct }}%** of them. **{{ shareCount }} of {{ survey.count }}** ({{ tldr.shareAtLeast20Pct }}%)
+  could save 20% or more. Most of it is est.: few sites ship a smaller `srcset` candidate that goes unused.
+- **8 open-source apps:** developer sites carry few image bytes. The waste sits in image-heavy commerce.
+
+**Method**
+
+- Each site is scanned once, in headless Chromium: 2 pages, 6 viewports, scrolled to the end.
+- **Exact** is the site's own smaller `srcset` candidate, fetched and measured. **Est.** is a re-encode or resize, kept only
+  if SSIMULACRA2 stays within a delta of 2 of the original.
+- robots.txt is respected, and sites behind bot walls are dropped. The sample leans toward sites without them.
+- Any stack: the scan measures the live page, not the source. Details are in [Method](#method) and [Limits](#limits).
 
 ## Method
 
