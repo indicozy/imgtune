@@ -1,7 +1,7 @@
 {
   "scannedFrom": "2026-10-29",
   "scannedTo": "2026-10-31",
-  "count": 192,
+  "count": 200,
   "categories": [
     "E-commerce & brands",
     "Media & publishing",
@@ -9,9 +9,9 @@
     "Agencies & portfolios",
     "Marketplaces",
     "Travel & hospitality",
-    "Health & wellness",
-    "Finance",
     "Developer tools",
+    "Finance",
+    "Health & wellness",
     "Education",
     "Real estate",
     "Other"
@@ -1009,6 +1009,16 @@
     },
     {
       "id": "P100",
+      "category": "Developer tools",
+      "tech": "Astro",
+      "imageKbPerView": 670,
+      "exactPct": 3.9,
+      "exactEstPct": 16.7,
+      "fixablePct": 33.9,
+      "savedKbPerView": 110
+    },
+    {
+      "id": "P101",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 280,
@@ -1018,7 +1028,7 @@
       "savedKbPerView": 50
     },
     {
-      "id": "P101",
+      "id": "P102",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 380,
@@ -1028,7 +1038,7 @@
       "savedKbPerView": 50
     },
     {
-      "id": "P102",
+      "id": "P103",
       "category": "Marketplaces",
       "tech": "Next.js",
       "imageKbPerView": 4090,
@@ -1038,7 +1048,7 @@
       "savedKbPerView": 830
     },
     {
-      "id": "P103",
+      "id": "P104",
       "category": "Real estate",
       "tech": "Next.js",
       "imageKbPerView": 1070,
@@ -1048,7 +1058,7 @@
       "savedKbPerView": 170
     },
     {
-      "id": "P104",
+      "id": "P105",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 1150,
@@ -1058,7 +1068,7 @@
       "savedKbPerView": 200
     },
     {
-      "id": "P105",
+      "id": "P106",
       "category": "Finance",
       "tech": "Next.js",
       "imageKbPerView": 260,
@@ -1068,7 +1078,7 @@
       "savedKbPerView": 60
     },
     {
-      "id": "P106",
+      "id": "P107",
       "category": "Media & publishing",
       "tech": "WordPress",
       "imageKbPerView": 9160,
@@ -1078,7 +1088,17 @@
       "savedKbPerView": 1410
     },
     {
-      "id": "P107",
+      "id": "P108",
+      "category": "Developer tools",
+      "tech": "Gatsby",
+      "imageKbPerView": 1490,
+      "exactPct": 0,
+      "exactEstPct": 15.3,
+      "fixablePct": 58.5,
+      "savedKbPerView": 260
+    },
+    {
+      "id": "P109",
       "category": "Travel & hospitality",
       "tech": "Next.js",
       "imageKbPerView": 650,
@@ -1088,7 +1108,7 @@
       "savedKbPerView": 120
     },
     {
-      "id": "P108",
+      "id": "P110",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 1670,
@@ -1098,7 +1118,7 @@
       "savedKbPerView": 290
     },
     {
-      "id": "P109",
+      "id": "P111",
       "category": "Agencies & portfolios",
       "tech": "Next.js",
       "imageKbPerView": 820,
@@ -1108,7 +1128,7 @@
       "savedKbPerView": 120
     },
     {
-      "id": "P110",
+      "id": "P112",
       "category": "Media & publishing",
       "tech": "WordPress",
       "imageKbPerView": 2390,
@@ -1118,7 +1138,7 @@
       "savedKbPerView": 450
     },
     {
-      "id": "P111",
+      "id": "P113",
       "category": "Media & publishing",
       "tech": "WordPress",
       "imageKbPerView": 1220,
@@ -1128,7 +1148,7 @@
       "savedKbPerView": 190
     },
     {
-      "id": "P112",
+      "id": "P114",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 3660,
@@ -1138,7 +1158,7 @@
       "savedKbPerView": 1010
     },
     {
-      "id": "P113",
+      "id": "P115",
       "category": "Agencies & portfolios",
       "tech": "WordPress",
       "imageKbPerView": 9380,
@@ -1148,7 +1168,7 @@
       "savedKbPerView": 3610
     },
     {
-      "id": "P114",
+      "id": "P116",
       "category": "Health & wellness",
       "tech": "Next.js",
       "imageKbPerView": 2710,
@@ -1158,7 +1178,7 @@
       "savedKbPerView": 50
     },
     {
-      "id": "P115",
+      "id": "P117",
       "category": "Education",
       "tech": "Next.js",
       "imageKbPerView": 110,
@@ -1168,7 +1188,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P116",
+      "id": "P118",
       "category": "Media & publishing",
       "tech": "WordPress",
       "imageKbPerView": 3740,
@@ -1178,7 +1198,7 @@
       "savedKbPerView": 400
     },
     {
-      "id": "P117",
+      "id": "P119",
       "category": "E-commerce & brands",
       "tech": "Next.js",
       "imageKbPerView": 470,
@@ -1188,7 +1208,7 @@
       "savedKbPerView": 60
     },
     {
-      "id": "P118",
+      "id": "P120",
       "category": "Travel & hospitality",
       "tech": "Other / unknown",
       "imageKbPerView": 25830,
@@ -1198,7 +1218,7 @@
       "savedKbPerView": 2040
     },
     {
-      "id": "P119",
+      "id": "P121",
       "category": "Developer tools",
       "tech": "Next.js",
       "imageKbPerView": 1000,
@@ -1208,7 +1228,17 @@
       "savedKbPerView": 160
     },
     {
-      "id": "P120",
+      "id": "P122",
+      "category": "Finance",
+      "tech": "WordPress",
+      "imageKbPerView": 13690,
+      "exactPct": 11.7,
+      "exactEstPct": 12.3,
+      "fixablePct": 45.1,
+      "savedKbPerView": 3570
+    },
+    {
+      "id": "P123",
       "category": "Agencies & portfolios",
       "tech": "Next.js",
       "imageKbPerView": 680,
@@ -1218,7 +1248,7 @@
       "savedKbPerView": 80
     },
     {
-      "id": "P121",
+      "id": "P124",
       "category": "Media & publishing",
       "tech": "WordPress",
       "imageKbPerView": 2900,
@@ -1228,7 +1258,7 @@
       "savedKbPerView": 390
     },
     {
-      "id": "P122",
+      "id": "P125",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 8320,
@@ -1238,7 +1268,7 @@
       "savedKbPerView": 1240
     },
     {
-      "id": "P123",
+      "id": "P126",
       "category": "Finance",
       "tech": "Other / unknown",
       "imageKbPerView": 1640,
@@ -1248,7 +1278,17 @@
       "savedKbPerView": 330
     },
     {
-      "id": "P124",
+      "id": "P127",
+      "category": "Developer tools",
+      "tech": "Next.js",
+      "imageKbPerView": 1020,
+      "exactPct": 11.3,
+      "exactEstPct": 11.4,
+      "fixablePct": 21.5,
+      "savedKbPerView": 70
+    },
+    {
+      "id": "P128",
       "category": "E-commerce & brands",
       "tech": "Other / unknown",
       "imageKbPerView": 590,
@@ -1258,7 +1298,7 @@
       "savedKbPerView": 40
     },
     {
-      "id": "P125",
+      "id": "P129",
       "category": "Developer tools",
       "tech": "Next.js",
       "imageKbPerView": 540,
@@ -1268,7 +1308,7 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P126",
+      "id": "P130",
       "category": "Media & publishing",
       "tech": "Next.js",
       "imageKbPerView": 1070,
@@ -1278,7 +1318,7 @@
       "savedKbPerView": 140
     },
     {
-      "id": "P127",
+      "id": "P131",
       "category": "Education",
       "tech": "Webflow",
       "imageKbPerView": 820,
@@ -1288,7 +1328,7 @@
       "savedKbPerView": 100
     },
     {
-      "id": "P128",
+      "id": "P132",
       "category": "E-commerce & brands",
       "tech": "Nuxt",
       "imageKbPerView": 660,
@@ -1298,7 +1338,7 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P129",
+      "id": "P133",
       "category": "E-commerce & brands",
       "tech": "Other / unknown",
       "imageKbPerView": 470,
@@ -1308,7 +1348,7 @@
       "savedKbPerView": 110
     },
     {
-      "id": "P130",
+      "id": "P134",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 5920,
@@ -1318,7 +1358,7 @@
       "savedKbPerView": 590
     },
     {
-      "id": "P131",
+      "id": "P135",
       "category": "Developer tools",
       "tech": "Next.js",
       "imageKbPerView": 770,
@@ -1328,7 +1368,17 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P132",
+      "id": "P136",
+      "category": "Developer tools",
+      "tech": "Astro",
+      "imageKbPerView": 410,
+      "exactPct": 0,
+      "exactEstPct": 9.2,
+      "fixablePct": 29.3,
+      "savedKbPerView": 40
+    },
+    {
+      "id": "P137",
       "category": "Real estate",
       "tech": "Other / unknown",
       "imageKbPerView": 50,
@@ -1338,7 +1388,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P133",
+      "id": "P138",
       "category": "Developer tools",
       "tech": "Next.js",
       "imageKbPerView": 1490,
@@ -1348,7 +1398,7 @@
       "savedKbPerView": 160
     },
     {
-      "id": "P134",
+      "id": "P139",
       "category": "E-commerce & brands",
       "tech": "Shopify",
       "imageKbPerView": 1580,
@@ -1358,7 +1408,7 @@
       "savedKbPerView": 130
     },
     {
-      "id": "P135",
+      "id": "P140",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 1110,
@@ -1368,7 +1418,7 @@
       "savedKbPerView": 60
     },
     {
-      "id": "P136",
+      "id": "P141",
       "category": "E-commerce & brands",
       "tech": "Next.js",
       "imageKbPerView": 18320,
@@ -1378,7 +1428,7 @@
       "savedKbPerView": 2370
     },
     {
-      "id": "P137",
+      "id": "P142",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 4960,
@@ -1388,7 +1438,7 @@
       "savedKbPerView": 390
     },
     {
-      "id": "P138",
+      "id": "P143",
       "category": "Other",
       "tech": "Next.js",
       "imageKbPerView": 880,
@@ -1398,7 +1448,17 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P139",
+      "id": "P144",
+      "category": "Finance",
+      "tech": "Next.js",
+      "imageKbPerView": 1000,
+      "exactPct": 0,
+      "exactEstPct": 7.9,
+      "fixablePct": 24.6,
+      "savedKbPerView": 90
+    },
+    {
+      "id": "P145",
       "category": "Travel & hospitality",
       "tech": "Shopify",
       "imageKbPerView": 5710,
@@ -1408,7 +1468,7 @@
       "savedKbPerView": 380
     },
     {
-      "id": "P140",
+      "id": "P146",
       "category": "E-commerce & brands",
       "tech": "Next.js",
       "imageKbPerView": 1210,
@@ -1418,7 +1478,7 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P141",
+      "id": "P147",
       "category": "Real estate",
       "tech": "Next.js",
       "imageKbPerView": 3640,
@@ -1428,7 +1488,7 @@
       "savedKbPerView": 280
     },
     {
-      "id": "P142",
+      "id": "P148",
       "category": "Health & wellness",
       "tech": "Next.js",
       "imageKbPerView": 1200,
@@ -1438,7 +1498,7 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P143",
+      "id": "P149",
       "category": "Developer tools",
       "tech": "Next.js",
       "imageKbPerView": 1000,
@@ -1448,7 +1508,7 @@
       "savedKbPerView": 60
     },
     {
-      "id": "P144",
+      "id": "P150",
       "category": "Agencies & portfolios",
       "tech": "Other / unknown",
       "imageKbPerView": 760,
@@ -1458,7 +1518,7 @@
       "savedKbPerView": 100
     },
     {
-      "id": "P145",
+      "id": "P151",
       "category": "Agencies & portfolios",
       "tech": "Other / unknown",
       "imageKbPerView": 12180,
@@ -1468,7 +1528,7 @@
       "savedKbPerView": 490
     },
     {
-      "id": "P146",
+      "id": "P152",
       "category": "Real estate",
       "tech": "Next.js",
       "imageKbPerView": 2770,
@@ -1478,7 +1538,7 @@
       "savedKbPerView": 190
     },
     {
-      "id": "P147",
+      "id": "P153",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 4330,
@@ -1488,7 +1548,7 @@
       "savedKbPerView": 590
     },
     {
-      "id": "P148",
+      "id": "P154",
       "category": "Marketplaces",
       "tech": "Next.js",
       "imageKbPerView": 6180,
@@ -1498,7 +1558,7 @@
       "savedKbPerView": 150
     },
     {
-      "id": "P149",
+      "id": "P155",
       "category": "E-commerce & brands",
       "tech": "Shopify",
       "imageKbPerView": 3580,
@@ -1508,7 +1568,7 @@
       "savedKbPerView": 240
     },
     {
-      "id": "P150",
+      "id": "P156",
       "category": "E-commerce & brands",
       "tech": "Shopify",
       "imageKbPerView": 2080,
@@ -1518,7 +1578,7 @@
       "savedKbPerView": 130
     },
     {
-      "id": "P151",
+      "id": "P157",
       "category": "Media & publishing",
       "tech": "Astro",
       "imageKbPerView": 2530,
@@ -1528,7 +1588,7 @@
       "savedKbPerView": 180
     },
     {
-      "id": "P152",
+      "id": "P158",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 2440,
@@ -1538,7 +1598,7 @@
       "savedKbPerView": 150
     },
     {
-      "id": "P153",
+      "id": "P159",
       "category": "Travel & hospitality",
       "tech": "Other / unknown",
       "imageKbPerView": 4100,
@@ -1548,7 +1608,7 @@
       "savedKbPerView": 130
     },
     {
-      "id": "P154",
+      "id": "P160",
       "category": "Media & publishing",
       "tech": "Astro",
       "imageKbPerView": 4420,
@@ -1558,7 +1618,7 @@
       "savedKbPerView": 230
     },
     {
-      "id": "P155",
+      "id": "P161",
       "category": "Marketplaces",
       "tech": "Other / unknown",
       "imageKbPerView": 1660,
@@ -1568,7 +1628,7 @@
       "savedKbPerView": 130
     },
     {
-      "id": "P156",
+      "id": "P162",
       "category": "Real estate",
       "tech": "Other / unknown",
       "imageKbPerView": 150,
@@ -1578,7 +1638,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P157",
+      "id": "P163",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 39680,
@@ -1588,7 +1648,7 @@
       "savedKbPerView": 2390
     },
     {
-      "id": "P158",
+      "id": "P164",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 2210,
@@ -1598,7 +1658,7 @@
       "savedKbPerView": 220
     },
     {
-      "id": "P159",
+      "id": "P165",
       "category": "Education",
       "tech": "Webflow",
       "imageKbPerView": 1010,
@@ -1608,7 +1668,17 @@
       "savedKbPerView": 90
     },
     {
-      "id": "P160",
+      "id": "P166",
+      "category": "Finance",
+      "tech": "Other / unknown",
+      "imageKbPerView": 770,
+      "exactPct": 4.3,
+      "exactEstPct": 4.3,
+      "fixablePct": 10.2,
+      "savedKbPerView": 40
+    },
+    {
+      "id": "P167",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 1010,
@@ -1618,7 +1688,7 @@
       "savedKbPerView": 50
     },
     {
-      "id": "P161",
+      "id": "P168",
       "category": "Agencies & portfolios",
       "tech": "WordPress",
       "imageKbPerView": 860,
@@ -1628,7 +1698,7 @@
       "savedKbPerView": 40
     },
     {
-      "id": "P162",
+      "id": "P169",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 22820,
@@ -1638,7 +1708,7 @@
       "savedKbPerView": 1240
     },
     {
-      "id": "P163",
+      "id": "P170",
       "category": "Agencies & portfolios",
       "tech": "Other / unknown",
       "imageKbPerView": 4180,
@@ -1648,7 +1718,7 @@
       "savedKbPerView": 130
     },
     {
-      "id": "P164",
+      "id": "P171",
       "category": "Agencies & portfolios",
       "tech": "Nuxt",
       "imageKbPerView": 210,
@@ -1658,9 +1728,9 @@
       "savedKbPerView": 20
     },
     {
-      "id": "P165",
+      "id": "P172",
       "category": "Health & wellness",
-      "tech": "Other / unknown",
+      "tech": "Gatsby",
       "imageKbPerView": 1800,
       "exactPct": 0,
       "exactEstPct": 3,
@@ -1668,7 +1738,7 @@
       "savedKbPerView": 80
     },
     {
-      "id": "P166",
+      "id": "P173",
       "category": "Travel & hospitality",
       "tech": "Next.js",
       "imageKbPerView": 830,
@@ -1678,7 +1748,7 @@
       "savedKbPerView": 30
     },
     {
-      "id": "P167",
+      "id": "P174",
       "category": "Health & wellness",
       "tech": "Webflow",
       "imageKbPerView": 2470,
@@ -1688,7 +1758,7 @@
       "savedKbPerView": 70
     },
     {
-      "id": "P168",
+      "id": "P175",
       "category": "Marketplaces",
       "tech": "Other / unknown",
       "imageKbPerView": 920,
@@ -1698,7 +1768,7 @@
       "savedKbPerView": 30
     },
     {
-      "id": "P169",
+      "id": "P176",
       "category": "Health & wellness",
       "tech": "Next.js",
       "imageKbPerView": 1230,
@@ -1708,7 +1778,7 @@
       "savedKbPerView": 20
     },
     {
-      "id": "P170",
+      "id": "P177",
       "category": "Marketplaces",
       "tech": "Next.js",
       "imageKbPerView": 11920,
@@ -1718,7 +1788,7 @@
       "savedKbPerView": 270
     },
     {
-      "id": "P171",
+      "id": "P178",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 1400,
@@ -1728,7 +1798,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P172",
+      "id": "P179",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 1210,
@@ -1738,7 +1808,7 @@
       "savedKbPerView": 40
     },
     {
-      "id": "P173",
+      "id": "P180",
       "category": "Finance",
       "tech": "Next.js",
       "imageKbPerView": 240,
@@ -1748,7 +1818,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P174",
+      "id": "P181",
       "category": "Media & publishing",
       "tech": "WordPress",
       "imageKbPerView": 1410,
@@ -1758,7 +1828,7 @@
       "savedKbPerView": 40
     },
     {
-      "id": "P175",
+      "id": "P182",
       "category": "Travel & hospitality",
       "tech": "WordPress",
       "imageKbPerView": 1840,
@@ -1768,7 +1838,7 @@
       "savedKbPerView": 50
     },
     {
-      "id": "P176",
+      "id": "P183",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 1500,
@@ -1778,7 +1848,7 @@
       "savedKbPerView": 40
     },
     {
-      "id": "P177",
+      "id": "P184",
       "category": "Agencies & portfolios",
       "tech": "Other / unknown",
       "imageKbPerView": 0,
@@ -1788,7 +1858,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P178",
+      "id": "P185",
       "category": "Agencies & portfolios",
       "tech": "Next.js",
       "imageKbPerView": 7250,
@@ -1798,7 +1868,7 @@
       "savedKbPerView": 80
     },
     {
-      "id": "P179",
+      "id": "P186",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 1040,
@@ -1808,7 +1878,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P180",
+      "id": "P187",
       "category": "E-commerce & brands",
       "tech": "Other / unknown",
       "imageKbPerView": 710,
@@ -1818,7 +1888,7 @@
       "savedKbPerView": 20
     },
     {
-      "id": "P181",
+      "id": "P188",
       "category": "Developer tools",
       "tech": "Next.js",
       "imageKbPerView": 1220,
@@ -1828,7 +1898,7 @@
       "savedKbPerView": 30
     },
     {
-      "id": "P182",
+      "id": "P189",
       "category": "Agencies & portfolios",
       "tech": "WordPress",
       "imageKbPerView": 1200,
@@ -1838,7 +1908,7 @@
       "savedKbPerView": 20
     },
     {
-      "id": "P183",
+      "id": "P190",
       "category": "Marketplaces",
       "tech": "Other / unknown",
       "imageKbPerView": 780,
@@ -1848,7 +1918,7 @@
       "savedKbPerView": 10
     },
     {
-      "id": "P184",
+      "id": "P191",
       "category": "Media & publishing",
       "tech": "Other / unknown",
       "imageKbPerView": 2430,
@@ -1858,7 +1928,17 @@
       "savedKbPerView": 40
     },
     {
-      "id": "P185",
+      "id": "P192",
+      "category": "Education",
+      "tech": "Other / unknown",
+      "imageKbPerView": 630,
+      "exactPct": 0.4,
+      "exactEstPct": 0.4,
+      "fixablePct": 6.4,
+      "savedKbPerView": 0
+    },
+    {
+      "id": "P193",
       "category": "AI & SaaS",
       "tech": "Next.js",
       "imageKbPerView": 230,
@@ -1868,7 +1948,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P186",
+      "id": "P194",
       "category": "Travel & hospitality",
       "tech": "Other / unknown",
       "imageKbPerView": 2840,
@@ -1878,7 +1958,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P187",
+      "id": "P195",
       "category": "Finance",
       "tech": "Next.js",
       "imageKbPerView": 3450,
@@ -1888,7 +1968,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P188",
+      "id": "P196",
       "category": "Agencies & portfolios",
       "tech": "Other / unknown",
       "imageKbPerView": 3090,
@@ -1898,7 +1978,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P189",
+      "id": "P197",
       "category": "Marketplaces",
       "tech": "Other / unknown",
       "imageKbPerView": 2170,
@@ -1908,7 +1988,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P190",
+      "id": "P198",
       "category": "Media & publishing",
       "tech": "Next.js",
       "imageKbPerView": 1560,
@@ -1918,7 +1998,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P191",
+      "id": "P199",
       "category": "Finance",
       "tech": "Next.js",
       "imageKbPerView": 110,
@@ -1928,7 +2008,7 @@
       "savedKbPerView": 0
     },
     {
-      "id": "P192",
+      "id": "P200",
       "category": "Marketplaces",
       "tech": "Other / unknown",
       "imageKbPerView": 30,
@@ -1939,25 +2019,25 @@
     }
   ],
   "summary": {
-    "medianKbPerView": 2100,
-    "medianExactEstPct": 17.2,
-    "medianFixablePct": 44.9,
-    "shareAtLeast20Pct": 43.8,
-    "totalSavedKbPerView": 217610,
+    "medianKbPerView": 1830,
+    "medianExactEstPct": 16.7,
+    "medianFixablePct": 44.3,
+    "shareAtLeast20Pct": 42,
+    "totalSavedKbPerView": 221790,
     "p25ExactEstPct": 6.8,
-    "p75ExactEstPct": 31,
+    "p75ExactEstPct": 29.9,
     "byTech": [
       {
         "tech": "Next.js",
-        "count": 87,
-        "medianKbPerView": 1490,
-        "medianExactEstPct": 18.6
+        "count": 89,
+        "medianKbPerView": 1400,
+        "medianExactEstPct": 17.9
       },
       {
         "tech": "Other / unknown",
-        "count": 48,
-        "medianKbPerView": 1980,
-        "medianExactEstPct": 9.5
+        "count": 49,
+        "medianKbPerView": 1790,
+        "medianExactEstPct": 9
       },
       {
         "tech": "Shopify",
@@ -1967,9 +2047,15 @@
       },
       {
         "tech": "WordPress",
-        "count": 18,
-        "medianKbPerView": 2110,
-        "medianExactEstPct": 14.7
+        "count": 19,
+        "medianKbPerView": 2390,
+        "medianExactEstPct": 14
+      },
+      {
+        "tech": "Astro",
+        "count": 7,
+        "medianKbPerView": 1360,
+        "medianExactEstPct": 16.7
       },
       {
         "tech": "Nuxt",
@@ -1978,16 +2064,16 @@
         "medianExactEstPct": 29.5
       },
       {
-        "tech": "Astro",
-        "count": 5,
-        "medianKbPerView": 2530,
-        "medianExactEstPct": 20.2
-      },
-      {
         "tech": "Webflow",
         "count": 4,
         "medianKbPerView": 1120,
         "medianExactEstPct": 7.5
+      },
+      {
+        "tech": "Gatsby",
+        "count": 2,
+        "medianKbPerView": 1640,
+        "medianExactEstPct": 9.2
       }
     ]
   },
@@ -2041,6 +2127,22 @@
       "medianSavedKbPerView": 300
     },
     {
+      "category": "Developer tools",
+      "count": 12,
+      "medianKbPerView": 930,
+      "medianExactEstPct": 11.1,
+      "medianFixablePct": 35.3,
+      "medianSavedKbPerView": 90
+    },
+    {
+      "category": "Finance",
+      "count": 12,
+      "medianKbPerView": 1400,
+      "medianExactEstPct": 11.9,
+      "medianFixablePct": 30.7,
+      "medianSavedKbPerView": 160
+    },
+    {
       "category": "Health & wellness",
       "count": 10,
       "medianKbPerView": 2470,
@@ -2049,27 +2151,11 @@
       "medianSavedKbPerView": 340
     },
     {
-      "category": "Finance",
-      "count": 9,
-      "medianKbPerView": 1610,
-      "medianExactEstPct": 15.7,
-      "medianFixablePct": 36.7,
-      "medianSavedKbPerView": 240
-    },
-    {
-      "category": "Developer tools",
-      "count": 8,
-      "medianKbPerView": 930,
-      "medianExactEstPct": 10.1,
-      "medianFixablePct": 37.9,
-      "medianSavedKbPerView": 110
-    },
-    {
       "category": "Education",
-      "count": 8,
-      "medianKbPerView": 950,
-      "medianExactEstPct": 23.6,
-      "medianFixablePct": 49,
+      "count": 9,
+      "medianKbPerView": 890,
+      "medianExactEstPct": 19.5,
+      "medianFixablePct": 38.3,
       "medianSavedKbPerView": 220
     },
     {
