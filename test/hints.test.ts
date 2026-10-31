@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hasFix, type ImageRecord } from "../src/images.js";
+import { hasFix, searchHintsOf, type ImageRecord } from "../src/images.js";
 import { hintsCommand, hintsOf, parseHintsArgs, renderHint, renderHints, selectHints, type Hint } from "../src/hints.js";
 import { renderPage, type PageResult } from "../src/remote.js";
 
@@ -242,5 +242,33 @@ describe("locator verification and the source-map limits", () => {
     expect(calls).toEqual([{ url: "http://localhost:3000/_next/static/a.js.map", maxBytes: MAX_MAP_BYTES }]);
     for (let i = 0; i < MAX_MAPS_PER_SCAN + 5; i++) await loadSourceMap(ctx, `http://localhost:3000/_next/static/c${i}.js`);
     expect(calls.length).toBe(MAX_MAPS_PER_SCAN);
+  });
+});
+
+describe("search hints for elements without a resolved file", () => {
+  /** A record of a server component: no file, so its search clues are set from its component name. */
+  function serverRecord(id: string, component: string[]): ImageRecord {
+    const base = record(id, { saved: 40 * 1024, component });
+    return { ...base, locator: { ...base.locator, file: undefined, line: undefined, searchHints: searchHintsOf(base.locator) } };
+  }
+
+  it("a server component with no file prints where to look", () => {
+    const hint = hintsOf(page([serverRecord("abc123", ["ProductItem", "ProductGrid"])]))[0];
+    expect(hint.find).toEqual({ component: "ProductItem", glob: "**/ProductItem.*" });
+    expect(renderHint(hint, 1).join("\n")).toContain("   find: ProductItem in **/ProductItem.*");
+  });
+
+  it("an element with a resolved file prints its file, not a search", () => {
+    const hint = hintsOf(page([record("abc124", { saved: 40 * 1024, component: ["Card"], file: "src/Card.tsx", line: 7 })]))[0];
+    expect(hint.find).toBeUndefined();
+    expect(renderHint(hint, 1).join("\n")).not.toContain("find:");
+  });
+
+  it("a component name that is not an identifier gets no glob", () => {
+    expect(searchHintsOf({ component: ["Bad Name*"], alt: undefined, urlPattern: undefined })).toBeUndefined();
+    expect(searchHintsOf({ component: [], alt: "Hero", urlPattern: "https://cdn.example/a.jpg" })).toEqual({
+      alt: "Hero",
+      urlPattern: "https://cdn.example/a.jpg",
+    });
   });
 });

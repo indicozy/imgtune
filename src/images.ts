@@ -14,7 +14,7 @@ import {
   type SizesResult,
 } from "./layout.js";
 import { isLocalTarget } from "./address.js";
-import { loaderName, sanitizeText, urlPattern } from "./locate.js";
+import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern } from "./locate.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
@@ -41,6 +41,35 @@ export interface ImageLocator {
   urlPattern?: string;
   /** next-default, a CDN's adapter name, cdn:<host>, plain-img, or unknown. */
   loader: string;
+  /**
+   * Where to look in the project when no source file resolved (a server component has a name but no file:line): the
+   * component, its likely file name, a glob, and the alt and URL pattern. Clues only: nothing is read from the project.
+   */
+  searchHints?: SearchHints;
+}
+
+export interface SearchHints {
+  component?: string;
+  /** The file the component would be in, as a pattern. */
+  fileName?: string;
+  /** The glob to search the project with. */
+  glob?: string;
+  alt?: string;
+  urlPattern?: string;
+}
+
+/** The search clues of an element without a resolved source; undefined when there are none. */
+export function searchHintsOf(locator: Pick<ImageLocator, "component" | "alt" | "urlPattern">): SearchHints | undefined {
+  const hints: SearchHints = {};
+  const name = locator.component[0];
+  if (name !== undefined && COMPONENT_NAME.test(name)) {
+    hints.component = name;
+    hints.fileName = `${name}.(tsx|jsx|ts|js)`;
+    hints.glob = `**/${name}.*`;
+  }
+  if (locator.alt) hints.alt = locator.alt;
+  if (locator.urlPattern) hints.urlPattern = locator.urlPattern;
+  return Object.keys(hints).length > 0 ? hints : undefined;
 }
 
 export interface ImagePerViewport {
@@ -161,6 +190,10 @@ function locatorOf(member: Instance, pageUrl: string, source: ResolvedSource | u
   if (img.locator?.testid !== undefined) locator.testid = sanitizeText(img.locator.testid, 120);
   if (img.locator?.alt !== undefined) locator.alt = sanitizeText(img.locator.alt, 120);
   if (src) locator.urlPattern = sanitizeText(urlPattern(src, pageUrl) ?? "", 300);
+  if (source?.file === undefined) {
+    const searchHints = searchHintsOf(locator);
+    if (searchHints !== undefined) locator.searchHints = searchHints;
+  }
   return locator;
 }
 

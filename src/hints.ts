@@ -31,6 +31,8 @@ export interface Hint {
   testid?: string;
   alt?: string;
   classes?: string;
+  /** Where to look for the element in the project when no file resolved (see SearchHints). */
+  find?: { component: string; glob: string };
   selector: string;
   sizes: { current?: string; proposed?: string; basis?: string };
   width?: number;
@@ -107,6 +109,10 @@ export function hintsOf(result: PageResult): Hint[] {
     if (record.locator.testid !== undefined) hint.testid = record.locator.testid;
     if (record.locator.alt !== undefined) hint.alt = record.locator.alt;
     if (record.locator.classes) hint.classes = record.locator.classes;
+    const search = record.locator.searchHints;
+    if (record.locator.file === undefined && search?.component !== undefined && search.glob !== undefined) {
+      hint.find = { component: search.component, glob: search.glob };
+    }
     if (record.fix.width !== undefined) hint.width = record.fix.width;
     if (record.fix.quality !== undefined && record.current.quality !== undefined) {
       hint.quality = {
@@ -153,6 +159,8 @@ export function renderHint(hint: Hint, rank: number): string[] {
     hint.classes !== undefined ? `class ${JSON.stringify(hint.classes)}` : undefined,
   ].filter((a): a is string => a !== undefined);
   if (attributes.length > 0) lines.push(`   ${attributes.join("  ")}`);
+  // The name is an identifier (COMPONENT_NAME), so it prints bare; the glob is built from the same name.
+  if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
   const parts: string[] = [];
