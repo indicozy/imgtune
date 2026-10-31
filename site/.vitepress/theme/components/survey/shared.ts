@@ -49,7 +49,7 @@ export interface Survey {
 export const survey = data as unknown as Survey;
 
 /** Categories with fewer sites than this are faded and marked "small sample". */
-export const SMALL_N = 3;
+export const SMALL_N = 5;
 /** The saving threshold the study names. */
 export const THRESHOLD_PCT = 20;
 /** Tech label for sites no named stack covers. The data folds small stacks into it. */

@@ -37,16 +37,23 @@ const maxStack = computed(() => {
   return Math.max(1, ...fill);
 });
 
-const H = computed(() => Math.max(props.compact ? 130 : 160, PAD_TOP + maxStack.value * step.value + AXIS_H + 8));
 const plotW = computed(() => W.value - PAD_L - PAD_R);
+const xOf = (pct: number) => PAD_L + (pct / 100) * plotW.value;
+// Approximate width of "median 17.2%" in the reference-label font.
+const MEDIAN_LABEL_W = 90;
+const medianLeft = computed(() => med.value < THRESHOLD_PCT);
+// When the median sits so close to the left edge that its label would run off the chart, the label moves to a
+// second row, to the right of its line. The 20% label stays on the first row.
+const medOverflow = computed(() => medianLeft.value && xOf(med.value) - 5 - MEDIAN_LABEL_W < PAD_L);
+const topPad = computed(() => (medOverflow.value ? PAD_TOP + 16 : PAD_TOP));
+
+const H = computed(() => Math.max(props.compact ? 130 : 160, topPad.value + maxStack.value * step.value + AXIS_H + 8));
 const binW = computed(() => plotW.value / BINS);
 const baseY = computed(() => H.value - AXIS_H);
-const xOf = (pct: number) => PAD_L + (pct / 100) * plotW.value;
 const cxOf = (bin: number) => PAD_L + (bin + 0.5) * binW.value;
 const cyOf = (row: number) => baseY.value - r.value - 2 - row * step.value;
 
 const med = computed(() => survey.summary.medianExactEstPct);
-const medianLeft = computed(() => med.value < THRESHOLD_PCT);
 const ticks = [0, 20, 40, 60, 80, 100];
 
 const countAt20 = computed(() => sites.filter((s) => s.exactEstPct >= THRESHOLD_PCT).length);
@@ -97,8 +104,8 @@ const label = (s: SurveySite) =>
       >
         <line :x1="PAD_L" :x2="W - PAD_R" :y1="baseY" :y2="baseY" class="base" />
         <g class="ref">
-          <line :x1="xOf(THRESHOLD_PCT)" :x2="xOf(THRESHOLD_PCT)" :y1="PAD_TOP - 6" :y2="baseY" />
-          <line :x1="xOf(med)" :x2="xOf(med)" :y1="PAD_TOP - 6" :y2="baseY" class="median" />
+          <line :x1="xOf(THRESHOLD_PCT)" :x2="xOf(THRESHOLD_PCT)" :y1="topPad - 6" :y2="baseY" />
+          <line :x1="xOf(med)" :x2="xOf(med)" :y1="topPad - 6" :y2="baseY" class="median" />
         </g>
         <text
           :x="medianLeft ? xOf(THRESHOLD_PCT) + 5 : xOf(THRESHOLD_PCT) - 5"
@@ -107,9 +114,9 @@ const label = (s: SurveySite) =>
           class="reflabel"
         >{{ THRESHOLD_PCT }}%</text>
         <text
-          :x="medianLeft ? xOf(med) - 5 : xOf(med) + 5"
-          y="13"
-          :text-anchor="medianLeft ? 'end' : 'start'"
+          :x="medOverflow ? xOf(med) + 5 : medianLeft ? xOf(med) - 5 : xOf(med) + 5"
+          :y="medOverflow ? 29 : 13"
+          :text-anchor="medianLeft && !medOverflow ? 'end' : 'start'"
           class="reflabel strong"
         >median {{ fmtPct(med) }}</text>
         <text

@@ -27,19 +27,22 @@ const span = Math.log10(hi) - Math.log10(lo);
 const xOf = (kb: number) => PAD.l + ((Math.log10(Math.max(kb, lo)) - Math.log10(lo)) / span) * plotW.value;
 const yOf = (pct: number) => PAD.t + (1 - pct / 100) * plotH.value;
 
-// Ladder ticks inside the domain, dropped greedily from the right so labels never touch.
+// Ladder ticks inside the domain, dropped greedily from the right so labels never touch. The rightmost tick is
+// end-anchored (its label runs left of its position); the others are middle-anchored. The width is over-estimated
+// so the gap holds for the start-anchored tick on the left too.
 const xTicks = computed(() => {
   const inside = ladder.filter((v) => v >= lo && v <= hi);
   const kept: number[] = [];
-  let lastX = Infinity;
-  let lastW = 0;
+  let lastLeft = Infinity;
   for (const v of [...inside].reverse()) {
     const x = xOf(v);
-    const w = fmtInt(v).length * 6.8;
-    if (lastX - x >= (w + lastW) / 2 + 10 || kept.length === 0) {
+    const w = fmtInt(v).length * 7.4;
+    if (kept.length === 0) {
       kept.push(v);
-      lastX = x;
-      lastW = w;
+      lastLeft = x - w;
+    } else if (x + w + 8 <= lastLeft) {
+      kept.push(v);
+      lastLeft = x - w / 2;
     }
   }
   return kept.reverse();
