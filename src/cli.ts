@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { scanCommand } from "./remote.js";
+import { hintsCommand } from "./hints.js";
 import { ChromiumMissingError } from "./browser.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
@@ -46,12 +47,28 @@ const SCAN_HELP = commandHelp(
   ["out", "aggressive", "viewports", "noQuality", "markdown", "failOver", "summaryJson", "ignoreRobots"],
 );
 
+const HINTS_HELP = `Usage: imgtune hints <scan.json> [options]
+
+Prints a compact batch of the per-image fix hints of one scanned page, sorted by the bytes a fix saves. Each hint names
+the image, its component and file:line when they resolved, the sizes and quality to use, and the two byte numbers.
+
+Options:
+  --page <text>       only pages whose URL contains the text
+  --component <name>  only images whose component or file contains the text
+  --limit <N>         hints to print (default 10)
+  --offset <N>        skip the first N hints (for the next batch)
+  --min-kb <N>        only hints that save at least N KB per view
+  --format <text|json>  text (default) or JSON
+  -h, --help          show this help
+`;
+
 const USAGE = `Usage: imgtune <command> [options]
 
 Commands:
   scan      measure live pages by URL, with no source, config or dev server (writes JSON to --out)
+  hints     print a batch of the per-image fix hints of a scan file
 
-Run "imgtune scan --help" for the options of the scan.
+Run "imgtune scan --help" for the options of the scan, and "imgtune hints --help" for those of hints.
 
 Options:
   --version           print the version
@@ -65,12 +82,20 @@ async function main(): Promise<void> {
     return;
   }
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
-    process.stdout.write(argv.includes("scan") ? SCAN_HELP : USAGE);
+    if (argv[0] === "hints") process.stdout.write(HINTS_HELP);
+    else process.stdout.write(argv.includes("scan") ? SCAN_HELP : USAGE);
+    return;
+  }
+
+  if (argv[0] === "hints") {
+    const hints = await hintsCommand(argv.slice(1), process.cwd());
+    process.stdout.write(hints.output);
+    process.exitCode = hints.exitCode;
     return;
   }
 
   if (argv[0] !== "scan") {
-    console.error(`imgtune: Unknown command "${argv[0]}": expected scan`);
+    console.error(`imgtune: Unknown command "${argv[0]}": expected scan or hints`);
     process.exitCode = 2;
     return;
   }

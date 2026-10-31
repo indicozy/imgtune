@@ -176,6 +176,11 @@ function sizesOf(
   return { value: `${Math.ceil(Math.max(...measured.map((m) => m.renderedWidth)))}px`, basis: "measured-max" };
 }
 
+/** An image record that has something to fix: bytes saved, or a sizes value that differs from the current one. */
+export function hasFix(record: ImageRecord): boolean {
+  return record.fix.bytes.saved > 0 || (record.fix.sizes !== undefined && record.fix.sizes.value !== record.current.sizes);
+}
+
 /** Builds the image records of one page from its analysed instances. */
 export function buildImageRecords(input: BuildInput): ImageRecord[] {
   const { pageUrl, observations, instances, refName, resolved } = input;

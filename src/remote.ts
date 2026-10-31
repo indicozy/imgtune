@@ -16,7 +16,7 @@ import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { parseSourceMap, resolveOwners } from "./locate.js";
-import { buildImageRecords, type ImageRecord, type ResolvedSource } from "./images.js";
+import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
 import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
@@ -1833,8 +1833,8 @@ export function safeText(text: string, limit = TEXT_LIMIT): string {
 const pct = (value: number): string => `${value.toFixed(1)}%`;
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
-/** One page: a short table and its top groups. */
-export function renderPage(result: PageResult, aggressive: boolean): string[] {
+/** One page: a short table and its top groups. `hintsFile` names the scan file, for the pointer to `imgtune hints`. */
+export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: string): string[] {
   const head = `${safeText(result.url)}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
   if (result.status !== "ok" || !result.page) return [head, `  ${safeText(result.error ?? result.status)}`];
   const n = result.page;
@@ -1848,6 +1848,8 @@ export function renderPage(result: PageResult, aggressive: boolean): string[] {
     `  sharpness (separate)   +${n.sharpnessKB.toFixed(1)} KB`,
   ];
   if (aggressive) lines.push(`  exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}  ${pct(n.aggressiveExactEstPct ?? 0)}`);
+  const hinted = (result.images ?? []).filter(hasFix).length;
+  if (hinted > 0 && hintsFile !== undefined) lines.push(`  ${hinted} images with fix hints: run \`imgtune hints ${safeText(hintsFile)}\``);
   if (result.groups.length > 0) {
     lines.push("  top groups:");
     for (const g of result.groups) {
@@ -1863,9 +1865,9 @@ export function renderPage(result: PageResult, aggressive: boolean): string[] {
 }
 
 /** Per-site line for hosts with two or more scanned pages. */
-export function renderScan(results: PageResult[], aggressive: boolean): string {
+export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string): string {
   const lines: string[] = [];
-  for (const result of results) lines.push(...renderPage(result, aggressive), "");
+  for (const result of results) lines.push(...renderPage(result, aggressive, hintsFile?.(result)), "");
   const byHost = new Map<string, PageNumbers[]>();
   for (const result of results) {
     if (result.status !== "ok" || !result.page) continue;
@@ -2044,7 +2046,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
   if (args.summaryJson !== undefined) {
     await writeOutput(resolve(cwd, args.summaryJson), `${JSON.stringify(summaryOf(results), null, 2)}\n`);
   }
-  let output = renderScan(results, args.aggressive);
+  let output = renderScan(results, args.aggressive, (result) => join(args.out, pageFileName(new URL(result.url))));
   let exitCode = 0;
   if (args.failOver !== undefined) {
     const over = pagesOverBudget(results, args.failOver);
