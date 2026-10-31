@@ -8,6 +8,7 @@ import {
   fetchSitemapUrls,
   isSitemapText,
   MAX_SITEMAP_BYTES,
+  MAX_SITEMAP_URLS,
   MAX_CHILD_SITEMAPS,
   parseSitemapText,
   parseUrlList,
@@ -77,6 +78,39 @@ describe("parseSitemapText", () => {
     expect(parseSitemapText("<html><body>hello</body></html>")).toBeUndefined();
     expect(isSitemapText("https://shop.example/a\n")).toBe(false);
     expect(isSitemapText(urlset("https://shop.example/a"))).toBe(true);
+  });
+});
+
+describe("parseSitemapText on hostile input", () => {
+  it("finishes well under a second on 100k comment openers with no closer", () => {
+    const hostile = `<urlset>${"<!--".repeat(100_000)}<url><loc>https://shop.example/x</loc></url></urlset>`;
+    const started = performance.now();
+    const parsed = parseSitemapText(hostile);
+    expect(performance.now() - started).toBeLessThan(1000);
+    // An opener with no closer drops the rest of the text: the locs after it are not read.
+    expect(parsed?.locs).toEqual([]);
+  });
+
+  it("finishes well under a second on 100k CDATA openers and a comment that never closes", () => {
+    const hostile = `<urlset>${"<![CDATA[x".repeat(100_000)}${"<!--".repeat(50_000)}</urlset>`;
+    const started = performance.now();
+    parseSitemapText(hostile);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("reads the locs around closed comments, and keeps the text inside CDATA", () => {
+    const xml = `<urlset><!-- one --><url><loc><![CDATA[https://shop.example/a]]></loc></url><!-- two --></urlset>`;
+    expect(parseSitemapText(xml)?.locs).toEqual(["https://shop.example/a"]);
+  });
+
+  it("refuses a parse that runs past its time budget", () => {
+    const many = `<urlset>${"<url><loc>https://shop.example/p</loc></url>".repeat(20_000)}</urlset>`;
+    expect(parseSitemapText(many, -1)).toBeUndefined();
+  });
+
+  it("caps the locs read from one sitemap", () => {
+    const many = `<urlset>${"<url><loc>https://shop.example/p</loc></url>".repeat(MAX_SITEMAP_URLS + 5)}</urlset>`;
+    expect(parseSitemapText(many)?.locs).toHaveLength(MAX_SITEMAP_URLS);
   });
 });
 

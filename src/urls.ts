@@ -71,18 +71,47 @@ export interface SitemapText {
   locs: string[];
 }
 
+/** Wall time one sitemap's text may take to parse. Past it the sitemap is refused, whatever its size. */
+export const PARSE_BUDGET_MS = 5_000;
+
 /**
- * The root kind and the `<loc>` values of a sitemap's text. Comments and CDATA markers are removed first. Undefined when
- * the text is not a sitemap or sitemap index.
+ * The text with each `open ... close` span removed, in one forward pass (indexOf from the last position, so the time is
+ * linear in the text). An opener with no closer removes the rest of the text.
  */
-export function parseSitemapText(xml: string): SitemapText | undefined {
-  const clean = xml.replace(/<!--[\s\S]*?-->/g, "").replace(/<!\[CDATA\[|\]\]>/g, "");
+function stripSpans(text: string, open: string, close: string): string {
+  const kept: string[] = [];
+  let pos = 0;
+  for (;;) {
+    const start = text.indexOf(open, pos);
+    if (start === -1) {
+      kept.push(text.slice(pos));
+      break;
+    }
+    kept.push(text.slice(pos, start));
+    const end = text.indexOf(close, start + open.length);
+    if (end === -1) break;
+    pos = end + close.length;
+  }
+  return kept.join("");
+}
+
+/**
+ * The root kind and the `<loc>` values of a sitemap's text. Comments are removed and CDATA markers dropped (the text
+ * inside CDATA is kept), both in linear time. At most MAX_SITEMAP_URLS locs are read, and the parse stops after
+ * PARSE_BUDGET_MS of wall time. Undefined when the text is not a sitemap or sitemap index, or the budget ran out.
+ */
+export function parseSitemapText(xml: string, budgetMs: number = PARSE_BUDGET_MS): SitemapText | undefined {
+  const started = performance.now();
+  const clean = stripSpans(xml, "<!--", "-->").split("<![CDATA[").join("").split("]]>").join("");
   const root = /<(urlset|sitemapindex)[\s>]/.exec(clean);
   if (!root) return undefined;
   const locs: string[] = [];
   const pattern = /<loc>([^<]*)<\/loc>/g;
   let match: RegExpExecArray | null;
+  let steps = 0;
   while ((match = pattern.exec(clean)) !== null && locs.length < MAX_SITEMAP_URLS) {
+    // The clock is read every 1000 matches, inside the loop.
+    if (++steps % 1000 === 0 && performance.now() - started > budgetMs) return undefined;
     const loc = decodeEntities(match[1]).trim();
     if (loc !== "") locs.push(loc);
   }
