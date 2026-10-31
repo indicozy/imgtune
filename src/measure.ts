@@ -3,6 +3,7 @@ import type { Browser, Page, Response } from "playwright";
 import { launchChromium } from "./browser.js";
 import { srcsetWidths } from "./srcset-parse.js";
 import type { Viewport } from "./types.js";
+import { count, measure } from "./timing.js";
 
 export interface ImageObservation {
   usageId: string;
@@ -207,17 +208,25 @@ export async function waitForLoadWithin(page: Page, ms: number): Promise<boolean
  * network and for the images matched by `imageSelector` to complete.
  */
 export async function settlePage(page: Page, imageSelector: string): Promise<void> {
-  await scrollThrough(page);
+  await measure("settle: scroll", () => scrollThrough(page));
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
-  await page
-    .waitForFunction(
-      (selector) =>
-        Array.from(document.querySelectorAll<HTMLImageElement>(selector)).every((img) => !img.currentSrc || img.complete),
-      imageSelector,
-      { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
-    )
-    .catch(() => {});
+  await measure("settle: network idle", () =>
+    page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {
+      count("network idle timeouts");
+    }),
+  );
+  await measure("settle: images complete", () =>
+    page
+      .waitForFunction(
+        (selector) =>
+          Array.from(document.querySelectorAll<HTMLImageElement>(selector)).every((img) => !img.currentSrc || img.complete),
+        imageSelector,
+        { timeout: IMAGES_COMPLETE_TIMEOUT_MS },
+      )
+      .catch(() => {
+        count("image completion timeouts");
+      }),
+  );
 }
 
 /** Waits for the promises to settle, but never longer than `ms`. */
@@ -237,6 +246,7 @@ async function scrollThrough(page: Page): Promise<void> {
       window.scrollBy(0, window.innerHeight);
       return window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
     });
+    count("scroll steps");
     await new Promise((resolve) => setTimeout(resolve, SCROLL_STEP_WAIT_MS));
     if (atBottom) return;
   }

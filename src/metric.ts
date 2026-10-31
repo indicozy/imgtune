@@ -9,6 +9,7 @@ import { writeFileAtomic } from "./atomic.js";
 import { pixelsKey } from "./encode.js";
 import { LruCache } from "./lru.js";
 import { ssim, type RawImage } from "./ssim.js";
+import { count, measure } from "./timing.js";
 
 /**
  * `ssimulacra2`: perceptual score, 100 for identical images, scored in-process by the bundled WebAssembly build.
@@ -71,8 +72,9 @@ export function cachedScorer(metric: Metric, inner: Scorer): Scorer {
   return (ref, test) => {
     const key = `${metric}|${pixelsKey(ref)}|${pixelsKey(test)}`;
     let pending = scoreCache.get(key);
+    count("score calls");
     if (!pending) {
-      pending = (async () => inner(ref, test))();
+      pending = (async () => measure(`score ${metric}`, () => inner(ref, test)))();
       scoreCache.set(key, pending);
       pending.catch(() => scoreCache.delete(key));
     }

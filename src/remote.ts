@@ -21,6 +21,7 @@ import { deriveSizes, type SizePoint } from "./sizes.js";
 import type { RawImage } from "./ssim.js";
 import type { Viewport } from "./types.js";
 import { IMGTUNE_VERSION } from "./version.js";
+import { count, measure, renderTiming, resetTiming, TIMING_ENABLED } from "./timing.js";
 
 export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
 export { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -609,25 +610,24 @@ async function avifBytesAtBar(reference: RawImage, bar: number, enc: typeof enco
 export async function estimateQuality(input: QualityInput, deltas: number[], deps: QualityDeps): Promise<QualityEstimate | undefined> {
   const enc = deps.encode ?? encode;
   const score = deps.score;
-  const reference = await referenceAt(input.original, input.width);
+  const reference = await measure("resize reference", () => referenceAt(input.original, input.width));
   const ratio: Record<number, number> = {};
 
   if (input.format === "avif" || input.format === "webp") {
     const format = input.format;
-    const fit = await calibrationOffset(
-      [{ ref: reference, format, cdnQuality: input.current, cdnBytes: input.bytes }],
-      { encode: enc },
+    const fit = await measure("calibrate", () =>
+      calibrationOffset([{ ref: reference, format, cdnQuality: input.current, cdnBytes: input.bytes }], { encode: enc }),
     );
     if (!fit) return undefined;
     const offset = fit.offset;
     const localCurrent = clampQuality(input.current - offset);
     const currentOut = await enc(reference, format, localCurrent, "cdn");
     // The bar is the served file's own score against the original, so it holds whatever quality the URL asks for.
-    const servedScore = await score(reference, await decodeRaw(input.served, { width: reference.width, height: reference.height }));
+    const servedScore = await score(reference, await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height })));
     let target: number | undefined;
     for (const delta of deltas) {
       const bar = Math.max(SCAN_THRESHOLD, servedScore - delta);
-      const best = await minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score });
+      const best = await measure("bisect: quality", () => minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score }));
       const bestBytes = (await enc(reference, format, best, "cdn")).bytes;
       ratio[delta] = currentOut.bytes > 0 ? Math.min(1, bestBytes / currentOut.bytes) : 1;
       if (delta === deltas[0]) target = Math.min(input.current, clampQuality(best + offset));
@@ -636,11 +636,11 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
   }
 
   if (input.format === "jpeg" || input.format === "png") {
-    const servedRaw = await decodeRaw(input.served, { width: reference.width, height: reference.height });
+    const servedRaw = await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height }));
     const ownScore = await score(reference, servedRaw);
     for (const delta of deltas) {
       const bar = Math.max(SCAN_THRESHOLD, ownScore - delta);
-      const avifBytes = await avifBytesAtBar(reference, bar, enc, score);
+      const avifBytes = await measure("avif bar search", () => avifBytesAtBar(reference, bar, enc, score));
       ratio[delta] = avifBytes !== undefined && input.bytes > 0 ? Math.min(1, avifBytes / input.bytes) : 1;
     }
     return { ratio, format: "avif" };
@@ -753,7 +753,7 @@ async function settledView(page: Page, navigations: () => number, loadCapMs: num
     let view: PageView | undefined;
     try {
       await settlePage(page, "img");
-      view = await readView(page);
+      view = await measure("read view", () => readView(page));
     } catch (err) {
       if (!isNavigationError(err)) throw err;
     }
@@ -780,11 +780,13 @@ async function observeViewport(
   let blockedRequests = 0;
   // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
   // time. Chromium gives the route handler no route for a redirect hop, so the route guard alone would miss them.
-  const egress = await startEgressProxy(guard.policy, () => {
-    blockedRequests++;
-  });
+  const egress = await measure("egress proxy start", () =>
+    startEgressProxy(guard.policy, () => {
+      blockedRequests++;
+    }),
+  );
   try {
-    const context = await browser.newContext({
+    const context = await measure("context start", () => browser.newContext({
       viewport: { width: viewport.width, height: viewport.height },
       deviceScaleFactor: viewport.dpr,
       isMobile: viewport.mobile,
@@ -794,7 +796,7 @@ async function observeViewport(
       serviceWorkers: "block",
       // Loopback is proxied as well, so a request to 127.0.0.1 from a public page is checked like any other.
       proxy: { server: egress.url, bypass: "<-loopback>" },
-    });
+    }));
     try {
       // The route guard decides the URL of each request and aborts it when refused. The proxy checks what it cannot see.
       await context.route("**/*", async (route) => {
@@ -849,13 +851,14 @@ async function observeViewport(
       page.on("framenavigated", (frame) => {
         if (frame === page.mainFrame()) navigations++;
       });
-      const loaded = await gotoParsed(page, pageUrl, loadCapMs);
+      const loaded = await measure(`page load ${viewport.name}`, () => gotoParsed(page, pageUrl, loadCapMs));
       const docResponse: BrowserResponse | null = loaded.response;
       const { seen, html } = await settledView(page, () => navigations, loadCapMs);
       const status = docResponse?.status();
-      await settleWithin(bodyReads, BODY_READ_TIMEOUT_MS);
+      await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
+      count("image responses", responses.size);
       for (const record of responses.values()) {
-        if (record.buffer) record.pixels = await pixelSize(record.buffer);
+        if (record.buffer) record.pixels = await measure("decode: pixel size", () => pixelSize(record.buffer as Buffer));
       }
       return {
         viewport,
@@ -967,10 +970,12 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
       rightBuffer = response.buffer;
     } else {
       // A candidate the browser loaded at this viewport is reused; otherwise it is fetched once, as the page advertises it.
-      rightBuffer = obs.responses.get(right.url)?.buffer ?? (await ctx.fetcher.get(right.url, { allowPrivate: ctx.allowPrivate }));
+      rightBuffer =
+        obs.responses.get(right.url)?.buffer ??
+        (await measure("fetch: srcset candidate", () => ctx.fetcher.get(right.url, { allowPrivate: ctx.allowPrivate })));
     }
     if (rightBuffer) {
-      const rightPixels = right.url === img.currentSrc ? served : await pixelSize(rightBuffer);
+      const rightPixels = right.url === img.currentSrc ? served : await measure("decode: pixel size", () => pixelSize(rightBuffer as Buffer));
       const rightBytes = rightBuffer.length;
       if (isUndersized(served.width, need, largest)) {
         instance.undersized = true;
@@ -996,7 +1001,8 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
     const key = `${img.currentSrc}|${needed}`;
     let pending = ctx.resized.get(key);
     if (!pending) {
-      pending = resizedEstimate(response.buffer, served.format, needed).catch(() => undefined);
+      count("plain resize estimates");
+      pending = measure("plain resize estimate", () => resizedEstimate(response.buffer as Buffer, served.format as string, needed)).catch(() => undefined);
       ctx.resized.set(key, pending);
     }
     const resized = await pending;
@@ -1052,23 +1058,25 @@ async function estimateQualities(ctx: AnalysisContext, instances: Instance[], re
       const original = referenceUrl(member.url, ctx.pageUrl);
       if (!original) continue;
       attempts++;
-      const buffer = await ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate });
-      if (!buffer || !member.right) continue;
+      count("quality samples");
+      const buffer = await measure("fetch: original", () => ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate }));
+      const right = member.right;
+      if (!buffer || !right) continue;
       const current = currentQuality(member.url, ctx.pageUrl);
       const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];
-      const estimate = await estimateQuality(
+      const estimate = await measure("quality estimate", () => estimateQuality(
         {
           original: buffer,
-          served: member.right.buffer,
-          format: member.right.format,
-          bytes: member.right.bytes,
-          width: member.right.width,
-          height: member.right.height,
+          served: right.buffer,
+          format: right.format,
+          bytes: right.bytes,
+          width: right.width,
+          height: right.height,
           current: current.quality,
         },
         deltas,
         ctx.deps,
-      ).catch(() => undefined);
+      )).catch(() => undefined);
       if (!estimate) continue;
       member.qualityRatio = { ...estimate.ratio };
       member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, target: estimate.target, format: estimate.format, sampled: true };
@@ -1333,6 +1341,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   }
 
   const elements = new Set(instances.map((i) => i.element));
+  count("images", elements.size);
   const byLoader: Record<string, number> = {};
   for (const e of elements) {
     const first = instances.find((i) => i.element === e) as Instance;
@@ -1346,14 +1355,14 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
     if (mine.some((i) => i.kind !== "skipped" && i.qualityRatio === undefined)) naElements.add(e);
   }
 
-  const numbers = pageNumbers(totals);
+  const numbers = measure("aggregate", () => pageNumbers(totals));
   const { aggressiveExactEstPct, ...withoutAggressive } = numbers;
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
     perViewport,
     page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
-    groups: groupReports(instances, observations.length),
+    groups: measure("aggregate", () => groupReports(instances, observations.length)),
     counts: {
       images: elements.size,
       qualityNA: naElements.size,
@@ -1454,6 +1463,7 @@ async function scanPage(
   let loadTimedOut = false;
   try {
     for (const viewport of run.viewports) {
+      count("viewport loads");
       const obs = await observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs);
       if (obs.blocked) {
         return { ...base, status: "blocked", error: `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}` };
@@ -1482,7 +1492,8 @@ async function scanPage(
 
 /** Scans each page in order and writes its JSON to `outDir`. Nothing else is written, except the scorer's temp files. */
 export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
-  const browser = await launchChromium();
+  resetTiming();
+  const browser = await measure("browser launch", () => launchChromium());
   try {
     // The fetches send the desktop viewport's user agent: the default one of a fresh context.
     const probe = await browser.newContext();
@@ -1518,7 +1529,9 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const results: PageResult[] = [];
     for (const url of urls) {
       opts.log(`scanning ${safeText(url)}`);
+      const started = performance.now();
       const result = await scanPage(browser, run, url, robotsFor);
+      if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - started) / 1000).toFixed(1)} s\n`);
       await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
         root: opts.outDir,
       });
@@ -1527,6 +1540,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     return results;
   } finally {
     await browser.close();
+    for (const line of renderTiming()) process.stderr.write(`${line}\n`);
   }
 }
 

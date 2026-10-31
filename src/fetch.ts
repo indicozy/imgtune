@@ -3,6 +3,7 @@ import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { guardedLookup, refusedAddress, systemResolver, type Resolver } from "./address.js";
 import { sameSite } from "./site.js";
+import { count, measure } from "./timing.js";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Extra fetches: one memo per scan, at most two in flight, 30 s each, capped bodies, checked destinations
@@ -163,8 +164,11 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
       const key = `${maxBytes}|${allowPrivate}|${fetchOpts.sameSiteAs ?? ""}|${url}`;
       let pending = memo.get(key);
       if (!pending) {
-        pending = withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs)).catch(() => undefined);
+        count("fetch requests");
+        pending = measure("fetch: network", () => withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs))).catch(() => undefined);
         memo.set(key, pending);
+      } else {
+        count("fetch memo hits");
       }
       return pending;
     },

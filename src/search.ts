@@ -1,6 +1,7 @@
 import { encode, type EncoderProfile } from "./encode.js";
 import type { Scorer } from "./metric.js";
 import { ssim, type RawImage } from "./ssim.js";
+import { count } from "./timing.js";
 
 /**
  * Test seams: the real encoder, and the plain SSIM as scorer. Production passes the configured metric's scorer.
@@ -33,9 +34,11 @@ export async function minPassingQuality(
   const enc = deps.encode ?? encode;
   const score = deps.score ?? ssim;
   const passes = async (q: number): Promise<boolean> => {
+    count("bisect probes");
     const { decoded } = await enc(ref, format, q, profile);
     return (await score(ref, decoded)) >= threshold;
   };
+  count("bisect searches");
 
   if (!(await passes(start))) return start;
 

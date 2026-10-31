@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import sharp, { type Sharp } from "sharp";
 import { LruCache } from "./lru.js";
 import type { RawImage } from "./ssim.js";
+import { count, measure } from "./timing.js";
 
 sharp.concurrency(4);
 
@@ -20,10 +21,12 @@ export async function loadReference(original: Buffer, width: number): Promise<Ra
 
 /** Content hash of a decoded image: its pixels and size. Equal pixels, however they were produced, share one hash. */
 export function pixelsKey(img: RawImage): string {
-  return createHash("sha1")
-    .update(Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength))
-    .update(`${img.width}x${img.height}`)
-    .digest("hex");
+  return measure("hash pixels", () =>
+    createHash("sha1")
+      .update(Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength))
+      .update(`${img.width}x${img.height}`)
+      .digest("hex"),
+  );
 }
 
 /** Compressed encodes of this process, by pixels, format, quality and profile. Only the bytes are kept. */
@@ -32,11 +35,16 @@ const encodeCache = new LruCache<string, Promise<Buffer>>(ENCODE_CACHE_MAX);
 const encodeStats = { hits: 0, misses: 0 };
 
 async function decodeRgba(buffer: Buffer): Promise<RawImage> {
-  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await measure("decode encoded", () => sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true }));
   return { data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), width: info.width, height: info.height };
 }
 
 async function encodeBuffer(ref: RawImage, format: "avif" | "webp", quality: number, profile: EncoderProfile): Promise<Buffer> {
+  count(`encode runs ${format}`);
+  return measure(`encode ${format} ${profile}`, () => encodeRun(ref, format, quality, profile));
+}
+
+function encodeRun(ref: RawImage, format: "avif" | "webp", quality: number, profile: EncoderProfile): Promise<Buffer> {
   const source = sharp(ref.data, { raw: { width: ref.width, height: ref.height, channels: 4 } });
   let encoder: Sharp;
   if (format === "avif") {
@@ -67,7 +75,11 @@ export async function encode(
 ): Promise<{ bytes: number; decoded: RawImage; buffer: Buffer }> {
   const key = `${pixelsKey(ref)}|${format}|${quality}|${profile}`;
   let pending = encodeCache.get(key);
-  if (pending) encodeStats.hits++;
+  count("encode calls");
+  if (pending) {
+    encodeStats.hits++;
+    count("encode cache hits");
+  }
   else {
     encodeStats.misses++;
     pending = encodeBuffer(ref, format, quality, profile);
