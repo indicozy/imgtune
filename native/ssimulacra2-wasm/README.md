@@ -16,6 +16,23 @@ The script runs these steps with 4 jobs at most:
 
 and renames the CommonJS glue to `ssim_wasm.cjs`, because the imgtune package is `"type": "module"`.
 
+## Scorer
+
+`src/scorer.rs` and `src/blur/` are vendored from ssimulacra2 0.5.0 (BSD-2-Clause). The arithmetic is upstream's. What
+changed is the order of allocation: each image's planar XYB is built right after its own downscale, the full-size
+linear RGB is freed before the blur, and the blur and error maps run one channel at a time. Scores do not change; the
+peak memory of the scorer does.
+
+## Tests
+
+    CARGO_BUILD_JOBS=4 cargo test --release --locked --test bit_identical
+    SSIM_TEST_IMAGES=/path/to/images CARGO_BUILD_JOBS=4 cargo test --release --locked --test bit_identical
+
+`tests/bit_identical.rs` runs the vendored scorer and the upstream `ssimulacra2` crate (a dev-dependency) on the same
+RGBA input and asserts that the f64 results match bit for bit. The synthetic cases cover odd sizes down to 8x8, which
+change how many scales run. With `SSIM_TEST_IMAGES` set, every JPEG/PNG/WebP file in that directory is also compared
+at its own size, at 1001x667 and as a thumbnail, with JPEG and resample distortions.
+
 ## Pins
 
 - `Cargo.lock` is committed and the build uses `--locked`. It keeps `ssimulacra2 0.5.0` (the library behind

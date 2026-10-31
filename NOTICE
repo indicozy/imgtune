@@ -11,5 +11,8 @@ The adapted code keeps the original attribution header. Modifications are made f
 The SSIMULACRA2 WebAssembly module in vendor/ssimulacra2 is built from native/ssimulacra2-wasm, which uses:
 
   ssimulacra2 0.5.0 (BSD-2-Clause), Copyright (c) 2022-2022, the rav1e contributors
+    The scoring loop (native/ssimulacra2-wasm/src/scorer.rs) and the blur (native/ssimulacra2-wasm/src/blur/) are
+    vendored from it and changed to use less memory. Their file headers carry the full license text. The upstream
+    crate is used only by the tests in native/ssimulacra2-wasm/tests/.
   yuvxyb 0.4.0 (MIT)
   wasm-bindgen 0.2.129 (MIT OR Apache-2.0)
