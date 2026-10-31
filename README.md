@@ -8,8 +8,8 @@ Website: https://indicozy.github.io/imgtune/ · [Try the demo](https://indicozy.
 
 They waste it three ways: served larger than the space they fill, encoded at a quality nobody can see, and
 in an older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on
-your live page, at six viewports, against a perceptual quality bar, and in a Next.js project it gives you the exact
-`sizes` and `quality` to change. Your pages send the fewest image bytes that still look the same.
+your live page, at six viewports, against a perceptual quality bar. Your pages send the fewest image bytes that still
+look the same.
 
 ### Why one lever is not enough
 
@@ -20,8 +20,7 @@ your live page, at six viewports, against a perceptual quality bar, and in a Nex
 - **Lighthouse** flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate.
   It tells you something is wrong, not which `sizes` or quality to set.
 - **ImgTune** measures size, quality and format together, per image, on the live page at six viewports, accepts a
-  saving only when SSIMULACRA2 says nobody can see it, and in Next.js writes the fix, verifies it against the server
-  and can undo it.
+  saving only when SSIMULACRA2 says nobody can see it.
 
 It looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the
 encoder setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per
@@ -44,27 +43,7 @@ Measure any live site, with no access to its source:
 npx imgtune scan https://your-site
 ```
 
-In a Next.js project, tune `next/image` sizes and quality against the running app:
-
-```sh
-npx imgtune audit     # measure and propose sizes and quality (writes .imgtune/report.json)
-npx imgtune apply     # write the proposals into the source files
-npx imgtune verify    # re-check the applied changes against the served images (report only)
-```
-
-Run `npx imgtune --help`, or `npx imgtune <command> --help`, for every option.
-
-When `verify` reports a usage `regressed (raise quality to N)`, raise its applied quality with:
-
-```sh
-npx imgtune apply --raise <Component>=<N>     # repeatable; N must be above the applied quality, at most 100
-npx imgtune verify                             # measure it again
-```
-
-The raise rewrites that usage's `quality` literal, lists N in `images.qualities` when the project has a list (or
-`[75, N]` when it has none and N is not 75), and records the new file in the state. Nothing else is applied. `verify`
-prints the exact command under each such usage. A quality you already wrote by hand is picked up by `verify` as the
-applied value, so it is measured as it stands.
+Run `npx imgtune --help`, or `npx imgtune scan --help`, for every option.
 
 ## What `scan` measures
 
@@ -88,8 +67,7 @@ desktop at 1x), scrolls it to the end, and records every image.
   sampled image (derived from the loader URL), each at most once per scan. It never requests new transformations from
   the CDN.
 - Security: `scan` refuses private and loopback addresses unless the URL you give is itself local, checks every redirect
-  hop and sub-resource at connection time, and `audit`/`verify` read sitemaps only from the same site, with size and depth
-  limits. See the [scanning guide](site/guide/scanning-any-site.md#security).
+  hop and sub-resource at connection time. See the [scanning guide](site/guide/scanning-any-site.md#security).
 
 ## Supported loaders
 
@@ -113,12 +91,7 @@ for quality.
 
 ## Safety
 
-- ImgTune never commits. `apply` writes the proposed sizes and quality into your files and leaves git to you.
-- Measuring a project adds temporary instrumentation to the source files. A run that is interrupted (for example with
-  Ctrl-C) restores the files; if one was killed harder, `npx imgtune restore` undoes what it left behind.
-- Progress is kept in `imgtune.state.json` in the project, so a second `audit` skips usages that were already applied.
-  Use `--all` to measure them again.
-- `--url` measures a server you already run; ImgTune never starts or stops it.
+- ImgTune never commits, and `scan` does not change your project's source files.
 
 ## Demand study (2026-10-28)
 
@@ -187,7 +160,7 @@ numbers) and `--fail-over <pct>` (exit 3 above the budget).
 ## Use with a coding agent
 
 `skills/imgtune/SKILL.md` teaches a coding agent (Claude Code, or any tool that reads `SKILL.md` skills) to run ImgTune
-safely: scan a live URL, or audit, apply and verify in a Next.js project. It ships in the npm package under `skills/`.
+safely: scan a live URL and read the results. It ships in the npm package under `skills/`.
 Copy the `skills/imgtune` folder into your agent's skills directory to use it.
 
 ## Requirements
@@ -195,7 +168,6 @@ Copy the `skills/imgtune` folder into your agent's skills directory to use it.
 - Node.js 20.9 or later.
 - Chromium for Playwright. Install it once with `npx playwright install chromium`. If it is missing, ImgTune prints
   that command and exits with status 2.
-- `audit` and `verify` start your dev server (`next dev`) unless you pass `--url`.
 
 ## License
 
