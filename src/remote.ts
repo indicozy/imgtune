@@ -15,7 +15,7 @@ import { encode } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
-import { parseSourceMap, resolveOwners } from "./locate.js";
+import { COMPONENT_NAME, parseSourceMap, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
 import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
@@ -1099,20 +1099,31 @@ export interface AnalysisContext {
   sourceMaps?: Map<string, Promise<SourceMapData | undefined>>;
 }
 
-/** Largest source map read for a chunk; a dev bundle's map is a few MB. */
-const MAX_MAP_BYTES = 32 * 1024 * 1024;
+/** Largest source map read for a chunk: the scanned site is untrusted, so a map is capped in size. */
+export const MAX_MAP_BYTES = 20 * 1024 * 1024;
+/** Most distinct chunk maps read in one scan (all pages together). */
+export const MAX_MAPS_PER_SCAN = 64;
 
-/** The source map of a bundled chunk (`<chunk>.map`), read once per scan. Undefined when it is absent or unreadable. */
-function loadSourceMap(ctx: AnalysisContext, chunk: string): Promise<SourceMapData | undefined> {
+/**
+ * The source map of a bundled chunk (`<chunk>.map`), read once per scan. Only a chunk on the page's own origin is read,
+ * and at most MAX_MAPS_PER_SCAN maps are read in all. Undefined when it is refused, absent or unreadable.
+ */
+export function loadSourceMap(ctx: AnalysisContext, chunk: string): Promise<SourceMapData | undefined> {
   const cache = (ctx.sourceMaps ??= new Map());
   let pending = cache.get(chunk);
-  if (!pending) {
-    pending = ctx.fetcher
-      .get(`${chunk}.map`, { allowPrivate: ctx.allowPrivate, maxBytes: MAX_MAP_BYTES })
-      .then((body) => (body ? parseSourceMap(body.toString("utf8")) : undefined))
-      .catch(() => undefined);
-    cache.set(chunk, pending);
+  if (pending) return pending;
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(chunk).origin === new URL(ctx.pageUrl).origin;
+  } catch {
+    sameOrigin = false;
   }
+  if (!sameOrigin || cache.size >= MAX_MAPS_PER_SCAN) return Promise.resolve(undefined);
+  pending = ctx.fetcher
+    .get(`${chunk}.map`, { allowPrivate: ctx.allowPrivate, maxBytes: MAX_MAP_BYTES })
+    .then((body) => (body ? parseSourceMap(body.toString("utf8")) : undefined))
+    .catch(() => undefined);
+  cache.set(chunk, pending);
   return pending;
 }
 
@@ -1123,7 +1134,10 @@ async function resolveSources(ctx: AnalysisContext, observations: ViewportObserv
     for (const img of obs.images) {
       const owners = img.locator?.owners ?? [];
       const found = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
-      const component = owners.flatMap((o) => (o.name !== undefined ? [o.name] : [])).slice(0, MAX_OWNERS);
+      // Component names come from the scanned page, so only identifiers are kept.
+      const component = owners
+        .flatMap((o) => (o.name !== undefined && COMPONENT_NAME.test(o.name) ? [o.name] : []))
+        .slice(0, MAX_OWNERS);
       resolved.set(img, { file: found?.file, line: found?.line, component });
     }
   }
@@ -1653,6 +1667,8 @@ async function scanPage(
     resolver: Resolver;
     connectAddress?: (address: string) => string;
     ignoreRobots: boolean;
+    /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
+    sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
     log: (message: string) => void;
   },
   pageUrl: string,
@@ -1752,7 +1768,7 @@ async function scanPage(
   if (robotsRule !== undefined) described.robotsRule = robotsRule;
   if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
   return analysePage(
-    { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map() },
+    { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map(), sourceMaps: run.sourceMaps },
     observations,
     described,
   );
@@ -1780,6 +1796,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       resolver,
       connectAddress: opts.connectAddress,
       ignoreRobots: opts.ignoreRobots === true,
+      sourceMaps: new Map(),
       log: opts.log,
     };
 

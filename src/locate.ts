@@ -80,29 +80,48 @@ export function decodeMappings(mappings: string): number[][][] {
   return lines;
 }
 
+/** Most generated lines an index map may place: a hostile offset cannot make the reader allocate more. */
+export const MAX_MAP_LINES = 1_000_000;
+/** Most sections and sources one map may carry. */
+const MAX_SECTIONS = 10_000;
+const MAX_SOURCES = 10_000;
+
 /** One plain map's sources and segments, or undefined when the object is not a map with sources and mappings. */
-function plainMap(json: { sources?: unknown; mappings?: unknown } | undefined): SourceMapData | undefined {
-  if (!json || !Array.isArray(json.sources) || typeof json.mappings !== "string") return undefined;
-  return { sources: json.sources.map(String), lines: decodeMappings(json.mappings) };
+function plainMap(json: unknown): SourceMapData | undefined {
+  const map = json as { sources?: unknown; mappings?: unknown } | null;
+  if (!map || typeof map !== "object" || !Array.isArray(map.sources) || typeof map.mappings !== "string") return undefined;
+  if (map.sources.length > MAX_SOURCES) return undefined;
+  return { sources: map.sources.map(String), lines: decodeMappings(map.mappings) };
 }
+
+/** A section offset: a non-negative safe integer, or undefined. */
+const offsetOf = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 
 /**
  * Joins the sections of an index map (Turbopack writes one for each chunk) into one map: each section's segments move by
- * its offset, and its sources are appended. Sections without an inline map are skipped.
+ * its offset, and its sources are appended. Offsets come from the scanned site, so a section is skipped when its offset
+ * is not a non-negative integer, goes backwards, or would place lines past MAX_MAP_LINES.
  */
-function flattenSections(sections: { offset?: { line?: number; column?: number }; map?: unknown }[]): SourceMapData | undefined {
+function flattenSections(sections: unknown[]): SourceMapData | undefined {
+  if (sections.length > MAX_SECTIONS) return undefined;
   const sources: string[] = [];
   const lines: number[][][] = [];
-  for (const section of sections) {
-    const map = plainMap(section.map as { sources?: unknown; mappings?: unknown } | undefined);
-    if (!map) continue;
-    const offsetLine = section.offset?.line ?? 0;
-    const offsetColumn = section.offset?.column ?? 0;
+  let lastLine = 0;
+  for (const raw of sections) {
+    const section = raw as { offset?: { line?: unknown; column?: unknown }; map?: unknown } | null;
+    if (!section || typeof section !== "object") continue;
+    const offsetLine = offsetOf(section.offset?.line);
+    const offsetColumn = offsetOf(section.offset?.column);
+    if (offsetLine === undefined || offsetColumn === undefined || offsetLine < lastLine) continue;
+    const map = plainMap(section.map);
+    if (!map || offsetLine + map.lines.length > MAX_MAP_LINES) continue;
+    lastLine = offsetLine;
     const base = sources.length;
     sources.push(...map.sources);
+    while (lines.length < offsetLine + map.lines.length) lines.push([]);
     map.lines.forEach((segments, i) => {
       const target = offsetLine + i;
-      while (lines.length <= target) lines.push([]);
       for (const segment of segments) {
         const moved = [...segment];
         if (i === 0) moved[0] += offsetColumn;
@@ -112,15 +131,15 @@ function flattenSections(sections: { offset?: { line?: number; column?: number }
     });
   }
   if (sources.length === 0) return undefined;
-  for (const segments of lines) segments.sort((a, b) => a[0] - b[0]);
+  for (const segments of lines) segments.sort((x, y) => x[0] - y[0]);
   return { sources, lines };
 }
 
 /** Parses a source map's JSON text (a plain map or an index map). Undefined when it is neither. */
 export function parseSourceMap(text: string): SourceMapData | undefined {
   try {
-    const json = JSON.parse(text) as { sources?: unknown; mappings?: unknown; sections?: unknown };
-    if (Array.isArray(json.sections)) return flattenSections(json.sections as { offset?: { line?: number; column?: number }; map?: unknown }[]);
+    const json = JSON.parse(text) as { sections?: unknown } | null;
+    if (json && Array.isArray(json.sections)) return flattenSections(json.sections);
     return plainMap(json);
   } catch {
     return undefined;
@@ -143,28 +162,46 @@ export function originalPosition(map: SourceMapData, line: number, col: number):
   return { source, line: best[2] + 1 };
 }
 
-const SOURCE_ROOT_MARKERS = /\/(app|src|pages|components|lib)\//;
+/** Bundler schemes a source name may carry. Any other scheme (file:, http:, about:, rsc:) is not a project source. */
+const SOURCE_SCHEMES = new Set(["webpack", "turbopack", "webpack-internal"]);
+/** A project path: word characters, dots, dashes, slashes, and the brackets and spaces of Next's route folders. */
+const SAFE_PATH = /^[\w@.\-/[\]() +]+$/;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\\]/;
+export const MAX_SOURCE_NAME = 1024;
+export const MAX_PATH = 256;
+
+/** A React component name a locator may carry: an identifier of at most 64 characters. */
+export const COMPONENT_NAME = /^[A-Za-z_$][\w$.]{0,63}$/;
 
 /**
- * The project-relative path of a bundler source name, or undefined for a file that is not the app's own source:
- * dependencies (node_modules), runtime and internal modules, and anything that is not a script or MDX file. Handles
- * webpack:// (its first segment is the bundle name), turbopack:/// ([project]), webpack-internal:/// and file:// paths.
+ * Text a page controls, as it may be stored and printed: control characters (newlines included) removed, and at most
+ * `limit` characters.
+ */
+export function sanitizeText(text: string, limit = 120): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "").slice(0, limit);
+}
+
+/**
+ * The project-relative path of a bundler source name, or undefined when it is not a file of the app. Refused: any
+ * control character or backslash, any scheme but the bundlers' own, an absolute path, a `..` segment, dependencies and
+ * runtime modules, a file that is not a script or MDX file, and a path with characters outside SAFE_PATH. The name is
+ * untrusted (it comes from the scanned site's source map), so the result is only ever a relative path under the project.
  */
 export function projectPath(source: string): string | undefined {
+  if (source.length > MAX_SOURCE_NAME || CONTROL.test(source)) return undefined;
   if (/node_modules|\[turbopack\]|webpack\/runtime/i.test(source)) return undefined;
   let rest = source;
   const scheme = /^([a-z-]+):\/\//i.exec(rest);
   const kind = scheme ? scheme[1].toLowerCase() : "";
+  if (scheme && !SOURCE_SCHEMES.has(kind)) return undefined;
+  if (!scheme && rest.startsWith("/")) return undefined;
   if (scheme) rest = rest.slice(scheme[0].length);
-  // An absolute file path keeps its project folder from the first app-like folder on; otherwise its basename.
-  if (kind === "file" || (kind === "" && rest.startsWith("/"))) {
-    const marker = SOURCE_ROOT_MARKERS.exec(rest);
-    rest = marker ? rest.slice(marker.index + 1) : rest.slice(rest.lastIndexOf("/") + 1);
-  }
   const segments = rest.split("/").filter((s) => s !== "");
+  if (segments.some((s) => s === "..")) return undefined;
   if (kind === "webpack" && segments.length > 0) segments.shift();
-  while (segments.length > 0 && (segments[0] === "." || segments[0] === ".." || /^[([].*[)\]]$/.test(segments[0]))) segments.shift();
+  while (segments.length > 0 && (segments[0] === "." || /^[([].*[)\]]$/.test(segments[0]))) segments.shift();
   const path = segments.join("/");
+  if (path === "" || path.length > MAX_PATH || path.startsWith("/") || !SAFE_PATH.test(path)) return undefined;
   if (!/\.(tsx?|jsx?|mdx?)$/i.test(path)) return undefined;
   return path;
 }

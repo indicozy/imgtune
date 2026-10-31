@@ -4,7 +4,8 @@
 
 import { sha1 } from "./atomic.js";
 import { deriveSizesFormula, slotExpr, sameStructure, withinTolerance, type FormulaPoint, type LayoutNode } from "./layout.js";
-import { loaderName, urlPattern } from "./locate.js";
+import { isLocalTarget } from "./address.js";
+import { loaderName, sanitizeText, urlPattern } from "./locate.js";
 import { deriveSizes, sizesBranchAt, sizesSlotAt, type SizePoint } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
@@ -18,6 +19,11 @@ export interface ImageLocator {
   /** Project-relative source file and line of the element (dev builds, through the source map). */
   file?: string;
   line?: number;
+  /**
+   * Whether the source came from a local development server (the page is on loopback or a private host). A source from
+   * any other origin is unverified: it is printed as such, and must be checked before it is trusted.
+   */
+  verified?: boolean;
   testid?: string;
   alt?: string;
   selector: string;
@@ -124,21 +130,30 @@ function baseKey(img: ObservedImage, source: ResolvedSource | undefined): string
   return `css:${img.locator?.selector ?? "img"}`;
 }
 
+/** Whether a source resolved on this page is verified: only a page on a local (loopback or private) origin is. */
+export function locatorVerified(file: string | undefined, pageUrl: string): boolean | undefined {
+  return file === undefined ? undefined : isLocalTarget(pageUrl);
+}
+
 /** The loader, the URL pattern, and the tunable flags of one element, from its reference instance. */
 function locatorOf(member: Instance, pageUrl: string, source: ResolvedSource | undefined): ImageLocator {
   const img = member.img;
   const src = img.currentSrc || parseSrcset(img.srcset, pageUrl)[0]?.url || "";
-  return {
+  const locator: ImageLocator = {
     component: source?.component ?? [],
-    file: source?.file,
-    line: source?.file ? source.line : undefined,
-    testid: img.locator?.testid,
-    alt: img.locator?.alt,
-    selector: img.locator?.selector ?? "img",
-    classes: img.classes,
-    urlPattern: src ? urlPattern(src, pageUrl) : undefined,
+    selector: sanitizeText(img.locator?.selector ?? "img", 300),
+    classes: sanitizeText(img.classes, 120),
     loader: src ? loaderName(src, pageUrl) : "unknown",
   };
+  if (source?.file !== undefined) {
+    locator.file = source.file;
+    locator.line = source.line;
+    locator.verified = locatorVerified(source.file, pageUrl);
+  }
+  if (img.locator?.testid !== undefined) locator.testid = sanitizeText(img.locator.testid, 120);
+  if (img.locator?.alt !== undefined) locator.alt = sanitizeText(img.locator.alt, 120);
+  if (src) locator.urlPattern = sanitizeText(urlPattern(src, pageUrl) ?? "", 300);
+  return locator;
 }
 
 /** What the element can be tuned by. A loader that ignores w (or q) is not tunable there: the fix is in the loader. */

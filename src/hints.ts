@@ -26,6 +26,11 @@ export interface Hint {
   component: string[];
   file?: string;
   line?: number;
+  /** False when the source came from a non-local origin: printed as unverified. */
+  verified?: boolean;
+  testid?: string;
+  alt?: string;
+  classes?: string;
   selector: string;
   sizes: { current?: string; proposed?: string; basis?: string };
   width?: number;
@@ -97,7 +102,11 @@ export function hintsOf(result: PageResult): Hint[] {
     if (record.locator.file !== undefined) {
       hint.file = record.locator.file;
       hint.line = record.locator.line;
+      hint.verified = record.locator.verified;
     }
+    if (record.locator.testid !== undefined) hint.testid = record.locator.testid;
+    if (record.locator.alt !== undefined) hint.alt = record.locator.alt;
+    if (record.locator.classes) hint.classes = record.locator.classes;
     if (record.fix.width !== undefined) hint.width = record.fix.width;
     if (record.fix.quality !== undefined && record.current.quality !== undefined) {
       hint.quality = {
@@ -131,9 +140,19 @@ const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
 /** One hint as four short lines: where, sizes, quality and format, bytes and rung. */
 export function renderHint(hint: Hint, rank: number): string[] {
-  const where = hint.file !== undefined ? `${hint.file}:${hint.line ?? 0}` : hint.component[0] ?? hint.selector;
-  const component = hint.component.length > 0 && hint.file !== undefined ? ` (${hint.component[0]})` : "";
-  const lines = [`${rank}. ${hint.id}  ${safeText(where)}${safeText(component)}  ${safeText(hint.page)}`];
+  // Page-derived names and attributes are printed as JSON strings, so a newline or an instruction inside them stays data.
+  const where =
+    hint.file !== undefined
+      ? `${JSON.stringify(`${hint.file}:${hint.line ?? 0}`)}${hint.verified === false ? " (unverified)" : ""}`
+      : JSON.stringify(hint.component[0] ?? hint.selector);
+  const component = hint.component.length > 0 && hint.file !== undefined ? ` (${JSON.stringify(hint.component[0])})` : "";
+  const lines = [`${rank}. ${hint.id}  ${where}${component}  ${safeText(hint.page)}`];
+  const attributes = [
+    hint.alt !== undefined ? `alt ${JSON.stringify(hint.alt)}` : undefined,
+    hint.testid !== undefined ? `testid ${JSON.stringify(hint.testid)}` : undefined,
+    hint.classes !== undefined ? `class ${JSON.stringify(hint.classes)}` : undefined,
+  ].filter((a): a is string => a !== undefined);
+  if (attributes.length > 0) lines.push(`   ${attributes.join("  ")}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
   const parts: string[] = [];
