@@ -174,6 +174,15 @@ describe("slotAt: structural rules", () => {
     expect(walk(1300)).toBe(1280 - 32);
   });
 
+  it("a max-width that follows the viewport (not binding at any viewport) keeps one branch", () => {
+    // The body's computed max-width equals the viewport width at every viewport: it never binds.
+    const chainAt = (vw: number) => [img({ width: vw - 32 }), node({ width: vw - 32, paddingX: 32 }), node({ tag: "body", width: vw, maxWidth: vw }), html(vw)];
+    const result = deriveSizesFromLayout(points(PHONES_AND_DESKTOP, chainAt))!;
+    expect(result.branches).toHaveLength(1);
+    expect(result.value).toBe("calc(100vw - 32px)");
+    expect(result.basis).toBe("layout-formula");
+  });
+
   it("a grid child takes its column span, with the gaps between the columns", () => {
     const half = slotAt(gridChain(1440, 12, 6, 24), 1440)!;
     expect(formatLinear(half.linear)).toBe("calc(50vw - 36px)");

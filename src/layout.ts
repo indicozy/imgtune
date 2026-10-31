@@ -118,12 +118,12 @@ export function slotAt(nodes: LayoutNode[], vw: number): SlotWalk | undefined {
 function contentOf(node: LayoutNode, containing: Linear, vw: number): { linear: Linear; step: string } {
   const borderBox = node.borderBox === true;
   let avail = shift(containing, node.marginX + (borderBox ? 0 : node.paddingX + node.borderX));
-  // The step names the constants too, so a breakpoint that changes a padding or a cap starts a new branch.
+  // The step names the constants too, so a breakpoint that changes a padding or a binding cap starts a new branch. A cap
+  // that does not bind here is named only as not binding: a max-width that follows the viewport (100vw) is not a new branch.
   let step = `${node.marginX}/${node.paddingX}/${node.borderX}${borderBox ? "b" : ""}`;
   if (node.maxWidth !== undefined) {
     const capped = capAt(avail, node.maxWidth, vw);
-    // The side of the cap that is active at this viewport: the expression ("m") or the cap itself ("M").
-    step += `/${capped === avail ? "m" : "M"}${node.maxWidth}`;
+    step += capped === avail ? "/m" : `/M${node.maxWidth}`;
     avail = capped;
   }
   if (borderBox) avail = shift(avail, node.paddingX + node.borderX);
