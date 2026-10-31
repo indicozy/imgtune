@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { Browser, Page, Response as BrowserResponse } from "playwright";
+import type { Browser, BrowserContextOptions, Page, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
@@ -17,6 +17,7 @@ import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, parseSourceMap, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
+import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
@@ -384,6 +385,18 @@ export interface ScanArgs {
   summaryJson?: string;
   /** Scan a page even when robots.txt disallows it (the verdict is still recorded). */
   ignoreRobots?: boolean;
+  /** Reuse the complete pages already in --out with the same options. */
+  resume?: boolean;
+  /** Stop after this many pages (scanned or resumed). */
+  maxPages?: number;
+  /** Stop after the page that brings the images counted so far to this number. */
+  maxImages?: number;
+  /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
+  urlsFrom?: string;
+  /** At most this many URLs per route pattern of the --urls-from list. */
+  samplePerPattern?: number;
+  /** A Playwright storage state file (cookies and local storage) applied to every context. */
+  storageState?: string;
 }
 
 /** The stderr warning for a page that robots.txt disallows and that is scanned anyway (--ignore-robots). */
@@ -418,7 +431,24 @@ function parseViewports(text: string): string[] {
   return names;
 }
 
-const VALUE_OPTIONS: readonly string[] = ["--out", "--viewports", "--markdown", "--fail-over", "--summary-json"];
+const VALUE_OPTIONS: readonly string[] = [
+  "--out",
+  "--viewports",
+  "--markdown",
+  "--fail-over",
+  "--summary-json",
+  "--max-pages",
+  "--max-images",
+  "--urls-from",
+  "--sample-per-pattern",
+  "--storage-state",
+];
+
+/** A whole number of at least 1, for a limit option. */
+function parseLimit(name: string, text: string): number {
+  if (!/^\d+$/.test(text) || Number(text) < 1) throw new Error(`${name} needs a whole number of at least 1, not ${safeText(text)}`);
+  return Number(text);
+}
 
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
@@ -428,6 +458,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     if (arg === "--aggressive") args.aggressive = true;
     else if (arg === "--no-quality") args.quality = false;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
+    else if (arg === "--resume") args.resume = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -436,6 +467,11 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--viewports") args.viewports = parseViewports(value);
       else if (arg === "--markdown") args.markdown = value;
       else if (arg === "--summary-json") args.summaryJson = value;
+      else if (arg === "--max-pages") args.maxPages = parseLimit(arg, value);
+      else if (arg === "--max-images") args.maxImages = parseLimit(arg, value);
+      else if (arg === "--urls-from") args.urlsFrom = value;
+      else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
+      else if (arg === "--storage-state") args.storageState = value;
       else args.failOver = parseFailOver(value);
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option ${arg}`);
@@ -443,7 +479,8 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       args.urls.push(parseUrl(arg));
     }
   }
-  if (args.urls.length === 0) throw new Error("scan needs at least one URL");
+  if (args.urls.length === 0 && args.urlsFrom === undefined) throw new Error("scan needs at least one URL or --urls-from");
+  if (args.samplePerPattern !== undefined && args.urlsFrom === undefined) throw new Error("--sample-per-pattern needs --urls-from");
   return args;
 }
 
@@ -759,6 +796,9 @@ interface PageView {
   html: string;
 }
 
+/** A Playwright storage state: cookies and local storage of a logged-in session. */
+export type StorageState = NonNullable<BrowserContextOptions["storageState"]>;
+
 /** Ancestors walked for the layout chain of an image (the image itself included). */
 export const LAYOUT_DEPTH = 15;
 /** React owners read per image, nearest first. */
@@ -971,6 +1011,7 @@ async function observeViewport(
   viewport: Viewport,
   guard: RequestGuard,
   loadCapMs: number = LOAD_EVENT_CAP_MS,
+  storageState?: StorageState,
 ): Promise<ViewportObservation> {
   const responses = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
@@ -993,6 +1034,7 @@ async function observeViewport(
       serviceWorkers: "block",
       // Loopback is proxied as well, so a request to 127.0.0.1 from a public page is checked like any other.
       proxy: { server: egress.url, bypass: "<-loopback>" },
+      ...(storageState !== undefined ? { storageState } : {}),
     }));
     try {
       // The route guard decides the URL of each request and aborts it when refused. The proxy checks what it cannot see.
@@ -1118,6 +1160,8 @@ export interface AnalysisContext {
   allowPrivate: boolean;
   deps: QualityDeps;
   quality: boolean;
+  /** Only the images for which this is true get the quality and format search (recheck skips unchanged ones). */
+  qualityFor?: (inst: Instance) => boolean;
   aggressive: boolean;
   resized: Map<string, Promise<{ bytes: number; buffer: Buffer } | undefined>>;
   /** Source maps read so far, by chunk URL (the locator reads each chunk's map once). */
@@ -1286,10 +1330,11 @@ function median(values: number[]): number | undefined {
  * The quality step: per group, up to SAMPLES_PER_GROUP images are scored at the reference viewport (those with a known
  * original). Their median ratio applies to every other image of the group that has a reference.
  */
-async function estimateQualities(ctx: AnalysisContext, instances: Instance[], refName: string): Promise<void> {
+async function estimateQualities(ctx: AnalysisContext, all: Instance[], refName: string): Promise<void> {
   const groups = new Map<string, Instance[]>();
-  for (const inst of instances) {
+  for (const inst of all) {
     if (inst.kind !== "srcset" || !inst.right) continue;
+    if (ctx.qualityFor && !ctx.qualityFor(inst)) continue;
     const list = groups.get(inst.group);
     if (list) list.push(inst);
     else groups.set(inst.group, [inst]);
@@ -1451,6 +1496,39 @@ export interface PageResult {
   images?: ImageRecord[];
   /** Lazy images that never loaded at any viewport. */
   notLoaded?: number;
+  /** Written once the page is done: a page without it (an interrupted run) is scanned again by --resume. */
+  complete?: true;
+  /** The options the page was scanned with: --resume reuses a page only when they are the same. */
+  options?: ScanRecordOptions;
+}
+
+/** What a page's output depends on: the scan options and the imgtune version. */
+export interface ScanRecordOptions {
+  imgtuneVersion: string;
+  aggressive: boolean;
+  quality: boolean;
+  viewports: string[];
+  ignoreRobots: boolean;
+  /** A storage state (logged-in session) was applied to every context. Its contents are not recorded. */
+  storageState: boolean;
+}
+
+/** The options of one page's output, for the completeness check of --resume. */
+export function recordOptionsOf(opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState">): ScanRecordOptions {
+  return {
+    imgtuneVersion: IMGTUNE_VERSION,
+    aggressive: opts.aggressive,
+    quality: opts.quality,
+    viewports: opts.viewports.map((v) => v.name),
+    ignoreRobots: opts.ignoreRobots === true,
+    storageState: opts.storageState !== undefined,
+  };
+}
+
+/** Whether two recorded option sets are the same (the viewports in order). */
+export function sameRecordOptions(a: ScanRecordOptions | undefined, b: ScanRecordOptions): boolean {
+  if (!a) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function toReport(inst: Instance): ImageReport {
@@ -1660,6 +1738,29 @@ export interface ScanOptions {
    * Test seam: the address a checked destination is really connected to (see EgressPolicy). Production leaves it unset.
    */
   connectAddress?: (address: string) => string;
+  /** Reuse the complete pages already in outDir with the same options (--resume). */
+  resume?: boolean;
+  /** Stop after this many pages, scanned or resumed (--max-pages). */
+  maxPages?: number;
+  /** Stop after the page that brings the images counted so far to this number (--max-images). */
+  maxImages?: number;
+  /** A Playwright storage state applied to every context (--storage-state). Never recorded. */
+  storageState?: StorageState;
+  /** Only the images for which this is true get the quality and format search (see AnalysisContext). */
+  qualityFor?: (inst: Instance) => boolean;
+  /** Filled with why the run stopped early, if it did. */
+  report?: ScanReport;
+}
+
+/** How a run ended early: the limit that was reached, and how far the scan got. */
+export interface ScanReport {
+  stopped?: {
+    reason: "max-pages" | "max-images";
+    limit: number;
+    pages: number;
+    total: number;
+    images: number;
+  };
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -1695,6 +1796,8 @@ async function scanPage(
     ignoreRobots: boolean;
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
+    storageState?: StorageState;
+    qualityFor?: (inst: Instance) => boolean;
     log: (message: string) => void;
   },
   pageUrl: string,
@@ -1762,7 +1865,7 @@ async function scanPage(
   const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
   const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) => {
     count("viewport loads");
-    return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs);
+    return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, run.storageState);
   });
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
@@ -1794,14 +1897,27 @@ async function scanPage(
   if (robotsRule !== undefined) described.robotsRule = robotsRule;
   if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
   return analysePage(
-    { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map(), sourceMaps: run.sourceMaps },
+    {
+      pageUrl,
+      fetcher: run.fetcher,
+      allowPrivate,
+      deps: run.deps,
+      quality: run.quality,
+      qualityFor: run.qualityFor,
+      aggressive: run.aggressive,
+      resized: new Map(),
+      sourceMaps: run.sourceMaps,
+    },
     observations,
     described,
   );
 }
 
-/** Scans each page in order and writes its JSON to `outDir`. Nothing else is written, except the scorer's temp files. */
-export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
+/** The run's shared state: the browser's fetcher, the scorer, the robots cache and the options each page reads. */
+async function withScanRun<T>(
+  opts: ScanOptions,
+  body: (browser: Browser, run: Parameters<typeof scanPage>[1], robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>) => Promise<T>,
+): Promise<T> {
   resetTiming();
   const browser = await measure("browser launch", () => launchChromium());
   try {
@@ -1823,6 +1939,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       connectAddress: opts.connectAddress,
       ignoreRobots: opts.ignoreRobots === true,
       sourceMaps: new Map(),
+      storageState: opts.storageState,
+      qualityFor: opts.qualityFor,
       log: opts.log,
     };
 
@@ -1837,24 +1955,94 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       }
       return pending;
     };
-
-    await mkdir(opts.outDir, { recursive: true });
-    const results: PageResult[] = [];
-    for (const url of urls) {
-      opts.log(`scanning ${safeText(url)}`);
-      const started = performance.now();
-      const result = await scanPage(browser, run, url, robotsFor);
-      if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - started) / 1000).toFixed(1)} s\n`);
-      await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
-        root: opts.outDir,
-      });
-      results.push(result);
-    }
-    return results;
+    return await body(browser, run, robotsFor);
   } finally {
     await browser.close();
     for (const line of renderTiming()) process.stderr.write(`${line}\n`);
   }
+}
+
+/**
+ * A complete page left by an earlier run with the same options, or undefined. A page with other options is scanned again,
+ * with a warning: its numbers would not be comparable.
+ */
+async function resumable(
+  outDir: string,
+  pageUrl: string,
+  options: ScanRecordOptions,
+  log: (message: string) => void,
+): Promise<PageResult | undefined> {
+  let parsed: PageResult;
+  try {
+    parsed = JSON.parse(await readFile(join(outDir, pageFileName(new URL(pageUrl))), "utf8")) as PageResult;
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || parsed.complete !== true || parsed.url !== pageUrl) return undefined;
+  if (!sameRecordOptions(parsed.options, options)) {
+    log(`warning: ${safeText(pageUrl)} was scanned with other options or another imgtune version; scanning it again`);
+    return undefined;
+  }
+  return parsed;
+}
+
+/** The progress line after a page: the pages done, the image bytes measured so far, and the site's estimated share. */
+export function progressLine(done: PageResult[], total: number): string {
+  const last = done[done.length - 1];
+  const ok = done.filter((r) => r.status === "ok" && r.page !== undefined).map((r) => r.page as PageNumbers);
+  const measured = ok.reduce((sum, p) => sum + p.meanImageBytes, 0);
+  const estimated = ok.length > 0 ? siteNumbers(ok).exactEstPct : 0;
+  const status = last.status === "ok" ? "" : ` (${last.status})`;
+  return `page ${done.length}/${total} done${status} · ${(measured / (1024 * 1024)).toFixed(1)} MB measured · est. ${estimated.toFixed(0)}%`;
+}
+
+/**
+ * Scans each page in order and writes its JSON to `outDir` as soon as the page is done, with a progress line after each.
+ * With `resume`, a complete page with the same options is taken from `outDir` instead. The run stops early at --max-pages
+ * (pages scanned or resumed) or --max-images (checked after each page, so the page that reaches it is finished).
+ */
+export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
+  return withScanRun(opts, async (browser, run, robotsFor) => {
+    await mkdir(opts.outDir, { recursive: true });
+    const options = recordOptionsOf(opts);
+    const results: PageResult[] = [];
+    let images = 0;
+    for (const url of urls) {
+      if (opts.maxPages !== undefined && results.length >= opts.maxPages) break;
+      const kept = opts.resume ? await resumable(opts.outDir, url, options, opts.log) : undefined;
+      let result: PageResult;
+      if (kept) {
+        result = kept;
+        opts.log(`resumed ${safeText(url)}`);
+      } else {
+        opts.log(`scanning ${safeText(url)}`);
+        const started = performance.now();
+        result = { ...(await scanPage(browser, run, url, robotsFor)), complete: true, options };
+        if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - started) / 1000).toFixed(1)} s\n`);
+        await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
+          root: opts.outDir,
+        });
+      }
+      results.push(result);
+      images += result.counts?.images ?? 0;
+      opts.log(progressLine(results, urls.length));
+      if (opts.maxImages !== undefined && images >= opts.maxImages && results.length < urls.length) {
+        if (opts.report) opts.report.stopped = { reason: "max-images", limit: opts.maxImages, pages: results.length, total: urls.length, images };
+        break;
+      }
+    }
+    if (opts.maxPages !== undefined && results.length < urls.length && opts.report?.stopped === undefined) {
+      if (opts.report) opts.report.stopped = { reason: "max-pages", limit: opts.maxPages, pages: results.length, total: urls.length, images };
+    }
+    return results;
+  });
+}
+
+/**
+ * One page scanned in memory, with nothing written: the run recheck uses. Its images are the page's own records.
+ */
+export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<PageResult> {
+  return withScanRun(opts, async (browser, run, robotsFor) => scanPage(browser, run, pageUrl, robotsFor));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2072,11 +2260,52 @@ export interface ScanCommandResult {
   exitCode: number;
 }
 
+/** Largest storage state file read: a session's cookies and local storage are small. */
+export const MAX_STORAGE_STATE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * A Playwright storage state read from a file. It holds session cookies: the file must not be committed. Its contents are
+ * never printed, and the error for a bad file names only the file.
+ */
+export async function readStorageState(path: string): Promise<StorageState> {
+  const info = await stat(path);
+  if (!info.isFile()) throw new Error(`--storage-state ${safeText(path)} is not a file`);
+  if (info.size > MAX_STORAGE_STATE_BYTES) throw new Error(`--storage-state file is larger than ${MAX_STORAGE_STATE_BYTES / (1024 * 1024)} MB`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    throw new Error(`--storage-state ${safeText(path)} is not JSON`);
+  }
+  const state = parsed as { cookies?: unknown; origins?: unknown } | null;
+  if (state === null || typeof state !== "object" || Array.isArray(state)) throw new Error(`--storage-state ${safeText(path)} is not a storage state`);
+  if (state.cookies !== undefined && !Array.isArray(state.cookies)) throw new Error(`--storage-state ${safeText(path)} has no cookie list`);
+  if (state.origins !== undefined && !Array.isArray(state.origins)) throw new Error(`--storage-state ${safeText(path)} has no origin list`);
+  type Saved = Exclude<StorageState, string>;
+  return { cookies: (state.cookies ?? []) as Saved["cookies"], origins: (state.origins ?? []) as Saved["origins"] };
+}
+
 /** `imgtune scan`: the arguments after `scan`. The JSON files are written to --out; --markdown and --summary-json too. */
 export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<ScanCommandResult> {
   const args = parseScanArgs(argv);
   const viewports = DEFAULT_VIEWPORTS.filter((v) => !args.viewports || args.viewports.includes(v.name)).map((v) => ({ ...v }));
-  const results = await runScan(args.urls, {
+  let urls = args.urls;
+  if (args.urlsFrom !== undefined) {
+    const source = await urlsFromSource(args.urlsFrom, cwd);
+    const named = source.source === "list" ? "URL list" : source.source === "local-sitemap" ? "local sitemap" : "remote sitemap";
+    const dropped = source.dropped > 0 ? `, ${source.dropped} on another domain dropped` : "";
+    log(`--urls-from: ${source.urls.length} URL(s) from the ${named}${dropped}`);
+    urls = [...new Set([...urls, ...source.urls])];
+    if (args.samplePerPattern !== undefined) {
+      const sample = sampleByPattern(urls, args.samplePerPattern);
+      log(`--sample-per-pattern ${args.samplePerPattern}: ${sample.urls.length} of ${urls.length} URL(s), ${sample.patterns} pattern(s)`);
+      urls = sample.urls;
+    }
+  }
+  if (urls.length === 0) throw new Error("no URL to scan");
+  const storageState = args.storageState !== undefined ? await readStorageState(resolve(cwd, args.storageState)) : undefined;
+  const report: ScanReport = {};
+  const results = await runScan(urls, {
     outDir: resolve(cwd, args.out),
     cwd,
     aggressive: args.aggressive,
@@ -2084,12 +2313,22 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     viewports,
     log,
     ignoreRobots: args.ignoreRobots === true,
+    resume: args.resume === true,
+    maxPages: args.maxPages,
+    maxImages: args.maxImages,
+    storageState,
+    report,
   });
   if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);
   if (args.summaryJson !== undefined) {
     await writeOutput(resolve(cwd, args.summaryJson), `${JSON.stringify(summaryOf(results), null, 2)}\n`);
   }
   let output = renderScan(results, args.aggressive, (result) => join(args.out, pageFileName(new URL(result.url))));
+  const stop = report.stopped;
+  if (stop !== undefined) {
+    const flag = stop.reason === "max-pages" ? `--max-pages ${stop.limit}` : `--max-images ${stop.limit}`;
+    output += `stopped at ${flag}: ${stop.pages} of ${stop.total} page(s) done, ${stop.images} image(s) counted; run again with --resume to continue\n`;
+  }
   let exitCode = 0;
   if (args.failOver !== undefined) {
     const over = pagesOverBudget(results, args.failOver);

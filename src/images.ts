@@ -119,6 +119,8 @@ export interface ImageRecord {
   locator: ImageLocator;
   tunable: { width: boolean; quality: boolean; reason?: string };
   current: {
+    /** The URL the browser loaded at the reference viewport (recheck compares it to skip unchanged images). */
+    src?: string;
     sizes?: string;
     srcsetCandidates: { url: string; width: number }[];
     quality?: number;
@@ -335,6 +337,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       locator,
       tunable: tunableOf(member, pageUrl, locator.loader),
       current: {
+        src: member.img.currentSrc || undefined,
         sizes: member.img.sizes,
         srcsetCandidates: candidates.map((c) => ({ url: c.url, width: c.width })),
         quality: current?.quality,

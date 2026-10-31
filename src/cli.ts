@@ -24,6 +24,21 @@ const OPTION_HELP = {
     "--ignore-robots",
     "scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON)",
   ],
+  resume: ["--resume", "reuse the complete pages already in --out that were scanned with the same options"],
+  maxPages: ["--max-pages <N>", "stop after N pages (scanned or resumed); run again with --resume to continue"],
+  maxImages: ["--max-images <N>", "stop after the page that brings the images counted to N (checked between pages)"],
+  urlsFrom: [
+    "--urls-from <file|sitemap-url>",
+    "scan the URLs of a text file (one per line, # comments), a local sitemap.xml, or a remote sitemap (same domain only)",
+  ],
+  samplePerPattern: [
+    "--sample-per-pattern <N>",
+    "with --urls-from: at most N URLs per route pattern (/p/*, /c/*), spread over the pattern",
+  ],
+  storageState: [
+    "--storage-state <file>",
+    "a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it",
+  ],
 } as const;
 
 type OptionKey = keyof typeof OPTION_HELP;
@@ -44,7 +59,22 @@ const SCAN_HELP = commandHelp(
     "Measure live pages by URL, with no source, config or dev server. Writes one JSON file per page to --out.",
     "Needs Chromium for Playwright: npx playwright install chromium.",
   ],
-  ["out", "aggressive", "viewports", "noQuality", "markdown", "failOver", "summaryJson", "ignoreRobots"],
+  [
+    "out",
+    "aggressive",
+    "viewports",
+    "noQuality",
+    "markdown",
+    "failOver",
+    "summaryJson",
+    "ignoreRobots",
+    "resume",
+    "maxPages",
+    "maxImages",
+    "urlsFrom",
+    "samplePerPattern",
+    "storageState",
+  ],
 );
 
 const HINTS_HELP = `Usage: imgtune hints <scan.json> [options]
