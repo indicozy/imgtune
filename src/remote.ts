@@ -1134,9 +1134,10 @@ async function resolveSources(ctx: AnalysisContext, observations: ViewportObserv
     for (const img of obs.images) {
       const owners = img.locator?.owners ?? [];
       const found = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
-      // Component names come from the scanned page, so only identifiers are kept.
+      // Component names come from the scanned page, so only identifiers are kept. A production build leaves one- and
+      // two-letter minified names, which say nothing about the source, so they are dropped too.
       const component = owners
-        .flatMap((o) => (o.name !== undefined && COMPONENT_NAME.test(o.name) ? [o.name] : []))
+        .flatMap((o) => (o.name !== undefined && COMPONENT_NAME.test(o.name) && o.name.length > 2 ? [o.name] : []))
         .slice(0, MAX_OWNERS);
       resolved.set(img, { file: found?.file, line: found?.line, component });
     }
