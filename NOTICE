@@ -16,3 +16,5 @@ The SSIMULACRA2 WebAssembly module in vendor/ssimulacra2 is built from native/ss
     crate is used only by the tests in native/ssimulacra2-wasm/tests/.
   yuvxyb 0.4.0 (MIT)
   wasm-bindgen 0.2.129 (MIT OR Apache-2.0)
+
+Full license texts for all of the above are in THIRD_PARTY_LICENSES.
