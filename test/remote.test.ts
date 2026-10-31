@@ -32,6 +32,7 @@ import {
   pageNumbers,
   FAIL_OVER_EXIT,
   checkRobots,
+  robotsIgnoredWarning,
   mdCode,
   mdText,
   pagesOverBudget,
@@ -134,6 +135,46 @@ describe("checkRobots", () => {
     expect(verdict).toEqual({ allowed: false });
     expect(fetched).toBe(true);
     expect(await checkRobots("https://shop.example/bags", false, async () => undefined)).toEqual({ allowed: true });
+  });
+
+  it("default path: a disallowed public page is refused, and no ignored flag is set", async () => {
+    const verdict = await checkRobots("https://shop.example/bags", false, async () => robots);
+    expect(verdict).toEqual({ allowed: false });
+    expect(verdict).not.toHaveProperty("ignored");
+  });
+
+  it("--ignore-robots: a disallowed public page is still fetched and checked, then scanned, marked ignored", async () => {
+    let fetched = false;
+    const verdict = await checkRobots(
+      "https://shop.example/bags",
+      false,
+      async () => {
+        fetched = true;
+        return robots;
+      },
+      true,
+    );
+    expect(verdict).toEqual({ allowed: true, ignored: true });
+    expect(fetched).toBe(true);
+  });
+
+  it("--ignore-robots: a page that robots.txt allows is not marked ignored", async () => {
+    expect(await checkRobots("https://shop.example/bags", false, async () => "User-agent: *\nDisallow: /cart", true)).toEqual({
+      allowed: true,
+    });
+  });
+
+  it("--ignore-robots: a loopback page keeps the local-host skip, not an ignored flag", async () => {
+    expect(await checkRobots("http://localhost:3000/bags", true, async () => robots, true)).toEqual({
+      allowed: true,
+      skipped: "skipped (local host)",
+    });
+  });
+
+  it("names the page and the flag in the warning", () => {
+    expect(robotsIgnoredWarning("https://shop.example/bags")).toBe(
+      "robots.txt disallows https://shop.example/bags; scanning anyway (--ignore-robots). Only scan sites you own or are allowed to test.",
+    );
   });
 });
 
@@ -381,6 +422,18 @@ describe("parseScanArgs", () => {
   });
 });
 
+
+describe("parseScanArgs for --ignore-robots", () => {
+  it("is off by default", () => {
+    expect(parseScanArgs(["https://a.example/"]).ignoreRobots).toBeUndefined();
+  });
+
+  it("is on when the flag is given, and takes no value", () => {
+    const args = parseScanArgs(["https://a.example/", "--ignore-robots", "https://a.example/list"]);
+    expect(args.ignoreRobots).toBe(true);
+    expect(args.urls).toEqual(["https://a.example/", "https://a.example/list"]);
+  });
+});
 
 describe("parseScanArgs for the CI outputs", () => {
   it("reads --markdown, --fail-over and --summary-json", () => {

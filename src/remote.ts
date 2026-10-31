@@ -363,6 +363,13 @@ export interface ScanArgs {
   failOver?: number;
   /** Where to write one JSON file with every page's status and numbers. */
   summaryJson?: string;
+  /** Scan a page even when robots.txt disallows it (the verdict is still recorded). */
+  ignoreRobots?: boolean;
+}
+
+/** The stderr warning for a page that robots.txt disallows and that is scanned anyway (--ignore-robots). */
+export function robotsIgnoredWarning(url: string): string {
+  return `robots.txt disallows ${safeText(url)}; scanning anyway (--ignore-robots). Only scan sites you own or are allowed to test.`;
 }
 
 function parseUrl(text: string): string {
@@ -401,6 +408,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     const arg = argv[i];
     if (arg === "--aggressive") args.aggressive = true;
     else if (arg === "--no-quality") args.quality = false;
+    else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -1187,6 +1195,8 @@ export interface PageResult {
   error?: string;
   /** Set when robots.txt was not checked: the page is on a loopback or private host. */
   robots?: string;
+  /** True when robots.txt disallowed the page (or the URL it ended on) and it was scanned anyway (--ignore-robots). */
+  robotsIgnored?: true;
   /** The URL the page ended on, when it differs from `url` (a navigation of its own). */
   finalUrl?: string;
   /** True when the page's `load` event did not come within the cap; its figures were taken anyway. */
@@ -1386,6 +1396,8 @@ export interface ScanOptions {
   log: (message: string) => void;
   /** How long a page may take to fire `load` (default LOAD_EVENT_CAP_MS). */
   loadCapMs?: number;
+  /** Scan pages that robots.txt disallows, with a warning (--ignore-robots). Default false. */
+  ignoreRobots?: boolean;
   /** Host resolver for the connect-time check (tests inject one; production uses the system resolver). */
   resolver?: Resolver;
   /**
@@ -1399,15 +1411,17 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 /**
  * Whether a page may be scanned under robots.txt. robots.txt is etiquette toward third parties, so a page on a loopback
  * or private host (its owner's own server) is not checked and the skip is recorded; `fetchRobots` is not called then.
- * A public host is checked as before.
+ * A public host is checked as before. With `ignoreRobots`, a disallowed page is allowed anyway and `ignored` is set.
  */
 export async function checkRobots(
   pageUrl: string,
   allowPrivate: boolean,
   fetchRobots: () => Promise<string | undefined>,
-): Promise<{ allowed: boolean; skipped?: string }> {
+  ignoreRobots = false,
+): Promise<{ allowed: boolean; skipped?: string; ignored?: boolean }> {
   if (allowPrivate) return { allowed: true, skipped: ROBOTS_SKIPPED_LOCAL };
-  return { allowed: robotsAllows(await fetchRobots(), pageUrl) };
+  if (robotsAllows(await fetchRobots(), pageUrl)) return { allowed: true };
+  return ignoreRobots ? { allowed: true, ignored: true } : { allowed: false };
 }
 
 async function scanPage(
@@ -1421,6 +1435,8 @@ async function scanPage(
     loadCapMs: number;
     resolver: Resolver;
     connectAddress?: (address: string) => string;
+    ignoreRobots: boolean;
+    log: (message: string) => void;
   },
   pageUrl: string,
   robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
@@ -1442,16 +1458,25 @@ async function scanPage(
     groups: [],
     counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
   };
-  const robots = await checkRobots(pageUrl, allowPrivate, () => robotsFor(url.origin, false));
+  const robots = await checkRobots(pageUrl, allowPrivate, () => robotsFor(url.origin, false), run.ignoreRobots);
   if (!robots.allowed) return { ...base, status: "robots" };
   if (robots.skipped !== undefined) base.robots = robots.skipped;
+  if (robots.ignored) {
+    base.robotsIgnored = true;
+    run.log(robotsIgnoredWarning(pageUrl));
+  }
+  let robotsIgnored = robots.ignored === true;
 
   // A page that ends on another URL is measured only when that URL is on the same registrable domain and robots.txt
   // allows it; otherwise the page is reported as redirected, with the URL it ended on.
   const landedOk = async (landing: string): Promise<boolean> => {
     if (!sameSite(landing, pageUrl)) return false;
     const landingOrigin = new URL(landing).origin;
-    const landingRobots = await checkRobots(landing, allowPrivate, () => robotsFor(landingOrigin, false));
+    const landingRobots = await checkRobots(landing, allowPrivate, () => robotsFor(landingOrigin, false), run.ignoreRobots);
+    if (landingRobots.ignored) {
+      robotsIgnored = true;
+      run.log(robotsIgnoredWarning(landing));
+    }
     return landingRobots.allowed;
   };
 
@@ -1483,6 +1508,7 @@ async function scanPage(
   const described: PageResult = { ...base };
   if (finalUrl !== undefined) described.finalUrl = finalUrl;
   if (loadTimedOut) described.loadTimedOut = true;
+  if (robotsIgnored) described.robotsIgnored = true;
   return analysePage(
     { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map() },
     observations,
@@ -1511,6 +1537,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       loadCapMs: opts.loadCapMs ?? LOAD_EVENT_CAP_MS,
       resolver,
       connectAddress: opts.connectAddress,
+      ignoreRobots: opts.ignoreRobots === true,
+      log: opts.log,
     };
 
     const robotsCache = new Map<string, Promise<string | undefined>>();
@@ -1769,6 +1797,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     quality: args.quality,
     viewports,
     log,
+    ignoreRobots: args.ignoreRobots === true,
   });
   if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);
   if (args.summaryJson !== undefined) {

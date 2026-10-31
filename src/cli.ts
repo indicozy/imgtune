@@ -65,6 +65,10 @@ const OPTION_HELP = {
     "exit 3 when a page's exact + est. share is above this percentage (default: never fail)",
   ],
   summaryJson: ["--summary-json <file>", "write one JSON file with every page's status and numbers"],
+  ignoreRobots: [
+    "--ignore-robots",
+    "scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON)",
+  ],
 } as const;
 
 type OptionKey = keyof typeof OPTION_HELP;
@@ -112,7 +116,7 @@ const COMMAND_HELP: Record<Command | "scan", string> = {
       "Measure live pages by URL, with no source, config or dev server. Writes one JSON file per page to --out.",
       "Needs Chromium for Playwright: npx playwright install chromium.",
     ],
-    ["out", "aggressive", "viewports", "noQuality", "markdown", "failOver", "summaryJson"],
+    ["out", "aggressive", "viewports", "noQuality", "markdown", "failOver", "summaryJson", "ignoreRobots"],
   ),
 };
 
