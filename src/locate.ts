@@ -163,7 +163,9 @@ export function originalPosition(map: SourceMapData, line: number, col: number):
 }
 
 /** Bundler schemes a source name may carry. Any other scheme (file:, http:, about:, rsc:) is not a project source. */
-const SOURCE_SCHEMES = new Set(["webpack", "turbopack", "webpack-internal"]);
+const SOURCE_SCHEMES = new Set(["webpack", "turbopack", "webpack-internal", "file"]);
+/** The folders an app's own sources sit under: a file: name (an absolute path) is kept from the first of them on. */
+const APP_FOLDER = /(^|\/)(app|src|pages|components|lib)\//;
 /** A project path: word characters, dots, dashes, slashes, and the brackets and spaces of Next's route folders. */
 const SAFE_PATH = /^[\w@.\-/[\]() +]+$/;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\\]/;
@@ -196,6 +198,12 @@ export function projectPath(source: string): string | undefined {
   if (scheme && !SOURCE_SCHEMES.has(kind)) return undefined;
   if (!scheme && rest.startsWith("/")) return undefined;
   if (scheme) rest = rest.slice(scheme[0].length);
+  if (kind === "file") {
+    // An absolute path (Turbopack writes these): only its part from an app folder on, so the machine's own folders stay out.
+    const marker = APP_FOLDER.exec(rest);
+    if (!marker) return undefined;
+    rest = rest.slice(marker.index + marker[1].length);
+  }
   const segments = rest.split("/").filter((s) => s !== "");
   if (segments.some((s) => s === "..")) return undefined;
   if (kind === "webpack" && segments.length > 0) segments.shift();

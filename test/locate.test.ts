@@ -103,8 +103,10 @@ describe("projectPath", () => {
     expect(projectPath("webpack://shop/./app/components/Hero.tsx")).toBe("app/components/Hero.tsx");
   });
 
-  it("refuses a file: or other foreign scheme, an absolute path, and a parent-folder segment", () => {
-    expect(projectPath("file:///home/someone/work/shop/app/components/Hero.tsx")).toBeUndefined();
+  it("refuses other foreign schemes, an absolute path with no app folder, and a parent-folder segment", () => {
+    expect(projectPath("file:///home/someone/work/shop/app/components/Hero.tsx")).toBe("app/components/Hero.tsx");
+    expect(projectPath("file:///home/someone/work/shop/tools/Hero.tsx")).toBeUndefined();
+    expect(projectPath("file:///home/someone/app/../../etc/components/Hero.tsx")).toBeUndefined();
     expect(projectPath("about://React/Server/file:///x/app/page.tsx")).toBeUndefined();
     expect(projectPath("http://evil.example/app/page.tsx")).toBeUndefined();
     expect(projectPath("/etc/app/page.tsx")).toBeUndefined();
