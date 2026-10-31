@@ -13,6 +13,10 @@ import { calibrationOffset } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
+import type { LayoutChainData, LayoutNode } from "./layout.js";
+import type { OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
+import { parseSourceMap, resolveOwners } from "./locate.js";
+import { buildImageRecords, type ImageRecord, type ResolvedSource } from "./images.js";
 import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
@@ -116,6 +120,18 @@ function starRules(robotsTxt: string): RobotsRule[] {
  */
 export function robotsAllows(robotsTxt: string | undefined, target: string): boolean {
   if (robotsTxt === undefined) return true;
+  const best = decidingRule(robotsTxt, target);
+  return best ? best.allow : true;
+}
+
+/** The rule that decides `target` for the `*` user agent, as robots.txt writes it ("Disallow: /cart"); undefined when none. */
+export function robotsRuleFor(robotsTxt: string | undefined, target: string): string | undefined {
+  if (robotsTxt === undefined) return undefined;
+  const rule = decidingRule(robotsTxt, target);
+  return rule ? `${rule.allow ? "Allow" : "Disallow"}: ${rule.pattern}` : undefined;
+}
+
+function decidingRule(robotsTxt: string, target: string): RobotsRule | undefined {
   const url = new URL(target);
   const path = url.pathname + url.search;
   let best: RobotsRule | undefined;
@@ -123,7 +139,7 @@ export function robotsAllows(robotsTxt: string | undefined, target: string): boo
     if (!ruleMatches(rule.pattern, path)) continue;
     if (!best || rule.length > best.length || (rule.length === best.length && rule.allow)) best = rule;
   }
-  return best ? best.allow : true;
+  return best;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -676,6 +692,20 @@ export interface ObservedImage {
   classes: string;
   nextImage: boolean;
   inFirstViewport: boolean;
+  /** The element asks for lazy loading (loading="lazy"). */
+  lazy?: boolean;
+  /** The layout chain of the image at this viewport. */
+  layout?: LayoutChainData;
+  /** What identifies the element in its source. */
+  locator?: ObservedLocator;
+}
+
+/** What the browser reads to find an image in the source: a React owner trace, a test id, an alt text and a DOM path. */
+export interface ObservedLocator {
+  testid?: string;
+  alt?: string;
+  selector: string;
+  owners: OwnerTrace[];
 }
 
 export interface ResponseRecord {
@@ -729,26 +759,157 @@ interface PageView {
   html: string;
 }
 
+/** Ancestors walked for the layout chain of an image (the image itself included). */
+export const LAYOUT_DEPTH = 15;
+/** React owners read per image, nearest first. */
+export const MAX_OWNERS = 8;
+
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
 async function readView(page: Page): Promise<PageView> {
-  const seen = await page.evaluate(() => {
-    const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
-    const images = Array.from(document.querySelectorAll("img"), (img, index) => {
-      const rect = img.getBoundingClientRect();
-      return {
-        index,
-        currentSrc: img.currentSrc,
-        renderedWidth: rect.width,
-        renderedHeight: rect.height,
-        srcset: img.getAttribute("srcset") ?? "",
-        sizes: img.getAttribute("sizes") ?? undefined,
-        classes: img.getAttribute("class") ?? "",
-        nextImage: img.hasAttribute("data-nimg"),
-        inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
+  const seen = await page.evaluate(
+    ({ depth, maxOwners }) => {
+      const num = (value: string): number => {
+        const n = parseFloat(value);
+        return Number.isFinite(n) ? n : 0;
       };
-    });
-    return { nextjs, images };
-  });
+      // Frames in React, Next or the bundler runtime are not the app's own source.
+      const NOT_APP = /node_modules|react-dom|react-server|react\/jsx|next[\/_.-]dist|scheduler|webpack\/runtime|turbopack/i;
+      const FRAME = /((?:https?|file|webpack-internal|turbopack):\/\/[^\s)]+?):(\d+):(\d+)/g;
+      const appFrames = (stack: string | undefined): StackFrame[] => {
+        const out: StackFrame[] = [];
+        for (const m of (stack ?? "").matchAll(FRAME)) {
+          if (NOT_APP.test(m[1])) continue;
+          out.push({ url: m[1], line: Number(m[2]), col: Number(m[3]) });
+          if (out.length === 4) break;
+        }
+        return out;
+      };
+      interface Fiber {
+        type?: unknown;
+        return?: Fiber | null;
+        _debugOwner?: Fiber | null;
+        _debugStack?: { stack?: string } | null;
+        _debugSource?: { fileName?: string; lineNumber?: number } | null;
+      }
+      const typeName = (t: unknown): string | undefined => {
+        if (!t || typeof t === "string") return undefined;
+        if (typeof t === "function") return (t as { displayName?: string }).displayName || t.name || undefined;
+        const o = t as { displayName?: string; render?: unknown; type?: unknown };
+        return o.displayName || typeName(o.render) || typeName(o.type);
+      };
+      // The fiber of the image, or of its nearest ancestor within five levels (React keys the DOM node by fiber).
+      const fiberOf = (el: Element): Fiber | undefined => {
+        let cur: Element | null = el;
+        for (let i = 0; i < 5 && cur; i++) {
+          const key = Object.keys(cur).find((k) => k.startsWith("__reactFiber$"));
+          if (key) return (cur as unknown as Record<string, Fiber>)[key];
+          cur = cur.parentElement;
+        }
+        return undefined;
+      };
+      // Walks _debugOwner (the component that created each element), then return where that is missing.
+      // A server-created component has no type name in the browser; its stack's first named frame is the function's.
+      const stackName = (stack: string | undefined): string | undefined => /\n\s+at ([A-Z][\w$]*) \(/.exec(stack ?? "")?.[1];
+      const ownersOf = (start: Fiber | undefined): OwnerTrace[] => {
+        const owners: OwnerTrace[] = [];
+        let cur: Fiber | null | undefined = start;
+        for (let hops = 0; cur && owners.length < maxOwners && hops < 200; hops++) {
+          const name = typeName(cur.type) ?? stackName(cur._debugStack?.stack);
+          const component = name !== undefined && /^[A-Z]/.test(name) ? name : undefined;
+          const frames = appFrames(cur._debugStack?.stack);
+          const src = cur._debugSource;
+          const source = src?.fileName ? { file: src.fileName, line: src.lineNumber ?? 0 } : undefined;
+          if (component !== undefined || frames.length > 0 || source !== undefined) {
+            owners.push({ name: component, source, frames });
+          }
+          cur = cur._debugOwner ?? cur.return;
+        }
+        return owners;
+      };
+      const cssPath = (el: Element): string => {
+        const parts: string[] = [];
+        let cur: Element | null = el;
+        for (let i = 0; i < 6 && cur && cur.tagName !== "HTML"; i++) {
+          const node: Element = cur;
+          const tag = node.tagName.toLowerCase();
+          if (/^[A-Za-z][\w-]*$/.test(node.id)) {
+            parts.unshift(`${tag}#${node.id}`);
+            break;
+          }
+          const parent: Element | null = node.parentElement;
+          const siblings = parent ? Array.from(parent.children).filter((c) => c.tagName === node.tagName) : [node];
+          parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(node) + 1})` : tag);
+          cur = parent;
+        }
+        return parts.join(" > ");
+      };
+      // The image, then its ancestors up to the root. display: contents and inline wrappers do not constrain width: skipped.
+      const layoutOf = (img: Element): LayoutChainData => {
+        const nodes: LayoutNode[] = [];
+        const skipped: string[] = [];
+        let el: Element | null = img;
+        while (el && nodes.length < depth) {
+          const cs = getComputedStyle(el);
+          if (el !== img && (cs.display === "contents" || cs.display === "inline")) {
+            skipped.push(`${el.tagName.toLowerCase()}: display ${cs.display}`);
+          } else {
+            const paddingX = num(cs.paddingLeft) + num(cs.paddingRight);
+            const borderX = num(cs.borderLeftWidth) + num(cs.borderRightWidth);
+            const marginL = num(cs.marginLeft);
+            const marginR = num(cs.marginRight);
+            const maxWidth = cs.maxWidth.endsWith("px") ? num(cs.maxWidth) : undefined;
+            const outer = cs.width === "auto" ? el.getBoundingClientRect().width : num(cs.width);
+            const width = cs.boxSizing === "border-box" ? outer - paddingX - borderX : outer;
+            const node: LayoutNode = {
+              tag: el.tagName.toLowerCase(),
+              classes: Array.from(el.classList).slice(0, 3).join(" "),
+              width: Math.round(width * 100) / 100,
+              paddingX,
+              borderX,
+              // A max-width with equal side margins is a centred box: its margins are auto and the max-width does the work.
+              marginX: maxWidth !== undefined && marginL === marginR ? 0 : marginL + marginR,
+              display: cs.display,
+              flexBasis: cs.flexBasis,
+            };
+            if (maxWidth !== undefined) node.maxWidth = maxWidth;
+            if (cs.display === "grid") {
+              node.gridCols = cs.gridTemplateColumns === "none" ? 0 : cs.gridTemplateColumns.split(/\s+/).length;
+            }
+            if (cs.display === "grid" || cs.display === "flex") node.gap = num(cs.columnGap);
+            if (cs.display === "flex") node.flexDirection = cs.flexDirection;
+            nodes.push(node);
+          }
+          el = el.parentElement;
+        }
+        return { nodes, skipped, truncated: el !== null };
+      };
+      const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
+      const images = Array.from(document.querySelectorAll("img"), (img, index) => {
+        const rect = img.getBoundingClientRect();
+        return {
+          index,
+          currentSrc: img.currentSrc,
+          renderedWidth: rect.width,
+          renderedHeight: rect.height,
+          srcset: img.getAttribute("srcset") ?? "",
+          sizes: img.getAttribute("sizes") ?? undefined,
+          classes: img.getAttribute("class") ?? "",
+          nextImage: img.hasAttribute("data-nimg"),
+          inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
+          lazy: img.loading === "lazy",
+          layout: layoutOf(img),
+          locator: {
+            testid: img.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
+            alt: img.getAttribute("alt")?.slice(0, 120) ?? undefined,
+            selector: cssPath(img),
+            owners: ownersOf(fiberOf(img)),
+          },
+        };
+      });
+      return { nextjs, images };
+    },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS },
+  );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
 }
@@ -934,6 +1095,39 @@ export interface AnalysisContext {
   quality: boolean;
   aggressive: boolean;
   resized: Map<string, Promise<{ bytes: number; buffer: Buffer } | undefined>>;
+  /** Source maps read so far, by chunk URL (the locator reads each chunk's map once). */
+  sourceMaps?: Map<string, Promise<SourceMapData | undefined>>;
+}
+
+/** Largest source map read for a chunk; a dev bundle's map is a few MB. */
+const MAX_MAP_BYTES = 32 * 1024 * 1024;
+
+/** The source map of a bundled chunk (`<chunk>.map`), read once per scan. Undefined when it is absent or unreadable. */
+function loadSourceMap(ctx: AnalysisContext, chunk: string): Promise<SourceMapData | undefined> {
+  const cache = (ctx.sourceMaps ??= new Map());
+  let pending = cache.get(chunk);
+  if (!pending) {
+    pending = ctx.fetcher
+      .get(`${chunk}.map`, { allowPrivate: ctx.allowPrivate, maxBytes: MAX_MAP_BYTES })
+      .then((body) => (body ? parseSourceMap(body.toString("utf8")) : undefined))
+      .catch(() => undefined);
+    cache.set(chunk, pending);
+  }
+  return pending;
+}
+
+/** Each observed image's source (through its React owner trace) and component names. */
+async function resolveSources(ctx: AnalysisContext, observations: ViewportObservation[]): Promise<Map<ObservedImage, ResolvedSource>> {
+  const resolved = new Map<ObservedImage, ResolvedSource>();
+  for (const obs of observations) {
+    for (const img of obs.images) {
+      const owners = img.locator?.owners ?? [];
+      const found = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
+      const component = owners.flatMap((o) => (o.name !== undefined ? [o.name] : [])).slice(0, MAX_OWNERS);
+      resolved.set(img, { file: found?.file, line: found?.line, component });
+    }
+  }
+  return resolved;
 }
 
 const formatName = (format: string | undefined): string | undefined => (format === "jpg" ? "jpeg" : format);
@@ -1204,11 +1398,19 @@ export interface PageResult {
   finalUrl?: string;
   /** True when the page's `load` event did not come within the cap; its figures were taken anyway. */
   loadTimedOut?: boolean;
+  /** The robots.txt rule that disallowed the page, when it was scanned anyway (--ignore-robots). */
+  robotsRule?: string;
+  /** A note that the page ended on another URL, with the URL in it. */
+  redirectNote?: string;
   nextjs: boolean;
   perViewport: Record<string, ViewportReport>;
   page?: PageNumbers;
   groups: GroupReport[];
   counts: { images: number; qualityNA: number; skipped: number; blockedRequests: number; byLoader: Record<string, number> };
+  /** One fix record per distinct image element, merged across viewports (see images.ts). */
+  images?: ImageRecord[];
+  /** Lazy images that never loaded at any viewport. */
+  notLoaded?: number;
 }
 
 function toReport(inst: Instance): ImageReport {
@@ -1330,6 +1532,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   for (const inst of instances) {
     inst.group = groupKey(inst.img.sizes, inst.img.classes, refWidth.get(inst.element));
   }
+  const sources = await resolveSources(ctx, observations);
   if (ctx.quality) await estimateQualities(ctx, instances, refName);
   for (const inst of instances) applyQuality(inst);
 
@@ -1370,6 +1573,14 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
 
   const numbers = measure("aggregate", () => pageNumbers(totals));
   const { aggressiveExactEstPct, ...withoutAggressive } = numbers;
+  const images = buildImageRecords({
+    pageUrl: ctx.pageUrl,
+    observations,
+    instances,
+    refName,
+    resolved: sources,
+    currentQuality,
+  });
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
@@ -1383,6 +1594,8 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
       blockedRequests: observations.reduce((sum, o) => sum + o.blockedRequests, 0),
       byLoader,
     },
+    images,
+    notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
   };
 }
 
@@ -1410,6 +1623,7 @@ export interface ScanOptions {
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 
 /**
  * Whether a page may be scanned under robots.txt. robots.txt is etiquette toward third parties, so a page on a loopback
@@ -1461,23 +1675,39 @@ async function scanPage(
     groups: [],
     counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
   };
-  const robots = await checkRobots(pageUrl, allowPrivate, () => robotsFor(url.origin, false), run.ignoreRobots);
+  // The robots.txt text is kept, so an ignored page can name the rule that disallowed it.
+  let robotsTxt: string | undefined;
+  const robots = await checkRobots(
+    pageUrl,
+    allowPrivate,
+    async () => (robotsTxt = await robotsFor(url.origin, false)),
+    run.ignoreRobots,
+  );
   if (!robots.allowed) return { ...base, status: "robots" };
   if (robots.skipped !== undefined) base.robots = robots.skipped;
   if (robots.ignored) {
     base.robotsIgnored = true;
+    base.robotsRule = robotsRuleFor(robotsTxt, pageUrl);
     run.log(robotsIgnoredWarning(pageUrl));
   }
   let robotsIgnored = robots.ignored === true;
+  let robotsRule = robots.ignored ? robotsRuleFor(robotsTxt, pageUrl) : undefined;
 
   // A page that ends on another URL is measured only when that URL is on the same registrable domain and robots.txt
   // allows it; otherwise the page is reported as redirected, with the URL it ended on.
   const landedOk = async (landing: string): Promise<boolean> => {
     if (!sameSite(landing, pageUrl)) return false;
     const landingOrigin = new URL(landing).origin;
-    const landingRobots = await checkRobots(landing, allowPrivate, () => robotsFor(landingOrigin, false), run.ignoreRobots);
+    let landingTxt: string | undefined;
+    const landingRobots = await checkRobots(
+      landing,
+      allowPrivate,
+      async () => (landingTxt = await robotsFor(landingOrigin, false)),
+      run.ignoreRobots,
+    );
     if (landingRobots.ignored) {
       robotsIgnored = true;
+      robotsRule ??= robotsRuleFor(landingTxt, landing);
       run.log(robotsIgnoredWarning(landing));
     }
     return landingRobots.allowed;
@@ -1519,6 +1749,8 @@ async function scanPage(
   if (finalUrl !== undefined) described.finalUrl = finalUrl;
   if (loadTimedOut) described.loadTimedOut = true;
   if (robotsIgnored) described.robotsIgnored = true;
+  if (robotsRule !== undefined) described.robotsRule = robotsRule;
+  if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
   return analysePage(
     { pageUrl, fetcher: run.fetcher, allowPrivate, deps: run.deps, quality: run.quality, aggressive: run.aggressive, resized: new Map() },
     observations,

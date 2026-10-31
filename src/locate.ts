@@ -80,12 +80,48 @@ export function decodeMappings(mappings: string): number[][][] {
   return lines;
 }
 
-/** Parses a source map's JSON text. Undefined when it is not a map with sources and mappings. */
+/** One plain map's sources and segments, or undefined when the object is not a map with sources and mappings. */
+function plainMap(json: { sources?: unknown; mappings?: unknown } | undefined): SourceMapData | undefined {
+  if (!json || !Array.isArray(json.sources) || typeof json.mappings !== "string") return undefined;
+  return { sources: json.sources.map(String), lines: decodeMappings(json.mappings) };
+}
+
+/**
+ * Joins the sections of an index map (Turbopack writes one for each chunk) into one map: each section's segments move by
+ * its offset, and its sources are appended. Sections without an inline map are skipped.
+ */
+function flattenSections(sections: { offset?: { line?: number; column?: number }; map?: unknown }[]): SourceMapData | undefined {
+  const sources: string[] = [];
+  const lines: number[][][] = [];
+  for (const section of sections) {
+    const map = plainMap(section.map as { sources?: unknown; mappings?: unknown } | undefined);
+    if (!map) continue;
+    const offsetLine = section.offset?.line ?? 0;
+    const offsetColumn = section.offset?.column ?? 0;
+    const base = sources.length;
+    sources.push(...map.sources);
+    map.lines.forEach((segments, i) => {
+      const target = offsetLine + i;
+      while (lines.length <= target) lines.push([]);
+      for (const segment of segments) {
+        const moved = [...segment];
+        if (i === 0) moved[0] += offsetColumn;
+        if (moved.length >= 4) moved[1] += base;
+        lines[target].push(moved);
+      }
+    });
+  }
+  if (sources.length === 0) return undefined;
+  for (const segments of lines) segments.sort((a, b) => a[0] - b[0]);
+  return { sources, lines };
+}
+
+/** Parses a source map's JSON text (a plain map or an index map). Undefined when it is neither. */
 export function parseSourceMap(text: string): SourceMapData | undefined {
   try {
-    const json = JSON.parse(text) as { sources?: unknown; mappings?: unknown };
-    if (!Array.isArray(json.sources) || typeof json.mappings !== "string") return undefined;
-    return { sources: json.sources.map(String), lines: decodeMappings(json.mappings) };
+    const json = JSON.parse(text) as { sources?: unknown; mappings?: unknown; sections?: unknown };
+    if (Array.isArray(json.sections)) return flattenSections(json.sections as { offset?: { line?: number; column?: number }; map?: unknown }[]);
+    return plainMap(json);
   } catch {
     return undefined;
   }

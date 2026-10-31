@@ -159,3 +159,16 @@ export function sizesSlotAt(sizes: string, viewportWidth: number): number | unde
   const base = (Number(calc[1]) / 100) * viewportWidth;
   return Math.max(0, calc[2] === "+" ? base + Number(calc[3]) : base - Number(calc[3]));
 }
+
+/** The first branch whose condition holds at `viewportWidth`: its raw value and its media condition ("default" when none). */
+export function sizesBranchAt(sizes: string, viewportWidth: number): { condition: string; value: string } | undefined {
+  const branches = parseSizes(sizes);
+  if (!branches) return undefined;
+  const match = branches.find(({ condition }) => {
+    if (!condition) return true;
+    return condition.kind === "max" ? viewportWidth <= condition.px : viewportWidth >= condition.px;
+  });
+  if (!match) return undefined;
+  const condition = match.condition ? `(${match.condition.kind}-width: ${match.condition.px}px)` : "default";
+  return { condition, value: match.value };
+}

@@ -69,6 +69,21 @@ describe("originalPosition", () => {
     expect(originalPosition(map, 2, 1)).toBeUndefined();
   });
 
+  it("joins the sections of an index map, moving each by its offset and renumbering its sources", () => {
+    const index = {
+      version: 3,
+      sections: [
+        { offset: { line: 0, column: 0 }, map: { sources: ["a.tsx"], mappings: "AAAA;AACA" } },
+        // Second section starts at line 2 (0-based line 1), column 10: its first segment moves right by 10 columns.
+        { offset: { line: 1, column: 10 }, map: { sources: ["b.tsx"], mappings: "AAAA" } },
+      ],
+    };
+    const parsed = parseSourceMap(JSON.stringify(index));
+    expect(parsed?.sources).toEqual(["a.tsx", "b.tsx"]);
+    expect(originalPosition(parsed as SourceMapData, 2, 11)).toEqual({ source: "b.tsx", line: 1 });
+    expect(originalPosition(parsed as SourceMapData, 1, 1)).toEqual({ source: "a.tsx", line: 1 });
+  });
+
   it("parses a map's JSON text", () => {
     const parsed = parseSourceMap(JSON.stringify({ sources: ["a.tsx"], mappings: "AAAA" }));
     expect(parsed?.sources).toEqual(["a.tsx"]);
