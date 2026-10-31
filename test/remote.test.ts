@@ -758,7 +758,7 @@ describe("the private allowance excludes cloud metadata endpoints", () => {
 
 describe("a public page never gets private access, whatever it resolves to", () => {
   it("scans a public-named page that resolves to loopback without the robots skip that private access grants", async () => {
-    const out = mkdtempSync(join(tmpdir(), "imgtune-private-"));
+    const out = mkdtempSync(join(tmpdir(), "imgtune-remote-"));
     const [result] = await runScan(["http://attacker.test:9/page"], {
       outDir: out,
       cwd: out,
