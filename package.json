@@ -1,14 +1,12 @@
 {
   "name": "imgtune",
   "version": "0.1.0",
-  "description": "Measures the image waste of live pages per view and viewport, and tunes next/image sizes and quality, checked with SSIMULACRA2",
+  "description": "Measures the image waste of live pages per view and viewport, with exact and estimated savings checked by SSIMULACRA2",
   "license": "MIT",
   "author": "indicozy",
   "keywords": [
     "images",
     "image-optimization",
-    "nextjs",
-    "next-image",
     "srcset",
     "avif",
     "webp",
@@ -60,13 +58,12 @@
   },
   "packageManager": "pnpm@10.8.0",
   "dependencies": {
-    "fast-xml-parser": "^5.11.2",
     "playwright": "^1.64.1",
-    "sharp": "^0.35.5",
-    "typescript": "^5.9.3"
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "typescript": "^5.9.3",
     "vitest": "^5.0.5"
   }
 }

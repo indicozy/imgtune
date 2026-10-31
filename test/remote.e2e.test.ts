@@ -233,7 +233,7 @@ describe("imgtune scan end to end", () => {
     const out = join(work, "out-next");
     const first = await runScan(work, [url, "--out", out, "--viewports", "iphone-15,desktop"]);
     expect(first.code).toBe(0);
-    expect(first.stdout).toContain('Next.js detected: run "npx imgtune audit"');
+    expect(first.stdout).not.toContain("imgtune audit");
 
     const name = `localhost-${nextPort}-ae-en-eyeglasses.json`;
     const page = JSON.parse(await readFile(join(out, name), "utf8")) as PageResult;

@@ -48,7 +48,7 @@ const UNDERSIZED_RATIO = 0.9;
 export const VIEWPORT_CONCURRENCY = 3;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
 const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha"];
-/** Quality assumed for an image whose URL does not say (next/image's default, and the audit's). */
+/** Quality assumed for an image whose URL does not say (next/image's default). */
 export const ASSUMED_QUALITY = 75;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -556,7 +556,7 @@ export async function resizedEstimate(
 // Quality and format (est.)
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** The relative rule's floor and tolerance for SSIMULACRA2 (the relaxed preset the audit uses). */
+/** The relative rule's floor and tolerance for SSIMULACRA2 (the relaxed preset). */
 export const SCAN_THRESHOLD = 70;
 export const SCAN_TOLERANCE = 5;
 /** The points a candidate may drop: the default, and the `--aggressive` column that is never the claim. */
@@ -1601,7 +1601,7 @@ export function safeText(text: string, limit = TEXT_LIMIT): string {
 const pct = (value: number): string => `${value.toFixed(1)}%`;
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
-/** One page: a short table, its top groups and, for Next.js, the pointer to audit. */
+/** One page: a short table and its top groups. */
 export function renderPage(result: PageResult, aggressive: boolean): string[] {
   const head = `${safeText(result.url)}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
   if (result.status !== "ok" || !result.page) return [head, `  ${safeText(result.error ?? result.status)}`];
@@ -1627,7 +1627,6 @@ export function renderPage(result: PageResult, aggressive: boolean): string[] {
       lines.push(`    ${sizes} -> ${suggested}  saves ${kb(g.savedBytes)}/view${loader}${hint}${qualityHint}`);
     }
   }
-  if (result.nextjs) lines.push('  Next.js detected: run "npx imgtune audit" in the project to fix these in code');
   return lines;
 }
 

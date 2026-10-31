@@ -108,7 +108,7 @@ function channelSsim(a: RawImage, b: RawImage, bg: number | "alpha" | undefined)
     }
   };
   // Windows are 8 rows tall at stride 4, so consecutive bands share 4 rows. Sums are kept per 4-row group and a band
-  // is the sum of two groups: every pixel is converted and accumulated once instead of twice (audit: ~2x faster).
+  // is the sum of two groups: every pixel is converted and accumulated once instead of twice (measured: ~2x faster).
   const cols = new Float64Array(W * stride);
   let groupA = new Float64Array(W * stride);
   let groupB = new Float64Array(W * stride);
@@ -175,7 +175,7 @@ export function ssimDetailed(reference: RawImage, test: RawImage): SsimResult {
     if (!worst || r.ssim < worst.ssim) worst = r;
   }
   if (alpha) {
-    // Compositing under-penalises alpha errors (audit: an icon scored 0.994 composited but 0.972 on alpha alone;
+    // Compositing under-penalises alpha errors (measured: an icon scored 0.994 composited but 0.972 on alpha alone;
     // AVIF alpha errors reached 128/255 at shape edges). The alpha plane's own SSIM is a lower bound.
     const a = channelSsim(reference, test, "alpha")[0];
     worst!.alpha = a;

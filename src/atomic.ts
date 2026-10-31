@@ -9,11 +9,6 @@ export function sha1(data: string | Buffer): string {
 export interface WriteOptions {
   /** Project root. Every write must land inside it, after symlinks are resolved. */
   root: string;
-  /**
-   * Source files only (apply, next.config). Without it a symlink at `path` is refused. With it the link is written
-   * through, provided its target lies inside `root`.
-   */
-  followSymlink?: boolean;
   /** Permission bits for a file this call creates. An existing file keeps its own. */
   mode?: number;
   /** fsync the temp file before the rename, for files a crash must not leave short. */
@@ -30,8 +25,7 @@ function inside(root: string, path: string, allowRoot: boolean): boolean {
 }
 
 /**
- * The file a write lands in. The parent directory must resolve inside the root. A symlink at `path` is refused unless
- * `followSymlink` is set, in which case its target must resolve inside the root too.
+ * The file a write lands in. The parent directory must resolve inside the root. A symlink at `path` is refused.
  */
 async function resolveWriteTarget(path: string, opts: WriteOptions): Promise<string> {
   const rootReal = await realpath(opts.root);
@@ -43,21 +37,14 @@ async function resolveWriteTarget(path: string, opts: WriteOptions): Promise<str
     if (isNotFound(err)) return undefined;
     throw err;
   });
-  if (!info?.isSymbolicLink()) return plain;
-
-  if (!opts.followSymlink) throw new Error(`refusing to write through symlink: ${path}`);
-  const linkTarget = await realpath(path).catch((err: unknown) => {
-    if (isNotFound(err)) throw new Error(`refusing to write through dangling symlink: ${path}`);
-    throw err;
-  });
-  if (!inside(rootReal, linkTarget, false)) throw new Error(`refusing to write outside the project: ${path}`);
-  return linkTarget;
+  if (info?.isSymbolicLink()) throw new Error(`refusing to write through symlink: ${path}`);
+  return plain;
 }
 
 /**
  * Writes `data` to a sibling temp file, then renames it over the target, so a crash never leaves a half-written file.
  * The temp name is random and created exclusively, so concurrent writers never share one. An existing file keeps its
- * permission bits. Symlinks are refused unless `opts.followSymlink` is set (see WriteOptions).
+ * permission bits. Symlinks are refused.
  */
 export async function writeFileAtomic(path: string, data: string | Buffer, opts: WriteOptions): Promise<void> {
   const target = await resolveWriteTarget(path, opts);

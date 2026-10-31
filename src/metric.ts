@@ -87,7 +87,7 @@ export function clearScoreCache(): void {
   scoreCache.clear();
 }
 
-/** A scorer bound to one metric and its options, for the search, analysis and verify code. Scores are cached. */
+/** A scorer bound to one metric and its options, for the search and calibration code. Scores are cached. */
 export function makeScorer(metric: Metric, opts: ScoreOptions = {}): Scorer {
   return cachedScorer(metric, (ref, test) => score(metric, ref, test, opts));
 }
