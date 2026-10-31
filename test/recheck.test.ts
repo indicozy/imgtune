@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { compareImage, parseRecheckArgs } from "../src/recheck.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll } from "vitest";
+import { compareImage, parseRecheckArgs, recheckScan, usableRecords } from "../src/recheck.js";
 import type { ImageRecord } from "../src/images.js";
 
 /** A record with one viewport, for the comparison rules. */
@@ -31,7 +35,7 @@ function record(overrides: { renderedCssPx?: number; servedBytes?: number; under
 
 describe("parseRecheckArgs", () => {
   it("reads the scan file and the image ids", () => {
-    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ file: "scan.json", ids: ["a1", "b2"] });
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ file: "scan.json", ids: ["a1", "b2"], ignoreRobots: false });
   });
 
   it("needs the scan file, and refuses other options", () => {
@@ -65,5 +69,64 @@ describe("compareImage", () => {
 
   it("fails an image that is no longer on the page", () => {
     expect(compareImage(record(), undefined, false).failures).toEqual(["gone"]);
+  });
+});
+
+describe("the scan file is untrusted", () => {
+  let dir = "";
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "imgtune-recheck-"));
+  });
+  afterAll(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("takes --ignore-robots from the command line only", () => {
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--ignore-robots"]).ignoreRobots).toBe(true);
+    expect(parseRecheckArgs(["--recheck", "scan.json"]).ignoreRobots).toBe(false);
+  });
+
+  it("refuses a scan that says it ignored robots.txt, unless the flag is on the command line", async () => {
+    const path = join(dir, "robots.json");
+    await writeFile(path, JSON.stringify({ url: "https://shop.example/", robotsIgnored: true, images: [] }));
+    await expect(recheckScan(["--recheck", path], dir, () => {})).rejects.toThrow("pass --ignore-robots to recheck it too");
+  });
+
+  it("refuses a page URL that is not http or https, before any request", async () => {
+    const path = join(dir, "ftp.json");
+    await writeFile(path, JSON.stringify({ url: "file:///etc/passwd", images: [] }));
+    await expect(recheckScan(["--recheck", path], dir, () => {})).rejects.toThrow("not http or https");
+    const bad = join(dir, "bad-url.json");
+    await writeFile(bad, JSON.stringify({ url: "not a url", images: [] }));
+    await expect(recheckScan(["--recheck", bad], dir, () => {})).rejects.toThrow("not a URL");
+  });
+
+  it("refuses ids that are not of the expected form on the command line", async () => {
+    const path = join(dir, "ids.json");
+    await writeFile(path, JSON.stringify({ url: "https://shop.example/", images: [] }));
+    await expect(recheckScan(["--recheck", path, "--ids", "a;rm"], dir, () => {})).rejects.toThrow("not an image id");
+  });
+
+  it("skips records with an id of the wrong form or a malformed record, with a warning", () => {
+    const warnings: string[] = [];
+    const good = record();
+    const bad = { ...record(), id: "../../etc" };
+    const usable = usableRecords([good, bad, { id: "abc", page: 3 }, null], (m) => warnings.push(m));
+    expect(usable.map((r) => r.id)).toEqual(["abc123"]);
+    expect(warnings).toHaveLength(3);
+  });
+
+  it("prints a viewport name from the file only when it is a known one, with control characters removed", () => {
+    const before = record();
+    const hostile = { ...before, perViewport: [{ ...before.perViewport[0], viewport: "\u001b[2Jevil" }] } as ImageRecord;
+    const check = compareImage(hostile, hostile, false);
+    expect(check.lines.join("\n")).not.toContain("\u001b");
+    expect(check.lines.join("\n")).not.toContain("evil");
+    expect(check.failures).toEqual([]);
+  });
+
+  it("removes control characters from the page and component names it prints", () => {
+    const hostile = { ...record(), page: "https://shop.example/\u001b[31m", locator: { component: ["Card\u0007"], selector: "img", classes: "", loader: "x" } } as unknown as ImageRecord;
+    for (const line of compareImage(hostile, hostile, false).lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 });
