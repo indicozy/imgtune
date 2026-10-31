@@ -3,6 +3,7 @@ import { encode } from "./encode.js";
 import type { Scorer } from "./metric.js";
 import type { SearchDeps } from "./search.js";
 import { ssim, type RawImage } from "./ssim.js";
+import { mapLimit } from "./concurrency.js";
 
 type Format = "avif" | "webp";
 type FormatMap<T> = { [F in Format]?: T };
@@ -22,24 +23,37 @@ export interface CalibrationSample {
   cdnBytes: number;
 }
 
-/** Nearest local `cdn` quality to `cdnBytes`: coarse scan 20..100 step 5, then refine +-4 step 1 within 1..100. */
+/** Encodes in flight during the match: the sharp threadpool's default size. */
+const MATCH_CONCURRENCY = 4;
+
+/**
+ * Nearest local `cdn` quality to `cdnBytes`: coarse scan 20..100 step 5, then refine +-4 step 1 within 1..100. The sizes
+ * of each pass are encoded a few at a time; the best is then taken in the order the qualities are listed, so a tie goes to
+ * the earlier one, as a one-by-one scan would have it.
+ */
 async function matchLocalQuality(ref: RawImage, format: Format, cdnBytes: number, enc: typeof encode): Promise<number> {
   const sizeAt = async (q: number) => (await enc(ref, format, q, "cdn")).bytes;
   let best = 20;
   let bestDiff = Infinity;
-  const consider = async (q: number) => {
-    const diff = Math.abs((await sizeAt(q)) - cdnBytes);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = q;
-    }
+  const pick = (qs: number[], sizes: number[]) => {
+    qs.forEach((q, i) => {
+      const diff = Math.abs(sizes[i] - cdnBytes);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = q;
+      }
+    });
   };
-  for (let q = 20; q <= 100; q += 5) await consider(q);
+  const coarseQs: number[] = [];
+  for (let q = 20; q <= 100; q += 5) coarseQs.push(q);
+  pick(coarseQs, await mapLimit(coarseQs, MATCH_CONCURRENCY, sizeAt));
   const coarse = best;
+  // Multiples of 5 were covered by the coarse scan.
+  const refineQs: number[] = [];
   for (let q = Math.max(1, coarse - 4); q <= Math.min(100, coarse + 4); q++) {
-    if (q % 5 === 0) continue; // multiples of 5 were covered by the coarse scan
-    await consider(q);
+    if (q % 5 !== 0) refineQs.push(q);
   }
+  pick(refineQs, await mapLimit(refineQs, MATCH_CONCURRENCY, sizeAt));
   return best;
 }
 

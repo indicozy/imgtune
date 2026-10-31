@@ -22,6 +22,7 @@ import type { RawImage } from "./ssim.js";
 import type { Viewport } from "./types.js";
 import { IMGTUNE_VERSION } from "./version.js";
 import { count, measure, renderTiming, resetTiming, TIMING_ENABLED } from "./timing.js";
+import { settleLimit } from "./concurrency.js";
 
 export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
 export { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -43,6 +44,8 @@ export const LOAD_EVENT_CAP_MS = 30_000;
 export const MAX_POST_LOAD_NAVIGATIONS = 3;
 /** A srcset candidate that is this far below the need (and below the largest) is an undersized file. */
 const UNDERSIZED_RATIO = 0.9;
+/** Viewports of one page loaded at the same time (each in its own browser context). */
+export const VIEWPORT_CONCURRENCY = 3;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
 const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha"];
 /** Quality assumed for an image whose URL does not say (next/image's default, and the audit's). */
@@ -1480,16 +1483,23 @@ async function scanPage(
     return landingRobots.allowed;
   };
 
-  // One pass per viewport; a challenge stops the page at once, with no retry.
+  // One pass per viewport, a few at a time, each in its own context. The outcomes are read in viewport order, so the first
+  // challenge, redirect or error decides the status as it does when the viewports load one after another. A challenge
+  // is still not retried.
   const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
   const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
+  const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) => {
+    count("viewport loads");
+    return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs);
+  });
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
   let loadTimedOut = false;
   try {
-    for (const viewport of run.viewports) {
-      count("viewport loads");
-      const obs = await observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs);
+    for (const [index, outcome] of outcomes.entries()) {
+      const viewport = run.viewports[index];
+      if (!outcome.ok) throw outcome.error;
+      const obs = outcome.value;
       if (obs.blocked) {
         return { ...base, status: "blocked", error: `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}` };
       }
