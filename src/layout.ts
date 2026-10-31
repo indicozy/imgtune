@@ -1,6 +1,7 @@
-// Layout chains and the CSS `sizes` formula derived from them. Pure: no DOM, no network. The browser side (remote.ts)
-// records a chain per image and viewport; this module turns the chain into the width of the image's slot as an
-// expression of 100vw, checks it against the widths the browser actually rendered, and prints it as CSS.
+// Layout chains and the CSS `sizes` value derived from them. Pure: no DOM, no network. The browser side (remote.ts) records
+// a chain per image and viewport; this module walks the chain down from the viewport to the image and states the image's
+// width as a linear function of the viewport width (a * vw + b). The function is checked against the widths the browser
+// rendered, branch by branch, and printed as CSS.
 
 /** One ancestor (or the image itself) as the browser laid it out. Widths and spacing are CSS px. */
 export interface LayoutNode {
@@ -9,7 +10,7 @@ export interface LayoutNode {
   classes: string;
   /** Computed content-box width. */
   width: number;
-  /** max-width in px; undefined when none or a percentage. */
+  /** max-width in px; undefined when none or a percentage (a percentage is the containing block's own width). */
   maxWidth?: number;
   /** padding-left + padding-right. */
   paddingX: number;
@@ -20,11 +21,19 @@ export interface LayoutNode {
   display: string;
   /** Tracks in grid-template-columns (display grid only; 0 for none). */
   gridCols?: number;
+  /** True when every grid track is the same width (display grid only). */
+  gridUniform?: boolean;
+  /** Columns this node spans in its grid parent (1 when none is set). */
+  gridSpan?: number;
   /** column-gap in px (grid and flex containers). */
   gap?: number;
   flexDirection?: string;
   /** flex-basis as computed: "auto", "120px" or "50%". */
   flexBasis?: string;
+  /** flex-grow as computed. */
+  flexGrow?: number;
+  /** box-sizing is border-box: max-width then caps the border box, not the content box. */
+  borderBox?: boolean;
 }
 
 /** The chain of one image at one viewport: the image first, the root last. */
@@ -36,117 +45,132 @@ export interface LayoutChainData {
   truncated: boolean;
 }
 
-/** A width expression: the slot of an image in CSS px, as a function of the viewport width. */
-export type Expr =
-  | { kind: "vw" }
-  | { kind: "px"; value: number }
-  | { kind: "min"; a: Expr; b: Expr }
-  | { kind: "sub"; a: Expr; px: number }
-  | { kind: "frac"; a: Expr; gap: number; num: number; den: number };
-
-const VW: Expr = { kind: "vw" };
-
-const round2 = (value: number): string => String(Math.round(value * 100) / 100);
-
-function gcd(a: number, b: number): number {
-  return b === 0 ? Math.abs(a) : gcd(b, a % b);
+/** A width in CSS px as a linear function of the viewport width: `a` times the viewport, plus `b` px. */
+export interface Linear {
+  a: number;
+  b: number;
 }
 
-/** (a - gap) * num / den, with num/den reduced. */
-function frac(a: Expr, gap: number, num: number, den: number): Expr {
-  const reduce = Number.isInteger(num) && Number.isInteger(den);
-  const g = reduce ? gcd(num, den) || 1 : 1;
-  const n = num / g;
-  const d = den / g;
-  if (n === d && gap === 0) return a;
-  return { kind: "frac", a, gap, num: n, den: d };
-}
-
-function sub(a: Expr, px: number): Expr {
-  return px === 0 ? a : { kind: "sub", a, px };
-}
-
-const minOf = (a: Expr, b: Expr): Expr => ({ kind: "min", a, b });
-
-/** The expression as CSS, without the outer calc(). */
-export function printExpr(e: Expr): string {
-  switch (e.kind) {
-    case "vw":
-      return "100vw";
-    case "px":
-      return `${round2(e.value)}px`;
-    case "min":
-      return `min(${printExpr(e.a)}, ${printExpr(e.b)})`;
-    case "sub":
-      return `${printExpr(e.a)} - ${round2(e.px)}px`;
-    case "frac": {
-      const inner = e.gap > 0 ? `${printExpr(e.a)} - ${round2(e.gap)}px` : printExpr(e.a);
-      return e.num === 1 ? `(${inner}) / ${e.den}` : `(${inner}) * ${e.num} / ${e.den}`;
-    }
-  }
-}
-
-/** The expression as a `sizes` value: a plain length or min() stands alone; anything else is one calc(). */
-export function formatSizes(e: Expr): string {
-  if (e.kind === "vw" || e.kind === "px" || e.kind === "min") return printExpr(e);
-  return `calc(${printExpr(e)})`;
-}
-
-/** The expression's value at a viewport width, in CSS px (never negative). */
-export function evalExpr(e: Expr, vw: number): number {
-  switch (e.kind) {
-    case "vw":
-      return vw;
-    case "px":
-      return e.value;
-    case "min":
-      return Math.min(evalExpr(e.a, vw), evalExpr(e.b, vw));
-    case "sub":
-      return Math.max(0, evalExpr(e.a, vw) - e.px);
-    case "frac":
-      return Math.max(0, ((evalExpr(e.a, vw) - e.gap) * e.num) / e.den);
-  }
-}
-
-const pct = (basis: string | undefined): number | undefined => {
-  const m = /^([\d.]+)%$/.exec(basis ?? "");
-  return m ? Number(m[1]) : undefined;
-};
+/** Where a sizes value came from, weakest first: a measured maximum, a fitted line, or the layout formula. */
+export type SizesBasis = "layout-formula" | "fit" | "measured-max";
 
 /**
- * The width of the image's slot, from its chain (the image first, the root last). Walking from the root down: each
- * ancestor takes its margin, then its max-width, then its padding and border; a grid container divides its content
- * among its columns (less the gaps); a row flex container gives each child its percentage of the content. The image's
- * own max-width caps the result. Undefined for an empty chain.
+ * The walk of one chain at one viewport: the width as a linear function, and the structure it came from. The structure
+ * (which caps bind, the grid arithmetic, which steps were measured) is the key a branch groups viewports by, so a
+ * measured share that changes with the viewport stays in one branch and is fitted there.
  */
-export function slotExpr(nodes: LayoutNode[]): Expr | undefined {
+export interface SlotWalk {
+  linear: Linear;
+  signature: string;
+}
+
+/** Rounding of the coefficients: the printed value is the value the check uses. */
+const round = (value: number, digits: number): number => {
+  const scale = 10 ** digits;
+  return Math.round(value * scale) / scale;
+};
+
+/** The width at a viewport, in CSS px, never negative. */
+export function linearAt(l: Linear, vw: number): number {
+  return Math.max(0, l.a * vw + l.b);
+}
+
+const scale = (l: Linear, k: number): Linear => ({ a: l.a * k, b: l.b * k });
+const shift = (l: Linear, px: number): Linear => ({ a: l.a, b: l.b - px });
+
+/** The expression capped at `max` at this viewport: the expression while it is at most the cap, else the cap. */
+function capAt(l: Linear, max: number, vw: number): Linear {
+  return l.a * vw + l.b <= max ? l : { a: 0, b: max };
+}
+
+/**
+ * The width of the image's box at a viewport, from its chain (the image first, the root last). The root is laid out in
+ * the viewport (100vw); each node takes its containing block's width as its own share, then its margins, its max-width
+ * (which caps the content box, or the border box with border-box sizing) and its padding and border.
+ *
+ * A child's share of its parent's content box is, in order: the grid's span arithmetic when the grid's tracks are equal;
+ * the measured share (child's margin box over the parent's content box) for a flex row child, a grid of unequal tracks,
+ * or a block child that does not fill its parent; a fixed px share for a flex child with a px basis that does not grow;
+ * and the whole parent for a block child that fills it or is capped by a max-width (the cap is then the node's own rule).
+ * Undefined when a step has no rule and no measured share.
+ */
+export function slotAt(nodes: LayoutNode[], vw: number): SlotWalk | undefined {
   if (nodes.length === 0) return undefined;
   const top = [...nodes].reverse();
-  let expr: Expr = VW;
-  for (let i = 0; i < top.length - 1; i++) {
-    const node = top[i];
-    const child = top[i + 1];
-    expr = sub(expr, node.marginX);
-    if (node.maxWidth !== undefined) expr = minOf(expr, { kind: "px", value: node.maxWidth });
-    expr = sub(expr, node.paddingX + node.borderX);
-    const gap = node.gap ?? 0;
-    if (node.display === "grid" && (node.gridCols ?? 0) > 1) {
-      const cols = node.gridCols as number;
-      expr = frac(expr, gap * (cols - 1), 1, cols);
-    } else if (node.display === "flex" && (node.flexDirection ?? "row").startsWith("row")) {
-      const basis = child.flexBasis ?? "auto";
-      const percent = pct(basis);
-      if (percent !== undefined && percent > 0) {
-        const count = Math.max(1, Math.round(100 / percent));
-        expr = frac(expr, gap * (count - 1), percent, 100);
-      } else if (/^[\d.]+px$/.test(basis)) {
-        expr = { kind: "px", value: parseFloat(basis) };
-      }
+  let state: Linear = { a: 1, b: 0 };
+  const steps: string[] = [];
+  for (let k = 0; k < top.length; k++) {
+    const node = top[k];
+    if (k > 0) {
+      const share = shareOf(top[k - 1], node, state);
+      if (share === undefined) return undefined;
+      state = share.linear;
+      steps.push(share.step);
     }
+    const content = contentOf(node, state, vw);
+    state = content.linear;
+    steps.push(content.step);
   }
-  const img = top[top.length - 1];
-  if (img.maxWidth !== undefined) expr = minOf(expr, { kind: "px", value: img.maxWidth });
-  return expr;
+  return { linear: { a: round(state.a, 4), b: round(state.b, 2) }, signature: steps.join(" ") };
+}
+
+/** The content box of a node, from its containing block's width. */
+function contentOf(node: LayoutNode, containing: Linear, vw: number): { linear: Linear; step: string } {
+  const borderBox = node.borderBox === true;
+  let avail = shift(containing, node.marginX + (borderBox ? 0 : node.paddingX + node.borderX));
+  // The step names the constants too, so a breakpoint that changes a padding or a cap starts a new branch.
+  let step = `${node.marginX}/${node.paddingX}/${node.borderX}${borderBox ? "b" : ""}`;
+  if (node.maxWidth !== undefined) {
+    const capped = capAt(avail, node.maxWidth, vw);
+    // The side of the cap that is active at this viewport: the expression ("m") or the cap itself ("M").
+    step += `/${capped === avail ? "m" : "M"}${node.maxWidth}`;
+    avail = capped;
+  }
+  if (borderBox) avail = shift(avail, node.paddingX + node.borderX);
+  return { linear: avail, step: `content ${step}` };
+}
+
+/** The margin box of a child, as a share of its parent's content box. */
+function shareOf(parent: LayoutNode, child: LayoutNode, parentContent: Linear): { linear: Linear; step: string } | undefined {
+  // A capped box takes the whole parent (margins are auto); its own rule in contentOf applies the cap.
+  if (child.maxWidth !== undefined) return { linear: parentContent, step: "capped" };
+  const outer = child.width + child.paddingX + child.borderX + child.marginX;
+  if (parent.display === "grid" && (parent.gridCols ?? 0) > 1 && parent.gridUniform === true) {
+    const cols = parent.gridCols as number;
+    const span = Math.max(1, Math.min(cols, child.gridSpan ?? 1));
+    const gap = parent.gap ?? 0;
+    // (parent - gap * (cols - 1)) * span / cols + gap * (span - 1)
+    const linear = shift(scale(shift(parentContent, gap * (cols - 1)), span / cols), -gap * (span - 1));
+    return { linear, step: `grid ${cols}/${span}/${gap}` };
+  }
+  if (parent.width <= 0) return undefined;
+  if (parent.display === "flex" && (parent.flexDirection ?? "row").startsWith("row")) {
+    const basis = /^([\d.]+)px$/.exec(child.flexBasis ?? "");
+    if (basis && Number(basis[1]) > 0 && (child.flexGrow ?? 0) === 0) return { linear: { a: 0, b: outer }, step: `px ${outer}` };
+  }
+  if (Math.abs(outer - parent.width) <= 1) return { linear: parentContent, step: "fill" };
+  return { linear: scale(parentContent, round(outer / parent.width, 4)), step: "share" };
+}
+
+/** The CSS of a coefficient pair: a plain length, or one calc(). */
+export function formatLinear(l: Linear): string {
+  const vwPercent = round(l.a * 100, 2);
+  const px = round(l.b, 2);
+  if (vwPercent === 0) return `${Math.max(0, px)}px`;
+  if (px === 0) return `${vwPercent}vw`;
+  return `calc(${vwPercent}vw ${px < 0 ? "-" : "+"} ${Math.abs(px)}px)`;
+}
+
+/** A fitted line held outside the range it was measured in: the viewport is clamped to [lo, hi] (CSS clamp()). */
+export function formatHeldFit(l: Linear, lo: number, hi: number): string {
+  if (Math.abs(l.a) < 1e-9) return formatLinear({ a: 0, b: l.b });
+  const b = round(l.b, 2);
+  return `calc(${round(l.a, 4)} * clamp(${Math.round(lo)}px, 100vw, ${Math.round(hi)}px) ${b < 0 ? "-" : "+"} ${Math.abs(b)}px)`;
+}
+
+/** The value of a held fit at a viewport: the line at the viewport clamped to [lo, hi]. */
+export function heldFitAt(l: Linear, lo: number, hi: number, vw: number): number {
+  return linearAt(l, Math.min(Math.max(vw, lo), hi));
 }
 
 /**
@@ -170,47 +194,118 @@ export function breakpointBetween(lo: number, hi: number): number {
 export interface FormulaPoint {
   viewportWidth: number;
   renderedWidth: number;
-  /** The slot expression of this viewport's chain. */
-  expr: Expr;
+  /** The image's chain walked at this viewport (undefined: a step had no rule). */
+  slot?: SlotWalk;
+}
+
+/** One media branch of a sizes value: the viewports it covers, its value and where the value came from. */
+export interface SizesBranch {
+  /** Smallest and largest measured viewport width in the branch. */
+  lo: number;
+  hi: number;
+  /** The CSS value (a length or a calc()/max()/clamp() of one). */
+  value: string;
+  basis: SizesBasis;
+  /** The media condition that selects the branch ("default" for the last one). */
+  condition: string;
+}
+
+export interface SizesResult {
+  /** The sizes value: its branches joined, the last one unconditioned. */
+  value: string;
+  /** The weakest basis of its branches. */
+  basis: SizesBasis;
+  branches: SizesBranch[];
+}
+
+const BASIS_ORDER: SizesBasis[] = ["measured-max", "fit", "layout-formula"];
+const weakest = (bases: SizesBasis[]): SizesBasis => bases.reduce((a, b) => (BASIS_ORDER.indexOf(a) <= BASIS_ORDER.indexOf(b) ? a : b));
+
+/** Least-squares line through the points (viewport width, rendered width); undefined when the viewports do not vary. */
+function fitLine(points: { x: number; y: number }[]): Linear | undefined {
+  const n = points.length;
+  const sx = points.reduce((s, p) => s + p.x, 0);
+  const sy = points.reduce((s, p) => s + p.y, 0);
+  const sxx = points.reduce((s, p) => s + p.x * p.x, 0);
+  const sxy = points.reduce((s, p) => s + p.x * p.y, 0);
+  const denom = n * sxx - sx * sx;
+  if (denom === 0) return undefined;
+  const a = (n * sxy - sx * sy) / denom;
+  return { a, b: (sy - a * sx) / n };
 }
 
 /**
- * The `sizes` value of one image from its per-viewport slot expressions. Viewports whose expressions print the same form
- * one branch; the branches must cover disjoint ranges of viewport width, and each switch point becomes a media condition.
- * Undefined when the branches interleave, or when the value misses a measured width (see withinTolerance): the caller
- * then falls back to a fitted or measured value.
+ * The sizes value of one image from its measured points, per media branch. Points with the same linear function form one
+ * branch when their viewports are contiguous (a branch of one viewport is not a formula). A branch takes, in order:
+ * the layout formula when it matches every rendered width of the branch; else a line fitted to the branch, held outside
+ * its measured range (clamp) with the branch's largest width as a floor above it, when the line never decreases and
+ * matches; else the largest rendered width of the branch as a constant. A branch never falls below its measured widths.
+ * Undefined when no point was rendered, or when the branches overlap (then the whole image is fitted or held at its maximum).
  */
-export function deriveSizesFormula(points: FormulaPoint[]): string | undefined {
-  const measured = points.filter((p) => p.renderedWidth >= 1);
+export function deriveSizesFromLayout(points: FormulaPoint[]): SizesResult | undefined {
+  const measured = points.filter((p) => p.renderedWidth >= 1).sort((a, b) => a.viewportWidth - b.viewportWidth);
   if (measured.length === 0) return undefined;
-  const groups = new Map<string, { expr: Expr; min: number; max: number }>();
+
+  const groups = new Map<string, FormulaPoint[]>();
   for (const p of measured) {
-    const key = printExpr(p.expr);
-    const group = groups.get(key);
-    if (group) {
-      group.min = Math.min(group.min, p.viewportWidth);
-      group.max = Math.max(group.max, p.viewportWidth);
-    } else {
-      groups.set(key, { expr: p.expr, min: p.viewportWidth, max: p.viewportWidth });
+    const key = p.slot ? p.slot.signature : `unexplained:${p.viewportWidth}`;
+    const list = groups.get(key);
+    if (list) list.push(p);
+    else groups.set(key, [p]);
+  }
+  let ordered = [...groups.values()].sort((a, b) => a[0].viewportWidth - b[0].viewportWidth);
+  const overlap = ordered.some((g, i) => i + 1 < ordered.length && g[g.length - 1].viewportWidth >= ordered[i + 1][0].viewportWidth);
+  if (overlap) ordered = [measured];
+
+  const branches: SizesBranch[] = ordered.map((group): SizesBranch => {
+    const lo = group[0].viewportWidth;
+    const hi = group[group.length - 1].viewportWidth;
+    const widest = Math.ceil(Math.max(...group.map((p) => p.renderedWidth)));
+    const distinct = new Set(group.map((p) => p.viewportWidth)).size;
+    // The formula of the branch: the first viewport's. One viewport confirms only a constant (a cap or a px share).
+    const formula = !overlap && group[0].slot ? group[0].slot.linear : undefined;
+    const confirmed = distinct >= 2 || formula?.a === 0;
+    if (formula && confirmed && group.every((p) => withinTolerance(linearAt(formula, p.viewportWidth), p.renderedWidth))) {
+      return { lo, hi, value: formatLinear(formula), basis: "layout-formula", condition: "" };
     }
+    const fitted = distinct >= 2 && !overlap ? fitLine(group.map((p) => ({ x: p.viewportWidth, y: p.renderedWidth }))) : undefined;
+    // The line is checked with the coefficients it is printed with.
+    const line = fitted && { a: round(fitted.a, 4), b: round(fitted.b, 2) };
+    if (line && line.a > 1e-9) {
+      const held = (vw: number) => heldFitAt(line, lo, hi, vw);
+      if (group.every((p) => withinTolerance(held(p.viewportWidth), p.renderedWidth))) {
+        const top = held(hi);
+        const value = formatHeldFit(line, lo, hi);
+        return {
+          lo,
+          hi,
+          value: top < widest - 0.5 ? `max(${value}, ${widest}px)` : value,
+          basis: "fit",
+          condition: "",
+        };
+      }
+    }
+    return { lo, hi, value: `${widest}px`, basis: "measured-max", condition: "" };
+  });
+
+  // Adjacent branches with the same value are one branch: the media condition would change nothing.
+  const merged: SizesBranch[] = [];
+  for (const branch of branches) {
+    const last = merged[merged.length - 1];
+    if (last && last.value === branch.value) {
+      last.hi = branch.hi;
+      last.basis = weakest([last.basis, branch.basis]);
+    } else merged.push({ ...branch });
   }
-  const ordered = [...groups.values()].sort((a, b) => a.min - b.min);
-  for (let i = 0; i + 1 < ordered.length; i++) {
-    if (ordered[i].max >= ordered[i + 1].min) return undefined;
-  }
-  const branches = ordered.map((g, i) => ({
-    expr: g.expr,
-    maxWidth: i + 1 < ordered.length ? breakpointBetween(g.max, ordered[i + 1].min) : undefined,
-  }));
-  const valueAt = (vw: number): number | undefined => {
-    const branch = branches.find((b) => b.maxWidth === undefined || vw <= b.maxWidth);
-    return branch ? evalExpr(branch.expr, vw) : undefined;
-  };
-  if (!measured.every((p) => withinTolerance(valueAt(p.viewportWidth), p.renderedWidth))) return undefined;
-  if (branches.length === 1) return formatSizes(branches[0].expr);
-  return branches
-    .map((b) => (b.maxWidth === undefined ? formatSizes(b.expr) : `(max-width: ${b.maxWidth}px) ${formatSizes(b.expr)}`))
-    .join(", ");
+  merged.forEach((branch, i) => {
+    branch.condition = i + 1 < merged.length ? `(max-width: ${breakpointBetween(branch.hi, merged[i + 1].lo)}px)` : "default";
+  });
+  branches.splice(0, branches.length, ...merged);
+  const value =
+    branches.length === 1
+      ? branches[0].value
+      : branches.map((b) => (b.condition === "default" ? b.value : `${b.condition} ${b.value}`)).join(", ");
+  return { value, basis: weakest(branches.map((b) => b.basis)), branches };
 }
 
 /** Whether two chains have the same structure at every ancestor, ignoring widths and class names. */
@@ -226,9 +321,11 @@ export function sameStructure(a: LayoutNode[], b: LayoutNode[]): boolean {
       n.borderX === m.borderX &&
       n.marginX === m.marginX &&
       n.gridCols === m.gridCols &&
+      n.gridSpan === m.gridSpan &&
       n.gap === m.gap &&
       n.flexDirection === m.flexDirection &&
-      n.flexBasis === m.flexBasis
+      n.flexBasis === m.flexBasis &&
+      n.borderBox === m.borderBox
     );
   });
 }

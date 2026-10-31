@@ -843,6 +843,19 @@ async function readView(page: Page): Promise<PageView> {
         }
         return parts.join(" > ");
       };
+      // The columns an item spans, from its computed grid lines (a line is a number, "span N" or "auto"; -1 is the last line).
+      const gridSpanOf = (start: string, end: string, cols: number): number => {
+        const line = (v: string): number | undefined => (/^-?\d+$/.test(v) ? Number(v) : undefined);
+        const spanOf = (v: string): number | undefined => {
+          const m = /^span (\d+)$/.exec(v);
+          return m ? Number(m[1]) : undefined;
+        };
+        const s = line(start);
+        const e = line(end);
+        if (s !== undefined && e !== undefined) return Math.max(1, (e < 0 ? cols + e + 2 : e) - s);
+        if (s !== undefined && spanOf(end) !== undefined) return spanOf(end) as number;
+        return spanOf(start) ?? 1;
+      };
       // The image, then its ancestors up to the root. display: contents and inline wrappers do not constrain width: skipped.
       const layoutOf = (img: Element): LayoutChainData => {
         const nodes: LayoutNode[] = [];
@@ -870,13 +883,25 @@ async function readView(page: Page): Promise<PageView> {
               marginX: maxWidth !== undefined && marginL === marginR ? 0 : marginL + marginR,
               display: cs.display,
               flexBasis: cs.flexBasis,
+              borderBox: cs.boxSizing === "border-box",
             };
             if (maxWidth !== undefined) node.maxWidth = maxWidth;
             if (cs.display === "grid") {
-              node.gridCols = cs.gridTemplateColumns === "none" ? 0 : cs.gridTemplateColumns.split(/\s+/).length;
+              const tracks = cs.gridTemplateColumns === "none" ? [] : cs.gridTemplateColumns.split(/\s+/).map(num);
+              node.gridCols = tracks.length;
+              node.gridUniform = tracks.length > 0 && tracks.every((t) => Math.abs(t - tracks[0]) <= 0.5);
             }
             if (cs.display === "grid" || cs.display === "flex") node.gap = num(cs.columnGap);
-            if (cs.display === "flex") node.flexDirection = cs.flexDirection;
+            if (cs.display === "flex") {
+              node.flexDirection = cs.flexDirection;
+              node.flexGrow = num(cs.flexGrow);
+            }
+            // The columns this item spans in a grid parent (grid-column: 1 / -1 spans all of them).
+            const parentStyle = el.parentElement ? getComputedStyle(el.parentElement) : undefined;
+            if (parentStyle?.display === "grid") {
+              const cols = parentStyle.gridTemplateColumns === "none" ? 0 : parentStyle.gridTemplateColumns.split(/\s+/).length;
+              node.gridSpan = gridSpanOf(cs.gridColumnStart, cs.gridColumnEnd, cols);
+            }
             nodes.push(node);
           }
           el = el.parentElement;

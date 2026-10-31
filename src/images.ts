@@ -3,15 +3,23 @@
 // Built from the instances the page analysis already measured: no measurement happens here.
 
 import { sha1 } from "./atomic.js";
-import { deriveSizesFormula, slotExpr, sameStructure, withinTolerance, type FormulaPoint, type LayoutNode } from "./layout.js";
+import {
+  deriveSizesFromLayout,
+  sameStructure,
+  slotAt,
+  type FormulaPoint,
+  type LayoutNode,
+  type SizesBasis,
+  type SizesBranch,
+  type SizesResult,
+} from "./layout.js";
 import { isLocalTarget } from "./address.js";
 import { loaderName, sanitizeText, urlPattern } from "./locate.js";
-import { deriveSizes, sizesBranchAt, sizesSlotAt, type SizePoint } from "./sizes.js";
+import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
 
-/** Where a sizes value came from: a layout formula, a fitted line, or the largest measured width. */
-export type SizesBasis = "layout-formula" | "fit" | "measured-max";
+export type { SizesBasis, SizesBranch };
 
 export interface ImageLocator {
   /** Component names, nearest first (dev builds of React only). */
@@ -58,7 +66,7 @@ export interface ImagePerViewport {
 }
 
 export interface ImageFix {
-  sizes?: { value: string; basis: SizesBasis; rung: "measured-page" };
+  sizes?: { value: string; basis: SizesBasis; rung: "measured-page"; branches: SizesBranch[] };
   /** Plain images: the device pixel width the file needs at the reference viewport. */
   width?: number;
   quality?: {
@@ -169,26 +177,14 @@ function tunableOf(member: Instance, pageUrl: string, loader: string): { width: 
   return { width, quality, reason: "fix in the loader" };
 }
 
-/** The sizes value of one element and its basis, from its measured points and its layout chains. */
-function sizesOf(
-  measured: { viewportWidth: number; renderedWidth: number; mobile: boolean; chain?: LayoutNode[] }[],
-): { value: string; basis: SizesBasis } | undefined {
-  if (measured.length === 0) return undefined;
-  const formulaPoints: FormulaPoint[] = [];
-  for (const m of measured) {
-    const expr = m.chain ? slotExpr(m.chain) : undefined;
-    if (expr) formulaPoints.push({ viewportWidth: m.viewportWidth, renderedWidth: m.renderedWidth, expr });
-  }
-  if (formulaPoints.length === measured.length) {
-    const formula = deriveSizesFormula(formulaPoints);
-    if (formula !== undefined) return { value: formula, basis: "layout-formula" };
-  }
-  const points: SizePoint[] = measured.map((m) => ({ viewportWidth: m.viewportWidth, renderedWidth: m.renderedWidth, mobile: m.mobile }));
-  const fit = deriveSizes(points);
-  if (fit !== undefined && measured.every((m) => withinTolerance(sizesSlotAt(fit, m.viewportWidth), m.renderedWidth))) {
-    return { value: fit, basis: "fit" };
-  }
-  return { value: `${Math.ceil(Math.max(...measured.map((m) => m.renderedWidth)))}px`, basis: "measured-max" };
+/** The sizes value of one element, per media branch, from its measured points and their layout chains. */
+function sizesOf(measured: { viewportWidth: number; renderedWidth: number; chain?: LayoutNode[] }[]): SizesResult | undefined {
+  const points: FormulaPoint[] = measured.map((m) => ({
+    viewportWidth: m.viewportWidth,
+    renderedWidth: m.renderedWidth,
+    slot: m.chain ? slotAt(m.chain, m.viewportWidth) : undefined,
+  }));
+  return deriveSizesFromLayout(points);
 }
 
 /** An image record that has something to fix: bytes saved, or a sizes value that differs from the current one. */
@@ -278,7 +274,6 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       .map((m) => ({
         viewportWidth: m.viewport.width,
         renderedWidth: m.renderedWidth,
-        mobile: m.viewport.mobile,
         chain: m.img.layout?.nodes,
       }));
     const sizes = sizesOf(measured);
@@ -291,11 +286,11 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
 
     const fix: ImageFix = { bytes: { saved, addedForSharpness } };
     if (sizes) {
-      fix.sizes = { value: sizes.value, basis: sizes.basis, rung: "measured-page" };
+      fix.sizes = { value: sizes.value, basis: sizes.basis, rung: "measured-page", branches: sizes.branches };
+      const sized = sizes.branches.map((b) => b.basis);
+      const formulas = sized.filter((b) => b === "layout-formula").length;
       notes.push(
-        sizes.basis === "layout-formula"
-          ? `sizes: layout formula, checked at ${measured.length} of ${viewportCount} viewports`
-          : `sizes: ${sizes.basis} (no layout formula matched every viewport)`,
+        `sizes: ${sizes.basis} (${formulas} of ${sized.length} media branch(es) from the layout formula, checked at ${measured.length} of ${viewportCount} viewports)`,
       );
     }
     if (member.kind === "plain") fix.width = member.needed;

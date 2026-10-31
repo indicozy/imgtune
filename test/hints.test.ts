@@ -31,7 +31,12 @@ function record(id: string, overrides: { saved?: number; sharpness?: number; com
     },
     perViewport: [],
     fix: {
-      sizes: { value: overrides.proposed ?? "calc((100vw - 24px - 8px) / 2)", basis: "layout-formula", rung: "measured-page" },
+      sizes: {
+        value: overrides.proposed ?? "calc((100vw - 24px - 8px) / 2)",
+        basis: "layout-formula",
+        rung: "measured-page",
+        branches: [{ lo: 390, hi: 1440, value: overrides.proposed ?? "calc((100vw - 24px - 8px) / 2)", basis: "layout-formula", condition: "default" }],
+      },
       quality: { perFormat: { webp: 80 }, groupRule: "max-of-targets", group: "Card", samples: 8, current: 90, qualityAssumed: false },
       format: "webp",
       bytes: { saved, addedForSharpness: overrides.sharpness ?? 0 },
