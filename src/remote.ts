@@ -47,6 +47,7 @@ import { makeScorer, type Scorer } from "./metric.js";
 import { countGpuFallbacks, gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
+import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
 import { cacheScope, CACHE_DIR, contentHash, ResultCache } from "./result-cache.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
 
@@ -446,6 +447,8 @@ export interface ScanArgs {
   gpu?: { device: number };
   /** --harness: the pages are harness routes (Storybook, a temporary route): their records are measured-harness. */
   harness?: boolean;
+  /** --fail-on-broken: exit 4 when a page is broken (see broken.ts). */
+  failOnBroken?: boolean;
 }
 
 /** The stderr warning for a page that robots.txt disallows and that is scanned anyway (--ignore-robots). */
@@ -498,13 +501,13 @@ const VALUE_OPTIONS: readonly string[] = [
 ];
 
 /** A whole number of at least 1, for a limit option. */
-function parseLimit(name: string, text: string): number {
+export function parseLimit(name: string, text: string): number {
   if (!/^\d+$/.test(text) || Number(text) < 1) throw new Error(`${name} needs a whole number of at least 1, not ${safeText(text)}`);
   return Number(text);
 }
 
 /** A whole number from `min` to `max`, for an option with a range. */
-function parseRange(name: string, text: string, min: number, max: number): number {
+export function parseRange(name: string, text: string, min: number, max: number): number {
   const value = Number(text);
   if (!/^\d+$/.test(text) || value < min || value > max) {
     throw new Error(`${name} needs a whole number from ${min} to ${max}, not ${safeText(text)}`);
@@ -525,6 +528,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--harness") args.harness = true;
     else if (arg === "--survey") args.survey = true;
+    else if (arg === "--fail-on-broken") args.failOnBroken = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -884,6 +888,8 @@ export interface ViewportObservation {
   backgrounds?: ObservedBackground[];
   /** Stylesheets the page links that the server refused or the browser could not load (their styles are not applied): zero on a sound page. */
   stylesheetsFailed?: number;
+  /** The hosts of those stylesheets (distinct, no paths or query strings). */
+  stylesheetHosts?: string[];
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
 }
@@ -1212,6 +1218,19 @@ async function functionLocationsOf(session: CDPSession, index: number, scripts: 
   return frames;
 }
 
+/** The distinct hosts of a set of URLs. A URL that does not parse is left out. */
+function hostsOf(urls: Iterable<string>): string[] {
+  const hosts = new Set<string>();
+  for (const url of urls) {
+    try {
+      hosts.add(new URL(url).host);
+    } catch {
+      // not a URL: nothing to name
+    }
+  }
+  return [...hosts];
+}
+
 /**
  * One viewport's read of a page. `light` (the locate and sizes-only paths) reads no image bodies and no layout chain: the
  * image sizes come from the response headers, and nothing is decoded or scored.
@@ -1356,6 +1375,7 @@ async function observeViewport(
         images: seen.images,
         backgrounds: seen.backgrounds,
         stylesheetsFailed: failedSheets.size,
+        stylesheetHosts: hostsOf(failedSheets),
         responses,
       };
     } finally {
@@ -1890,8 +1910,9 @@ export interface GroupReport {
 /**
  * ok: measured. blocked: a challenge page. robots: robots.txt disallows the page. redirected: the page ends on another
  * site, or on a URL robots.txt disallows, so nothing is measured (finalUrl says where it went). failed: an error.
+ * broken: measured, but not as the app is (see broken.ts): no page numbers, and no total counts it.
  */
-export type PageStatus = "ok" | "blocked" | "robots" | "redirected" | "failed";
+export type PageStatus = "ok" | "blocked" | "robots" | "redirected" | "failed" | "broken";
 
 /** The `robots` value recorded for a page on a loopback or private host: its owner's own server is not checked. */
 export const ROBOTS_SKIPPED_LOCAL = "skipped (local host)";
@@ -1935,6 +1956,12 @@ export interface PageResult {
   loadTimedOut?: boolean;
   /** Linked stylesheets that did not load, per viewport (only when some did): the widths measured there are not valid. */
   stylesheetsFailed?: Record<string, number>;
+  /** The hosts the failed stylesheets were loaded from (only when some failed): named in the broken reason. */
+  stylesheetHosts?: string[];
+  /** The HTTP status of the document, per viewport, when it is an error (400 and up). */
+  documentStatus?: Record<string, number>;
+  /** Why the page is broken (status "broken"): the kind, the reason and the likely fix. */
+  broken?: BrokenInfo;
   /** The robots.txt rule that disallowed the page, when it was scanned anyway (--ignore-robots). */
   robotsRule?: string;
   /** A note that the page ended on another URL, with the URL in it. */
@@ -2333,6 +2360,11 @@ export interface ScanOptions {
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
   harness?: boolean;
+  /**
+   * The image count a survey found per page URL. A full scan that finds no images where the survey found some is broken
+   * (see broken.ts). Undefined for a page the survey did not see.
+   */
+  expectImages?: (url: string) => number | undefined;
 }
 
 /** How a run ended early: the limit that was reached, and how far the scan got. */
@@ -2465,6 +2497,8 @@ async function scanPage(
   let finalUrl: string | undefined;
   let loadTimedOut = false;
   const sheetsFailed: Record<string, number> = {};
+  const failedHosts = new Set<string>();
+  const documentStatus: Record<string, number> = {};
   try {
     for (const [index, outcome] of outcomes.entries()) {
       const viewport = run.viewports[index];
@@ -2475,6 +2509,8 @@ async function scanPage(
       }
       if (obs.loadTimedOut) loadTimedOut = true;
       if ((obs.stylesheetsFailed ?? 0) > 0) sheetsFailed[viewport.name] = obs.stylesheetsFailed as number;
+      for (const host of obs.stylesheetHosts ?? []) failedHosts.add(host);
+      if (obs.status !== undefined && obs.status >= 400) documentStatus[viewport.name] = obs.status;
       if (obs.finalUrl !== undefined && new URL(obs.finalUrl).href !== url.href) {
         if (!(await landedOk(obs.finalUrl))) {
           return { ...base, status: "redirected", finalUrl: obs.finalUrl, error: `redirected to ${obs.finalUrl}` };
@@ -2489,6 +2525,8 @@ async function scanPage(
   const described: PageResult = { ...base };
   if (finalUrl !== undefined) described.finalUrl = finalUrl;
   if (loadTimedOut) described.loadTimedOut = true;
+  if (failedHosts.size > 0) described.stylesheetHosts = [...failedHosts];
+  if (Object.keys(documentStatus).length > 0) described.documentStatus = documentStatus;
   if (Object.keys(sheetsFailed).length > 0) {
     described.stylesheetsFailed = sheetsFailed;
     run.log(
@@ -2666,7 +2704,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
         opts.log(`scanning ${safeText(url)}`);
         const startedAt = performance.now();
         const scanned = await countGpuFallbacks(() => scanPage(browser, run, url, robotsFor));
-        result = { ...scanned.value, complete: true, options };
+        result = withBroken({ ...scanned.value, complete: true, options }, opts.expectImages?.(url));
         result.scorer = scorerOf(run.gpu, scanned.fallbacks);
         if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - startedAt) / 1000).toFixed(1)} s\n`);
         await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
@@ -2799,7 +2837,11 @@ const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 /** One page: a short table and its top groups. `hintsFile` names the scan file, for the pointer to `imgtune hints`. */
 export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: string): string[] {
   const head = `${safeText(result.url)}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
-  if (result.status !== "ok" || !result.page) return [head, `  ${safeText(result.error ?? result.status)}`];
+  if (result.status !== "ok" || !result.page) {
+    const lines = [head, `  ${safeText(result.error ?? result.status)}`];
+    if (result.broken !== undefined) lines.push(`  fix: ${safeText(result.broken.fix)}`);
+    return lines;
+  }
   const n = result.page;
   const lines = [
     head,
@@ -3128,6 +3170,11 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     output += `stopped at ${flag}: ${stop.pages} of ${stop.total} page(s) done, ${stop.images} image(s) counted; run again with --resume to continue\n`;
   }
   let exitCode = 0;
+  const broken = results.filter((r) => r.status === "broken");
+  if (args.failOnBroken === true && broken.length > 0) {
+    exitCode = BROKEN_EXIT;
+    output += `${broken.length} of ${results.length} page(s) broken (--fail-on-broken); each page above gives the reason and the fix\n`;
+  }
   if (args.failOver !== undefined) {
     const over = pagesOverBudget(results, args.failOver);
     if (over.length > 0) {

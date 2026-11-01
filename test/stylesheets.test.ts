@@ -61,9 +61,13 @@ describe("a stylesheet that did not load", () => {
     return { result, logs };
   };
 
-  it("records a stylesheet the server refused on the page and warns, naming the viewport", async () => {
+  it("records a stylesheet the server refused on the page and warns, naming the viewport; the page is broken, with no numbers", async () => {
     const { result, logs } = await scan("/broken.html");
-    expect(result.status).toBe("ok");
+    // A page that is not styled as the app is cannot be measured as the app: it is broken (see broken.ts).
+    expect(result.status).toBe("broken");
+    expect(result).not.toHaveProperty("page");
+    expect(result.broken?.kind).toBe("stylesheet");
+    expect(result.stylesheetHosts).toEqual([new URL(base).host]);
     expect(result.stylesheetsFailed).toEqual({ desktop: 1 });
     const warning = logs.find((line) => line.includes("a linked stylesheet did not load"));
     expect(warning?.includes("at desktop;")).toBe(true);
