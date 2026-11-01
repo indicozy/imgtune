@@ -132,6 +132,9 @@ export function pairRecord(before: ImageRecord, now: Map<string, ImageRecord>, f
   return { ambiguous: candidates.length };
 }
 
+/** A signed kilobyte count: "saves 12 KB" or "grew 12 KB". */
+const saving = (bytes: number): string => (bytes >= 0 ? `saves ${kb(bytes)}` : `grew ${kb(-bytes)}`);
+
 /**
  * One image before and after: a row per viewport, the predicted saving next to the measured one (served bytes), the hint
  * delta, and the failures (undersized, bytes up without a fix). `how` says how the image was found again.
@@ -166,10 +169,12 @@ export function compareImage(
     const moved = was !== undefined && now !== undefined && was !== now ? ` (line ${was} -> ${now})` : "";
     lines.push(`  matched by source file and URL, not by id: the element moved or its order changed${moved}`);
   }
+  const measured: number[] = [];
   for (const p of before.perViewport.filter((v) => v.renderedCssPx > 0 && KNOWN_VIEWPORTS.includes(v.viewport))) {
     const q: ImagePerViewport | undefined = after.perViewport.find((v) => v.viewport === p.viewport);
     if (q === undefined) continue;
     const name = safeText(p.viewport);
+    measured.push(p.servedBytes - q.servedBytes);
     lines.push(
       `  ${name.padEnd(18)} rendered ${p.renderedCssPx} -> ${q.renderedCssPx} px  served ${kb(p.servedBytes)} -> ${kb(q.servedBytes)}  undersized ${yesNo(p.undersized)} -> ${yesNo(q.undersized)}`,
     );
@@ -187,6 +192,13 @@ export function compareImage(
   lines.push(
     `  hint   sizes ${sizesBefore} -> ${sizesAfter}  saves ${kb(savedBefore)} -> ${kb(savedAfter)}${reused}`,
   );
+  // Predicted (the hint, per view, averaged over viewports) next to measured (served bytes at the same viewports).
+  const split = before.fix.bytes.sizes !== undefined ? ` (sizes ${kb(before.fix.bytes.sizes)}, quality ${kb(before.fix.bytes.quality ?? 0)})` : "";
+  const predicted = `predicted ${saving(savedBefore)}/view${split}`;
+  if (measured.length > 0) {
+    const mean = measured.reduce((sum, b) => sum + b, 0) / measured.length;
+    lines.push(`  ${predicted}; measured ${saving(mean)}/view (served bytes, mean of ${measured.length} viewport(s))`);
+  } else lines.push(`  ${predicted}; measured: no viewport in both scans`);
   return { lines, failures };
 }
 

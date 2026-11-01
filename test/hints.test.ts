@@ -6,6 +6,9 @@ import { hasFix, searchHintsOf, type ImageRecord } from "../src/images.js";
 import {
   combinedSizes,
   groupHints,
+  parseQualities,
+  savesText,
+  snapUp,
   hintsCommand,
   hintsOf,
   parseHintsArgs,
@@ -323,6 +326,53 @@ describe("search hints for elements without a resolved file", () => {
 function onPage(id: string, pageUrl: string, file: string, line: number, proposed: string, saved = 1000): ImageRecord {
   return { ...record(id, { file, line, proposed, saved }), page: pageUrl };
 }
+
+describe("quality snap and the split saving", () => {
+  it("raises a target to the nearest allowed quality, and keeps an allowed one", () => {
+    expect(snapUp(82, [75, 85, 100])).toBe(85);
+    expect(snapUp(85, [75, 85, 100])).toBe(85);
+    expect(snapUp(60, [75, 85, 100])).toBe(75);
+    expect(snapUp(101, [75, 85, 100])).toBe(100);
+  });
+
+  it("parses the --qualities list: sorted, unique, 1 to 100", () => {
+    expect(parseQualities("85,75,85,100")).toEqual([75, 85, 100]);
+    expect(() => parseQualities("75,abc")).toThrow(/--qualities needs a list of qualities from 1 to 100/);
+    expect(() => parseQualities("0")).toThrow(/from 1 to 100/);
+    expect(() => parseQualities("101")).toThrow(/from 1 to 100/);
+    expect(parseHintsArgs(["page.json", "--qualities", "75,85,100"]).qualities).toEqual([75, 85, 100]);
+  });
+
+  it("prints the snap, and voids the quality saving it cannot recompute", () => {
+    const r = record("a", { saved: 9000 });
+    r.fix.bytes = { saved: 9000, addedForSharpness: 0, sizes: 4000, quality: 5000 };
+    const [snapped] = hintsOf(page([r]), [75, 85, 100]);
+    expect(snapped.quality).toMatchObject({ target: 85, snapFrom: 80, allowed: [75, 85, 100], void: true });
+    expect(snapped.bytes).toEqual({ saved: 4000, addedForSharpness: 0, sizes: 4000, quality: 0 });
+    const lines = renderHint(snapped, 1);
+    expect(lines.join("\n")).toContain("q80 -> 85 (allowed: 75,85,100)");
+    expect(lines.join("\n")).toContain("saves 4 KB/view = sizes 4 KB + quality void after snap");
+  });
+
+  it("keeps the target and the saving when no snap was needed or no list was given", () => {
+    const r = record("a", { saved: 9000 });
+    r.fix.bytes = { saved: 9000, addedForSharpness: 0, sizes: 4000, quality: 5000 };
+    const [plain] = hintsOf(page([r]));
+    expect(plain.quality?.target).toBe(80);
+    expect(plain.bytes.saved).toBe(9000);
+    const [allowed] = hintsOf(page([r]), [75, 80, 100]);
+    expect(allowed.quality).toMatchObject({ target: 80, allowed: [75, 80, 100] });
+    expect(allowed.quality?.snapFrom).toBeUndefined();
+    expect(allowed.bytes.saved).toBe(9000);
+  });
+
+  it("splits the saving into its sizes and quality parts, and says so only when the scan gave the split", () => {
+    expect(savesText({ bytes: { saved: 15 * 1024, addedForSharpness: 0, sizes: 12 * 1024, quality: 3 * 1024 } } as Hint)).toBe(
+      "saves 15 KB/view = sizes 12 KB + quality 3 KB",
+    );
+    expect(savesText({ bytes: { saved: 90 * 1024, addedForSharpness: 0 } } as Hint)).toBe("saves 90 KB/view");
+  });
+});
 
 describe("grouped hints (one entry per call site)", () => {
   const A = "https://shop.example/shoes";

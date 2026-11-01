@@ -19,6 +19,8 @@ export interface HintsArgs {
   format: "text" | "json";
   /** One hint per image instead of one entry per file:line (the default groups them). */
   flat: boolean;
+  /** The framework's allowed quality values (Next: images.qualities). Targets are snapped up to one of them. */
+  qualities?: number[];
 }
 
 /** One hint: an image record reduced to what an agent needs to make the fix. */
@@ -43,21 +45,51 @@ export interface Hint {
   selector: string;
   sizes: { current?: string; proposed?: string; basis?: string };
   width?: number;
-  quality?: { current: number; target?: number; samples: number; group: string };
+  quality?: {
+    current: number;
+    target?: number;
+    samples: number;
+    group: string;
+    /** The target before it was snapped up to an allowed quality (--qualities). */
+    snapFrom?: number;
+    /** The allowed qualities the target was snapped to. */
+    allowed?: number[];
+    /** The snap left the quality saving unknown: it was estimated at the unsnapped target, so it is not counted. */
+    void?: boolean;
+  };
   format?: { current?: string; best?: string };
-  bytes: { saved: number; addedForSharpness: number };
+  bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number };
   rung: string;
   notes: string[];
 }
 
-const usage = "usage: imgtune hints <scan.json> [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat]";
+const usage =
+  "usage: imgtune hints <scan.json> [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat] [--qualities 75,85,100]";
 
 function nonNegativeInteger(name: string, text: string): number {
   if (!/^\d+$/.test(text)) throw new Error(`${name} needs a whole number, not ${safeText(text)}`);
   return Number(text);
 }
 
-const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offset", "--min-kb", "--format"];
+const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offset", "--min-kb", "--format", "--qualities"];
+
+/** A list of allowed quality values: whole numbers 1 to 100, separated by commas. Sorted, without repeats. */
+export function parseQualities(text: string): number[] {
+  const values = text.split(",").map((v) => v.trim());
+  if (values.some((v) => !/^\d{1,3}$/.test(v) || Number(v) < 1 || Number(v) > 100)) {
+    throw new Error(`--qualities needs a list of qualities from 1 to 100, like 75,85,100, not ${safeText(text)}`);
+  }
+  return [...new Set(values.map(Number))].sort((a, b) => a - b);
+}
+
+/**
+ * The allowed quality a target is raised to: the smallest allowed value that is not below it. A target above every
+ * allowed value gets the largest (the framework cannot go higher).
+ */
+export function snapUp(target: number, allowed: number[]): number {
+  const sorted = [...allowed].sort((a, b) => a - b);
+  return sorted.find((q) => q >= target) ?? sorted[sorted.length - 1];
+}
 
 /** The arguments after `hints`: one scan JSON file and the filters. Throws with the message the CLI prints. */
 export function parseHintsArgs(argv: string[]): HintsArgs {
@@ -87,6 +119,8 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
     else if (arg === "--min-kb") {
       if (!/^\d+(\.\d+)?$/.test(value)) throw new Error(`--min-kb needs a number, not ${safeText(value)}`);
       args.minKb = Number(value);
+    } else if (arg === "--qualities") {
+      args.qualities = parseQualities(value);
     } else if (arg === "--format") {
       if (value !== "text" && value !== "json") throw new Error(`--format is text or json, not ${safeText(value)}`);
       args.format = value;
@@ -98,10 +132,15 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
 }
 
 /** The hints of one page: its image records that have a fix, as hints. */
-export function hintsOf(result: PageResult): Hint[] {
+export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
   return (result.images ?? []).filter(hasFix).map((record) => {
     const served = record.current.format;
-    const target = served !== undefined ? record.fix.quality?.perFormat[served] : undefined;
+    const rawTarget = served !== undefined ? record.fix.quality?.perFormat[served] : undefined;
+    // With the framework's allowed qualities, the target goes up to one of them. The quality saving was estimated at the
+    // raw target, so after a snap it is not counted, and the hint says so.
+    const snapped = rawTarget !== undefined && qualities !== undefined ? snapUp(rawTarget, qualities) : undefined;
+    const snapFrom = snapped !== undefined && snapped !== rawTarget ? rawTarget : undefined;
+    const target = snapped ?? rawTarget;
     const hint: Hint = {
       id: record.id,
       page: record.page,
@@ -135,6 +174,12 @@ export function hintsOf(result: PageResult): Hint[] {
         samples: record.fix.quality.samples,
         group: record.fix.quality.group,
       };
+      if (qualities !== undefined) hint.quality.allowed = [...new Set(qualities)].sort((a, b) => a - b);
+      if (snapFrom !== undefined) {
+        hint.quality.snapFrom = snapFrom;
+        hint.quality.void = true;
+        if (hint.bytes.sizes !== undefined) hint.bytes = { ...hint.bytes, saved: hint.bytes.sizes, quality: 0 };
+      }
     }
     if (record.fix.format !== undefined || served !== undefined) hint.format = { current: served, best: record.fix.format };
     return hint;
@@ -162,6 +207,24 @@ const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 export function locationNote(hint: Hint): string {
   if (hint.kind === "owner") return " (owner call site)";
   return hint.verified === false ? " (unverified)" : "";
+}
+
+/** The quality target as printed: "-> 85", or "q82 -> 85 (allowed: 75,85,100)" when the target was snapped to an allowed value. */
+export function qualityTarget(quality: NonNullable<Hint["quality"]>): string {
+  if (quality.target === undefined) return "";
+  const allowed = quality.allowed !== undefined ? ` (allowed: ${quality.allowed.join(",")})` : "";
+  return quality.snapFrom !== undefined ? ` q${quality.snapFrom} -> ${quality.target}${allowed}` : ` -> ${quality.target}${allowed}`;
+}
+
+/**
+ * The saving of one image or one call site, per view, split into its parts when the scan gave them: "saves 15 KB/view =
+ * sizes 12 KB + quality 3 KB". A quality part that a snap voided is printed as void, not as a number.
+ */
+export function savesText(hint: Hint): string {
+  const { saved, sizes, quality } = hint.bytes;
+  if (sizes === undefined) return `saves ${kb(saved)}/view`;
+  const qualityPart = hint.quality?.void === true ? "quality void after snap" : `quality ${kb(quality ?? 0)}`;
+  return `saves ${kb(saved)}/view = sizes ${kb(sizes)} + ${qualityPart}`;
 }
 
 /** One hint as four short lines: where, sizes, quality and format, bytes and rung. */
@@ -193,14 +256,11 @@ export function renderHint(hint: Hint, rank: number): string[] {
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
   if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
   const parts: string[] = [];
-  if (hint.quality) {
-    const target = hint.quality.target !== undefined ? ` -> ${hint.quality.target}` : "";
-    parts.push(`quality ${hint.quality.current}${target} (max of ${hint.quality.samples}, ${safeText(hint.quality.group)})`);
-  }
+  if (hint.quality) parts.push(`quality ${hint.quality.current}${qualityTarget(hint.quality)} (max of ${hint.quality.samples}, ${safeText(hint.quality.group)})`);
   if (hint.format) parts.push(`format ${hint.format.current ?? "?"}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${hint.format.best}` : ""}`);
   if (parts.length > 0) lines.push(`   ${parts.join("  ")}`);
   lines.push(
-    `   saves ${kb(hint.bytes.saved)}/view, +${kb(hint.bytes.addedForSharpness)} sharpness (separate)  rung ${hint.rung}`,
+    `   ${savesText(hint)}, +${kb(hint.bytes.addedForSharpness)} sharpness (separate)  rung ${hint.rung}`,
   );
   return lines;
 }
@@ -257,7 +317,9 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
       ? `${JSON.stringify(`${first.file}:${first.line ?? 0}`)}${locationNote(first)}`
       : JSON.stringify(first.component[0] ?? first.selector);
   const name = first.file !== undefined && first.component[0] !== undefined ? ` (${JSON.stringify(first.component[0])})` : "";
-  const lines = [`${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view`];
+  const sizes = group.hints.every((h) => h.bytes.sizes !== undefined) ? group.hints.reduce((sum, h) => sum + (h.bytes.sizes ?? 0), 0) : undefined;
+  const split = sizes !== undefined ? ` = sizes ${kb(sizes)} + quality ${kb(group.saved - sizes)}` : "";
+  const lines = [`${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`];
   if (first.kind === "owner") lines.push(`   owner call site: the image is rendered inside <${first.component[0] ?? "an unnamed component"}>; search that component`);
   lines.push(`   sizes: ${safeText(combinedSizes(group))}`);
   for (const page of group.pages) {
@@ -310,7 +372,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   if (!Array.isArray(result.images)) {
     throw new Error(`${safeText(args.file)} has no image records: scan it with this version of imgtune`);
   }
-  const all = hintsOf(result);
+  const all = hintsOf(result, args.qualities);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
@@ -390,7 +452,7 @@ function commentLine(hint: Hint): string {
       ? `width ${hint.width}px`
       : `sizes ${quoted(hint.sizes.current ?? "none")} -> ${quoted(hint.sizes.proposed ?? "-")}`;
   const parts: (string | undefined)[] = [
-    `saves ${kb(hint.bytes.saved)}/view, +${kb(hint.bytes.addedForSharpness)} sharpness`,
+    `${savesText(hint)}, +${kb(hint.bytes.addedForSharpness)} sharpness`,
     `${location}${component}`,
     hint.alt !== undefined ? `alt ${quoted(hint.alt)}` : undefined,
     `page ${quoted(pathOf(hint.page))}`,

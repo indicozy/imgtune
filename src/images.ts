@@ -117,8 +117,12 @@ export interface ImageFix {
     qualityAssumed: boolean;
   };
   format?: string;
-  /** Two numbers, never netted: bytes the fix saves per page view, and sharpness bytes it adds on undersized images. */
-  bytes: { saved: number; addedForSharpness: number };
+  /**
+   * Two numbers, never netted: bytes the fix saves per page view, and sharpness bytes it adds on undersized images. The
+   * saving is split: `sizes` is the measured saving of the smaller srcset candidate (exact), `quality` the estimated
+   * quality and format saving on top of it (est.). sizes + quality = saved.
+   */
+  bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number };
 }
 
 export interface ImageRecord {
@@ -325,11 +329,12 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const notes: string[] = [];
 
     const saved = members.reduce((sum, m) => sum + m.exact + m.est, 0) / viewportCount;
+    const savedSizes = members.reduce((sum, m) => sum + m.exact, 0) / viewportCount;
     const addedForSharpness = members.reduce((sum, m) => sum + m.growth, 0) / viewportCount;
     const served = member.format;
     const best = served === "jpeg" || served === "png" ? (saved > 0 ? "avif" : served) : served;
 
-    const fix: ImageFix = { bytes: { saved, addedForSharpness } };
+    const fix: ImageFix = { bytes: { saved, addedForSharpness, sizes: savedSizes, quality: saved - savedSizes } };
     if (sizes) {
       fix.sizes = { value: sizes.value, basis: sizes.basis, rung: "measured-page", branches: sizes.branches };
       const sized = sizes.branches.map((b) => b.basis);

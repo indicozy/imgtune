@@ -188,4 +188,10 @@ describe("compareImage: gone and the predicted-versus-measured line", () => {
     expect(check.lines.join("\n")).toContain("rescan the page unchanged (pristine) and recheck it again");
   });
 
+  it("prints the predicted saving beside the measured served bytes", () => {
+    const check = compareImage(record({ servedBytes: 51_000, saved: 15_000 }), record({ servedBytes: 63_000 }), false);
+    const text = check.lines.join("\n");
+    expect(text).toContain("predicted saves 15 KB/view; measured grew 12 KB/view");
+    expect(check.failures).toHaveLength(1);
+  });
 });
