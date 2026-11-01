@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   checkGpuScorer,
+  countGpuFallbacks,
   encodeRequest,
   findGpuScorer,
   GPU_SCORER_BINARY,
@@ -323,6 +324,41 @@ describe("GpuScorer", () => {
       expect(gpu.fallbackScores).toBe(2);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(/^--gpu: the GPU scorer stopped \(exit 4\): mock failure; the scores from here on run on the CPU$/);
+    } finally {
+      gpu.close();
+    }
+  });
+
+  it("counts each page's CPU fallbacks for itself when two pages score at once", async () => {
+    const dir = await tempDir();
+    const gpu = new GpuScorer({
+      binary: await mockScorer(dir),
+      device: 0,
+      deviceName: "Mock GPU",
+      env: env({ MOCK_FAIL_AFTER: "0" }),
+      warn: () => undefined,
+    });
+    const a = gradientNoise(16, 16, 3, 1);
+    const b = gradientNoise(16, 16, 9, 2);
+    const c = gradientNoise(16, 16, 5, 3);
+    const d = gradientNoise(16, 16, 7, 4);
+    try {
+      // Two pages in flight: the first scores one pair, the second scores two. Each page's tally holds its own.
+      const first = countGpuFallbacks(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return gpu.tryScore(a, b);
+      });
+      const second = countGpuFallbacks(async () => {
+        await gpu.tryScore(c, d);
+        return gpu.tryScore(d, c);
+      });
+      const [one, two] = await Promise.all([first, second]);
+      expect(one.fallbacks).toBe(1);
+      expect(two.fallbacks).toBe(2);
+      expect(gpu.fallbackScores).toBe(3);
+      // Outside a page nothing is tallied, and the scorer's own count still moves.
+      await gpu.tryScore(a, c);
+      expect(gpu.fallbackScores).toBe(4);
     } finally {
       gpu.close();
     }

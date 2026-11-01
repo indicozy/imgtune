@@ -4,12 +4,26 @@
 // scores go to the CPU. It is never a hard requirement.
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { access, constants } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { flattenOnWhite, type GpuScoring } from "./metric.js";
 import type { RawImage } from "./ssim.js";
 
 export const GPU_SCORER_BINARY = "imgtune-ssimu2-gpu";
+
+/**
+ * The CPU fallbacks counted by the page being scanned, found by async context: pages scanned at the same time each count
+ * their own (see countGpuFallbacks). Outside a page, nothing is counted here; the scorer's own totals still are.
+ */
+const pageFallbacks = new AsyncLocalStorage<{ fallbacks: number }>();
+
+/** Runs `fn` and returns its value with the CPU fallbacks it caused, including those of the promises it started. */
+export async function countGpuFallbacks<T>(fn: () => Promise<T>): Promise<{ value: T; fallbacks: number }> {
+  const tally = { fallbacks: 0 };
+  const value = await pageFallbacks.run(tally, fn);
+  return { value, fallbacks: tally.fallbacks };
+}
 export const GPU_SCORER_ENV = "IMGTUNE_GPU_SCORER";
 
 /** Limits of the program's protocol (native/ssimulacra2-gpu): a pair outside them is scored on the CPU. */
@@ -208,8 +222,7 @@ export class GpuScorer implements GpuScoring {
   /** The GPU's score for the pair, or undefined when the CPU must score it. */
   async tryScore(ref: RawImage, test: RawImage): Promise<number | undefined> {
     if (this.failure !== undefined) {
-      this.fallbackScores++;
-      this.cpuScores++;
+      this.fallback();
       return undefined;
     }
     if (!gpuEligible(ref.width, ref.height)) {
@@ -220,11 +233,18 @@ export class GpuScorer implements GpuScoring {
       const [value] = await this.scoreBatch([[ref, test]]);
       return value;
     } catch (err) {
-      this.fallbackScores++;
-      this.cpuScores++;
+      this.fallback();
       this.kill(err instanceof Error ? err : new Error(String(err)));
       return undefined;
     }
+  }
+
+  /** The CPU scores a pair the GPU could not take: counted for the scorer, and for the page that asked. */
+  private fallback(): void {
+    this.fallbackScores++;
+    this.cpuScores++;
+    const tally = pageFallbacks.getStore();
+    if (tally !== undefined) tally.fallbacks++;
   }
 
   /** Scores several pairs in one request (one round trip). Requests run one at a time, in the order they were made. */

@@ -495,7 +495,7 @@ async function measureInputs(
   }
   const notes = args.write !== undefined ? await writeCopies(results, inputs, cwd, args.write, buffers) : [];
   const failed = results.filter((r) => r.error !== undefined).length;
-  const scorer: PageScorer = gpu !== undefined ? scorerOf(gpu) : { name: "cpu" };
+  const scorer: PageScorer = gpu !== undefined ? scorerOf(gpu, gpu.fallbackScores) : { name: "cpu" };
   if (args.format === "json") {
     const body = { evidence: "file-mode", scorer, files: results, copies: notes };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: failed > 0 ? 1 : 0 };

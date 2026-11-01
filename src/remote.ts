@@ -44,7 +44,7 @@ import { applySizesOutcome } from "./sizes-outcome.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
-import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
+import { countGpuFallbacks, gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
 import { cacheScope, CACHE_DIR, contentHash, ResultCache } from "./result-cache.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
@@ -94,6 +94,8 @@ export const LOAD_EVENT_CAP_MS = 30_000;
 export const MAX_POST_LOAD_NAVIGATIONS = 3;
 /** Viewports of one page loaded at the same time (each in its own browser context). */
 export const VIEWPORT_CONCURRENCY = 3;
+/** Pages of one run in flight at once (--page-concurrency): the most a run may ask for. */
+export const MAX_PAGE_CONCURRENCY = 6;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
 const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha"];
 /** Quality assumed for an image whose URL does not say (next/image's default). */
@@ -425,6 +427,8 @@ export interface ScanArgs {
   maxPages?: number;
   /** Stop after the page that brings the images counted so far to this number. */
   maxImages?: number;
+  /** Pages scanned at once on the shared browser (--page-concurrency). Undefined: one at a time. */
+  pageConcurrency?: number;
   /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
   urlsFrom?: string;
   /** At most this many URLs per route pattern of the --urls-from list. */
@@ -478,6 +482,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--summary-json",
   "--max-pages",
   "--max-images",
+  "--page-concurrency",
   "--urls-from",
   "--sample-per-pattern",
   "--storage-state",
@@ -488,6 +493,15 @@ const VALUE_OPTIONS: readonly string[] = [
 function parseLimit(name: string, text: string): number {
   if (!/^\d+$/.test(text) || Number(text) < 1) throw new Error(`${name} needs a whole number of at least 1, not ${safeText(text)}`);
   return Number(text);
+}
+
+/** A whole number from `min` to `max`, for an option with a range. */
+function parseRange(name: string, text: string, min: number, max: number): number {
+  const value = Number(text);
+  if (!/^\d+$/.test(text) || value < min || value > max) {
+    throw new Error(`${name} needs a whole number from ${min} to ${max}, not ${safeText(text)}`);
+  }
+  return value;
 }
 
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
@@ -513,6 +527,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--summary-json") args.summaryJson = value;
       else if (arg === "--max-pages") args.maxPages = parseLimit(arg, value);
       else if (arg === "--max-images") args.maxImages = parseLimit(arg, value);
+      else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--urls-from") args.urlsFrom = value;
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
       else if (arg === "--storage-state") args.storageState = value;
@@ -1960,10 +1975,9 @@ export function sameRecordOptions(a: ScanRecordOptions | undefined, b: ScanRecor
   return JSON.stringify({ ...a, scorer: a.scorer ?? "cpu" }) === JSON.stringify(b);
 }
 
-/** The scorer a page was measured with. `fallbacksBefore`: the GPU's fallback count when the page started. */
-export function scorerOf(gpu: GpuScorer | undefined, fallbacksBefore = 0): PageScorer {
+/** The scorer a page was measured with. `cpuFallbacks`: the pairs the CPU scored for that page (see countGpuFallbacks). */
+export function scorerOf(gpu: GpuScorer | undefined, cpuFallbacks = 0): PageScorer {
   if (gpu === undefined) return { name: "cpu" };
-  const cpuFallbacks = gpu.fallbackScores - fallbacksBefore;
   return { name: "gpu", device: gpu.device, deviceName: gpu.deviceName, ...gpu.cuda, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
 }
 
@@ -2250,6 +2264,8 @@ export interface ScanOptions {
   qualityFor?: (inst: Instance) => boolean;
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
   gpu?: { device: number };
+  /** Pages in flight at once on the shared browser (--page-concurrency). Default 1: one page at a time. */
+  pageConcurrency?: number;
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
@@ -2547,18 +2563,30 @@ export function progressLine(done: PageResult[], total: number): string {
 }
 
 /**
- * Scans each page in order and writes its JSON to `outDir` as soon as the page is done, with a progress line after each.
- * With `resume`, a complete page with the same options is taken from `outDir` instead. The run stops early at --max-pages
- * (pages scanned or resumed) or --max-images (checked after each page, so the page that reaches it is finished).
+ * Scans the pages and writes each one's JSON to `outDir` as soon as it is done, with a progress line after each. Up to
+ * `pageConcurrency` pages are in flight at once on the shared browser (each in its own contexts). Pages start in input
+ * order, and the result keeps that order whatever order they finish in. With `resume`, a complete page with the same
+ * options is taken from `outDir` instead.
+ *
+ * The limits are checked before a page starts, so the pages started are the pages kept. --max-pages counts the pages
+ * started (scanned or resumed). --max-images counts the images of the pages finished so far: once it is reached no page
+ * starts, but the pages already in flight finish and are kept.
  */
 export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
   return withScanRun(opts, async (browser, run, robotsFor) => {
     await mkdir(opts.outDir, { recursive: true });
     const options = recordOptionsOf(opts);
-    const results: PageResult[] = [];
+    const results = new Array<PageResult | undefined>(urls.length);
+    // The finished pages in finishing order: the progress line counts them.
+    const finished: PageResult[] = [];
+    let started = 0;
     let images = 0;
-    for (const url of urls) {
-      if (opts.maxPages !== undefined && results.length >= opts.maxPages) break;
+    const limitReached = (): boolean =>
+      (opts.maxPages !== undefined && started >= opts.maxPages) || (opts.maxImages !== undefined && images >= opts.maxImages);
+    await mapLimit(urls, opts.pageConcurrency ?? 1, async (url, index) => {
+      // Synchronous up to the first await, so pages start in input order even with several in flight.
+      if (limitReached()) return;
+      started++;
       const kept = opts.resume ? await resumable(opts.outDir, url, options, opts.log) : undefined;
       let result: PageResult;
       if (kept) {
@@ -2566,27 +2594,30 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
         opts.log(`resumed ${safeText(url)}`);
       } else {
         opts.log(`scanning ${safeText(url)}`);
-        const started = performance.now();
-        const fallbacksBefore = run.gpu?.fallbackScores ?? 0;
-        result = { ...(await scanPage(browser, run, url, robotsFor)), complete: true, options };
-        result.scorer = scorerOf(run.gpu, fallbacksBefore);
-        if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - started) / 1000).toFixed(1)} s\n`);
+        const startedAt = performance.now();
+        const scanned = await countGpuFallbacks(() => scanPage(browser, run, url, robotsFor));
+        result = { ...scanned.value, complete: true, options };
+        result.scorer = scorerOf(run.gpu, scanned.fallbacks);
+        if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - startedAt) / 1000).toFixed(1)} s\n`);
         await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
           root: opts.outDir,
         });
       }
-      results.push(result);
+      results[index] = result;
+      finished.push(result);
       images += result.counts?.images ?? 0;
-      opts.log(progressLine(results, urls.length));
-      if (opts.maxImages !== undefined && images >= opts.maxImages && results.length < urls.length) {
-        if (opts.report) opts.report.stopped = { reason: "max-images", limit: opts.maxImages, pages: results.length, total: urls.length, images };
-        break;
+      opts.log(progressLine(finished, urls.length));
+    });
+    const ran = results.filter((result): result is PageResult => result !== undefined);
+    if (ran.length < urls.length) {
+      // Images first: when both limits were reached, the one that stopped the run (as it did one page at a time) is named.
+      if (opts.maxImages !== undefined && images >= opts.maxImages) {
+        if (opts.report) opts.report.stopped = { reason: "max-images", limit: opts.maxImages, pages: ran.length, total: urls.length, images };
+      } else if (opts.maxPages !== undefined && opts.report) {
+        opts.report.stopped = { reason: "max-pages", limit: opts.maxPages, pages: ran.length, total: urls.length, images };
       }
     }
-    if (opts.maxPages !== undefined && results.length < urls.length && opts.report?.stopped === undefined) {
-      if (opts.report) opts.report.stopped = { reason: "max-pages", limit: opts.maxPages, pages: results.length, total: urls.length, images };
-    }
-    return results;
+    return ran;
   });
 }
 
@@ -2595,9 +2626,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
  */
 export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<PageResult> {
   return withScanRun(opts, async (browser, run, robotsFor) => {
-    const fallbacksBefore = run.gpu?.fallbackScores ?? 0;
-    const result = await scanPage(browser, run, pageUrl, robotsFor);
-    return { ...result, scorer: scorerOf(run.gpu, fallbacksBefore) };
+    const scanned = await countGpuFallbacks(() => scanPage(browser, run, pageUrl, robotsFor));
+    return { ...scanned.value, scorer: scorerOf(run.gpu, scanned.fallbacks) };
   });
 }
 
@@ -2996,6 +3026,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     resume: args.resume === true,
     maxPages: args.maxPages,
     maxImages: args.maxImages,
+    pageConcurrency: args.pageConcurrency,
     storageState,
     gpu: args.gpu,
     cache: args.noCache !== true,
