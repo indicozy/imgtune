@@ -268,6 +268,12 @@ describe("locator verification and the source-map limits", () => {
     expect(lines.join("\n")).not.toContain("find:");
   });
 
+  it("does not print a placeholder owner name as the component", () => {
+    const [hint] = hintsOf(page([{ ...record("a", { file: "app/src/X.tsx", line: 3, saved: 1 }), locator: { ...record("a").locator, component: ["UnknownOwner"], file: "app/src/X.tsx", line: 3 } }]));
+    expect(hint.component).toEqual([]);
+    expect(renderHint(hint, 1)[0]).not.toContain("UnknownOwner");
+  });
+
   it("never searches for a placeholder owner name", () => {
     expect(searchHintsOf({ component: ["UnknownOwner"], alt: "Bag", urlPattern: undefined })).toEqual({ alt: "Bag" });
     expect(searchHintsOf({ component: ["ProductCard"], urlPattern: undefined })).toMatchObject({

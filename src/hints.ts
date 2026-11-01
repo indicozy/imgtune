@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { hasFix } from "./images.js";
+import { hasFix, OWNER_PLACEHOLDERS } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 
@@ -144,7 +144,8 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
     const hint: Hint = {
       id: record.id,
       page: record.page,
-      component: record.locator.component,
+      // A placeholder name (the app's fallback component) says nothing: it is not printed as the component.
+      component: record.locator.component.filter((c) => !OWNER_PLACEHOLDERS.has(c)),
       selector: record.locator.selector,
       sizes: { current: record.current.sizes, proposed: record.fix.sizes?.value, basis: record.fix.sizes?.basis },
       bytes: { ...record.fix.bytes },
@@ -320,7 +321,13 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
   const sizes = group.hints.every((h) => h.bytes.sizes !== undefined) ? group.hints.reduce((sum, h) => sum + (h.bytes.sizes ?? 0), 0) : undefined;
   const split = sizes !== undefined ? ` = sizes ${kb(sizes)} + quality ${kb(group.saved - sizes)}` : "";
   const lines = [`${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`];
-  if (first.kind === "owner") lines.push(`   owner call site: the image is rendered inside <${first.component[0] ?? "an unnamed component"}>; search that component`);
+  if (first.kind === "owner") {
+    lines.push(
+      first.component[0] !== undefined
+        ? `   owner call site: the image is rendered inside <${first.component[0]}>; search that component`
+        : "   owner call site: the image is rendered inside an unnamed component; search the file's imports",
+    );
+  }
   lines.push(`   sizes: ${safeText(combinedSizes(group))}`);
   for (const page of group.pages) {
     const mine = group.hints.filter((h) => h.page === page);
