@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { hasFix } from "./images.js";
-import { mdText, safeText } from "./text.js";
+import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
@@ -218,8 +218,8 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
 export const COMMENT_HINTS = 10;
 /** Longest value shown in the comment, before JSON quoting and escaping. */
 const COMMENT_FIELD = 80;
-/** Longest escaped text one field may take (a capped value, quoted and escaped, is far shorter). */
-const COMMENT_ESCAPED_LIMIT = 1000;
+/** Longest text one field may take after quoting (a capped value, JSON-quoted, is far shorter). */
+const COMMENT_QUOTED_LIMIT = 1000;
 
 /** The hints of a PR comment: the top `limit` across the pages, one line each, and the number of hints in all. */
 export function commentHints(results: PageResult[], limit = COMMENT_HINTS): { total: number; lines: string[] } {
@@ -229,12 +229,13 @@ export function commentHints(results: PageResult[], limit = COMMENT_HINTS): { to
 }
 
 /**
- * A page-derived value in the comment: capped at COMMENT_FIELD characters, JSON-quoted the way the CLI text prints it (so
- * an instruction inside a name stays a quoted string), then Markdown-escaped. Its escapes keep it from closing the fence.
+ * A page-derived value in the comment: capped at COMMENT_FIELD characters, then JSON-quoted the way the CLI text prints it
+ * (so an instruction inside a name stays a quoted string). The block is fenced, and GitHub does not decode entities inside
+ * a fence, so there is no entity escaping here. Instead every backtick becomes an apostrophe: no value can close the fence.
  */
 function quoted(value: string): string {
   const capped = value.length > COMMENT_FIELD ? `${value.slice(0, COMMENT_FIELD - 3)}...` : value;
-  return mdText(JSON.stringify(capped), COMMENT_ESCAPED_LIMIT);
+  return safeText(JSON.stringify(capped), COMMENT_QUOTED_LIMIT).replace(/`/g, "'");
 }
 
 /** One hint as a line of the comment's fenced block. Every page-derived value goes through `quoted`. */

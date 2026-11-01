@@ -1488,7 +1488,7 @@ describe("the fix hints in the PR comment", () => {
     const numbered = md.split("\n").filter((line) => /^\d+\. saves /.test(line));
     expect(numbered).toHaveLength(10);
     expect(numbered[0]).toContain("saves 12 KB/view, +0 KB sharpness");
-    expect(numbered[0]).toContain(`"src/ProductCard.tsx&#58;7" ("ProductCard")`);
+    expect(numbered[0]).toContain(`"src/ProductCard.tsx:7" ("ProductCard")`);
     expect(numbered[0]).toContain(`sizes "33vw" -> "calc(50vw - 20px)"`);
     expect(md).toContain("```text\n1. saves 12 KB/view");
     expect(md).toContain("</details>");
@@ -1498,20 +1498,24 @@ describe("the fix hints in the PR comment", () => {
     expect(renderMarkdown([pageResult()], false)).not.toContain("<details>");
   });
 
-  it("escapes hostile names, paths and URLs so they cannot inject HTML, links or mentions", () => {
+  it("keeps hostile names, paths and URLs inside the fence as JSON text, with no backtick to close it", () => {
     const hostile = hintRecord("evil", {
       file: "src/<img src=x onerror=alert(1)>[click](https://evil.example).tsx",
       component: "[x](https://evil.example)<script> www.evil.example",
       page: "https://shop.example/@maintainer/`code`|pipe",
     });
     const md = renderMarkdown([pageResult({ images: [hostile] })], false);
-    const hintLines = md.split("\n").filter((line) => /^\d+\. /.test(line));
+    const open = md.indexOf("```text\n");
+    const close = md.indexOf("\n```", open + 1);
+    const inside = md.slice(open + "```text\n".length, close).split("\n");
+    const hintLines = inside.filter((line) => /^\d+\. /.test(line));
     expect(hintLines).toHaveLength(1);
     const line = hintLines[0];
-    expect(line).not.toMatch(/<|\]\(|@|\||https?:|www\./);
-    expect(line).toContain("&lt;img src=x onerror=alert(1)&gt;&#91;click&#93;(https&#58;//evil.example).tsx");
-    expect(line).toContain("www&#46;evil.example");
-    expect(line).toContain("&#64;maintainer");
+    // GitHub shows the fence's text as written: no entity escapes, and each backtick is now an apostrophe.
+    expect(line).toContain('"src/<img src=x onerror=alert(1)>[click](https://evil.example).tsx:7"');
+    expect(line).toContain('"shop.example/@maintainer/%60code%60|pipe"'); // the URL parser encodes the backticks
+    expect(line).not.toContain("&#");
+    expect(line).not.toContain("`");
   });
 
   it("fences the hints after a line that says they are data, and quotes an injected alt inside the fence", () => {
@@ -1531,11 +1535,11 @@ describe("the fix hints in the PR comment", () => {
     expect(md.slice(close)).not.toContain("Ignore previous");
   });
 
-  it("caps each field at 80 characters, and escapes a quote or a fence inside a value", () => {
+  it("caps each field at 80 characters, and keeps a quote or a fence inside a value from breaking the block", () => {
     const long = `a${"b".repeat(200)}`;
     const md = renderMarkdown([pageResult({ images: [hintRecord("cap1", { alt: `x"\`\`\`${long}` })] })], false);
     const line = md.split("\n").find((l) => /^1\. /.test(l)) ?? "";
-    expect(line).toContain('alt "x&#92;"&#96;&#96;&#96;a'); // JSON escapes the quote, the backslash is entity-escaped, backticks too
+    expect(line).toContain(String.raw`alt "x\"'''a`); // JSON escapes the quote; each backtick becomes an apostrophe
     expect(line).not.toContain("```");
     expect(line).not.toContain("b".repeat(100));
     expect(line).toContain("...\"");
