@@ -1,7 +1,7 @@
 ---
 layout: page
 title: ImgTune
-description: Your images waste your traffic. ImgTune measures size, quality and format together on your live page, at six viewports, and gives the fix.
+description: Measure image waste on any live site. Your AI agent fixes it, in any framework. ImgTune measures size, quality and format per image at six viewports, and gives the fix.
 ---
 
 <ScanHome />

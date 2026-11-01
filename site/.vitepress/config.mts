@@ -8,7 +8,7 @@ export default defineConfig({
   title: "ImgTune",
   titleTemplate: ":title | ImgTune",
   description:
-    "Your images waste your traffic. ImgTune measures size, quality and format together on your live page, at six viewports, and gives the fix.",
+    "Measure image waste on any live site. Your AI agent fixes it, in any framework. ImgTune measures size, quality and format per image at six viewports, and gives the fix.",
   cleanUrls: false,
   appearance: true,
   lastUpdated: false,
@@ -50,12 +50,12 @@ export default defineConfig({
           text: "Guide",
           items: [
             { text: "Getting started", link: "/guide/getting-started" },
+            { text: "Fix it with your agent", link: "/guide/fix-with-your-agent" },
             { text: "Scanning any site", link: "/guide/scanning-any-site" },
-            { text: "Next.js workflow", link: "/guide/nextjs-workflow" },
-            { text: "Image loaders and CDNs", link: "/guide/loaders-and-cdns" },
-            { text: "How it measures", link: "/guide/how-it-measures" },
+            { text: "Repo images and file mode", link: "/guide/repo-images" },
             { text: "CI action", link: "/guide/ci-action" },
-            { text: "Agent skill", link: "/guide/agent-skill" },
+            { text: "How it measures", link: "/guide/how-it-measures" },
+            { text: "Image loaders and CDNs", link: "/guide/loaders-and-cdns" },
             { text: "Limitations and FAQ", link: "/guide/limitations-and-faq" },
             { text: "Compared with other tools", link: "/guide/compared-with-other-tools" },
           ],
@@ -67,7 +67,6 @@ export default defineConfig({
           items: [
             { text: "CLI commands and flags", link: "/reference/cli" },
             { text: "Output JSON fields", link: "/reference/output-json" },
-            { text: "Configuration", link: "/reference/configuration" },
           ],
         },
       ],

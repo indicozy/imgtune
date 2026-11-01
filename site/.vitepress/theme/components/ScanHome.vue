@@ -27,10 +27,10 @@ function copy() {
     <section class="hero">
       <div class="hero-copy">
         <p class="kicker">scan · 6 viewports · 2 pages · SSIMULACRA2 delta 2</p>
-        <h1 class="scan-h1">Your images waste your traffic. <span class="fix">ImgTune fixes that.</span></h1>
+        <h1 class="scan-h1">Measure image waste on any live site. <span class="fix">Your AI agent fixes it, in any framework.</span></h1>
         <p class="lede">
-          Size, quality and format measured together on the live page, then the exact fix. Open source, MIT. Nothing leaves your
-          machine except the requests your own site makes.
+          ImgTune measures each image's size, quality and format together on the live page, at six viewports, and gives the fix
+          with the bytes it saves. Open source, MIT. Nothing leaves your machine except the requests your own site makes.
         </p>
         <div class="cmd">
           <span><span class="p">$</span> npx imgtune scan https://your-site</span>
@@ -43,6 +43,14 @@ function copy() {
         </p>
       </div>
       <DropTarget />
+    </section>
+
+    <section class="steps" aria-label="How it works">
+      <ol>
+        <li><span class="n">1</span><p><strong>Scan</strong> loads each page at six viewports and records every image.</p></li>
+        <li><span class="n">2</span><p><strong>Hints</strong> give each image its sizes, quality and format, and the bytes each fix saves.</p></li>
+        <li><span class="n">3</span><p><strong>Your agent fixes it</strong> in your source, and a rescan checks every change.</p></li>
+      </ol>
     </section>
 
     <section id="replay" class="blk">
@@ -75,7 +83,7 @@ function copy() {
         <li><span class="n">1</span><p><strong>Compressors</strong> squeeze the file you hand them, but never learn how wide it is shown. A 6,000&nbsp;px logo in a 150&nbsp;px slot stays 6,000&nbsp;px, only better compressed.</p></li>
         <li><span class="n">2</span><p><strong>Image CDNs and <code>next/image</code></strong> resize on request, but only to the widths your <code>sizes</code> attribute asks for. Get <code>sizes</code> wrong, or leave it out, and the browser fetches a file several times too wide, on every phone.</p></li>
         <li><span class="n">3</span><p><strong>Lighthouse</strong> flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate. It tells you something is wrong; it does not tell you which <code>sizes</code> or quality to set.</p></li>
-        <li class="us"><span class="n">&rarr;</span><p>ImgTune measures <strong>size, quality and format together</strong>, per image, on the live page at six viewports. Every candidate is checked with SSIMULACRA2, so a saving only counts when nobody can see the difference. Scanning works on any site. The audit, apply, verify and restore flow is Next.js only: there it writes the fix, verifies it against the server and can undo it.</p></li>
+        <li class="us"><span class="n">&rarr;</span><p>ImgTune measures <strong>size, quality and format together</strong>, per image, on the live page at six viewports. Every candidate is checked with SSIMULACRA2, so a saving only counts when nobody can see the difference. ImgTune does not edit your code: your AI agent makes the change from the hint, and a rescan checks it. That works in any framework.</p></li>
       </ol>
       <div class="survey-home">
         <p class="survey-line">
@@ -94,8 +102,8 @@ function copy() {
         <span class="idx">04 / docs</span>
       </div>
       <div class="cta-grid">
-        <a href="/imgtune/guide/getting-started"><b>Guide</b><span>Scan a live site, or tune a Next.js app. Getting started, workflow, CI, agent skill.</span></a>
-        <a href="/imgtune/reference/cli"><b>Reference</b><span>Every command and flag, the output JSON fields and the configuration keys.</span></a>
+        <a href="/imgtune/guide/getting-started"><b>Guide</b><span>Scan a live site, have your agent fix it, and run the scan in CI.</span></a>
+        <a href="/imgtune/reference/cli"><b>Reference</b><span>Every command and flag, and the fields of the scan JSON.</span></a>
         <a href="/imgtune/study/"><b>Study</b><span>How the demand study was run, its results, and what it does not prove.</span></a>
       </div>
       <p class="scan-note">Scan replay: fresh scans of 2026-10-30 with imgtune 0.1.0. Study numbers: v4 of 2026-10-28. Browser estimates in the demo are not the CLI's numbers.</p>
@@ -257,6 +265,35 @@ function copy() {
   color: var(--scan-accent);
   font-weight: 500;
   justify-self: start;
+}
+.steps ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+.steps li {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.25rem 0.75rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--scan-rule);
+}
+.steps li:last-child {
+  border-bottom: 1px solid var(--scan-rule);
+}
+.steps .n {
+  font: 500 0.875rem var(--scan-mono);
+  color: var(--scan-accent);
+  padding-top: 0.2rem;
+}
+.steps p {
+  margin: 0;
+  color: var(--scan-muted);
+}
+.steps strong {
+  color: var(--scan-ink);
 }
 .cta-grid {
   display: grid;
