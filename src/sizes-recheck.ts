@@ -11,6 +11,7 @@ import { isUndersized, neededWidth, observeLight, rightCandidate, type ViewportO
 import { parseSrcset } from "./srcset-parse.js";
 import { sizesSlotAt } from "./sizes.js";
 import { safeText } from "./text.js";
+import { batchLine, rowLine, type RecheckRow } from "./recheck-rows.js";
 
 export interface SizesArgs {
   file: string;
@@ -206,10 +207,15 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
 
   const out: string[] = [];
   const failures: string[] = [];
+  const rows: RecheckRow[] = [];
+  const details: string[] = [];
   for (const record of selected) {
     const proposed = record.fix.sizes?.value;
     const now = JSON.stringify(safeText(record.current.sizes ?? "none"));
-    out.push(`${record.id}  ${whereOf(record)}  ${pathOf(record.page)}  sizes ${now} -> hint ${JSON.stringify(safeText(proposed ?? "-"))}`);
+    const lines: string[] = [`${record.id}  ${whereOf(record)}  ${pathOf(record.page)}  sizes ${now} -> hint ${JSON.stringify(safeText(proposed ?? "-"))}`];
+    const failed: string[] = [];
+    let gone = false;
+    const saved: number[] = [];
     for (const p of record.perViewport) {
       if (p.renderedCssPx <= 0) continue;
       const view = perView.get(p.viewport);
@@ -218,8 +224,9 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
       const name = safeText(p.viewport).padEnd(18);
       if (pair === undefined) {
         const reason = view.join.reasons.get(record)?.text ?? "no image of this URL at this viewport";
-        out.push(`  ${name}gone: ${safeText(reason)}`);
-        failures.push(`${record.id}: ${p.viewport}: gone`);
+        lines.push(`  ${name}gone: ${safeText(reason)}`);
+        failed.push(`${record.id}: ${p.viewport}: gone`);
+        gone = true;
         continue;
       }
       const dev = pair.dev;
@@ -238,6 +245,7 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
         before: p,
         proposed,
       });
+      if (response !== undefined && response.bytesKnown !== false) saved.push(p.servedBytes - response.bytes);
       const bytes = response === undefined || response.bytesKnown === false ? "bytes ?" : `bytes ${kb(response.bytes)}`;
       const chosen = verdict.chosenWidth !== undefined ? `chosen ${verdict.chosenWidth}w` : "chosen ?";
       const targetText = verdict.targetWidth !== undefined ? `target ${verdict.targetWidth}w` : "target -";
@@ -247,17 +255,24 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
           : verdict.note !== undefined
             ? `n/a: ${verdict.note}`
             : "pass";
-      out.push(
+      lines.push(
         `  ${name}dpr ${dpr}  sizes ${JSON.stringify(safeText(dev.sizes ?? "none"))}  rendered ${dev.renderedCssPx} px  needed ${verdict.needed} px  ${chosen}  undersized ${yesNo(verdict.undersized)}  ${bytes} (was ${kb(p.servedBytes)})  ${targetText}  ${result}`,
       );
-      for (const fail of verdict.fails) failures.push(`${record.id}: ${p.viewport}: ${fail}`);
+      for (const fail of verdict.fails) failed.push(`${record.id}: ${p.viewport}: ${fail}`);
     }
-    out.push("");
+    const verdict = gone ? "GONE" : failed.length > 0 ? "FAIL" : "PASS";
+    const predicted = record.fix.bytes.sizes ?? record.fix.bytes.saved;
+    const measured = saved.length > 0 ? saved.reduce((sum, b) => sum + b, 0) / saved.length : undefined;
+    rows.push({ id: record.id, where: whereOf(record), verdict, predicted, measured });
+    failures.push(...failed);
+    // One line per image; the viewport detail follows only for an image that did not pass.
+    if (verdict === "PASS") continue;
+    details.push(...lines, "");
   }
   const seconds = (Date.now() - started) / 1000;
-  out.push(
-    `rechecked ${selected.length} image(s) at ${light.observations.length} viewport(s) on ${safeText(target)} in ${seconds.toFixed(1)} s (sizes only: no body decoded, nothing scored)`,
-  );
+  out.push(...rows.map(rowLine));
+  if (details.length > 0) out.push("", "not passed:", ...details);
+  out.push(batchLine(rows, seconds) + " (sizes only: no body decoded, nothing scored)");
   out.push(failures.length === 0 ? "ok: every chosen file is sharp and no bigger than the hint needs" : `FAILED: ${failures.length} check(s)`);
   for (const failure of failures) out.push(`  ${safeText(failure)}`);
   return { output: `${out.join("\n")}\n`, exitCode: failures.length === 0 ? 0 : 1 };

@@ -10,6 +10,7 @@ import { parseGpuDevice } from "./gpu.js";
 import { parseViewports, safeText, scanOnce, scorerNote, type PageResult } from "./remote.js";
 import { settleLimit } from "./concurrency.js";
 import { cleanRecord } from "./locate-join.js";
+import { batchLine, rowLine, type RecheckRow } from "./recheck-rows.js";
 
 export interface RecheckArgs {
   /** The scan files to recheck (one page each): repeat --recheck to give more. */
@@ -131,6 +132,8 @@ function viewportsOf(records: ImageRecord[]): string[] {
 interface Check {
   lines: string[];
   failures: string[];
+  /** The one-line summary of the image (PASS, FAIL or GONE, predicted and measured bytes). */
+  row: RecheckRow;
 }
 
 /** The source a record belongs to: its file, else its component (the same key a rescan gives it). */
@@ -197,6 +200,7 @@ export function compareImage(
         "  before concluding it is gone, rescan the page unchanged (pristine) and recheck it again: a moved or re-keyed element is not gone",
       ],
       failures: ["gone"],
+      row: { id: before.id, where: whereOf(before), verdict: "GONE", predicted: before.fix.bytes.saved },
     };
   }
   const failures: string[] = [];
@@ -232,11 +236,11 @@ export function compareImage(
   // Predicted (the hint, per view, averaged over viewports) next to measured (served bytes at the same viewports).
   const split = before.fix.bytes.sizes !== undefined ? ` (sizes ${kb(before.fix.bytes.sizes)}, quality ${kb(before.fix.bytes.quality ?? 0)})` : "";
   const predicted = `predicted ${saving(savedBefore)}/view${split}`;
-  if (measured.length > 0) {
-    const mean = measured.reduce((sum, b) => sum + b, 0) / measured.length;
-    lines.push(`  ${predicted}; measured ${saving(mean)}/view (served bytes, mean of ${measured.length} viewport(s))`);
-  } else lines.push(`  ${predicted}; measured: no viewport in both scans`);
-  return { lines, failures };
+  const mean = measured.length > 0 ? measured.reduce((sum, b) => sum + b, 0) / measured.length : undefined;
+  if (mean !== undefined) lines.push(`  ${predicted}; measured ${saving(mean)}/view (served bytes, mean of ${measured.length} viewport(s))`);
+  else lines.push(`  ${predicted}; measured: no viewport in both scans`);
+  const verdict = failures.length > 0 ? "FAIL" : "PASS";
+  return { lines, failures, row: { id: before.id, where: whereOf(before), verdict, predicted: savedBefore, measured: mean } };
 }
 
 /**
@@ -358,17 +362,21 @@ async function recheckPage(
   }
   if (note !== undefined || mismatch !== undefined) out.push("");
   const failures: string[] = [];
+  const rows: RecheckRow[] = [];
+  const details: string[] = [];
   for (const before of selected) {
     const how = pairRecord(before, now, fresh.images ?? []);
     const after = how.after;
     const unchangedSrc = before.current.src !== undefined && after !== undefined && earlierSrcs.has(after.current.src ?? "");
     const check = compareImage(before, after, unchangedSrc, how);
-    out.push(...check.lines, "");
+    rows.push(check.row);
+    // One line per image; the detail follows only for an image that did not pass.
+    if (check.row.verdict !== "PASS") details.push(...check.lines, "");
     for (const failure of check.failures) failures.push(`${before.id}: ${failure}`);
   }
-  out.push(
-    `rechecked ${selected.length} image(s) at ${viewports.length} viewport(s) on ${safeText(target.href)} in ${seconds.toFixed(1)} s`,
-  );
+  out.push(...rows.map(rowLine));
+  if (details.length > 0) out.push("", "not passed:", ...details);
+  out.push(batchLine(rows, seconds) + ` on ${safeText(target.href)} at ${viewports.length} viewport(s)`);
   out.push(failures.length === 0 ? "ok: no image became undersized, and no bytes rose without a sharpness fix" : `FAILED: ${failures.length} check(s)`);
   for (const failure of failures) out.push(`  ${safeText(failure)}`);
   return { output: `${out.join("\n")}\n`, exitCode: failures.length === 0 ? 0 : 1 };

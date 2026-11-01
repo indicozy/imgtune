@@ -104,12 +104,16 @@ describe("the measured, locate and sizes-only flow on a local server", () => {
     const before = await sizesRecheck(["--recheck", join(dir, "measured.located.json"), "--sizes-only", "--ids", id], dir, quiet);
     expect(before.exitCode).toBe(1);
     expect(before.output).toMatch(/bigger than the hint needs/);
+    expect(before.output).toMatch(new RegExp(`^${id}  FAIL`, "m"));
 
     // The edit: the sizes the hint proposes, on the dev page (what an agent writes at the call site).
     try {
       devState.sizes = proposed;
       const after = await sizesRecheck(["--recheck", join(dir, "measured.located.json"), "--sizes-only", "--ids", id], dir, quiet);
-      expect(after.output).toMatch(/chosen 640w/);
+      // A passing image is one line; the viewport detail is printed only for an image that did not pass.
+      expect(after.output).toMatch(new RegExp(`^${id}  PASS`, "m"));
+      expect(after.output).not.toMatch(/chosen 640w/);
+      expect(after.output).toMatch(/batch: 1 image\(s\).*1 PASS, 0 FAIL, 0 GONE/);
       expect(after.exitCode).toBe(0);
       expect(after.output).toMatch(/ok: every chosen file is sharp/);
       expect(after.output).toMatch(/sizes only: no body decoded/);
