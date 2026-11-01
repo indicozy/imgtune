@@ -14,6 +14,19 @@ import type { Viewport } from "./types.js";
 /** The most background elements read per viewport: a page with more keeps the first of them in document order. */
 export const MAX_BACKGROUND_ELEMENTS = 1000;
 
+/**
+ * The computed background-image and background-size are page-controlled: a value longer than this is not read, and a list
+ * with more layers than MAX_BACKGROUND_LAYERS is not read either (the element is skipped, not truncated).
+ */
+export const MAX_BACKGROUND_VALUE = 4096;
+export const MAX_BACKGROUND_LAYERS = 8;
+
+/** True when an element's computed values are too long or have too many layers to measure. */
+export function backgroundTooLarge(bg: Pick<ObservedBackground, "backgroundImage" | "backgroundSize">): boolean {
+  if (bg.backgroundImage.length > MAX_BACKGROUND_VALUE || bg.backgroundSize.length > MAX_BACKGROUND_VALUE) return true;
+  return splitTop(bg.backgroundImage).length > MAX_BACKGROUND_LAYERS;
+}
+
 /** One candidate of a layer: a url() or an image-set() entry, with its density (1 for url()). */
 export interface BackgroundCandidate {
   url: string;
@@ -95,25 +108,54 @@ export function splitTop(text: string, separator = ","): string[] {
   return parts.map((p) => p.trim());
 }
 
-/** The URL of a `url(...)` token (quoted or bare), or undefined when the text does not start with one. */
-function urlToken(text: string): { url: string; rest: string } | undefined {
-  const m = /^url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/.exec(text);
-  if (!m) return undefined;
-  return { url: (m[1] ?? m[2] ?? m[3] ?? "").trim(), rest: text.slice(m[0].length).trim() };
+/**
+ * The URL of a url() token and the text after it, read in one pass (quoted or bare). Undefined when the text does not
+ * start with url( or the token is not closed. No regular expression: the values come from the scanned page.
+ */
+function readUrl(text: string): { url: string; rest: string } | undefined {
+  if (!text.startsWith("url(")) return undefined;
+  let i = 4;
+  while (i < text.length && /\s/.test(text[i])) i++;
+  const quote = text[i];
+  let url: string;
+  let close: number;
+  if (quote === '"' || quote === "'") {
+    const end = text.indexOf(quote, i + 1);
+    if (end < 0) return undefined;
+    url = text.slice(i + 1, end);
+    close = text.indexOf(")", end);
+  } else {
+    close = text.indexOf(")", i);
+    url = close < 0 ? "" : text.slice(i, close);
+  }
+  if (close < 0) return undefined;
+  return { url: url.trim(), rest: text.slice(close + 1).trim() };
 }
 
-/** The URL of an image-set() entry: a url() token or a bare quoted string. */
-function entryUrl(entry: string): { url: string; rest: string } | undefined {
-  const quoted = /^(?:"([^"]*)"|'([^']*)')/.exec(entry);
-  if (quoted) return { url: (quoted[1] ?? quoted[2] ?? "").trim(), rest: entry.slice(quoted[0].length).trim() };
-  return urlToken(entry);
+/** The URL of an image-set() entry: a quoted string or a url() token. */
+function readEntryUrl(entry: string): { url: string; rest: string } | undefined {
+  const quote = entry[0];
+  if (quote === '"' || quote === "'") {
+    const end = entry.indexOf(quote, 1);
+    if (end < 0) return undefined;
+    return { url: entry.slice(1, end), rest: entry.slice(end + 1).trim() };
+  }
+  return readUrl(entry);
 }
 
-/** The density of an image-set() entry: `2x` or `192dppx` (1 when absent or unreadable). */
+/** One whitespace-separated token of an image-set() entry as a density: `2x` or `1.5x` (anchored, unambiguous). */
+const DENSITY_TOKEN = /^(\d+(?:\.\d+)?|\.\d+)(x|dppx)$/;
+
+/** The density of an image-set() entry, from the tokens after its URL (1 when absent or unreadable). */
 function resolutionOf(rest: string): number {
-  const m = /(\d*\.?\d+)\s*(x|dppx)\b/.exec(rest);
-  const value = m ? Number(m[1]) : NaN;
-  return Number.isFinite(value) && value > 0 ? value : 1;
+  for (const token of rest.split(/\s+/)) {
+    const m = DENSITY_TOKEN.exec(token);
+    if (m) {
+      const value = Number(m[1]);
+      return value > 0 ? value : 1;
+    }
+  }
+  return 1;
 }
 
 /**
@@ -123,12 +165,13 @@ function resolutionOf(rest: string): number {
 export function parseBackgroundImage(value: string): BackgroundLayer[] {
   return splitTop(value).map((part): BackgroundLayer => {
     const text = part.trim();
-    const set = /^(?:-webkit-)?image-set\(([\s\S]*)\)$/.exec(text);
-    if (set) {
+    const isSet = text.startsWith("image-set(") || text.startsWith("-webkit-image-set(");
+    if (isSet) {
+      if (!text.endsWith(")")) return { candidates: [], dataUri: false };
       const candidates: BackgroundCandidate[] = [];
       let dataUri = false;
-      for (const entry of splitTop(set[1])) {
-        const found = entryUrl(entry.trim());
+      for (const entry of splitTop(text.slice(text.indexOf("(") + 1, -1))) {
+        const found = readEntryUrl(entry.trim());
         if (!found || found.url === "") continue;
         if (found.url.startsWith("data:")) {
           dataUri = true;
@@ -138,7 +181,7 @@ export function parseBackgroundImage(value: string): BackgroundLayer[] {
       }
       return { candidates, dataUri };
     }
-    const single = urlToken(text);
+    const single = readUrl(text);
     if (single && single.url !== "") {
       if (single.url.startsWith("data:")) return { candidates: [], dataUri: true };
       return { candidates: [{ url: single.url, resolution: 1 }], dataUri: false };
@@ -154,14 +197,18 @@ export function parseBackgroundSize(value: string): string[] {
   return sizes.length > 0 && sizes.every((s) => s !== "") ? sizes : ["auto"];
 }
 
+/** Anchored, with a single unambiguous digit pattern: no nested or overlapping quantifiers. */
+const PX_LENGTH = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)px$/;
+const PERCENT_LENGTH = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)%$/;
+
 /**
  * The CSS px a length takes: a px value, a percentage of the base, or undefined for `auto`. Null for any other unit (the
  * layer is then not measured: the browser's own layout is not reproduced for it).
  */
 function lengthOf(token: string | undefined, base: number): number | undefined | null {
   if (token === undefined || token === "auto") return undefined;
-  if (/^[+-]?\d*\.?\d+px$/.test(token)) return parseFloat(token);
-  if (/^[+-]?\d*\.?\d+%$/.test(token)) return (parseFloat(token) / 100) * base;
+  if (PX_LENGTH.test(token)) return parseFloat(token);
+  if (PERCENT_LENGTH.test(token)) return (parseFloat(token) / 100) * base;
   return null;
 }
 

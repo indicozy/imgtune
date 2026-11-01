@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import {
+  backgroundTooLarge,
   displayedCssWidth,
   neededDevicePixels,
   parseBackgroundImage,
@@ -199,4 +200,42 @@ describe("scan of CSS background images", () => {
     expect(result.backgrounds?.layers).toBeGreaterThan(0);
     expect(result.perViewport.desktop.backgrounds?.measured).toBeGreaterThan(0);
   }, 120_000);
+});
+
+// The computed values are page-controlled: adversarial strings must not make the parser slow.
+describe("adversarial background strings", () => {
+  const timed = <T>(fn: () => T): { value: T; ms: number } => {
+    const t = performance.now();
+    const value = fn();
+    return { value, ms: performance.now() - t };
+  };
+
+  it("a 100k digit run before a unit parses in under 50 ms", () => {
+    const { value, ms } = timed(() => parseBackgroundImage(`image-set(url("a.png") ${"1".repeat(100_000)}y)`));
+    expect(ms).toBeLessThan(50);
+    expect(value[0].candidates).toEqual([{ url: "a.png", resolution: 1 }]);
+  });
+
+  it("an unclosed url( of 100k characters is read as nothing, in under 50 ms", () => {
+    const { value, ms } = timed(() => parseBackgroundImage(`url(${"x".repeat(100_000)}`));
+    expect(ms).toBeLessThan(50);
+    expect(value).toEqual([{ candidates: [], dataUri: false }]);
+  });
+
+  it("many url( openers without a close parse in under 50 ms", () => {
+    const { ms } = timed(() => parseBackgroundImage("image-set(url(".repeat(8_000)));
+    expect(ms).toBeLessThan(50);
+  });
+
+  it("a long dot-and-digit length is read in under 50 ms", () => {
+    const { ms } = timed(() => displayedCssWidth(`${"1.".repeat(50_000)}px`, { width: 100, height: 100 }, { width: 10, height: 10 }));
+    expect(ms).toBeLessThan(50);
+  });
+
+  it("an element with an oversized value or more than 8 layers is not read", () => {
+    const base = { backgroundSize: "auto" };
+    expect(backgroundTooLarge({ ...base, backgroundImage: `url(${"a".repeat(5000)}.png)` })).toBe(true);
+    expect(backgroundTooLarge({ ...base, backgroundImage: "url(a.png)".repeat(9).replace(/\)url/g, "), url") })).toBe(true);
+    expect(backgroundTooLarge({ ...base, backgroundImage: "url(a.png)" })).toBe(false);
+  });
 });

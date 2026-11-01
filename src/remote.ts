@@ -30,6 +30,8 @@ import {
   type BackgroundTotals,
   displayedCssWidth,
   MAX_BACKGROUND_ELEMENTS,
+  MAX_BACKGROUND_VALUE,
+  backgroundTooLarge,
   neededDevicePixels,
   parseBackgroundImage,
   parseBackgroundSize,
@@ -900,7 +902,7 @@ export const MAX_OWNERS = 8;
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
 async function readView(page: Page, light = false): Promise<PageView> {
   const seen = await page.evaluate(
-    ({ depth, maxOwners, maxBackgrounds, light }) => {
+    ({ depth, maxOwners, maxBackgrounds, maxValue, light }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1087,14 +1089,15 @@ async function readView(page: Page, light = false): Promise<PageView> {
             width: rect.width,
             height: rect.height,
             hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
-            backgroundImage: value.replace(/url\((["']?)data:[^)]*\)/g, 'url("data:")'),
-            backgroundSize: cs.backgroundSize,
+            // Capped here as well: one character over the cap is enough for Node to skip the element.
+            backgroundImage: (value.length > maxValue ? value.slice(0, maxValue + 1) : value).replace(/url\((["']?)data:[^)]*\)/g, 'url("data:")'),
+            backgroundSize: cs.backgroundSize.slice(0, maxValue + 1),
           });
         }
       }
       return { nextjs, images, backgrounds };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, light },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -2008,6 +2011,8 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   const bgInstances: BackgroundInstance[] = [];
   for (const obs of observations) {
     for (const bg of obs.backgrounds ?? []) {
+      // Too long or too many layers: not read at all (see backgroundTooLarge).
+      if (backgroundTooLarge(bg)) continue;
       const layers = parseBackgroundImage(bg.backgroundImage);
       const sizes = parseBackgroundSize(bg.backgroundSize);
       for (let k = 0; k < layers.length; k++) {
