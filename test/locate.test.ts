@@ -11,6 +11,7 @@ import {
   parseSourceMap,
   projectPath,
   resolveOwners,
+  resolveOwnerChain,
   urlPattern,
   type OwnerTrace,
   type SourceMapData,
@@ -191,6 +192,41 @@ describe("resolveOwners", () => {
 
   it("is undefined when no owner resolves (a production build)", async () => {
     expect(await resolveOwners([{ frames: [] }], noMaps)).toBeUndefined();
+  });
+});
+
+describe("resolveOwnerChain", () => {
+  const noMaps = async () => undefined;
+
+  it("lists every owner that resolves to a project file, nearest first, with its component name", async () => {
+    const owners: OwnerTrace[] = [
+      { name: "img", source: { file: "webpack://app/./src/components/Card.tsx", line: 12 }, frames: [] },
+      { name: "Card", source: { file: "webpack://app/./src/components/Grid.tsx", line: 88 }, frames: [] },
+      { name: "Vendor", source: { file: "webpack://app/./node_modules/lib/index.js", line: 3 }, frames: [] },
+      { name: "Page", source: { file: "webpack://app/./src/pages/Home.tsx", line: 9 }, frames: [] },
+    ];
+    expect(await resolveOwnerChain(owners, noMaps)).toEqual([
+      { file: "src/components/Card.tsx", line: 12, component: "img" },
+      { file: "src/components/Grid.tsx", line: 88, component: "Card" },
+      { file: "src/pages/Home.tsx", line: 9, component: "Page" },
+    ]);
+  });
+
+  it("starts with the entry resolveOwners returns", async () => {
+    const map: SourceMapData = { sources: ["webpack://app/./components/Card.tsx"], lines: [[[0, 0, 41, 0]]] };
+    const owners: OwnerTrace[] = [
+      { frames: [{ url: "http://localhost:3000/_next/static/chunks/_components_Card.js", line: 1, col: 3 }] },
+      { name: "Page", source: { file: "webpack://app/./src/pages/Home.tsx", line: 9 }, frames: [] },
+    ];
+    const loadMap = async (chunk: string) => (chunk.endsWith("_components_Card.js") ? map : undefined);
+    const chain = await resolveOwnerChain(owners, loadMap);
+    expect(chain[0]).toEqual({ file: "components/Card.tsx", line: 42 });
+    expect(await resolveOwners(owners, loadMap)).toEqual({ file: "components/Card.tsx", line: 42 });
+    expect(chain).toHaveLength(2);
+  });
+
+  it("is empty when no owner resolves", async () => {
+    expect(await resolveOwnerChain([{ name: "Card", frames: [] }], noMaps)).toEqual([]);
   });
 });
 

@@ -280,25 +280,60 @@ export async function resolveFunctionLocations(
   return undefined;
 }
 
+/** One owner's project source: the file and line React recorded for it (or its stack frames' source), and its name. */
+export interface OwnerSource {
+  file: string;
+  line: number;
+  /** The owner's component name, when it has one. */
+  component?: string;
+}
+
+/** The project source of one owner (its recorded source first, then its first two stack frames through the source map). */
+async function ownerSourceOf(
+  owner: OwnerTrace,
+  loadMap: (chunkUrl: string) => Promise<SourceMapData | undefined>,
+): Promise<{ file: string; line: number } | undefined> {
+  if (owner.source) {
+    const file = projectPath(owner.source.file);
+    if (file) return { file, line: owner.source.line };
+  }
+  for (const frame of owner.frames.slice(0, 2)) {
+    const chunk = frame.url.split("?")[0];
+    const map = await loadMap(chunk);
+    if (!map) continue;
+    const found = originalPosition(map, frame.line, frame.col);
+    const file = found ? projectPath(found.source) : undefined;
+    if (found && file) return { file, line: found.line };
+  }
+  return undefined;
+}
+
 export async function resolveOwners(
   owners: OwnerTrace[],
   loadMap: (chunkUrl: string) => Promise<SourceMapData | undefined>,
 ): Promise<{ file: string; line: number } | undefined> {
   for (const owner of owners) {
-    if (owner.source) {
-      const file = projectPath(owner.source.file);
-      if (file) return { file, line: owner.source.line };
-    }
-    for (const frame of owner.frames.slice(0, 2)) {
-      const chunk = frame.url.split("?")[0];
-      const map = await loadMap(chunk);
-      if (!map) continue;
-      const found = originalPosition(map, frame.line, frame.col);
-      const file = found ? projectPath(found.source) : undefined;
-      if (found && file) return { file, line: found.line };
-    }
+    const found = await ownerSourceOf(owner, loadMap);
+    if (found) return found;
   }
   return undefined;
+}
+
+/**
+ * The project source of every owner that resolves, nearest first: the owner chain above an element, read as call sites
+ * (each owner's source is where that component was written into its parent). The first entry is the one resolveOwners
+ * returns. Owners that resolve to no project file are skipped, so the chain holds only the project's own code.
+ */
+export async function resolveOwnerChain(
+  owners: OwnerTrace[],
+  loadMap: (chunkUrl: string) => Promise<SourceMapData | undefined>,
+): Promise<OwnerSource[]> {
+  const chain: OwnerSource[] = [];
+  for (const owner of owners) {
+    const found = await ownerSourceOf(owner, loadMap);
+    if (found) chain.push(owner.name !== undefined ? { ...found, component: owner.name } : found);
+  }
+  return chain;
 }
 
 /**

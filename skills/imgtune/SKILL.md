@@ -26,8 +26,8 @@ does not own or run, unless they say they are authorised.
    or `--sample-per-pattern` for a large catalogue; logins need `--storage-state`). Then, from the project root:
    `npx imgtune scan <built-url> [<built-url> ...] --out .imgtune/scan`. One JSON file per page. Read the terminal
    summary only: the files are large. The locator is empty on a built server, which is expected. Start the built server with
-   the asset-prefix env the build used (`NEXT_PUBLIC_CDN_URL=` empty); a "linked stylesheet did not load" warning means
-   unstyled widths: fix and rescan.
+   the same asset-prefix env as the build (Next.js: `NEXT_PUBLIC_CDN_URL=` empty for both `next build` and `next start`).
+   A "linked stylesheet did not load" warning means unstyled widths: fix and rescan.
 2. **Locate (dev server, or a built page with source maps).** For each page:
    `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json`. It reads one viewport (`iphone-15`, or
    `--viewports <name>`), reads no image bytes, and writes `<page>.located.json` (`file:line` and component joined in). A built URL with source maps works too (`via prod-sourcemap`: the component's definition).
@@ -155,8 +155,8 @@ These come from a real run where the agent's own numbers were worse than the sca
 - **The group quality is the max of the targets** for the images in the group, never the median. A group is a component
   or a URL pattern, and the hint names it.
 - **Shared components.** When the call site's group says `shared component: pass sizes per caller`, the pages need
-  different widths: the component takes `sizes` as a prop and each caller passes its own formula (listed under the
-  group). Never apply one caller's value to all of them. A single formula is used only when the group says `one formula`.
+  different widths: the component takes `sizes` as a prop and each caller passes its own formula. The group's `callers`
+  list (text and JSON) gives each caller's file:line, pages and formula. Never apply one caller's value to all of them.
 - **Proposals that add bytes are left out.** The scan drops a sizes proposal whose predicted outcome adds bytes, or saves
   none (`no saving: ...`, counted by `hints`). Do not add one by hand.
 - **Live data.** Products change between scans. Re-baseline in the same window as the fixes; the bytes claim is built

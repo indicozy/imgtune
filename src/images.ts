@@ -13,7 +13,7 @@ import {
   type SizesBranch,
   type SizesResult,
 } from "./layout.js";
-import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind, type LocatorVia } from "./locate.js";
+import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind, type LocatorVia, type OwnerSource } from "./locate.js";
 import { undersizedProposal, type ProposalPoint } from "./candidates.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
@@ -68,6 +68,11 @@ export interface ImageLocator {
   urlPattern?: string;
   /** next-default, a CDN's adapter name, cdn:<host>, plain-img, or unknown. */
   loader: string;
+  /**
+   * The project owner chain above the element, nearest first (dev builds of React; see OwnerSource). Its first entry is
+   * file:line. The caller map (hints.ts) reads the entries above the first.
+   */
+  ownerChain?: OwnerSource[];
   /**
    * Where to look in the project when no source file resolved (a server component has a name but no file:line): the
    * component, its likely file name, a glob, and the alt and URL pattern. Clues only: nothing is read from the project.
@@ -201,6 +206,8 @@ export interface ResolvedSource {
   via?: LocatorVia;
   /** The check of file:line against the project file (see LocatorKind). */
   check?: LocatorKind;
+  /** The project owners above the element, nearest first (dev builds; see OwnerSource). The first is file:line. */
+  ownerChain?: OwnerSource[];
 }
 
 export interface BuildInput {
@@ -245,6 +252,7 @@ function locatorOf(member: Instance, pageUrl: string, source: ResolvedSource | u
     if (source.via !== undefined) locator.via = source.via;
     locator.kind = source.check ?? "unchecked";
     locator.verified = locator.kind === "image";
+    if (source.ownerChain?.length) locator.ownerChain = source.ownerChain;
   }
   if (img.locator?.testid !== undefined) locator.testid = sanitizeText(img.locator.testid, 120);
   if (img.locator?.alt !== undefined) locator.alt = sanitizeText(img.locator.alt, 120);

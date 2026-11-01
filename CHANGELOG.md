@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Caller map: a call site whose component is rendered for several callers lists each caller at the first owner level above
+  the image that differs between usages (`callers:` in the grouped `hints`, `callers` in the JSON), with its file:line,
+  pages and its own sizes formula. The dev owner chain is read at `--locate-only` and kept on each located record
+  (`locator.ownerChain`, sanitised on read).
+- Docs: for Next.js, the asset-prefix env must be set the same for `next build` and `next start`; the skill says to check
+  the stylesheets load before a scan.
 - Fix: the GPU scorer no longer overwrites the user's `CUDA_VISIBLE_DEVICES` (a GPU the user excluded could run the scorer).
   `--gpu-device` is an index within the user's visible list; imgtune never sets `CUDA_DEVICE_ORDER`. The scorer prints the
   device it opened (name, index, order, visible list) and the scan JSON records `deviceOrder` and `visibleDevices`.

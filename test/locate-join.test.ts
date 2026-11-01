@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   applyLocate,
   cleanLocate,
+  cleanOwnerChain,
   cleanRecord,
   httpUrl,
   devImagesOf,
@@ -449,5 +450,27 @@ describe("page-derived text in the sizes verdict", () => {
 
   it("cleans bidi overrides and C1 controls from any text", () => {
     expect(safeText("a‮b\u009b31mc⁧d")).toBe("ab31mcd");
+  });
+});
+
+describe("cleanOwnerChain", () => {
+  it("keeps project entries in order, with a whole line and an identifier component, and drops the rest", () => {
+    const raw = [
+      { file: "src/components/Card.tsx", line: 12, component: "Card" },
+      { file: "node_modules/lib/index.js", line: 3 },
+      { file: "src/pages/Home.tsx", line: 9.5 },
+      { file: "src/pages/Plp.tsx", line: 4, component: "not a name" },
+      { file: "/etc/passwd", line: 1 },
+      "not an object",
+    ];
+    expect(cleanOwnerChain(raw)).toEqual([
+      { file: "src/components/Card.tsx", line: 12, component: "Card" },
+      { file: "src/pages/Plp.tsx", line: 4 },
+    ]);
+  });
+
+  it("is empty for anything that is not a list, and caps the length", () => {
+    expect(cleanOwnerChain("src/a.tsx")).toEqual([]);
+    expect(cleanOwnerChain(Array.from({ length: 20 }, (_, i) => ({ file: "src/a.tsx", line: i + 1 })))).toHaveLength(8);
   });
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasFix, searchHintsOf, type ImageRecord } from "../src/images.js";
 import {
+  callerMapOf,
   combinedSizes,
   groupHints,
   groupSizesOf,
@@ -547,5 +548,115 @@ describe("grouped hints (one entry per call site)", () => {
     expect(flat.output).toContain("2 image(s) with fix hints");
     expect(parseHintsArgs([file, "--flat"]).flat).toBe(true);
     expect(parseHintsArgs([file]).flat).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Caller map: a shared call site (one component rendering the image) and the owner above it that differs per usage
+// ---------------------------------------------------------------------------------------------------------------------
+
+const CARD = { file: "src/components/ProductCard.tsx", line: 40, component: "ProductCard" };
+
+/** A hint on a page whose owner chain above the image is `above` (the located source is CARD). */
+function usage(id: string, page: string, above: { file: string; line: number; component?: string }[], measured?: { width: number; rendered: number }[]): Hint {
+  return {
+    id,
+    page,
+    component: ["ProductCard"],
+    file: CARD.file,
+    line: CARD.line,
+    kind: "image",
+    selector: "ul > li > img",
+    sizes: { current: "33vw", proposed: "160px" },
+    bytes: { saved: 10 * 1024, addedForSharpness: 0 },
+    rung: "measured-page",
+    notes: [],
+    ...(measured ? { measured } : {}),
+    ownerChain: [CARD, ...above],
+  };
+}
+
+describe("callerMapOf", () => {
+  const plp = "https://shop.example/sunglasses";
+  const home = "https://shop.example/";
+
+  it("lists each caller at the first level above the image that differs between usages", () => {
+    const grid = { file: "src/plp/Grid.tsx", line: 88, component: "Grid" };
+    const carousel = { file: "src/home/Carousel.tsx", line: 20, component: "Carousel" };
+    const groups = groupHints([
+      usage("a", plp, [grid, { file: "src/pages/Plp.tsx", line: 12, component: "Plp" }]),
+      usage("b", home, [carousel, { file: "src/pages/Home.tsx", line: 9, component: "Home" }]),
+    ]);
+    expect(groups).toHaveLength(1);
+    const map = callerMapOf(groups[0]);
+    expect(map?.level).toBe(1);
+    expect(map?.callers.map((c) => `${c.file}:${c.line}`)).toEqual(["src/home/Carousel.tsx:20", "src/plp/Grid.tsx:88"]);
+    expect(map?.callers.map((c) => c.pages)).toEqual([[home], [plp]]);
+    expect(map?.callers.map((c) => c.count)).toEqual([1, 1]);
+  });
+
+  it("skips a level that is the same for every usage and reads the next one", () => {
+    const groups = groupHints([
+      usage("a", plp, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }, { file: "src/pages/Plp.tsx", line: 12, component: "Plp" }]),
+      usage("b", home, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }, { file: "src/pages/Home.tsx", line: 9, component: "Home" }]),
+    ]);
+    const map = callerMapOf(groups[0]);
+    expect(map?.level).toBe(2);
+    expect(map?.callers.map((c) => c.component)).toEqual(["Home", "Plp"]);
+  });
+
+  it("is undefined when every usage reaches the same callers", () => {
+    const same = [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }];
+    const groups = groupHints([usage("a", plp, same), usage("b", plp, same), usage("c", plp, same)]);
+    expect(callerMapOf(groups[0])).toBeUndefined();
+  });
+
+  it("is undefined when the usages carry no chain (a built scan, or a location that did not resolve)", () => {
+    const bare = { ...usage("a", plp, []), ownerChain: undefined };
+    expect(callerMapOf(groupHints([bare, usage("b", home, [])])[0])).toBeUndefined();
+  });
+
+  it("gives each caller its own sizes from its measured widths, and null when it was not measured", () => {
+    const groups = groupHints([
+      usage("a", plp, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }], [{ width: 390, rendered: 175 }, { width: 1440, rendered: 668 }]),
+      usage("b", home, [{ file: "src/home/Carousel.tsx", line: 20, component: "Carousel" }]),
+    ]);
+    const map = callerMapOf(groups[0]);
+    const grid = map?.callers.find((c) => c.file === "src/plp/Grid.tsx");
+    const carousel = map?.callers.find((c) => c.file === "src/home/Carousel.tsx");
+    expect(grid?.sizes).toEqual(expect.any(String));
+    expect(carousel?.sizes).toBeNull();
+  });
+
+  it("reports a usage with no owner at the level as a caller with no project file", () => {
+    const groups = groupHints([
+      usage("a", plp, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }]),
+      usage("b", home, []),
+    ]);
+    const map = callerMapOf(groups[0]);
+    expect(map?.callers.map((c) => c.file)).toEqual([null, "src/plp/Grid.tsx"]);
+  });
+
+  it("prints the callers under the call site in the grouped text, and in the JSON", async () => {
+    const groups = groupHints([
+      usage("a", plp, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }]),
+      usage("b", home, [{ file: "src/home/Carousel.tsx", line: 20, component: "Carousel" }]),
+    ]);
+    const lines = renderGroup(groups[0], 1);
+    expect(lines.join("\n")).toContain("   callers: 2 caller(s) above the image (owner level 1, the first that differs between usages)");
+    expect(lines.join("\n")).toContain('     "src/plp/Grid.tsx:88" ("Grid")  1 image(s), 1 page(s) "shop.example/sunglasses"  sizes not measured');
+
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-callers-"));
+    const scanOf = (name: string, url: string, id: string, chain: { file: string; line: number; component?: string }[]) => {
+      const rec = record(id, { saved: 10 * 1024, component: ["ProductCard"], file: CARD.file, line: CARD.line });
+      rec.page = url;
+      rec.locator.ownerChain = [CARD, ...chain];
+      return writeFile(join(dir, name), JSON.stringify({ ...page([rec]), url }));
+    };
+    await scanOf("plp.json", plp, "a", [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }]);
+    await scanOf("home.json", home, "b", [{ file: "src/home/Carousel.tsx", line: 20, component: "Carousel" }]);
+    const { output } = await hintsCommand([join(dir, "plp.json"), join(dir, "home.json"), "--format", "json"], dir);
+    const body = JSON.parse(output);
+    expect(body.callSites[0].callers.callers.map((c: { file: string }) => c.file)).toEqual(["src/home/Carousel.tsx", "src/plp/Grid.tsx"]);
   });
 });

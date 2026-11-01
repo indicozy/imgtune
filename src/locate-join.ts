@@ -7,7 +7,7 @@ import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import type { ImageLocator, ImagePerViewport, ImageRecord, ResolvedSource } from "./images.js";
-import { COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind, type LocatorVia } from "./locate.js";
+import { COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind, type LocatorVia, type OwnerSource } from "./locate.js";
 import { ID_PATTERN } from "./recheck.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { ObservedImage, PageResult, ViewportObservation } from "./remote.js";
@@ -55,6 +55,8 @@ export interface DevImage {
   line?: number;
   kind?: LocatorKind;
   via?: LocatorVia;
+  /** The project owner chain above the element (see OwnerSource). */
+  ownerChain?: OwnerSource[];
 }
 
 /** Why a flagged record did not join: a code for the summary, and the text for the reader. */
@@ -147,6 +149,7 @@ export function devImagesOf(
       line: source?.line,
       kind: source?.check,
       via: source?.via,
+      ownerChain: source?.ownerChain,
     };
   });
 }
@@ -282,6 +285,7 @@ export function applyLocate(records: ImageRecord[], join: LocateJoin, viewport: 
     delete locator.kind;
     delete locator.verified;
     delete locator.via;
+    delete locator.ownerChain;
     if (dev.file !== undefined && dev.line !== undefined) {
       delete locator.searchHints;
       locator.file = dev.file;
@@ -289,6 +293,7 @@ export function applyLocate(records: ImageRecord[], join: LocateJoin, viewport: 
       if (dev.via !== undefined) locator.via = dev.via;
       locator.kind = dev.kind ?? "unchecked";
       locator.verified = locator.kind === "image";
+      if (dev.ownerChain?.length) locator.ownerChain = dev.ownerChain;
     }
     if (dev.component.length > 0) locator.component = dev.component;
     const notes = record.evidence.notes.filter((note) => !/^(source|component): /.test(note));
@@ -370,6 +375,30 @@ export function cleanLocate(raw: unknown): LocateSummary | undefined {
   };
 }
 
+/** Most owners kept in a chain (the scan reads at most this many). */
+const MAX_CHAIN = 8;
+
+/**
+ * An owner chain from a scan file: each entry a project path, a whole line and, when present, a component identifier.
+ * Entries that do not fit are dropped; the rest keep their order.
+ */
+export function cleanOwnerChain(raw: unknown): OwnerSource[] {
+  if (!Array.isArray(raw)) return [];
+  const chain: OwnerSource[] = [];
+  for (const entry of raw) {
+    if (chain.length >= MAX_CHAIN) break;
+    if (entry === null || typeof entry !== "object") continue;
+    const { file: rawFile, line, component } = entry as { file?: unknown; line?: unknown; component?: unknown };
+    const file = typeof rawFile === "string" ? projectPath(rawFile) : undefined;
+    if (file === undefined || file !== rawFile) continue;
+    if (!(typeof line === "number" && Number.isInteger(line) && line >= 0)) continue;
+    const owner: OwnerSource = { file, line };
+    if (typeof component === "string" && COMPONENT_NAME.test(component)) owner.component = component;
+    chain.push(owner);
+  }
+  return chain;
+}
+
 /**
  * One record of a measured scan, checked and cleaned: the fields the join and the sizes check read must be the right
  * type, and a source (file, line, component) must be a project path, an integer and an identifier. Undefined when the
@@ -400,6 +429,12 @@ export function cleanRecord(raw: unknown): ImageRecord | undefined {
       delete locator.verified;
       delete locator.via;
     }
+  }
+  if (locator.file === undefined) delete locator.ownerChain;
+  if (locator.ownerChain !== undefined) {
+    const chain = cleanOwnerChain(locator.ownerChain);
+    if (chain.length > 0) locator.ownerChain = chain;
+    else delete locator.ownerChain;
   }
   if (locator.via !== undefined && locator.via !== "react-dev" && locator.via !== "prod-sourcemap") delete locator.via;
   if (locator.line !== undefined && !(Number.isInteger(locator.line) && locator.line >= 0)) {

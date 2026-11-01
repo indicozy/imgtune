@@ -7,6 +7,7 @@ import { hasFix, OWNER_PLACEHOLDERS } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 import { cleanLocate } from "./locate-join.js";
+import type { OwnerSource } from "./locate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
 
@@ -54,6 +55,8 @@ export interface Hint {
   background?: true;
   /** How the file:line was found (see ImageLocator.via). */
   via?: string;
+  /** The project owner chain above the element, nearest first; its first entry is file:line (see ImageLocator.ownerChain). */
+  ownerChain?: OwnerSource[];
   /** The rendered width range over the viewports the image was measured at, in CSS px. */
   rendered?: { min: number; max: number };
   /** Each measured viewport's width and the rendered width of the image there (the points a group's sizes is fitted to). */
@@ -178,6 +181,7 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
     if (record.locator.kind !== undefined) hint.kind = record.locator.kind;
     if (record.kind === "css-background") hint.background = true;
     if (record.locator.via !== undefined) hint.via = record.locator.via;
+    if (record.locator.ownerChain !== undefined) hint.ownerChain = record.locator.ownerChain;
     if (record.locator.testid !== undefined) hint.testid = record.locator.testid;
     if (record.locator.alt !== undefined) hint.alt = record.locator.alt;
     if (record.locator.classes) hint.classes = record.locator.classes;
@@ -312,6 +316,69 @@ export function groupKeyOf(hint: Hint): string {
   return `${hint.component[0] !== undefined ? "component" : "selector"}:${hint.component[0] ?? hint.selector}`;
 }
 
+/**
+ * A caller of a shared call site: the project owner at one level of the owner chain above the image. `file` is null when
+ * that usage has no project owner at this level (the chain is shorter there).
+ */
+export interface CallerEntry {
+  file: string | null;
+  line: number | null;
+  /** The owner's component name at this level, when it has one. */
+  component?: string;
+  /** Images of the group whose usage reaches this caller. */
+  count: number;
+  pages: string[];
+  saved: number;
+  /** The sizes fitted to this caller's measured widths, or null when its images were not measured. */
+  sizes: string | null;
+}
+
+/** The caller map of a shared call site: the level of the chain that differs between usages, and its callers. */
+export interface CallerMap {
+  /** The index in the owner chain (0 is the located source; the map reads from 1 up). */
+  level: number;
+  callers: CallerEntry[];
+}
+
+const CHAIN_KEY = (owner: OwnerSource | undefined): string => (owner ? `${owner.file}:${owner.line}` : "-");
+
+/**
+ * The caller map of a group, or undefined when its usages all reach the same callers (the call site is not shared, or
+ * the chains say nothing). It reads the owner chain above the located source: the first level, nearest first, at which
+ * the usages differ is the level of the map, and each usage is listed under the caller it reaches there.
+ */
+export function callerMapOf(group: HintGroup): CallerMap | undefined {
+  const chains = group.hints.map((h) => h.ownerChain ?? []);
+  const longest = Math.max(0, ...chains.map((c) => c.length));
+  for (let level = 1; level < longest; level++) {
+    if (new Set(chains.map((c) => CHAIN_KEY(c[level]))).size < 2) continue;
+    const byKey = new Map<string, { hints: Hint[]; owner?: OwnerSource }>();
+    group.hints.forEach((hint, i) => {
+      const owner = chains[i][level];
+      const key = CHAIN_KEY(owner);
+      const entry = byKey.get(key) ?? { hints: [], owner };
+      entry.hints.push(hint);
+      byKey.set(key, entry);
+    });
+    const callers: CallerEntry[] = [...byKey.values()].map(({ hints, owner }) => {
+      const points = maxPerWidth(hints.flatMap((h) => h.measured ?? []));
+      const fit = points.length > 0 ? fitSizes(points) : undefined;
+      return {
+        file: owner?.file ?? null,
+        line: owner?.line ?? null,
+        ...(owner?.component !== undefined ? { component: owner.component } : {}),
+        count: hints.length,
+        pages: [...new Set(hints.map((h) => h.page))],
+        saved: hints.reduce((sum, h) => sum + h.bytes.saved, 0),
+        sizes: fit?.value ?? null,
+      };
+    });
+    callers.sort((a, b) => b.saved - a.saved || `${a.file}:${a.line}`.localeCompare(`${b.file}:${b.line}`));
+    return { level, callers };
+  }
+  return undefined;
+}
+
 /** Groups hints by call site across pages, largest saving first. The hints keep the order they came in. */
 export function groupHints(hints: Hint[]): HintGroup[] {
   const groups = new Map<string, HintGroup>();
@@ -433,6 +500,17 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
         : "   owner call site: the image is rendered inside an unnamed component; search the file's imports",
     );
   }
+  const callers = callerMapOf(group);
+  if (callers) {
+    lines.push(`   callers: ${callers.callers.length} caller(s) above the image (owner level ${callers.level}, the first that differs between usages)`);
+    for (const caller of callers.callers) {
+      const where = caller.file !== null ? JSON.stringify(safeText(`${caller.file}:${caller.line ?? 0}`)) : "\"no project owner\"";
+      const name = caller.component !== undefined ? ` (${JSON.stringify(safeText(caller.component))})` : "";
+      const pages = caller.pages.map((p) => JSON.stringify(pathOf(p))).join(", ");
+      const sizes = caller.sizes !== null ? JSON.stringify(safeText(caller.sizes)) : "not measured";
+      lines.push(`     ${where}${name}  ${caller.count} image(s), ${caller.pages.length} page(s) ${pages}  sizes ${sizes}`);
+    }
+  }
   const fitted = groupSizesOf(group);
   lines.push(`   sizes: ${safeText(combinedSizes(group))}`);
   for (const page of group.pages) {
@@ -550,6 +628,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
           saved: group.saved,
           sizes: combinedSizes(group),
           sizesFitted: groupSizesOf(group) ?? null,
+          callers: callerMapOf(group) ?? null,
           ids: group.hints.map((h) => h.id),
           hints: group.hints,
         })),

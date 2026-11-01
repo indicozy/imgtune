@@ -52,6 +52,11 @@ Write this when stopping early. Keep it short enough to read first in the next s
   component: pass sizes from each caller`: make `sizes` a prop, have each caller pass its own value (the list gives them),
   and fix the component to use the prop. `max-safe`: one value covers every image on the page; it is the widest measured
   width, so nothing is cut off.
+- **Caller map** (`callers:` under a group, and `callers` in the JSON): when one component renders the image for several
+  callers, each caller is listed at the first owner level above the image that differs between usages (`owner level N`).
+  Each caller shows its file:line, its component, its pages and its own sizes formula (`not measured` when its images were
+  not). It needs the dev owner chain (`scan --locate-only`); a built scan without source maps has none. No map means the
+  usages reach the same callers.
 - **Quality snap**: pass the framework's allowed qualities with `--qualities`. A target below an allowed value is raised to
   it (`q82 -> 85`), and the quality saving is then `void after snap`: it was estimated at the raw target, so it is not
   counted, and the saving is the sizes part alone.
@@ -311,7 +316,10 @@ When a linked stylesheet fails to load (the server refuses it, or a built page's
 have this build's file), the page renders without its utility styles. An image with a `width` attribute then measures at
 that attribute, and every width and sizes verdict on the page is wrong. The scan prints `warning: ... a linked stylesheet did
 not load at <viewport>` and records `stylesheetsFailed` on the page; the sizes-only check stops with no verdict. Fix the
-server's asset URLs (the asset-prefix env the build used, set the same when starting the server), then scan again.
+server's asset URLs, then scan again. For Next.js, any env that rewrites asset URLs (`NEXT_PUBLIC_CDN_URL`, or an
+`assetPrefix` read from env) must be set the same, and empty when needed, for both `next build` and `next start`: a value set
+only at start makes the stylesheet URLs absolute to a CDN that may refuse them (the case that unstyled a measured page).
+Check the stylesheets load before a scan: the PLP card on a 1440 px screenshot should match the dev width.
 
 ## The run report
 

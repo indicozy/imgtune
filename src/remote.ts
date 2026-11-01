@@ -19,8 +19,8 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode, ENCODE_THREADS, ENCODER_ID } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
-import type { LocatorKind, LocatorVia, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
-import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwners } from "./locate.js";
+import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
+import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwnerChain, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, rungOfPage, type ImageRecord, type ResolvedSource } from "./images.js";
 import {
   backgroundPage,
@@ -1477,7 +1477,8 @@ async function resolveSources(
     for (const img of obs.images) {
       if (wanted && !wanted(img)) continue;
       const owners = img.locator?.owners ?? [];
-      const dev = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
+      const chain: OwnerSource[] = owners.length > 0 ? await resolveOwnerChain(owners, (chunk) => loadSourceMap(ctx, chunk)) : [];
+      const dev = chain[0] !== undefined ? { file: chain[0].file, line: chain[0].line } : undefined;
       // A production build has no owner source: the function locations of the owners stand in (prod-sourcemap).
       const prod = dev === undefined && img.locator?.functionLocations?.length
         ? await resolveFunctionLocations(img.locator.functionLocations, (chunk) => loadSourceMap(ctx, chunk))
@@ -1486,7 +1487,7 @@ async function resolveSources(
       const via: LocatorVia | undefined = dev ? "react-dev" : prod ? "prod-sourcemap" : undefined;
       const component = componentNamesOf(owners);
       const check = found ? await checkSource(ctx, texts, found.file, found.line, component[0]) : undefined;
-      resolved.set(img, { file: found?.file, line: found?.line, component, check, via });
+      resolved.set(img, { file: found?.file, line: found?.line, component, check, via, ownerChain: chain.length > 0 ? chain : undefined });
     }
   }
   return resolved;
