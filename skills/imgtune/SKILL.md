@@ -59,6 +59,10 @@ Every flag below is checked against `--help`; use only these.
 - `--urls-from <file|sitemap-url>` and `--sample-per-pattern <N>`: a URL list or sitemap, at most N URLs per route pattern.
 - `--storage-state <file>`: a Playwright storage state for a logged-in session (it holds cookies: never commit it).
 - `--ignore-robots`: scan a page `robots.txt` disallows (owned or authorised sites only).
+- Third-party requests are blocked by default (scripts, fetch and xhr, iframes, media, websockets, beacons; images, styles
+  and fonts are never blocked), which makes pages settle sooner. Use `--allow-host <h1,h2>` to keep a host, or
+  `--allow-third-party` to turn blocking off, when a third-party script injects images: otherwise the scan shows fewer
+  images than the page has. The setting is recorded in each page's JSON.
 - `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks** (they need `imgtune-ssimu2-gpu`, see
   `reference.md`). CUDA numbers GPUs fastest first unless `CUDA_DEVICE_ORDER=PCI_BUS_ID`; check the printed `opened <name>`.
   Compare scans only when both used the same scorer (`scorer` in the JSON).

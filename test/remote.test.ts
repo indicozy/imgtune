@@ -402,6 +402,7 @@ describe("parseScanArgs", () => {
       aggressive: false,
       quality: true,
       viewports: undefined,
+      thirdParty: { block: true, allowHosts: [] },
     });
   });
 

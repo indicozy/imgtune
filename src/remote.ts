@@ -14,6 +14,7 @@ import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
+import { DEFAULT_THIRD_PARTY, isThirdPartyBlocked, parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import { matchLocalQuality } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode, ENCODE_THREADS, ENCODER_ID } from "./encode.js";
@@ -435,6 +436,8 @@ export interface ScanArgs {
   gpu?: { device: number };
   /** --harness: the pages are harness routes (Storybook, a temporary route): their records are measured-harness. */
   harness?: boolean;
+  /** Third-party requests: blocked by default; --allow-third-party turns that off, --allow-host keeps hosts. */
+  thirdParty: ThirdPartyPolicy;
 }
 
 /** The stderr warning for a page that robots.txt disallows and that is scanned anyway (--ignore-robots). */
@@ -482,6 +485,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--sample-per-pattern",
   "--storage-state",
   "--gpu-device",
+  "--allow-host",
 ];
 
 /** A whole number of at least 1, for a limit option. */
@@ -492,10 +496,13 @@ function parseLimit(name: string, text: string): number {
 
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
-  const args: ScanArgs = { urls: [], out: DEFAULT_OUT, aggressive: false, quality: true };
+  const args: ScanArgs = { urls: [], out: DEFAULT_OUT, aggressive: false, quality: true, thirdParty: DEFAULT_THIRD_PARTY };
+  let allowThirdParty = false;
+  let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--aggressive") args.aggressive = true;
+    else if (arg === "--allow-third-party") allowThirdParty = true;
     else if (arg === "--no-quality") args.quality = false;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--resume") args.resume = true;
@@ -517,6 +524,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
       else if (arg === "--storage-state") args.storageState = value;
       else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
+      else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
       else args.failOver = parseFailOver(value);
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option ${arg}`);
@@ -526,6 +534,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
   }
   if (args.urls.length === 0 && args.urlsFrom === undefined) throw new Error("scan needs at least one URL or --urls-from");
   if (args.samplePerPattern !== undefined && args.urlsFrom === undefined) throw new Error("--sample-per-pattern needs --urls-from");
+  args.thirdParty = thirdPartyFromFlags(allowThirdParty, allowHosts);
   return args;
 }
 
@@ -853,6 +862,8 @@ export interface ViewportObservation {
   blocked: boolean;
   /** Requests the browser was stopped from making (the page is public and they reach a blocked address). */
   blockedRequests: number;
+  /** Requests to other sites that were aborted by the third-party policy (see third-party.ts). */
+  thirdPartyBlocked?: number;
   nextjs: boolean;
   images: ObservedImage[];
   /** The elements with a CSS background image (none in a light read). */
@@ -877,6 +888,8 @@ export interface RequestGuard {
   isBlocked(url: string): Promise<boolean>;
   /** What the egress proxy checks each destination against. */
   policy: EgressPolicy;
+  /** Third-party requests the browser is stopped from making (see third-party.ts). */
+  thirdParty: ThirdPartyPolicy;
 }
 
 /** A navigation that destroyed the page's execution context in the middle of a read: the read is taken again. */
@@ -1181,6 +1194,17 @@ async function functionLocationsOf(session: CDPSession, index: number, scripts: 
   return frames;
 }
 
+/** Whether a request is a document loaded into an iframe (the page's own navigation is not). */
+function isSubFrameDocument(request: { resourceType(): string; frame(): { parentFrame(): unknown } }): boolean {
+  if (request.resourceType() !== "document") return false;
+  try {
+    return request.frame().parentFrame() !== null;
+  } catch {
+    // A request with no frame (a service worker's, say) is treated as the page's own.
+    return false;
+  }
+}
+
 /**
  * One viewport's read of a page. `light` (the locate and sizes-only paths) reads no image bodies and no layout chain: the
  * image sizes come from the response headers, and nothing is decoded or scored.
@@ -1198,6 +1222,7 @@ async function observeViewport(
   const responses = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
   let blockedRequests = 0;
+  let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
   const failedSheets = new Set<string>();
   // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
@@ -1223,8 +1248,15 @@ async function observeViewport(
     try {
       // The route guard decides the URL of each request and aborts it when refused. The proxy checks what it cannot see.
       await context.route("**/*", async (route) => {
-        const url = route.request().url();
+        const request = route.request();
+        const url = request.url();
         if (url.startsWith("data:") || url.startsWith("blob:")) return route.continue();
+        const thirdPartyFacts = { pageUrl, requestUrl: url, resourceType: request.resourceType(), subFrame: isSubFrameDocument(request) };
+        if (isThirdPartyBlocked(guard.thirdParty, thirdPartyFacts)) {
+          thirdPartyBlocked++;
+          count("third-party requests blocked");
+          return route.abort("blockedbyclient");
+        }
         let blocked = true;
         try {
           blocked = /^https?:/i.test(url) ? await guard.isBlocked(url) : true;
@@ -1238,6 +1270,12 @@ async function observeViewport(
         return route.continue();
       });
       await context.routeWebSocket("**/*", async (socket) => {
+        if (isThirdPartyBlocked(guard.thirdParty, { pageUrl, requestUrl: socket.url(), resourceType: "websocket", subFrame: false })) {
+          thirdPartyBlocked++;
+          count("third-party requests blocked");
+          await socket.close();
+          return;
+        }
         let blocked = true;
         try {
           blocked = await guard.isBlocked(socket.url());
@@ -1320,6 +1358,7 @@ async function observeViewport(
         loadTimedOut: loaded.loadTimedOut,
         blocked: isChallenge(status, seen.images.length, html),
         blockedRequests,
+        thirdPartyBlocked,
         nextjs: seen.nextjs,
         images: seen.images,
         backgrounds: seen.backgrounds,
@@ -1921,6 +1960,8 @@ export interface PageResult {
   options?: ScanRecordOptions;
   /** Set on a page that `scan --locate-only` read the sources of from a dev page (see locate-join.ts). */
   locate?: LocateSummary;
+  /** Requests to other sites the browser was stopped from making, over the page's viewports (0 with --allow-third-party). */
+  thirdPartyBlocked?: number;
 }
 
 /** What a page's output depends on: the scan options and the imgtune version. */
@@ -1936,12 +1977,17 @@ export interface ScanRecordOptions {
   scorer: "cpu" | "gpu";
   /** --harness: the pages are measured in isolation. Absent (not false) otherwise, so older scans still match. */
   harness?: true;
+  /** Third-party requests: "blocked" (the default) or "allowed" (--allow-third-party). Scans from before it have none. */
+  thirdParty: "blocked" | "allowed";
+  /** The hosts kept while blocking (--allow-host), sorted. Absent when there are none. */
+  allowHosts?: string[];
 }
 
 /** The options of one page's output, for the completeness check of --resume. */
 export function recordOptionsOf(
-  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness">,
+  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "thirdParty">,
 ): ScanRecordOptions {
+  const thirdParty = opts.thirdParty ?? DEFAULT_THIRD_PARTY;
   return {
     imgtuneVersion: IMGTUNE_VERSION,
     aggressive: opts.aggressive,
@@ -1951,13 +1997,25 @@ export function recordOptionsOf(
     storageState: opts.storageState !== undefined,
     scorer: opts.gpu !== undefined ? "gpu" : "cpu",
     ...(opts.harness === true ? { harness: true as const } : {}),
+    thirdParty: thirdParty.block ? "blocked" : "allowed",
+    ...(thirdParty.block && thirdParty.allowHosts.length > 0 ? { allowHosts: [...thirdParty.allowHosts].sort() } : {}),
   };
 }
 
 /** Whether two recorded option sets are the same (the viewports in order; a missing scorer is the CPU). */
 export function sameRecordOptions(a: ScanRecordOptions | undefined, b: ScanRecordOptions): boolean {
   if (!a) return false;
-  return JSON.stringify({ ...a, scorer: a.scorer ?? "cpu" }) === JSON.stringify(b);
+  return canonicalJson({ ...a, scorer: a.scorer ?? "cpu" }) === canonicalJson(b);
+}
+
+/** JSON with the object keys sorted, so two records compare equal whatever order their keys were written in. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 /** The scorer a page was measured with. `fallbacksBefore`: the GPU's fallback count when the page started. */
@@ -2202,6 +2260,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
       blockedRequests: observations.reduce((sum, o) => sum + o.blockedRequests, 0),
       byLoader,
     },
+    thirdPartyBlocked: observations.reduce((sum, o) => sum + (o.thirdPartyBlocked ?? 0), 0),
     images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
     ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
@@ -2254,6 +2313,8 @@ export interface ScanOptions {
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
   harness?: boolean;
+  /** Third-party requests (see third-party.ts). Default: blocked, with no hosts kept. */
+  thirdParty?: ThirdPartyPolicy;
 }
 
 /** How a run ended early: the limit that was reached, and how far the scan got. */
@@ -2302,6 +2363,7 @@ async function scanPage(
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
     storageState?: StorageState;
+    thirdParty: ThirdPartyPolicy;
     qualityFor?: (inst: Instance) => boolean;
     /** The project directory the scan runs in: resolved sources are checked against its files. */
     projectDir?: string;
@@ -2373,7 +2435,7 @@ async function scanPage(
   // challenge, redirect or error decides the status as it does when the viewports load one after another. A challenge
   // is still not retried.
   const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
-  const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
+  const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy, thirdParty: run.thirdParty };
   const outcomes = await settleLimit(run.viewports, run.viewportConcurrency, (viewport) => {
     count("viewport loads");
     return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, run.storageState);
@@ -2486,6 +2548,7 @@ async function withBrowser<T>(
       harness: opts.harness === true,
       sourceMaps: new Map(),
       storageState: opts.storageState,
+      thirdParty: opts.thirdParty ?? DEFAULT_THIRD_PARTY,
       qualityFor: opts.qualityFor,
       projectDir: opts.cwd,
       projectRoot: opts.root,
@@ -2613,6 +2676,8 @@ export interface LightOptions {
   wanted: (img: ObservedImage, pageUrl: string) => boolean;
   resolver?: Resolver;
   loadCapMs?: number;
+  /** Third-party requests (see third-party.ts). Default: blocked, with no hosts kept. */
+  thirdParty?: ThirdPartyPolicy;
 }
 
 /** A light observation of a page: one read per viewport, and the sources of the wanted elements. */
@@ -2642,6 +2707,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
       ignoreRobots: opts.ignoreRobots,
       resolver: opts.resolver,
       loadCapMs: opts.loadCapMs,
+      thirdParty: opts.thirdParty,
     },
     async (browser, run, robotsFor): Promise<LightObservation> => {
       const url = new URL(pageUrl);
@@ -2651,7 +2717,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
       if (!robots.allowed) return empty("robots", "robots.txt disallows the page");
       if (robots.ignored) run.log(robotsIgnoredWarning(pageUrl));
       const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
-      const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
+      const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy, thirdParty: run.thirdParty };
       const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) =>
         observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true, (img) => opts.wanted(img, pageUrl)),
       );
@@ -3000,6 +3066,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     gpu: args.gpu,
     cache: args.noCache !== true,
     report,
+    thirdParty: args.thirdParty,
   });
   if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);
   if (args.summaryJson !== undefined) {

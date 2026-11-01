@@ -7,6 +7,7 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImageRecord, type ImagePerViewport } from "./images.js";
 import { devImagesOf, httpUrl, joinLocate, joinKeyOfImage, joinKeyOfRecord, readMeasuredScan, type DevImage, type LocateJoin } from "./locate-join.js";
 import { ID_PATTERN } from "./recheck.js";
+import { parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import { isUndersized, neededWidth, observeLight, rightCandidate, type ViewportObservation } from "./remote.js";
 import { parseSrcset } from "./srcset-parse.js";
 import { sizesSlotAt } from "./sizes.js";
@@ -18,6 +19,8 @@ export interface SizesArgs {
   ids?: string[];
   url?: string;
   ignoreRobots: boolean;
+  /** Third-party requests: blocked by default, as in a scan (--allow-third-party, --allow-host). */
+  thirdParty: ThirdPartyPolicy;
 }
 
 /** The longest output line the sizes-only check prints; a longer one is cut, with "...". */
@@ -31,8 +34,14 @@ export function parseSizesArgs(argv: string[]): SizesArgs {
   let ids: string[] | undefined;
   let url: string | undefined;
   let ignoreRobots = false;
+  let allowThirdParty = false;
+  let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === "--allow-third-party") {
+      allowThirdParty = true;
+      continue;
+    }
     if (arg === "--sizes-only" || arg === "--recheck") {
       if (arg === "--sizes-only") continue;
       const value = argv[i + 1];
@@ -43,6 +52,13 @@ export function parseSizesArgs(argv: string[]): SizesArgs {
     }
     if (arg === "--ignore-robots") {
       ignoreRobots = true;
+      continue;
+    }
+    if (arg === "--allow-host") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
+      i++;
+      allowHosts = parseAllowHosts(value);
       continue;
     }
     if (arg === "--ids" || arg === "--url") {
@@ -69,7 +85,7 @@ export function parseSizesArgs(argv: string[]): SizesArgs {
     throw new Error(`${safeText(arg)} is not an option of --sizes-only (${USAGE})`);
   }
   if (file === undefined) throw new Error(USAGE);
-  return { file, ids, url, ignoreRobots };
+  return { file, ids, url, ignoreRobots, thirdParty: thirdPartyFromFlags(allowThirdParty, allowHosts) };
 }
 
 /** Two widths (CSS px) count as the same layout within this tolerance: a pixel or two of rounding, or 2 %. */
@@ -234,6 +250,7 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
     log,
     ignoreRobots: args.ignoreRobots,
     wanted: (img, pageUrl) => flaggedPatterns.has(joinKeyOfImage(img, pageUrl)),
+    thirdParty: args.thirdParty,
   });
   if (light.status !== "ok") {
     return { output: `recheck: the dev page is ${light.status}${light.error ? `: ${safeText(light.error)}` : ""}\n`, exitCode: 1 };

@@ -50,6 +50,14 @@ const OPTION_HELP = {
     "--sample-per-pattern <N>",
     "with --urls-from: at most N URLs per route pattern (/p/*, /c/*), spread over the pattern",
   ],
+  allowThirdParty: [
+    "--allow-third-party",
+    "keep the requests to other sites that the scan blocks by default (scripts, fetch and xhr, iframes, media, websockets, beacons). Use it when a third-party script renders images: without it the scan shows fewer images than the page has",
+  ],
+  allowHost: [
+    "--allow-host <h1,h2>",
+    "keep the requests to these hosts while blocking stays on (exact host names, e.g. an image carousel's script)",
+  ],
   storageState: [
     "--storage-state <file>",
     "a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it",
@@ -120,6 +128,8 @@ const SCAN_HELP = commandHelp(
     "urlsFrom",
     "samplePerPattern",
     "storageState",
+    "allowThirdParty",
+    "allowHost",
     "recheck",
     "ids",
     "gpu",

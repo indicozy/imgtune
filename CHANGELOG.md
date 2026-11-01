@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Scans block the requests to other sites that cannot change an image or the layout (scripts, fetch and xhr, websockets,
+  event streams, media, beacons and pings, manifests, iframes, other). Documents, stylesheets, fonts and images are never
+  blocked, from any host. Pages reach `load` and network idle sooner. Flags: `--allow-third-party` turns the blocking off,
+  `--allow-host <h1,h2>` keeps named hosts (for a third-party script that renders images). The page JSON counts the aborted
+  requests (`thirdPartyBlocked`) and records the setting, so `--resume` does not mix settings; a recheck refuses a scan
+  file recorded with the other setting. Scan files from earlier versions were measured with every request allowed.
 - Caller map: a call site whose component is rendered for several callers lists each caller at the first owner level above
   the image that differs between usages (`callers:` in the grouped `hints`, `callers` in the JSON), with its file:line,
   pages and its own sizes formula. The dev owner chain is read at `--locate-only` and kept on each located record
