@@ -33,7 +33,8 @@ export interface MeasureOptions {
 const PAGE_LOAD_TIMEOUT_MS = 120_000;
 const MAX_SCROLL_STEPS = 30;
 const SCROLL_STEP_WAIT_MS = 250;
-const NETWORK_IDLE_TIMEOUT_MS = 10_000;
+/** The most a settle waits for the network to go idle (the scan's --idle-timeout changes it). */
+export const NETWORK_IDLE_TIMEOUT_MS = 10_000;
 const IMAGES_COMPLETE_TIMEOUT_MS = 5_000;
 export const BODY_READ_TIMEOUT_MS = 5_000;
 const PIXEL_PROBE_TIMEOUT_MS = 5_000;
@@ -223,14 +224,20 @@ export async function waitForLoadWithin(page: Page, ms: number): Promise<boolean
  * The settle step of every measurement: scrolls the page to its bottom and back so lazy images start, then waits for the
  * network and for the images matched by `imageSelector` to complete.
  */
-export async function settlePage(page: Page, imageSelector: string, options: { networkIdle?: boolean } = {}): Promise<void> {
+export async function settlePage(
+  page: Page,
+  imageSelector: string,
+  options: { networkIdle?: boolean; networkIdleMs?: number } = {},
+): Promise<void> {
   await measure("settle: scroll", () => scrollThrough(page));
   await page.evaluate(() => window.scrollTo(0, 0));
   // A page that keeps a connection open (a dev server, a tracker) never reaches network idle: each wait would cost the
   // full timeout. The light paths skip it: scrolling loads the lazy images, and the image wait below covers the rest.
-  if (options.networkIdle !== false) {
+  // A cap of 0 skips the wait too: Playwright reads a zero timeout as no timeout at all.
+  const idleMs = options.networkIdleMs ?? NETWORK_IDLE_TIMEOUT_MS;
+  if (options.networkIdle !== false && idleMs > 0) {
     await measure("settle: network idle", () =>
-      page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {
+      page.waitForLoadState("networkidle", { timeout: idleMs }).catch(() => {
         count("network idle timeouts");
       }),
     );

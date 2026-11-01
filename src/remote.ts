@@ -42,7 +42,7 @@ import {
 } from "./backgrounds.js";
 import { applySizesOutcome } from "./sizes-outcome.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
-import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
+import { countDocumentNavigations, gotoParsed, NETWORK_IDLE_TIMEOUT_MS, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { countGpuFallbacks, gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
@@ -96,6 +96,8 @@ export const MAX_POST_LOAD_NAVIGATIONS = 3;
 export const VIEWPORT_CONCURRENCY = 3;
 /** Pages of one run in flight at once (--page-concurrency): the most a run may ask for. */
 export const MAX_PAGE_CONCURRENCY = 6;
+/** The longest --idle-timeout: ten minutes (a timer past 2^31 ms would fire at once). */
+export const MAX_IDLE_TIMEOUT_MS = 600_000;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
 const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha"];
 /** Quality assumed for an image whose URL does not say (next/image's default). */
@@ -429,6 +431,8 @@ export interface ScanArgs {
   maxImages?: number;
   /** Pages scanned at once on the shared browser (--page-concurrency). Undefined: one at a time. */
   pageConcurrency?: number;
+  /** The cap on the wait for network idle after scroll, in ms (--idle-timeout). Undefined: the default cap. */
+  idleTimeoutMs?: number;
   /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
   urlsFrom?: string;
   /** At most this many URLs per route pattern of the --urls-from list. */
@@ -483,6 +487,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--max-pages",
   "--max-images",
   "--page-concurrency",
+  "--idle-timeout",
   "--urls-from",
   "--sample-per-pattern",
   "--storage-state",
@@ -528,6 +533,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--max-pages") args.maxPages = parseLimit(arg, value);
       else if (arg === "--max-images") args.maxImages = parseLimit(arg, value);
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
+      else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--urls-from") args.urlsFrom = value;
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
       else if (arg === "--storage-state") args.storageState = value;
@@ -1120,13 +1126,19 @@ async function readView(page: Page, light = false): Promise<PageView> {
  * The settle step, then one read, taken again whenever the page navigated while it ran (a reload or a script's
  * location change after load). At most MAX_POST_LOAD_NAVIGATIONS repeats; past that, the last complete read is used.
  */
-async function settledView(page: Page, navigations: () => number, loadCapMs: number, light = false): Promise<PageView> {
+async function settledView(
+  page: Page,
+  navigations: () => number,
+  loadCapMs: number,
+  light = false,
+  idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
+): Promise<PageView> {
   let last: PageView | undefined;
   for (let repeat = 0; ; repeat++) {
     const start = navigations();
     let view: PageView | undefined;
     try {
-      await settlePage(page, "img", { networkIdle: !light });
+      await settlePage(page, "img", { networkIdle: !light, networkIdleMs: idleTimeoutMs });
       view = await measure("read view", () => readView(page, light));
     } catch (err) {
       if (!isNavigationError(err)) throw err;
@@ -1209,6 +1221,7 @@ async function observeViewport(
   storageState?: StorageState,
   light = false,
   functionsWanted?: (img: ObservedImage) => boolean,
+  idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
 ): Promise<ViewportObservation> {
   const responses = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
@@ -1313,7 +1326,7 @@ async function observeViewport(
       }
       const loaded = await measure(`page load ${viewport.name}`, () => gotoParsed(page, pageUrl, loadCapMs));
       const docResponse: BrowserResponse | null = loaded.response;
-      const { seen, html } = await settledView(page, navigations, loadCapMs, light);
+      const { seen, html } = await settledView(page, navigations, loadCapMs, light, idleTimeoutMs);
       const status = docResponse?.status();
       if (debug !== undefined && functionsWanted !== undefined) {
         for (const img of seen.images) {
@@ -1951,11 +1964,13 @@ export interface ScanRecordOptions {
   scorer: "cpu" | "gpu";
   /** --harness: the pages are measured in isolation. Absent (not false) otherwise, so older scans still match. */
   harness?: true;
+  /** The network-idle cap, when it is not the default. Absent otherwise, so older scans still match. */
+  idleTimeoutMs?: number;
 }
 
 /** The options of one page's output, for the completeness check of --resume. */
 export function recordOptionsOf(
-  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness">,
+  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs">,
 ): ScanRecordOptions {
   return {
     imgtuneVersion: IMGTUNE_VERSION,
@@ -1966,6 +1981,7 @@ export function recordOptionsOf(
     storageState: opts.storageState !== undefined,
     scorer: opts.gpu !== undefined ? "gpu" : "cpu",
     ...(opts.harness === true ? { harness: true as const } : {}),
+    ...(opts.idleTimeoutMs !== undefined && opts.idleTimeoutMs !== NETWORK_IDLE_TIMEOUT_MS ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
   };
 }
 
@@ -2266,6 +2282,8 @@ export interface ScanOptions {
   gpu?: { device: number };
   /** Pages in flight at once on the shared browser (--page-concurrency). Default 1: one page at a time. */
   pageConcurrency?: number;
+  /** The cap on the wait for network idle after scroll, in ms (--idle-timeout). Default NETWORK_IDLE_TIMEOUT_MS; 0 skips the wait. */
+  idleTimeoutMs?: number;
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
@@ -2323,6 +2341,8 @@ async function scanPage(
     projectDir?: string;
     projectRoot?: string;
     viewportConcurrency: number;
+    /** The cap on the network-idle wait of each settle (see ScanOptions.idleTimeoutMs). */
+    idleTimeoutMs: number;
     log: (message: string) => void;
     /** The GPU scorer of this run, when --gpu was given and it started. */
     gpu?: GpuScorer;
@@ -2392,7 +2412,7 @@ async function scanPage(
   const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
   const outcomes = await settleLimit(run.viewports, run.viewportConcurrency, (viewport) => {
     count("viewport loads");
-    return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, run.storageState);
+    return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, run.storageState, false, undefined, run.idleTimeoutMs);
   });
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
@@ -2506,6 +2526,7 @@ async function withBrowser<T>(
       projectDir: opts.cwd,
       projectRoot: opts.root,
       viewportConcurrency: opts.viewportConcurrency ?? VIEWPORT_CONCURRENCY,
+      idleTimeoutMs: opts.idleTimeoutMs ?? NETWORK_IDLE_TIMEOUT_MS,
       log: opts.log,
       gpu,
     };
@@ -3027,6 +3048,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     maxPages: args.maxPages,
     maxImages: args.maxImages,
     pageConcurrency: args.pageConcurrency,
+    idleTimeoutMs: args.idleTimeoutMs,
     storageState,
     gpu: args.gpu,
     cache: args.noCache !== true,
