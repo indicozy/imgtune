@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Faster scans, same numbers. The AVIF and WebP calibration no longer encodes all 25 local qualities of each match: a
+  parallel search over the coarse grid and then the refine window encodes about half as many, and any probe that shows
+  bytes falling as quality rises falls back to the full scan. Targets and ratios are identical to the previous build on
+  the nextjs.org guard, on its five quality samples and on 25 generated images, with the CPU and with `--gpu`.
+- Result cache in `.imgtune/cache` (bounded to 500 MB, oldest removed first): the local encode sizes and each probe's
+  score, keyed by the original's content hash, width, scorer, encoder, quality, profile and tool version. Used by `scan`,
+  `scan --recheck` and `image`; a warm run reuses everything the cold run computed. `--no-cache` turns it off. Corrupt or
+  foreign entries are ignored.
+- Settle waits only for real document navigations. Same-document URL changes (`history.pushState`, `replaceState`, hash
+  changes) no longer repeat the settle and its 10 s network-idle wait; the wait itself is unchanged.
+- `--root <dir>` (`scan`, `--locate-only`): the folder project sources are read from. By default each file is read from the
+  nearest folder above the cwd that holds it, so a scan run from a sub-folder of a monorepo no longer marks every source
+  `unread`. Unread sources are named in the output with the folder they were looked up in.
+- `scan --recheck` takes several pages (repeat `--recheck`, at most three browser contexts in all) and `--viewports <names>`
+  to measure other viewports than the ones where the images rendered. Its default is unchanged.
+- Security: the `locate` block and the located records of a scan file are checked as a whole when read. A dev URL that is
+  not http or https, an unknown viewport, a count that is not a non-negative integer, or a short label that is not plain
+  text drops the block (the rest of the scan is kept, and the drop is reported). The sizes recheck refuses a non-http dev
+  URL from the file or the command line. `hints` prints the located line only from a checked block.
+
 - Split measure and locate. `scan <built-url>` measures the bytes on a built server or a preview (no source needed).
   `scan <dev-url> --locate-only --from <scan.json>` reads the React source of the flagged images from a dev page, at one
   viewport (default `iphone-15`), with no image bytes read and nothing scored. It writes `<scan>.located.json`: the measured

@@ -35,6 +35,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--out <dir>` | directory for the JSON files (default: `.imgtune/scan`) |
 | `--aggressive` | also report a delta 4 column (never used for the claim) |
 | `--viewports <names>` | comma-separated viewport names to measure (default: all six) |
+| `--root <dir>` | the folder project source files are read from, for `--locate-only` and source checks. Default: the nearest folder above the cwd that holds the file, else the nearest with a `package.json` or `.git`. Unread sources are named in the output with the folder they were looked up in |
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--markdown <file>` | write a PR-comment Markdown summary: per page, its top groups and the method |
 | `--fail-over <pct>` | exit 3 when a page's exact + est. share is above this percentage (default: never fail) |
@@ -42,12 +43,14 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--ignore-robots` | scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON) |
 | `--resume` | reuse the complete pages already in `--out` that were scanned with the same options |
 | `--max-pages <N>` | stop after N pages (scanned or resumed); run again with `--resume` to continue |
+| `--no-cache` | do not read or write `.imgtune/cache`. The cache keeps the local encode sizes and scores, so a rescan or a second run reuses them; the numbers are the same either way |
 | `--max-images <N>` | stop after the page that brings the images counted to N (checked between pages) |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file (one per line, `#` comments), a local `sitemap.xml`, or a remote sitemap (same domain only) |
 | `--sample-per-pattern <N>` | with `--urls-from`: at most N URLs per route pattern (`/p/*`, `/c/*`), spread over the pattern |
 | `--storage-state <file>` | a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it |
-| `--recheck <scan.json>` | rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after |
-| `--ids <a,b,c>` | with `--recheck`: only these image ids (from the scan JSON's `images[].id`) |
+| `--recheck <scan.json>` | rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after. Repeat it for several pages: at most three browser contexts run at once over all of them |
+| `--ids <a,b,c>` | with `--recheck`: only these image ids (from the scan JSON's `images[].id`; with several pages, each id is looked up in every page) |
+| `--viewports <names>` | with `--recheck`: measure these viewports instead of the ones where the images rendered |
 | `--locate-only` | read the React owner source of the flagged images (a saving or sharpness growth) from the dev page `<url>`, at one viewport. No image bytes are read, nothing is decoded or scored. Needs `--from` |
 | `--from <scan.json>` | with `--locate-only`: the measured scan of the same page |
 | `--locate-out <file>` | with `--locate-only`: where the joined copy is written (default: the measured file's name with `.located.json`) |
@@ -138,6 +141,7 @@ and dot folders are skipped). See [Repo images and file mode](/guide/repo-images
 | `--format <text\|json>` | `text` (default) or `json` |
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in; see [GPU scoring](#gpu-scoring-gpu)) |
 | `--gpu-device <n>` | the GPU to score on, by its `nvidia-smi` index (implies `--gpu`; default 0) |
+| `--no-cache` | do not read or write `.imgtune/cache` (see `scan --no-cache`) |
 | `-h, --help` | show this help |
 
 Exit status: 0 when every file was measured, 1 when one failed.

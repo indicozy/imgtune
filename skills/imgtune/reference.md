@@ -90,6 +90,13 @@ viewport.
 
 Use `--url <dev-url>` when the located file is not the page you check (the default is the dev page it was located on).
 
+## The result cache
+
+`scan`, `scan --recheck` and `image` keep the local encode sizes and quality scores in `.imgtune/cache` in the folder they
+run in (500 MB at most; the oldest entries go first). A second run on the same pages reuses them, and the numbers are
+the same as a cold run. Use `--no-cache` to compute everything again, for example after changing an encoder. The cache
+is keyed by the original's content hash, so a changed image never reads an old number.
+
 ## When `scan --recheck` says `gone`
 
 `gone` means no image on the page now matches the id, or its source file and URL pattern. For `--sizes-only` it means no
