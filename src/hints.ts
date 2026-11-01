@@ -27,6 +27,8 @@ export interface HintsArgs {
   flat: boolean;
   /** The framework's allowed quality values (Next: images.qualities). Targets are snapped up to one of them. */
   qualities?: number[];
+  /** `--top N`: the N call sites that save the most per view, one line each (no batch, no offset). */
+  top?: number;
 }
 
 /** One hint: an image record reduced to what an agent needs to make the fix. */
@@ -79,7 +81,7 @@ function nonNegativeInteger(name: string, text: string): number {
   return Number(text);
 }
 
-const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offset", "--min-kb", "--format", "--qualities"];
+const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offset", "--min-kb", "--format", "--qualities", "--top"];
 
 /** A list of allowed quality values: whole numbers 1 to 100, separated by commas. Sorted, without repeats. */
 export function parseQualities(text: string): number[] {
@@ -127,6 +129,9 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
       args.minKb = Number(value);
     } else if (arg === "--qualities") {
       args.qualities = parseQualities(value);
+    } else if (arg === "--top") {
+      args.top = nonNegativeInteger(arg, value);
+      if (args.top === 0) throw new Error("--top needs a number of at least 1");
     } else if (arg === "--format") {
       if (value !== "text" && value !== "json") throw new Error(`--format is text or json, not ${safeText(value)}`);
       args.format = value;
@@ -384,8 +389,8 @@ export function combinedSizes(group: HintGroup): string {
   return `max-safe: ${widest}px, the widest measured width (the images on this page differ; one value covers them all)`;
 }
 
-/** The text of a group: its call site, the combined sizes, each page's sizes and rendered widths, the ids, and the quality. */
-export function renderGroup(group: HintGroup, rank: number): string[] {
+/** The heading of a call site: where, the images and pages, and the bytes it saves per view (split when the scan gave the split). */
+export function groupHeadLine(group: HintGroup, rank: number): string {
   const first = group.hints[0];
   const where =
     first.file !== undefined
@@ -394,7 +399,19 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
   const name = first.file !== undefined && first.component[0] !== undefined ? ` (${JSON.stringify(first.component[0])})` : "";
   const sizes = group.hints.every((h) => h.bytes.sizes !== undefined) ? group.hints.reduce((sum, h) => sum + (h.bytes.sizes ?? 0), 0) : undefined;
   const split = sizes !== undefined ? ` = sizes ${kb(sizes)} + quality ${kb(group.saved - sizes)}` : "";
-  const lines = [`${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`];
+  return `${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`;
+}
+
+/** `--top`: the call sites that save the most per view, one line each. */
+export function renderTop(groups: HintGroup[]): string {
+  if (groups.length === 0) return "no images with fix hints\n";
+  return `${groups.map((group, i) => groupHeadLine(group, i + 1)).join("\n")}\n`;
+}
+
+/** The text of a group: its call site, the combined sizes, each page's sizes and rendered widths, the ids, and the quality. */
+export function renderGroup(group: HintGroup, rank: number): string[] {
+  const first = group.hints[0];
+  const lines = [groupHeadLine(group, rank)];
   if (first.kind === "owner") {
     lines.push(
       first.component[0] !== undefined
@@ -486,6 +503,13 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   const dropped = results.reduce((sum, r) => sum + (r.images ?? []).filter((i) => i.fix?.noSaving !== undefined).length, 0);
   if (dropped > 0) notes.push(`${dropped} sizes proposal(s) left out: no saving (their predicted outcome adds bytes or changes nothing)`);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
+  if (args.top !== undefined) {
+    const top = groupHints(filtered).slice(0, args.top);
+    if (args.format === "json") {
+      return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g) })) }, null, 2)}\n`, exitCode: 0 };
+    }
+    return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}`, exitCode: 0 };
+  }
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
     const groups = groupHints(filtered);

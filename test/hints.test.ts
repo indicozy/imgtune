@@ -7,6 +7,7 @@ import {
   combinedSizes,
   groupHints,
   groupSizesOf,
+  renderTop,
   parseQualities,
   savesText,
   snapUp,
@@ -88,6 +89,21 @@ describe("parseHintsArgs", () => {
 
   it("reads several scan files, one per page, so call sites group across pages", () => {
     expect(parseHintsArgs(["a.json", "b.json", "--limit", "3"]).files).toEqual(["a.json", "b.json"]);
+  });
+
+  it("reads --top N: a count of at least one", () => {
+    expect(parseHintsArgs(["a.json", "--top", "10"]).top).toBe(10);
+    expect(() => parseHintsArgs(["a.json", "--top", "0"])).toThrow(/at least 1/);
+  });
+
+  it("prints --top as one line per call site, largest saving first", () => {
+    const A = "https://shop.example/shoes";
+    const B = "https://shop.example/pdp";
+    const groups = groupHints(hintsOf(page([onPage("a", A, "app/src/Card.tsx", 217, "160px", 1000), onPage("b", B, "app/src/Card.tsx", 217, "160px", 1000), onPage("c", A, "app/src/Other.tsx", 9, "33vw", 5000)])));
+    const lines = renderTop(groups).trimEnd().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^1\. "app\/src\/Other\.tsx:9" \("Card"\)  1 image\(s\), 1 page\(s\)  saves 5 KB\/view/);
+    expect(lines[1]).toMatch(/^2\. "app\/src\/Card\.tsx:217" \("Card"\)  2 image\(s\), 2 page\(s\)  saves 2 KB\/view/);
   });
 
   it("refuses a missing file, a bad number, a bad format and an unknown option", () => {
