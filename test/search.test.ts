@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encode, type EncoderProfile } from "../src/encode.js";
-import { componentQuality, minPassingQuality, toTargetQuality } from "../src/search.js";
+import { bisectQuality, componentQuality, confirmBisect, minPassingQuality, toTargetQuality } from "../src/search.js";
 import { ssim, type RawImage } from "../src/ssim.js";
 import { gradientNoise } from "./image-fixtures.js";
 
@@ -60,6 +60,45 @@ describe("minPassingQuality", () => {
     expect(result - firstPassing).toBeGreaterThanOrEqual(0);
     expect(result - firstPassing).toBeLessThanOrEqual(5);
     expect(encodes).toBeLessThanOrEqual(6);
+  });
+});
+
+describe("bisectQuality and confirmBisect", () => {
+  const passesAt = (threshold: number) => async (q: number) => q / 100 >= threshold;
+
+  it("returns the same quality as minPassingQuality, with the window's failing end", async () => {
+    const log: number[] = [];
+    const found = await bisectQuality(dummy, "avif", 85, "cdn", 0.6, 5, qualityStub(log));
+    expect(found).toEqual({ quality: 62, failed: 58, startPassed: true });
+    expect(log).toEqual([85, 55, 70, 62, 58]);
+  });
+
+  it("reports no failing end when every probe passed (the floor is assumed failing, never probed)", async () => {
+    const found = await bisectQuality(dummy, "avif", 85, "cdn", 0, 5, qualityStub([]));
+    expect(found.failed).toBeUndefined();
+    expect(found.startPassed).toBe(true);
+  });
+
+  it("reports a failed start with no window", async () => {
+    expect(await bisectQuality(dummy, "webp", 85, "next-default", 0.9, 5, qualityStub([]))).toEqual({ quality: 85, startPassed: false });
+  });
+
+  it("confirms an answer whose two deciding qualities keep their outcome under the other encoder", async () => {
+    const found = { quality: 62, failed: 58, startPassed: true };
+    expect(await confirmBisect(found, passesAt(0.6))).toBe(true);
+  });
+
+  it("refuses an answer that passes at the failing end, or fails at the answer", async () => {
+    const found = { quality: 62, failed: 58, startPassed: true };
+    expect(await confirmBisect(found, passesAt(0.58))).toBe(false);
+    expect(await confirmBisect(found, passesAt(0.63))).toBe(false);
+  });
+
+  it("confirms a failed start only while it still fails, and a floor window only by its answer", async () => {
+    expect(await confirmBisect({ quality: 85, startPassed: false }, passesAt(0.9))).toBe(true);
+    expect(await confirmBisect({ quality: 85, startPassed: false }, passesAt(0.8))).toBe(false);
+    expect(await confirmBisect({ quality: 30, startPassed: true }, passesAt(0.3))).toBe(true);
+    expect(await confirmBisect({ quality: 30, startPassed: true }, passesAt(0.35))).toBe(false);
   });
 });
 

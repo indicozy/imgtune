@@ -11,7 +11,15 @@ sharp.concurrency(ENCODE_THREADS);
 /** Names the local encoder in result-cache keys: a new sharp or libvips gives new numbers, so it gets new keys. */
 export const ENCODER_ID = `sharp ${sharp.versions.sharp} vips ${sharp.versions.vips}`;
 
-export type EncoderProfile = "next-default" | "cdn";
+/**
+ * `next-default` mirrors Next's optimizer, `cdn` is the generic stand-in at AVIF effort 4, and `cdn-fast` is `cdn` at the
+ * faster AVIF effort the quality search uses while it looks (see remote.ts). A `cdn-fast` number is a search number only:
+ * the final pick is confirmed with `cdn`.
+ */
+export type EncoderProfile = "next-default" | "cdn" | "cdn-fast";
+
+/** AVIF effort of the `cdn-fast` profile (the quality search's encodes). */
+export const FAST_AVIF_EFFORT = 2;
 
 /** Decode the original, auto-rotate, downscale to `width` (never upscale) and return 8-bit RGBA pixels. */
 export async function loadReference(original: Buffer, width: number): Promise<RawImage> {
@@ -53,10 +61,8 @@ function encodeRun(ref: RawImage, format: "avif" | "webp", quality: number, prof
   const source = sharp(ref.data, { raw: { width: ref.width, height: ref.height, channels: 4 } });
   let encoder: Sharp;
   if (format === "avif") {
-    encoder =
-      profile === "next-default"
-        ? source.avif({ quality: Math.max(quality - 20, 1), effort: 3 })
-        : source.avif({ quality, effort: 4 });
+    if (profile === "next-default") encoder = source.avif({ quality: Math.max(quality - 20, 1), effort: 3 });
+    else encoder = source.avif({ quality, effort: profile === "cdn-fast" ? FAST_AVIF_EFFORT : 4 });
   } else {
     encoder = source.webp({ quality });
   }
@@ -66,7 +72,8 @@ function encodeRun(ref: RawImage, format: "avif" | "webp", quality: number, prof
 /**
  * Encode the reference pixels with a local stand-in for the server encoder and decode the result back to RGBA.
  * `next-default` mirrors Next 16's optimizer (next/dist/server/image-optimizer.js ~883-891: AVIF quality
- * max(q-20, 1) with effort 3, WebP quality q). `cdn` is a generic stand-in (AVIF effort 4, WebP defaults).
+ * max(q-20, 1) with effort 3, WebP quality q). `cdn` is a generic stand-in (AVIF effort 4, WebP defaults); `cdn-fast`
+ * is the same at FAST_AVIF_EFFORT.
  *
  * Shared by every caller in the process: an encode of the same pixels at the same format, quality and profile is done
  * once, so a second usage with the same original never re-encodes. The pixels of a reference are fixed by its original
@@ -78,6 +85,19 @@ export async function encode(
   quality: number,
   profile: EncoderProfile,
 ): Promise<{ bytes: number; decoded: RawImage; buffer: Buffer }> {
+  const buffer = await encodedBuffer(ref, format, quality, profile);
+  return { bytes: buffer.length, decoded: await decodeRgba(buffer), buffer };
+}
+
+/**
+ * The bytes of the same encode `encode` makes, without decoding it: for a caller that only needs the size. Shares the
+ * encode cache with `encode`, so either one saves the other the encode.
+ */
+export async function encodedBytes(ref: RawImage, format: "avif" | "webp", quality: number, profile: EncoderProfile): Promise<number> {
+  return (await encodedBuffer(ref, format, quality, profile)).length;
+}
+
+function encodedBuffer(ref: RawImage, format: "avif" | "webp", quality: number, profile: EncoderProfile): Promise<Buffer> {
   const key = `${pixelsKey(ref)}|${format}|${quality}|${profile}`;
   let pending = encodeCache.get(key);
   count("encode calls");
@@ -91,8 +111,7 @@ export async function encode(
     encodeCache.set(key, pending);
     pending.catch(() => encodeCache.delete(key));
   }
-  const buffer = await pending;
-  return { bytes: buffer.length, decoded: await decodeRgba(buffer), buffer };
+  return pending;
 }
 
 /** Encodes run and cache hits served since the last clear. */

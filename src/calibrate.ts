@@ -169,6 +169,46 @@ export async function matchLocalQuality(sizeAt: SizeAt, cdnBytes: number): Promi
   return refine.diff < coarse.diff ? refine.q : c;
 }
 
+/**
+ * The match of matchLocalQuality, found from a guess `start` at another encoder's bytes and confirmed by probes of the
+ * encoder given: the search walks from `start` to the two qualities that bracket the target (the bytes below it at one,
+ * at or above it at the next). Under the monotone assumption the match is then the nearer of the two (a tie goes to the
+ * lower), which is what matchLocalQuality returns. Undefined when the walk takes more than `maxSteps` steps, when the
+ * pick is below 16 (matchLocalQuality searches only 16 to 24 around its coarse point 20, so a lower match is not its
+ * answer), or when the pick has an equal-bytes neighbour (a tie that matchLocalQuality breaks by its coarse point): the
+ * caller must run the full match then.
+ */
+export async function confirmMatch(start: number, sizeAt: SizeAt, cdnBytes: number, maxSteps = 4): Promise<number | undefined> {
+  const memo = new Map<number, Promise<number>>();
+  const bytesAt = (q: number) => {
+    let value = memo.get(q);
+    if (value === undefined) {
+      value = sizeAt(q);
+      memo.set(q, value);
+    }
+    return value;
+  };
+  let q = Math.min(100, Math.max(2, start));
+  let steps = 0;
+  // Walk to the bracket: lower = bytes at q - 1 (below the target), upper = bytes at q (at or above it).
+  while ((await bytesAt(q)) < cdnBytes) {
+    if (q >= 100 || ++steps > maxSteps) return undefined;
+    q++;
+  }
+  while ((await bytesAt(q - 1)) >= cdnBytes) {
+    if (q - 1 < 2 || ++steps > maxSteps) return undefined;
+    q--;
+  }
+  const upper = await bytesAt(q);
+  const lower = await bytesAt(q - 1);
+  const pick = upper - cdnBytes < cdnBytes - lower ? q : q - 1;
+  // A pick on a flat run (equal bytes next to it) is a tie that matchLocalQuality breaks by its coarse point: the full match.
+  if (pick < 16 || pick > 99) return undefined;
+  const bytesPick = pick === q ? upper : lower;
+  if ((await bytesAt(pick - 1)) === bytesPick || (await bytesAt(pick + 1)) === bytesPick) return undefined;
+  return pick;
+}
+
 /** The previous match: every coarse and refine quality is encoded and the nearest is taken. Used when the search cannot verify. */
 export async function matchLocalQualityExhaustive(sizeAt: SizeAt, cdnBytes: number): Promise<{ q: number; diff: number }> {
   const sizes = new Sizes(sizeAt);

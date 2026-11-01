@@ -10,6 +10,8 @@ import { ResultCache } from "../src/result-cache.js";
 import {
   analysePage,
   applyQuality,
+  bisectFast,
+  calibrateFast,
   COMMENT_LIMIT,
   currentQuality,
   decodeRaw,
@@ -64,6 +66,8 @@ import {
 import { parseSrcset } from "../src/srcset-parse.js";
 import type { ImageRecord } from "../src/images.js";
 import type { encode } from "../src/encode.js";
+import { matchLocalQuality } from "../src/calibrate.js";
+import { minPassingQuality } from "../src/search.js";
 import { ssim, type RawImage } from "../src/ssim.js";
 import type { Viewport } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
@@ -1681,5 +1685,93 @@ describe("estimateQuality and the GPU scorer's CPU fallback", () => {
     const keys = await storedKeys(dir);
     expect(keys.some((k) => k.includes("|score|"))).toBe(true);
     expect(keys.some((k) => k.includes("|served|"))).toBe(true);
+  });
+});
+
+/**
+ * An encoder stub for the AVIF search: the decoded image carries the quality and the profile (1 for `cdn-fast`), and the
+ * bytes are five per quality point (the fast profile five and a quarter). The score of a stub image is its quality plus
+ * `fastShift` when it came from the fast profile; the served file (many pixels) scores 90.
+ */
+function profileStub(log: string[]): typeof encode {
+  return (async (_ref: RawImage, _format: "avif" | "webp", quality: number, profile: string) => {
+    log.push(`${profile}:${quality}`);
+    const fast = profile === "cdn-fast";
+    return {
+      bytes: Math.round(quality * (fast ? 5.25 : 5)),
+      decoded: { data: Uint8ClampedArray.of(quality, fast ? 1 : 0), width: 1, height: 1 },
+      buffer: Buffer.alloc(0),
+    };
+  }) as typeof encode;
+}
+const profileScore = (fastShift: number) => (_ref: RawImage, test: RawImage) =>
+  test.width === 1 ? test.data[0] + (test.data[1] === 1 ? fastShift : 0) : 90;
+
+describe("the AVIF search at the fast effort, confirmed at effort 4", () => {
+  const stubRef: RawImage = { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+
+  /** Runs the estimate with the fast search on or off; returns the estimate and the encodes it made. */
+  async function estimateWith(fastSearch: boolean, fastShift: number, current: number, bytes: number) {
+    const pixels = gradientNoise(160, 120, 4, 13);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).webp({ quality: 60 }).toBuffer();
+    const log: string[] = [];
+    const estimate = await estimateQuality(
+      { original, served, format: "avif", bytes, width: 160, height: 120, current },
+      [2],
+      { encode: profileStub(log), score: profileScore(fastShift), fastSearch },
+    );
+    return { estimate, log };
+  }
+
+  it("gives the same target and ratio as the search at effort 4 when the fast scores run below it", async () => {
+    const exact = await estimateWith(false, 0, 100, 425);
+    const fast = await estimateWith(true, -3, 100, 425);
+    expect(fast.estimate).toEqual(exact.estimate);
+    expect(fast.log.some((entry) => entry.startsWith("cdn-fast:"))).toBe(true);
+    expect(fast.log.filter((entry) => entry.startsWith("cdn:")).length).toBeLessThan(exact.log.length);
+  });
+
+  it("gives the same target and ratio as the search at effort 4 when the fast scores run above it (the fallback)", async () => {
+    const exact = await estimateWith(false, 0, 100, 425);
+    const fast = await estimateWith(true, 6, 100, 425);
+    expect(fast.estimate).toEqual(exact.estimate);
+  });
+
+  it("runs the whole search at effort 4 when fastSearch is off", async () => {
+    const off = await estimateWith(false, -3, 100, 425);
+    expect(off.log.some((entry) => entry.startsWith("cdn-fast:"))).toBe(false);
+  });
+
+  it("bisectFast returns the effort-4 bisection's answer for any fast shift, from fewer effort-4 encodes", async () => {
+    for (const shift of [-6, -3, -1, 0, 2, 5]) {
+      for (const bar of [70, 78, 84]) {
+        const exactLog: string[] = [];
+        const expected = await minPassingQuality(stubRef, "avif", 92, "cdn", bar, 5, {
+          encode: profileStub(exactLog),
+          score: profileScore(0),
+        });
+        const log: string[] = [];
+        const encode4 = profileStub(log);
+        const got = await bisectFast(stubRef, "avif", 92, bar, {
+          encode: encode4,
+          score: profileScore(shift),
+          scoreAt: async (q) => q + 0,
+          scoreFast: async (q) => q + shift,
+        });
+        expect(got).toBe(expected);
+      }
+    }
+  });
+
+  it("calibrateFast returns the effort-4 match for any byte offset of the fast encoder", async () => {
+    const cdnSize = (q: number) => Promise.resolve(q * 5);
+    for (const offsetPercent of [-3, 0, 4, 9]) {
+      const fastSize = (q: number) => Promise.resolve(Math.round(q * 5 * (1 + offsetPercent / 100)));
+      for (const bytes of [120, 262, 340, 425, 470]) {
+        const expected = await matchLocalQuality(cdnSize, bytes);
+        expect(await calibrateFast(fastSize, cdnSize, bytes)).toBe(expected);
+      }
+    }
   });
 });

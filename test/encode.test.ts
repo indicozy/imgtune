@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { clearEncodeCache, encode, encodeCacheStats, loadReference } from "../src/encode.js";
+import { clearEncodeCache, encode, encodedBytes, encodeCacheStats, FAST_AVIF_EFFORT, loadReference } from "../src/encode.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
 const original = await rawToPng(gradientNoise(480, 320, 10, 11));
@@ -14,6 +14,28 @@ describe("loadReference", () => {
 
     const small = await loadReference(original, 2000);
     expect(small.width).toBe(480);
+  });
+});
+
+describe("encodedBytes and the fast profile", () => {
+  it("gives the bytes of the same encode, without decoding it, and shares the encode cache", async () => {
+    clearEncodeCache();
+    const ref = await loadReference(original, 240);
+    const bytes = await encodedBytes(ref, "avif", 50, "cdn");
+    expect(encodeCacheStats()).toEqual({ hits: 0, misses: 1 });
+    expect((await encode(ref, "avif", 50, "cdn")).bytes).toBe(bytes);
+    expect(encodeCacheStats()).toEqual({ hits: 1, misses: 1 });
+  });
+
+  it("keeps the fast profile's encodes apart from effort 4's, and runs the fast AVIF effort", async () => {
+    clearEncodeCache();
+    const ref = await loadReference(original, 240);
+    const fast = await encodedBytes(ref, "avif", 50, "cdn-fast");
+    const full = await encodedBytes(ref, "avif", 50, "cdn");
+    expect(encodeCacheStats()).toEqual({ hits: 0, misses: 2 });
+    expect(FAST_AVIF_EFFORT).toBeLessThan(4);
+    expect(fast).toBeGreaterThan(0);
+    expect(full).toBeGreaterThan(0);
   });
 });
 
