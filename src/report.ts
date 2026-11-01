@@ -6,6 +6,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { safeText } from "./text.js";
 import type { CompareReport } from "./compare.js";
+import { surveyNote } from "./survey.js";
 
 export const LEDGER_STATUSES = ["fixed", "verified", "failed", "reverted", "skipped", "unmatched", "reported"] as const;
 export type LedgerStatus = (typeof LEDGER_STATUSES)[number];
@@ -166,6 +167,7 @@ export function renderReport(lines: LedgerLine[], dropped: number, compare: Comp
   if (compare === undefined) {
     out.push("No compare file given: run `imgtune compare <before.json> <after.json> --format json` and pass it with `--compare`.", "");
   } else {
+    if (compare.survey) out.push(surveyNote(compare.views.length), "");
     const p = compare.paired;
     out.push(`Paired images (${p.images}, matched by URL pattern and alt): before ${kb(p.beforeBytes)}/view, after ${kb(p.afterBytes)}/view.`);
     out.push("");
@@ -246,6 +248,7 @@ export function mergeCompares(list: CompareReport[]): CompareReport {
     disappeared: list.flatMap((r) => r.disappeared),
     changes: list.flatMap((r) => r.changes).sort((x, y) => y.saved - x.saved || x.afterId.localeCompare(y.afterId)),
     dropped: { before: sum((r) => r.dropped.before), after: sum((r) => r.dropped.after) },
+    ...(list.every((r) => r.survey === true) ? { survey: true as const } : {}),
   };
 }
 
@@ -255,6 +258,10 @@ export async function reportCommand(argv: string[], cwd: string): Promise<{ outp
   const { lines, dropped } = await readLedger(args.ledger, cwd);
   const read = [];
   for (const file of args.compares) read.push(await readCompare(file, cwd));
+  // A survey's numbers are exact savings only: they are never added to a full scan's, so the two cannot share a report.
+  if (read.some((r) => r.survey === true) && read.some((r) => r.survey !== true)) {
+    throw new Error("the compare files mix survey scans (--survey) with full scans: the report needs one kind");
+  }
   const compare = read.length > 0 ? mergeCompares(read) : undefined;
   const markdown = renderReport(lines, dropped, compare);
   if (args.out !== undefined) await writeFile(resolve(cwd, args.out), markdown, "utf8");

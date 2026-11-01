@@ -46,6 +46,7 @@ import { countDocumentNavigations, gotoParsed, NETWORK_IDLE_TIMEOUT_MS, settlePa
 import { makeScorer, type Scorer } from "./metric.js";
 import { countGpuFallbacks, gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
+import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, contentHash, ResultCache } from "./result-cache.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
 
@@ -433,6 +434,8 @@ export interface ScanArgs {
   pageConcurrency?: number;
   /** The cap on the wait for network idle after scroll, in ms (--idle-timeout). Undefined: the default cap. */
   idleTimeoutMs?: number;
+  /** --survey: the fast site-wide preset (see survey.ts and scanPlan). */
+  survey?: boolean;
   /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
   urlsFrom?: string;
   /** At most this many URLs per route pattern of the --urls-from list. */
@@ -521,6 +524,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--gpu") args.gpu ??= { device: 0 };
     else if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--harness") args.harness = true;
+    else if (arg === "--survey") args.survey = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -1966,11 +1970,13 @@ export interface ScanRecordOptions {
   harness?: true;
   /** The network-idle cap, when it is not the default. Absent otherwise, so older scans still match. */
   idleTimeoutMs?: number;
+  /** A --survey scan: its numbers are exact savings only. Absent (not false) otherwise, so older scans still match. */
+  survey?: true;
 }
 
 /** The options of one page's output, for the completeness check of --resume. */
 export function recordOptionsOf(
-  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs">,
+  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey">,
 ): ScanRecordOptions {
   return {
     imgtuneVersion: IMGTUNE_VERSION,
@@ -1981,6 +1987,7 @@ export function recordOptionsOf(
     storageState: opts.storageState !== undefined,
     scorer: opts.gpu !== undefined ? "gpu" : "cpu",
     ...(opts.harness === true ? { harness: true as const } : {}),
+    ...(opts.survey === true ? { survey: true as const } : {}),
     ...(opts.idleTimeoutMs !== undefined && opts.idleTimeoutMs !== NETWORK_IDLE_TIMEOUT_MS ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
   };
 }
@@ -2243,6 +2250,34 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
 // Run: pages in order, one JSON file each
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** What a scan runs with: the flags, after the --survey preset has filled in each setting that no flag named. */
+export interface ScanPlan {
+  /** Viewport names; undefined means all of them. */
+  viewports?: string[];
+  quality: boolean;
+  pageConcurrency: number;
+  idleTimeoutMs: number;
+  survey: boolean;
+}
+
+/** The settings of a scan. An explicit flag always wins over the --survey preset, and --no-quality is the same as the preset's. */
+export function scanPlan(args: ScanArgs): ScanPlan {
+  const survey = args.survey === true;
+  return {
+    viewports: args.viewports ?? (survey ? [...SURVEY_VIEWPORTS] : undefined),
+    quality: args.quality && !survey,
+    pageConcurrency: args.pageConcurrency ?? (survey ? SURVEY_PAGE_CONCURRENCY : 1),
+    idleTimeoutMs: args.idleTimeoutMs ?? (survey ? SURVEY_IDLE_TIMEOUT_MS : NETWORK_IDLE_TIMEOUT_MS),
+    survey,
+  };
+}
+
+/** The survey label of a set of pages: from the first survey page, or undefined when none is a survey. */
+export function surveyLabelOf(results: PageResult[]): string | undefined {
+  const survey = results.find((result) => result.options?.survey === true);
+  return survey === undefined ? undefined : surveyNote(survey.viewports.length);
+}
+
 export interface ScanOptions {
   /** A browser the caller started and closes (several scans share it). Without it, the scan starts and closes its own. */
   browser?: Browser;
@@ -2284,6 +2319,8 @@ export interface ScanOptions {
   pageConcurrency?: number;
   /** The cap on the wait for network idle after scroll, in ms (--idle-timeout). Default NETWORK_IDLE_TIMEOUT_MS; 0 skips the wait. */
   idleTimeoutMs?: number;
+  /** A --survey scan: recorded in the page options, so it is never resumed or compared as a full scan. */
+  survey?: boolean;
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
@@ -2788,6 +2825,8 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
 /** Per-site line for hosts with two or more scanned pages. */
 export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string): string {
   const lines: string[] = [];
+  const survey = surveyLabelOf(results);
+  if (survey !== undefined) lines.push(survey, "");
   const note = scorerNote(results);
   if (note !== undefined) lines.push(note, "");
   for (const result of results) lines.push(...renderPage(result, aggressive, hintsFile?.(result)), "");
@@ -2863,6 +2902,8 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   if (aggressive) head.push(`exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}`);
   const align = ["---", "---", "---:", "---:", "---:", "---:", "---:"].slice(0, width);
   const lines: string[] = ["## imgtune scan", ""];
+  const survey = surveyLabelOf(results);
+  if (survey !== undefined) lines.push(survey, "");
   const note = scorerNote(results);
   if (note !== undefined) lines.push(note, "");
   lines.push(mdRow(head, width), mdRow(align, width));
@@ -3016,7 +3057,8 @@ export async function rootOf(root: string | undefined, cwd: string): Promise<str
 /** `imgtune scan`: the arguments after `scan`. The JSON files are written to --out; --markdown and --summary-json too. */
 export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<ScanCommandResult> {
   const args = parseScanArgs(argv);
-  const viewports = DEFAULT_VIEWPORTS.filter((v) => !args.viewports || args.viewports.includes(v.name)).map((v) => ({ ...v }));
+  const plan = scanPlan(args);
+  const viewports = DEFAULT_VIEWPORTS.filter((v) => !plan.viewports || plan.viewports.includes(v.name)).map((v) => ({ ...v }));
   let urls = args.urls;
   if (args.urlsFrom !== undefined) {
     const source = await urlsFromSource(args.urlsFrom, cwd);
@@ -3039,16 +3081,17 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     cwd,
     root,
     aggressive: args.aggressive,
-    quality: args.quality,
+    quality: plan.quality,
     viewports,
     log,
     ignoreRobots: args.ignoreRobots === true,
     harness: args.harness === true,
+    survey: plan.survey,
     resume: args.resume === true,
     maxPages: args.maxPages,
     maxImages: args.maxImages,
-    pageConcurrency: args.pageConcurrency,
-    idleTimeoutMs: args.idleTimeoutMs,
+    pageConcurrency: plan.pageConcurrency,
+    idleTimeoutMs: plan.idleTimeoutMs,
     storageState,
     gpu: args.gpu,
     cache: args.noCache !== true,

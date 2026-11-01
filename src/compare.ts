@@ -11,6 +11,7 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import type { ImageRecord, ImagePerViewport } from "./images.js";
 import { joinKeyOfRecord, readMeasuredScan, type MeasuredPage } from "./locate-join.js";
 import { safeText } from "./text.js";
+import { surveyNote } from "./survey.js";
 
 export interface CompareArgs {
   before: string;
@@ -103,6 +104,8 @@ export interface CompareReport {
   after: string;
   /** The viewports both scans measured. */
   views: string[];
+  /** Both scans are --survey scans: the numbers are exact savings only (see survey.ts). Absent for two full scans. */
+  survey?: true;
   paired: {
     /** Paired images that are compared (layout unchanged, with at least one view both scans loaded). */
     images: number;
@@ -255,7 +258,14 @@ function layoutChanged(x: ImageRecord, y: ImageRecord, views: string[]): boolean
 }
 
 /** Compares two scans of one page. Pure: the caller loads the files. */
+/** Why a survey scan and a full scan are not compared: the survey has exact savings only, the full scan has an estimate too. */
+export const SURVEY_MIX_MESSAGE =
+  "a survey scan (--survey) and a full scan have different numbers (exact savings only, against exact and est.): scan both the same way";
+
+const isSurvey = (page: MeasuredPage): boolean => page.options?.survey === true;
+
 export function compareScans(before: MeasuredPage, after: MeasuredPage, dropped: { before: number; after: number }): CompareReport {
+  if (isSurvey(before) !== isSurvey(after)) throw new Error(SURVEY_MIX_MESSAGE);
   const views = commonViews(before, after);
   const imgOnly = (records: ImageRecord[]) => records.filter((r) => r.kind !== "css-background");
   const { pairs, before: onlyBefore, after: onlyAfter } = pairImages(imgOnly(before.images), imgOnly(after.images));
@@ -373,6 +383,7 @@ export function compareScans(before: MeasuredPage, after: MeasuredPage, dropped:
     disappeared: unpaired(onlyBefore),
     changes,
     dropped,
+    ...(isSurvey(before) ? { survey: true as const } : {}),
   };
 }
 
@@ -392,6 +403,7 @@ function pathOf(url: string): string {
 export function renderCompare(report: CompareReport, limit: number): string {
   const { paired, excluded } = report;
   const lines: string[] = [];
+  if (report.survey) lines.push(surveyNote(report.views.length));
   lines.push(`compare: ${pathOf(report.before)} (before) -> ${pathOf(report.after)} (after), ${report.views.length} viewport(s) in both`);
   lines.push(`paired images: ${paired.images} compared (matched by srcset URL pattern and alt, then rendered layout, in document order)`);
   lines.push(`  per view, paired images: before ${kb(paired.beforeBytes)}, after ${kb(paired.afterBytes)}`);
@@ -460,6 +472,12 @@ export async function compareCommand(argv: string[], cwd: string): Promise<{ out
   const args = parseCompareArgs(argv);
   const before = await readMeasuredScan(args.before, cwd);
   const after = await readMeasuredScan(args.after, cwd);
+  if (isSurvey(before.page) !== isSurvey(after.page)) {
+    const kind = (page: MeasuredPage): string => (isSurvey(page) ? "a survey scan" : "a full scan");
+    throw new Error(
+      `cannot compare ${safeText(args.before)} (${kind(before.page)}) with ${safeText(args.after)} (${kind(after.page)}): ${SURVEY_MIX_MESSAGE}`,
+    );
+  }
   const report = compareScans(before.page, after.page, { before: before.dropped, after: after.dropped });
   if (args.format === "json") return { output: `${JSON.stringify(report, null, 2)}\n`, exitCode: 0 };
   return { output: renderCompare(report, args.limit), exitCode: 0 };
