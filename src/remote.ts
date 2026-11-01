@@ -21,7 +21,7 @@ import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveOwners } from "./locate.js";
-import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
+import { buildImageRecords, hasFix, rungOfPage, type ImageRecord, type ResolvedSource } from "./images.js";
 import {
   backgroundPage,
   backgroundTotals,
@@ -2580,6 +2580,7 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
   const n = result.page;
   const lines = [
     head,
+    ...(rungOfPage(result.url) === "measured-harness" ? ["  measured in isolation (harness route): the component, not the page a visitor sees"] : []),
     `  viewports: ${safeText(result.viewports.join(", "))}`,
     `  image bytes per view   ${kb(n.meanImageBytes)}`,
     `  saving exact           ${pct(n.exactPct)}`,

@@ -7,7 +7,7 @@
 // built in buildBackgroundRecords below.
 
 import { sha1 } from "./atomic.js";
-import { searchHintsOf, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
+import { rungOfPage, searchHintsOf, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
 import { loaderName, sanitizeText, urlPattern, type OwnerTrace } from "./locate.js";
 import type { Viewport } from "./types.js";
 
@@ -329,7 +329,7 @@ export function buildBackgroundRecords(input: {
         width: member.needed > 0 ? member.needed : undefined,
         bytes: { saved, addedForSharpness: 0, sizes: 0, quality: saved },
       },
-      evidence: { rung: "measured-page", notes },
+      evidence: { rung: rungOfPage(pageUrl), notes },
     };
     if (best !== undefined) record.fix.format = best;
     records.push(record);

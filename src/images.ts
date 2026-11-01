@@ -20,6 +20,24 @@ import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
 
 export type { SizesBasis, SizesBranch };
 
+/** The first path segment of a harness route: a page the agent adds to measure a component in isolation. */
+export const HARNESS_SEGMENT = "__imgtune";
+
+/** The evidence rung a scanned page's measurements earn (see DECISIONS: measured-page > measured-harness). */
+export type MeasuredRung = "measured-page" | "measured-harness";
+
+/**
+ * The rung of a page's measurements: a harness route (`/__imgtune/<component>`) measures the component in isolation, not
+ * the page the user sees, so its records are `measured-harness`. Any other scanned URL is `measured-page`.
+ */
+export function rungOfPage(pageUrl: string): MeasuredRung {
+  try {
+    return new URL(pageUrl).pathname.split("/")[1] === HARNESS_SEGMENT ? "measured-harness" : "measured-page";
+  } catch {
+    return "measured-page";
+  }
+}
+
 export interface ImageLocator {
   /** Component names, nearest first (dev builds of React only). */
   component: string[];
@@ -108,7 +126,7 @@ export interface ImagePerViewport {
 }
 
 export interface ImageFix {
-  sizes?: { value: string; basis: SizesBasis; rung: "measured-page"; branches: SizesBranch[] };
+  sizes?: { value: string; basis: SizesBasis; rung: MeasuredRung; branches: SizesBranch[] };
   /** Plain images: the device pixel width the file needs at the reference viewport. */
   width?: number;
   quality?: {
@@ -165,7 +183,7 @@ export interface ImageRecord {
     diffs: { viewport: string; nodes: LayoutNode[] }[];
   };
   fix: ImageFix;
-  evidence: { rung: "measured-page"; notes: string[] };
+  evidence: { rung: MeasuredRung; notes: string[] };
 }
 
 /** A source resolved for one observed element: its file and line, and its component names. */
@@ -259,6 +277,7 @@ export function hasFix(record: ImageRecord): boolean {
 export function buildImageRecords(input: BuildInput): ImageRecord[] {
   const { pageUrl, observations, instances, refName, resolved } = input;
   const viewportCount = observations.length;
+  const rung = rungOfPage(pageUrl);
 
   // One key per element and viewport: the source key plus the ordinal among elements sharing it, in document order.
   const keyOf = new Map<Instance, string>();
@@ -351,7 +370,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
 
     const fix: ImageFix = { bytes: { saved, addedForSharpness, sizes: savedSizes, quality: saved - savedSizes } };
     if (sizes) {
-      fix.sizes = { value: sizes.value, basis: sizes.basis, rung: "measured-page", branches: sizes.branches };
+      fix.sizes = { value: sizes.value, basis: sizes.basis, rung, branches: sizes.branches };
       const sized = sizes.branches.map((b) => b.basis);
       const formulas = sized.filter((b) => b === "layout-formula").length;
       notes.push(
@@ -379,8 +398,11 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       perViewport,
       layoutChain,
       fix,
-      evidence: { rung: "measured-page", notes },
+      evidence: { rung, notes },
     };
+    if (rung === "measured-harness") {
+      notes.unshift(`measured in isolation: harness route ${sanitizeText(new URL(pageUrl).pathname, 120)} (not the page a visitor sees)`);
+    }
     if (source?.file) {
       const how = source.check === "owner" ? "owner call site, the image is inside its component" : source.check === "image" ? "verified: the line renders an image" : "not checked";
       notes.push(`source: ${source.file}:${source.line ?? 0} (React owner, dev build; ${how})`);
