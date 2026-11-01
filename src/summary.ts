@@ -3,10 +3,17 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { hintsCommand } from "./hints.js";
-import { safeText } from "./text.js";
+import { safeText, shellWord } from "./text.js";
 import { pageFileName, type PageResult, siteNumbers, surveyLabelOf } from "./remote.js";
 import { candidatesOf, patternRanking } from "./worst.js";
 import type { RunManifest } from "./run.js";
+
+/** The phases a manifest may name: the only values a manifest's phase name can take when it is printed. */
+export const PHASE_NAMES = ["survey", "deep", "locate", "hints"] as const;
+/** A plain file name in the run directory: letters, digits, dots, dashes and underscores, not starting with a dot. */
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** The largest count a manifest may carry (pages, images, patterns): far above any real run. */
+const MAX_COUNT = 1_000_000_000;
 
 /** The most lines the summary prints. */
 export const MAX_SUMMARY_LINES = 40;
@@ -76,11 +83,11 @@ const pctText = (value: number): string => `${value.toFixed(1)}%`;
 
 /** The lines of the summary, capped at MAX_SUMMARY_LINES (the row limits keep it under the cap; the cap is the backstop). */
 export function renderSummary(input: SummaryInput): string {
-  const lines: string[] = [input.heading];
+  const lines: string[] = [safeText(input.heading)];
   if (input.out !== undefined) lines.push(`out: ${safeText(input.out)}`);
   if (input.timings.length > 0) {
     const total = input.timings.reduce((sum, t) => sum + t.seconds, 0);
-    const parts = input.timings.map((t) => `${t.name} ${t.seconds.toFixed(0)} s`).join(", ");
+    const parts = input.timings.map((t) => `${safeText(t.name)} ${t.seconds.toFixed(0)} s`).join(", ");
     lines.push(`time: ${total.toFixed(0)} s total (${parts})`);
   }
   lines.push("");
@@ -313,7 +320,8 @@ export async function summaryCommand(argv: string[], cwd: string): Promise<{ out
 }
 
 async function runDirInput(dir: string, cwd: string): Promise<{ input: SummaryInput; exitCode: number }> {
-  const manifest = JSON.parse(await readFile(join(dir, "run.json"), "utf8")) as RunManifest;
+  const manifestFile = join(dir, "run.json");
+  const manifest = parseManifest(await readFile(manifestFile, "utf8"), manifestFile);
   const survey = (await exists(join(dir, "survey"))) ? await readPages(join(dir, "survey")) : undefined;
   const deep = (await exists(join(dir, "deep"))) ? await readPages(join(dir, "deep")) : [];
   const warnings: string[] = [];
@@ -321,19 +329,20 @@ async function runDirInput(dir: string, cwd: string): Promise<{ input: SummaryIn
   warnings.push(...pageWarnings("deep", deep));
   warnings.push(...(await locateWarnings(dir)));
   warnings.push(...(manifest.warnings ?? []));
-  const qualities = manifest.options.qualities !== undefined ? ` --qualities ${manifest.options.qualities.join(",")}` : "";
+  // Every value in a printed command is quoted (shellWord): an agent pastes these lines.
+  const qualities = manifest.options.qualities !== undefined ? ` --qualities ${shellWord(manifest.options.qualities.join(","))}` : "";
   const next: string[] = [];
   if (manifest.stop != null) {
-    next.push(`after the fix, run again: imgtune run --urls-from ${showPath(join(dir, manifest.urls.file), cwd)} --out <new dir>`);
+    next.push(`after the fix, run again: imgtune run --urls-from ${shellWord(showPath(join(dir, manifest.urls.file), cwd))} --out <new dir>`);
   } else if (deep.some((p) => p.status === "ok")) {
     const located = (await exists(join(dir, "located"))) && (await readdir(join(dir, "located"))).some((n) => n.endsWith(".json"));
     if (located) {
-      next.push(`imgtune hints ${showPath(join(dir, "located"), cwd)}/*.json --limit 10${qualities}`);
+      next.push(`imgtune hints ${shellWord(showPath(join(dir, "located"), cwd))}/*.json --limit 10${qualities}`);
     } else {
       // The worst deep page, the one the table shows first (scan order is not the worst order).
       const worst = [...deep.filter((p) => p.status === "ok" && p.page !== undefined)].sort((a, b) => exactOf(b) - exactOf(a))[0];
-      next.push(`locate: imgtune scan <dev-url> --locate-only --from ${showPath(join(dir, "deep", pageFileName(new URL(worst.url))), cwd)}`);
-      next.push(`imgtune hints ${showPath(join(dir, "deep"), cwd)}/*.json --limit 10${qualities}`);
+      next.push(`locate: imgtune scan <dev-url> --locate-only --from ${shellWord(showPath(join(dir, "deep", pageFileName(new URL(worst.url))), cwd))}`);
+      next.push(`imgtune hints ${shellWord(showPath(join(dir, "deep"), cwd))}/*.json --limit 10${qualities}`);
     }
   }
   const hintsFile = join(dir, "hints.json");
@@ -357,7 +366,9 @@ async function scanFilesInput(files: string[], cwd: string, qualities?: string):
   const pages: PageResult[] = [];
   for (const file of files) pages.push(await readPageFile(resolve(cwd, file)));
   const callSites = await callSitesOf(files, cwd, qualities);
-  const next = [`imgtune hints ${files.map((f) => showPath(f, cwd)).join(" ")} --limit 10${qualities ? ` --qualities ${qualities}` : ""}`];
+  const next = [
+    `imgtune hints ${files.map((f) => shellWord(showPath(f, cwd))).join(" ")} --limit 10${qualities ? ` --qualities ${shellWord(qualities)}` : ""}`,
+  ];
   return {
     heading: `imgtune summary: ${pages.length} scan file(s)`,
     timings: [],
@@ -367,4 +378,81 @@ async function scanFilesInput(files: string[], cwd: string, qualities?: string):
     warnings: pageWarnings("scan", pages),
     next,
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The manifest: run.json is read back from disk, so every field the summary prints or quotes is checked first
+// ---------------------------------------------------------------------------------------------------------------------
+
+type Json = Record<string, unknown>;
+
+function bad(file: string, field: string, why: string): never {
+  throw new Error(`${safeText(file)} is not a valid run manifest: ${field} ${why}`);
+}
+
+function objectOf(value: unknown, file: string, field: string): Json {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) bad(file, field, "must be an object");
+  return value as Json;
+}
+
+function integerOf(value: unknown, file: string, field: string, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    bad(file, field, `must be a whole number from ${min} to ${max}`);
+  }
+  return value;
+}
+
+function numberOf(value: unknown, file: string, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) bad(file, field, "must be a number of at least 0");
+  return value;
+}
+
+function stringOf(value: unknown, file: string, field: string): string {
+  if (typeof value !== "string") bad(file, field, "must be a string");
+  return value;
+}
+
+/**
+ * Parses and checks a run.json. A field the summary prints or puts in a command is checked here: qualities are whole numbers,
+ * urls.file is a plain name in the run directory (no path, no `..`), counts and exitCode are numbers, phase names are known.
+ * Anything else is an error that names the field, so nothing unchecked reaches the terminal or a pasted command.
+ */
+export function parseManifest(text: string, file: string): RunManifest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${safeText(file)} is not JSON`);
+  }
+  const root = objectOf(parsed, file, "the file");
+  if (root.tool !== "imgtune") bad(file, "tool", 'must be "imgtune"');
+  const urls = objectOf(root.urls, file, "urls");
+  const fileName = stringOf(urls.file, file, "urls.file");
+  if (!PLAIN_NAME.test(fileName) || fileName.includes("..")) bad(file, "urls.file", "must be a plain file name in the run directory");
+  integerOf(urls.count, file, "urls.count", 0, MAX_COUNT);
+  integerOf(urls.patterns, file, "urls.patterns", 0, MAX_COUNT);
+  const options = objectOf(root.options, file, "options");
+  if (options.qualities !== undefined) {
+    if (!Array.isArray(options.qualities) || options.qualities.length === 0) bad(file, "options.qualities", "must be a list of whole numbers");
+    for (const quality of options.qualities) integerOf(quality, file, "options.qualities", 1, 100);
+  }
+  integerOf(root.exitCode, file, "exitCode", 0, 255);
+  if (!Array.isArray(root.phases)) bad(file, "phases", "must be a list");
+  for (const phase of root.phases) {
+    const entry = objectOf(phase, file, "phases[]");
+    if (!(PHASE_NAMES as readonly unknown[]).includes(entry.name)) bad(file, "phases[].name", `must be one of ${PHASE_NAMES.join(", ")}`);
+    numberOf(entry.seconds, file, "phases[].seconds");
+    for (const key of ["pages", "ok", "broken", "exitCode"]) if (entry[key] !== undefined) numberOf(entry[key], file, `phases[].${key}`);
+  }
+  if (root.stop !== null && root.stop !== undefined) {
+    const stop = objectOf(root.stop, file, "stop");
+    stringOf(stop.phase, file, "stop.phase");
+    stringOf(stop.reason, file, "stop.reason");
+    stringOf(stop.fix, file, "stop.fix");
+  }
+  if (root.warnings !== undefined) {
+    if (!Array.isArray(root.warnings)) bad(file, "warnings", "must be a list of strings");
+    for (const warning of root.warnings) stringOf(warning, file, "warnings[]");
+  }
+  return root as unknown as RunManifest;
 }

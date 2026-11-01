@@ -1,7 +1,7 @@
 // `imgtune run`: the whole agent flow in one command. Survey every URL, full-scan the worst pages, locate them on a dev
 // server (optional), group the fix hints by call site, and write a run directory with a manifest that names every file and
 // every command it ran. The summary it prints is the one `imgtune summary <run dir>` prints.
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { writeFileAtomic } from "./atomic.js";
@@ -26,7 +26,7 @@ import {
 import { patternOf, sampleByPattern, urlsFromSource } from "./urls.js";
 import { candidatesOf, selectDeep } from "./worst.js";
 import { showPath, summaryCommand } from "./summary.js";
-import { safeText } from "./text.js";
+import { safeText, shellWord } from "./text.js";
 import { IMGTUNE_VERSION } from "./version.js";
 import type { Viewport } from "./types.js";
 
@@ -125,11 +125,6 @@ function argValue(argv: string[], index: number, name: string): string {
 export function devUrlOf(devOrigin: string, pageUrl: string): string {
   const page = new URL(pageUrl);
   return `${devOrigin}${page.pathname}${page.search}`;
-}
-
-/** A shell word for the commands in the manifest: quoted when it has characters a shell would read. */
-export function shellWord(text: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, "'\\''")}'`;
 }
 
 /** The URL list of a run: the named URLs, then --urls-from (deduplicated), then the per-pattern sample. */
@@ -331,7 +326,7 @@ export async function runCommand(
       command: ["imgtune hints", ...hintFiles.map((f) => shellWord(show(f))), "--format json", ...(args.qualities !== undefined ? ["--qualities", args.qualities.join(",")] : []), `> ${shellWord(show(hintsFile))}`].join(" "),
     });
     const hints = await hintsCommand(hintArgv, cwd);
-    await writeFile(hintsFile, hints.output);
+    await writeFileAtomic(hintsFile, hints.output, { root: outRoot });
     phases.push({ name: "hints", seconds: secondsSince(hintsStart), pages: hintFiles.length, exitCode: hints.exitCode });
   }
 

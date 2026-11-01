@@ -3,11 +3,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { devUrlOf, parseRunArgs, runCommand, shellWord, type RunManifest } from "../src/run.js";
+import { devUrlOf, parseRunArgs, runCommand, type RunManifest } from "../src/run.js";
+import { shellWord } from "../src/text.js";
 import { runScan, scanCommand, type PageResult } from "../src/remote.js";
 import { summaryCommand, MAX_SUMMARY_LINES } from "../src/summary.js";
 import { BROKEN_EXIT } from "../src/broken.js";
@@ -178,6 +179,18 @@ describe("imgtune run on a local site", () => {
     const hintsCommand = manifest.commands.find((c) => c.phase === "hints");
     expect(hintsCommand?.command).toMatch(/located\/.*\.located\.json/);
     expect(hintsCommand?.command).not.toMatch(/deep\/.*\.json .*deep\//);
+  }, 300_000);
+
+  it("refuses to write hints.json through a symlink, and writes nothing outside the run directory", async () => {
+    const out = join(scratch, "run-symlink");
+    await mkdir(out, { recursive: true });
+    const outside = join(scratch, "outside-target.txt");
+    await writeFile(outside, "untouched");
+    await symlink(outside, join(out, "hints.json"));
+    await expect(runCommand([`${base}/p/one`, "--deep", "1", "--out", out], scratch, () => undefined)).rejects.toThrow(
+      /refusing to write through symlink/,
+    );
+    expect(await readFile(outside, "utf8")).toBe("untouched");
   }, 300_000);
 
   it("stops before the deep phase when more than half of the survey is broken, with exit 4 and the fix", async () => {

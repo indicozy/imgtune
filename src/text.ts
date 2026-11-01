@@ -52,3 +52,12 @@ export function mdCode(text: string): string {
   const clean = safeText(text).replace(/`/g, "ʼ").replace(/</g, "‹").replace(/\|/g, "\\|");
   return `\`${clean === "" ? "-" : clean}\``;
 }
+
+/**
+ * A shell word for a printed command: the text as it is when it has only characters a shell reads literally, else
+ * single-quoted with each embedded quote closed, escaped and reopened. Every path or value a printed command interpolates
+ * goes through this, so a name in a run directory or a manifest cannot run anything when an agent pastes the command.
+ */
+export function shellWord(text: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, "'\\''")}'`;
+}

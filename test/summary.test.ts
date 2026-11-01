@@ -1,6 +1,10 @@
 // The one-screen summary: its sections, the 40-line cap, the call-site and path forms. The renderer is pure.
 import { describe, expect, it } from "vitest";
-import { callSitesFromJson, labelOf, MAX_SUMMARY_LINES, renderSummary, showPath, type CallSite, type SummaryInput } from "../src/summary.js";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { callSitesFromJson, labelOf, MAX_SUMMARY_LINES, parseManifest, renderSummary, showPath, summaryCommand, type CallSite, type SummaryInput } from "../src/summary.js";
 import { okPage, otherPage } from "./page-fixtures.js";
 
 const site = (i: number): CallSite => ({
@@ -153,5 +157,78 @@ describe("helpers", () => {
     expect(sites[0]).toMatchObject({ file: "src/Card.tsx", line: 42, component: "Card", saved: 2048, pages: 1 });
     expect(sites[1]).toMatchObject({ reason: "search Tile in src/**/*.tsx", component: "Tile" });
     expect(sites[1].file).toBeUndefined();
+  });
+});
+
+describe("run.json is checked before anything from it is printed", () => {
+  const good = {
+    tool: "imgtune",
+    version: "0.1.0",
+    urls: { count: 4, patterns: 2, file: "urls.txt" },
+    options: { deep: 2, qualities: [75, 85, 100], noCache: false, ignoreRobots: false, storageState: false },
+    phases: [{ name: "survey", seconds: 3.2 }],
+    stop: null,
+    exitCode: 0,
+  };
+  const withPatch = (patch: Record<string, unknown>) => JSON.stringify({ ...good, ...patch });
+  const rejects = (text: string, field: RegExp) => expect(() => parseManifest(text, "run.json")).toThrow(field);
+
+  it("accepts a manifest of the shape the run writes", () => {
+    expect(parseManifest(JSON.stringify(good), "run.json").urls.file).toBe("urls.txt");
+  });
+
+  it("refuses qualities that are not whole numbers", () => {
+    rejects(withPatch({ options: { ...good.options, qualities: [75.5] } }), /options\.qualities must be a whole number/);
+    rejects(withPatch({ options: { ...good.options, qualities: ["85"] } }), /options\.qualities/);
+    rejects(withPatch({ options: { ...good.options, qualities: [] } }), /options\.qualities must be a list/);
+  });
+
+  it("refuses a urls.file that is not a plain name in the run directory", () => {
+    for (const file of ["../escape.txt", "/etc/passwd", "sub/urls.txt", "a..b", ".hidden", "urls.txt; rm -rf ~"]) {
+      rejects(withPatch({ urls: { ...good.urls, file } }), /urls\.file must be a plain file name/);
+    }
+  });
+
+  it("refuses counts and exitCode that are not numbers", () => {
+    rejects(withPatch({ urls: { ...good.urls, count: "4" } }), /urls\.count must be a whole number/);
+    rejects(withPatch({ urls: { ...good.urls, patterns: null } }), /urls\.patterns/);
+    const { exitCode: _omit, ...noExit } = good;
+    rejects(JSON.stringify(noExit), /exitCode must be a whole number/);
+  });
+
+  it("refuses a phase name that is not one of the known phases (no escape sequence reaches the heading)", () => {
+    rejects(withPatch({ phases: [{ name: "\u001b[2Jsurvey", seconds: 1 }] }), /phases\[\]\.name must be one of survey, deep, locate, hints/);
+  });
+
+  it("refuses a file that is not a manifest, and says which file", () => {
+    expect(() => parseManifest("not json", "run.json")).toThrow(/run\.json is not JSON/);
+    expect(() => parseManifest(JSON.stringify({ tool: "other" }), "run.json")).toThrow(/tool must be "imgtune"/);
+  });
+
+  it("quotes every value a printed next command carries: a hostile run directory name is one inert word", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "imgtune-quote-"));
+    try {
+      // The directory's name is the hostile part: a space, a quote, and a command substitution.
+      const dir = join(scratch, "x'y $(touch pwned)");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "run.json"), JSON.stringify({ ...good, stop: { phase: "survey", reason: "r", fix: "f" } }));
+      const { output } = await summaryCommand([dir], scratch);
+      const line = output.split("\n").find((l) => l.includes("after the fix"));
+      expect(line).toBeDefined();
+      // The word after --urls-from, as a shell reads it: it must evaluate to the path, and nothing may have run.
+      const word = /--urls-from (\S.*?) --out/.exec(line as string)?.[1] as string;
+      expect(word.startsWith("'")).toBe(true);
+      const evaluated = execFileSync("sh", ["-c", `printf '%s' ${word}`], { cwd: scratch }).toString();
+      expect(evaluated).toBe(`x'y $(touch pwned)/urls.txt`);
+      expect(await readFile(join(scratch, "pwned"), "utf8").then(() => true, () => false)).toBe(false);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("prints the heading with control characters removed", () => {
+    const text = renderSummary(input({ heading: "imgtune run:\u001b[31m 4 URL(s)\u0007" }));
+    expect(text).not.toMatch(/\u001b|\u0007/);
+    expect(text.split("\n")[0]).toBe("imgtune run:[31m 4 URL(s)");
   });
 });
