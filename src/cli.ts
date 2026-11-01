@@ -6,6 +6,7 @@ import { locateCommand } from "./locate-only.js";
 import { sizesRecheck } from "./sizes-recheck.js";
 import { imageCommand } from "./image-file.js";
 import { compareCommand } from "./compare.js";
+import { reportCommand } from "./report.js";
 import { ChromiumMissingError } from "./browser.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
@@ -175,6 +176,19 @@ Options:
   -h, --help            show this help
 `;
 
+const REPORT_HELP = `Usage: imgtune report [options]
+
+Builds a Markdown run report from the agent's ledger (.imgtune/ledger.jsonl, one JSON line per usage: id, file, rung, fix,
+status, verified, and reason for a reverted, failed, skipped or unmatched usage). With --compare, the bytes come from the JSON
+of imgtune compare --format json. Ledger values are data: they are printed as code spans, never as Markdown.
+
+Options:
+  --ledger <file>       the ledger (default .imgtune/ledger.jsonl)
+  --compare <file>      the JSON of imgtune compare --format json (the bytes section)
+  --out <file>          write the Markdown to this file instead of printing it
+  -h, --help            show this help
+`;
+
 const USAGE = `Usage: imgtune <command> [options]
 
 Commands:
@@ -182,8 +196,9 @@ Commands:
   hints     print a batch of the per-image fix hints of a scan file
   image     measure image files or URLs without a page (--width, --dpr, --formats, --write)
   compare   the per-image before and after of two scans of one page (saved and sharpness bytes)
+  report    a Markdown run report from the ledger (and the compare JSON)
 
-Run "imgtune scan --help", "imgtune hints --help", "imgtune image --help" or "imgtune compare --help" for the options of each command.
+Run "imgtune scan --help", "imgtune hints --help", "imgtune image --help", "imgtune compare --help" or "imgtune report --help" for the options of each command.
 
 Options:
   --version           print the version
@@ -200,6 +215,7 @@ async function main(): Promise<void> {
     if (argv[0] === "hints") process.stdout.write(HINTS_HELP);
     else if (argv[0] === "image") process.stdout.write(IMAGE_HELP);
     else if (argv[0] === "compare") process.stdout.write(COMPARE_HELP);
+    else if (argv[0] === "report") process.stdout.write(REPORT_HELP);
     else process.stdout.write(argv.includes("scan") ? SCAN_HELP : USAGE);
     return;
   }
@@ -239,6 +255,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (argv[0] === "report") {
+    const outcome = await reportCommand(argv.slice(1), process.cwd());
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
+    return;
+  }
+
   if (argv[0] === "compare") {
     const outcome = await compareCommand(argv.slice(1), process.cwd());
     process.stdout.write(outcome.output);
@@ -247,7 +270,7 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] !== "scan") {
-    console.error(`imgtune: Unknown command "${argv[0]}": expected scan, hints, image or compare`);
+    console.error(`imgtune: Unknown command "${argv[0]}": expected scan, hints, image, compare or report`);
     process.exitCode = 2;
     return;
   }
