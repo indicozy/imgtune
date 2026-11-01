@@ -60,11 +60,17 @@ export interface SearchHints {
   urlPattern?: string;
 }
 
+/**
+ * Names the scanned app gives a component it cannot name. They say nothing about the file, so they are never searched for
+ * (the hint says "owner unknown" instead).
+ */
+export const OWNER_PLACEHOLDERS: ReadonlySet<string> = new Set(["UnknownOwner", "Unknown", "Anonymous"]);
+
 /** The search clues of an element without a resolved source; undefined when there are none. */
 export function searchHintsOf(locator: Pick<ImageLocator, "component" | "alt" | "urlPattern">): SearchHints | undefined {
   const hints: SearchHints = {};
   const name = locator.component[0];
-  if (name !== undefined && COMPONENT_NAME.test(name)) {
+  if (name !== undefined && COMPONENT_NAME.test(name) && !OWNER_PLACEHOLDERS.has(name)) {
     hints.component = name;
     hints.fileName = `${name}.(tsx|jsx|ts|js)`;
     hints.glob = `**/${name}.*`;

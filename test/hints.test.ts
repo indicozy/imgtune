@@ -164,7 +164,8 @@ describe("renderHint and renderHints", () => {
     const lines = renderHint(plain, 2);
     expect(lines[0]).toBe('2. c1c774f4dfb8  "body > img"  https://shop.example/bags');
     expect(lines[1]).toBe("   width 120px (device pixels needed)");
-    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe("   owner unknown");
+    expect(lines).toHaveLength(4);
   });
 
   it("keeps ten hints under a small token budget", () => {
@@ -244,6 +245,21 @@ describe("locator verification and the source-map limits", () => {
     expect(lines[0]).toContain('"components/ProductGrid.tsx:8" (owner call site) ("ProductCard")');
     expect(lines[1]).toBe("   owner call site: the image is rendered inside <ProductCard>; search that component for the <img>");
     expect(lines.join("\n")).not.toContain("(unverified)");
+  });
+
+  it("says owner unknown when no file and no searchable name resolved", () => {
+    const unknown: Hint = { ...base, file: undefined, line: undefined, component: [], find: undefined };
+    const lines = renderHint(unknown, 1);
+    expect(lines.join("\n")).toContain("   owner unknown");
+    expect(lines.join("\n")).not.toContain("find:");
+  });
+
+  it("never searches for a placeholder owner name", () => {
+    expect(searchHintsOf({ component: ["UnknownOwner"], alt: "Bag", urlPattern: undefined })).toEqual({ alt: "Bag" });
+    expect(searchHintsOf({ component: ["ProductCard"], urlPattern: undefined })).toMatchObject({
+      component: "ProductCard",
+      glob: "**/ProductCard.*",
+    });
   });
 
   it("reads only same-origin maps, and at most MAX_MAPS_PER_SCAN in one scan", async () => {

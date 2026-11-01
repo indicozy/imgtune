@@ -181,6 +181,7 @@ export function renderHint(hint: Hint, rank: number): string[] {
   if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
+  if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
   const parts: string[] = [];
   if (hint.quality) {
     const target = hint.quality.target !== undefined ? ` -> ${hint.quality.target}` : "";
