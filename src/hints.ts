@@ -341,7 +341,10 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
   if (targets.length > 0) {
     const current = Math.max(...targets.map((q) => q.current));
     const withTarget = targets.filter((q) => q.target !== undefined).map((q) => q.target as number);
-    const target = withTarget.length > 0 ? ` -> ${Math.max(...withTarget)}` : "";
+    // The group's target is the max of the images' targets; when any was snapped, the raw max is shown as the start.
+    const snapped = targets.some((q) => q.snapFrom !== undefined);
+    const raw = Math.max(...targets.map((q) => q.snapFrom ?? q.target ?? 0));
+    const target = withTarget.length > 0 ? qualityTarget({ ...targets[0], current, target: Math.max(...withTarget), snapFrom: snapped ? raw : undefined }) : "";
     lines.push(`   quality ${current}${target} (max of ${targets[0].samples}, ${safeText(targets[0].group)})`);
   }
   const ids = group.hints.map((h) => h.id);

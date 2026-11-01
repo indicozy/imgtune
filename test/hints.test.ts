@@ -415,6 +415,13 @@ describe("grouped hints (one entry per call site)", () => {
     expect(combinedSizes(group)).toMatch(/^max-safe: 0px/);
   });
 
+  it("shows the snap on the call site's quality line, from the largest raw target", () => {
+    const pageOf = [onPage("a", A, card, 217, "160px"), onPage("b", B, card, 217, "160px")];
+    const hints = hintsOf(page(pageOf), [75, 85, 100]);
+    const [group] = groupHints(hints);
+    expect(renderGroup(group, 1).join("\n")).toContain("quality 90 q80 -> 85 (allowed: 75,85,100) (max of 8, Card)");
+  });
+
   it("lists the ids of a group, eight at most, and the rest as a count", () => {
     const many = Array.from({ length: 10 }, (_, i) => onPage(`id${i}`, A, card, 217, "160px"));
     const [group] = groupHints(hintsOf(page(many)));
