@@ -137,6 +137,8 @@ export interface ImageFix {
 
 export interface ImageRecord {
   id: string;
+  /** A CSS background layer (see backgrounds.ts). Absent for an <img>, srcset or picture element. */
+  kind?: "css-background";
   page: string;
   locator: ImageLocator;
   tunable: { width: boolean; quality: boolean; reason?: string };

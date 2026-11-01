@@ -81,6 +81,8 @@ export interface LocateJoin {
 
 /** A record is flagged when the measured scan found a saving on it, or sharpness growth to undo. */
 export function isFlagged(record: ImageRecord): boolean {
+  // A CSS background is not an <img>: the dev page's images cannot join it, so it is never located.
+  if (record.kind === "css-background") return false;
   return record.fix.bytes.saved > 0 || record.fix.bytes.addedForSharpness > 0;
 }
 

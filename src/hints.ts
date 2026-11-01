@@ -48,6 +48,8 @@ export interface Hint {
   classes?: string;
   /** Where to look for the element in the project when no file resolved (see SearchHints). */
   find?: { component: string; glob: string };
+  /** A CSS background layer: there is no sizes attribute, so the fix is a file at the width, or image-set(). */
+  background?: true;
   /** The rendered width range over the viewports the image was measured at, in CSS px. */
   rendered?: { min: number; max: number };
   /** Each measured viewport's width and the rendered width of the image there (the points a group's sizes is fitted to). */
@@ -169,6 +171,7 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
       hint.verified = record.locator.verified;
     }
     if (record.locator.kind !== undefined) hint.kind = record.locator.kind;
+    if (record.kind === "css-background") hint.background = true;
     if (record.locator.testid !== undefined) hint.testid = record.locator.testid;
     if (record.locator.alt !== undefined) hint.alt = record.locator.alt;
     if (record.locator.classes) hint.classes = record.locator.classes;
@@ -271,7 +274,9 @@ export function renderHint(hint: Hint, rank: number): string[] {
   if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
-  if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
+  if (hint.background === true) {
+    lines.push("   css background: no sizes in CSS; serve a file at that width, or image-set() with the density or width variants");
+  } else if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
   const parts: string[] = [];
   if (hint.quality) parts.push(`quality ${hint.quality.current}${qualityTarget(hint.quality)} (max of ${hint.quality.samples}, ${safeText(hint.quality.group)})`);
   if (hint.format) parts.push(`format ${hint.format.current ?? "?"}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${hint.format.best}` : ""}`);

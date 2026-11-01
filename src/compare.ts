@@ -257,7 +257,8 @@ function layoutChanged(x: ImageRecord, y: ImageRecord, views: string[]): boolean
 /** Compares two scans of one page. Pure: the caller loads the files. */
 export function compareScans(before: MeasuredPage, after: MeasuredPage, dropped: { before: number; after: number }): CompareReport {
   const views = commonViews(before, after);
-  const { pairs, before: onlyBefore, after: onlyAfter } = pairImages(before.images, after.images);
+  const imgOnly = (records: ImageRecord[]) => records.filter((r) => r.kind !== "css-background");
+  const { pairs, before: onlyBefore, after: onlyAfter } = pairImages(imgOnly(before.images), imgOnly(after.images));
   const changes: ComparedImage[] = [];
   const excluded: CompareReport["excluded"] = {
     layoutChanged: { images: 0, beforeBytes: 0, afterBytes: 0, list: [] },

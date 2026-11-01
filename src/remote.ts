@@ -22,6 +22,22 @@ import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
+import {
+  backgroundPage,
+  backgroundTotals,
+  buildBackgroundRecords,
+  type BackgroundPage,
+  type BackgroundTotals,
+  displayedCssWidth,
+  MAX_BACKGROUND_ELEMENTS,
+  neededDevicePixels,
+  parseBackgroundImage,
+  parseBackgroundSize,
+  pickLoaded,
+  type BackgroundInstance,
+  type BackgroundLayer,
+  type ObservedBackground,
+} from "./backgrounds.js";
 import { applySizesOutcome } from "./sizes-outcome.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
@@ -841,6 +857,8 @@ export interface ViewportObservation {
   blockedRequests: number;
   nextjs: boolean;
   images: ObservedImage[];
+  /** The elements with a CSS background image (none in a light read). */
+  backgrounds?: ObservedBackground[];
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
 }
@@ -867,7 +885,7 @@ function isNavigationError(err: unknown): boolean {
 }
 
 interface PageView {
-  seen: { nextjs: boolean; images: ObservedImage[] };
+  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[] };
   html: string;
 }
 
@@ -882,7 +900,7 @@ export const MAX_OWNERS = 8;
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
 async function readView(page: Page, light = false): Promise<PageView> {
   const seen = await page.evaluate(
-    ({ depth, maxOwners, light }) => {
+    ({ depth, maxOwners, maxBackgrounds, light }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1046,9 +1064,37 @@ async function readView(page: Page, light = false): Promise<PageView> {
           },
         };
       });
-      return { nextjs, images };
+      // CSS background images: the elements whose computed background-image names a file (a gradient or none is not one).
+      // Light reads (locate, sizes-only) take none. Inline data: URIs are replaced before they leave the browser.
+      const NO_BACKGROUND = new Set(["IMG", "SVG", "PICTURE", "SOURCE", "SCRIPT", "STYLE", "LINK", "META", "HEAD", "TITLE", "NOSCRIPT", "IFRAME", "OBJECT", "VIDEO"]);
+      const backgrounds: ObservedBackground[] = [];
+      if (!light) {
+        for (const el of Array.from(document.querySelectorAll("*"))) {
+          if (backgrounds.length >= maxBackgrounds) break;
+          if (NO_BACKGROUND.has(el.tagName.toUpperCase())) continue;
+          const cs = getComputedStyle(el);
+          const value = cs.backgroundImage;
+          if (!value || value === "none" || !/url\(|image-set\(/.test(value)) continue;
+          const rect = el.getBoundingClientRect();
+          // The element's own fiber only: an ancestor's owner would name a component that does not draw this background.
+          const fiberKey = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
+          backgrounds.push({
+            index: backgrounds.length,
+            selector: cssPath(el),
+            classes: el.getAttribute("class") ?? "",
+            testid: el.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
+            owners: ownersOf(fiberKey ? (el as unknown as Record<string, Fiber>)[fiberKey] : undefined),
+            width: rect.width,
+            height: rect.height,
+            hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
+            backgroundImage: value.replace(/url\((["']?)data:[^)]*\)/g, 'url("data:")'),
+            backgroundSize: cs.backgroundSize,
+          });
+        }
+      }
+      return { nextjs, images, backgrounds };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, light },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, light },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -1203,6 +1249,7 @@ async function observeViewport(
         blockedRequests,
         nextjs: seen.nextjs,
         images: seen.images,
+        backgrounds: seen.backgrounds,
         responses,
       };
     } finally {
@@ -1333,6 +1380,16 @@ async function readProjectSource(projectDir: string, file: string): Promise<stri
   }
 }
 
+/**
+ * Component names from an owner trace. They come from the scanned page, so only identifiers are kept. A production build
+ * leaves one- and two-letter minified names, which say nothing about the source, so they are dropped too.
+ */
+function componentNamesOf(owners: OwnerTrace[]): string[] {
+  return owners
+    .flatMap((o) => (o.name !== undefined && COMPONENT_NAME.test(o.name) && o.name.length > 2 ? [o.name] : []))
+    .slice(0, MAX_OWNERS);
+}
+
 async function resolveSources(
   ctx: AnalysisContext,
   observations: ViewportObservation[],
@@ -1345,11 +1402,7 @@ async function resolveSources(
       if (wanted && !wanted(img)) continue;
       const owners = img.locator?.owners ?? [];
       const found = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
-      // Component names come from the scanned page, so only identifiers are kept. A production build leaves one- and
-      // two-letter minified names, which say nothing about the source, so they are dropped too.
-      const component = owners
-        .flatMap((o) => (o.name !== undefined && COMPONENT_NAME.test(o.name) && o.name.length > 2 ? [o.name] : []))
-        .slice(0, MAX_OWNERS);
+      const component = componentNamesOf(owners);
       const check = found ? await checkSource(ctx, texts, found.file, found.line, component[0]) : undefined;
       resolved.set(img, { file: found?.file, line: found?.line, component, check });
     }
@@ -1358,6 +1411,87 @@ async function resolveSources(
 }
 
 const formatName = (format: string | undefined): string | undefined => (format === "jpg" ? "jpeg" : format);
+
+/**
+ * The owner of each CSS background element, by its index (the first viewport that has it). Owners give the component
+ * and, when the source resolves, its file. No project file is checked: a background's owner is not an image line.
+ */
+async function resolveBackgroundSources(ctx: AnalysisContext, observations: ViewportObservation[]): Promise<Map<number, ResolvedSource>> {
+  const resolved = new Map<number, ResolvedSource>();
+  for (const obs of observations) {
+    for (const bg of obs.backgrounds ?? []) {
+      if (resolved.has(bg.index)) continue;
+      const found = bg.owners.length > 0 ? await resolveOwners(bg.owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
+      resolved.set(bg.index, { file: found?.file, line: found?.line, component: componentNamesOf(bg.owners) });
+    }
+  }
+  return resolved;
+}
+
+/**
+ * One layer of a CSS background at one viewport. The file is the candidate the browser loaded; the needed pixels come from
+ * the box and the background-size (see backgrounds.ts). The saving is a local resize to the needed width at the same
+ * format (est.): a layer has no alternative file to measure, and no quality sweep.
+ */
+async function measureBackground(
+  ctx: AnalysisContext,
+  obs: ViewportObservation,
+  bg: ObservedBackground,
+  layerIndex: number,
+  layer: BackgroundLayer,
+  size: string,
+): Promise<BackgroundInstance> {
+  const dpr = obs.viewport.dpr;
+  const instance: BackgroundInstance = {
+    viewport: obs.viewport,
+    bg,
+    layer: layerIndex,
+    url: "",
+    bytes: 0,
+    pixelWidth: 0,
+    displayedCss: 0,
+    needed: 0,
+    undersized: false,
+    est: 0,
+    estAggressive: 0,
+    size,
+  };
+  const skip = (reason: string): BackgroundInstance => ({ ...instance, skipped: reason });
+  if (bg.hidden) return skip("hidden");
+  if (bg.width < MIN_RENDERED_PX || bg.height < MIN_RENDERED_PX) return skip("under 16 px");
+  if (layer.dataUri) return skip("data URI");
+  const chosen = pickLoaded(layer.candidates, (url) => obs.responses.get(url)?.buffer !== undefined, dpr);
+  if (!chosen) return skip("not loaded");
+  const response = obs.responses.get(chosen.url) as ResponseRecord;
+  const served = response.pixels;
+  if (response.contentType?.toLowerCase().includes("svg") || served?.format === "svg") return skip("vector");
+  if (!served) return skip("not decodable");
+  const natural = { width: served.width / chosen.resolution, height: served.height / chosen.resolution };
+  const displayed = displayedCssWidth(size, { width: bg.width, height: bg.height }, natural);
+  if (displayed === undefined || !Number.isFinite(displayed) || displayed <= 0) return skip("background-size not read");
+  const needed = neededDevicePixels(displayed, dpr);
+  Object.assign(instance, {
+    url: chosen.url,
+    bytes: response.bytes,
+    pixelWidth: served.width,
+    format: formatName(served.format),
+    displayedCss: displayed,
+    needed,
+    undersized: served.width < UNDERSIZED_RATIO * needed,
+  });
+  if (served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
+    const key = `${chosen.url}|${needed}`;
+    let pending = ctx.resized.get(key);
+    if (!pending) {
+      count("background resize estimates");
+      pending = measure("background resize estimate", () => resizedEstimate(response.buffer as Buffer, served.format as string, needed)).catch(() => undefined);
+      ctx.resized.set(key, pending);
+    }
+    const resized = await pending;
+    if (resized) instance.est = instance.estAggressive = Math.max(0, response.bytes - resized.bytes);
+  }
+  return instance;
+}
 
 async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: ObservedImage): Promise<Instance> {
   const dpr = obs.viewport.dpr;
@@ -1613,6 +1747,8 @@ export interface ViewportReport {
   estAggressiveSaved?: number;
   sharpnessGrowth: number;
   images: ImageReport[];
+  /** The CSS background layers at this viewport (not in the totals above). Absent in a light read. */
+  backgrounds?: BackgroundTotals;
 }
 
 export interface GroupReport {
@@ -1685,6 +1821,8 @@ export interface PageResult {
   images?: ImageRecord[];
   /** Lazy images that never loaded at any viewport. */
   notLoaded?: number;
+  /** The CSS background layers of the page: a separate line, not in the headline (see backgrounds.ts). */
+  backgrounds?: BackgroundPage;
   /** Written once the page is done: a page without it (an interrupted run) is scanned again by --resume. */
   complete?: true;
   /** The options the page was scanned with: --resume reuses a page only when they are the same. */
@@ -1865,6 +2003,22 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   const sources = await resolveSources(ctx, observations);
   if (ctx.quality) await estimateQualities(ctx, instances, refName);
   for (const inst of instances) applyQuality(inst);
+  // CSS background layers: measured apart. They stay out of the totals, the groups and the counts below (the page's
+  // `backgrounds` line reports them), so the headline numbers are the images' alone.
+  const bgInstances: BackgroundInstance[] = [];
+  for (const obs of observations) {
+    for (const bg of obs.backgrounds ?? []) {
+      const layers = parseBackgroundImage(bg.backgroundImage);
+      const sizes = parseBackgroundSize(bg.backgroundSize);
+      for (let k = 0; k < layers.length; k++) {
+        const layer = layers[k];
+        // A gradient or none layer is not an image. Its size still counts in the list, so the index of the layers match.
+        if (layer.candidates.length === 0 && !layer.dataUri) continue;
+        bgInstances.push(await measureBackground(ctx, obs, bg, k, layer, sizes[k % sizes.length]));
+      }
+    }
+  }
+  const bgSources = await resolveBackgroundSources(ctx, observations);
 
   const perViewport: Record<string, ViewportReport> = {};
   const totals: ViewportTotals[] = [];
@@ -1883,6 +2037,9 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
       estAggressiveSaved: ctx.aggressive ? vt.estAggressive : undefined,
       sharpnessGrowth: vt.growth,
       images: own.map(toReport),
+      ...(obs.backgrounds !== undefined
+        ? { backgrounds: backgroundTotals(bgInstances.filter((i) => i.viewport.name === obs.viewport.name)) }
+        : {}),
     };
   }
 
@@ -1916,6 +2073,13 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   await measure("sizes outcome", () =>
     applySizesOutcome(images, widths, observations.length, async (url) => (await ctx.fetcher.get(url, { allowPrivate: ctx.allowPrivate }))?.length),
   );
+  const backgroundRecords = buildBackgroundRecords({
+    pageUrl: ctx.pageUrl,
+    viewports: observations.map((o) => o.viewport),
+    instances: bgInstances,
+    refName,
+    sources: bgSources,
+  });
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
@@ -1929,8 +2093,9 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
       blockedRequests: observations.reduce((sum, o) => sum + o.blockedRequests, 0),
       byLoader,
     },
-    images,
+    images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
+    ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
   };
 }
 
@@ -2423,6 +2588,12 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
     `  sharpness (separate)   +${n.sharpnessKB.toFixed(1)} KB`,
   ];
   if (aggressive) lines.push(`  exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}  ${pct(n.aggressiveExactEstPct ?? 0)}`);
+  const bg = result.backgrounds;
+  if (bg) {
+    lines.push(
+      `  CSS backgrounds (not in the lines above): ${bg.layers} layer(s), ${kb(bg.servedBytes)}/view served, ${kb(bg.estSaved)}/view est. saving, ${bg.undersized} undersized`,
+    );
+  }
   const hinted = (result.images ?? []).filter(hasFix).length;
   if (hinted > 0 && hintsFile !== undefined) lines.push(`  ${hinted} images with fix hints: run \`imgtune hints ${safeText(hintsFile)}\``);
   if (result.groups.length > 0) {

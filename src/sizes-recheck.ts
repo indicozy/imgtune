@@ -167,14 +167,15 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
   const measuredPath = new URL(measured.url).pathname;
   if (new URL(target).pathname !== measuredPath) throw new Error(`the dev page path is not the measured page's ${safeText(measuredPath)}`);
 
+  // A CSS background has no sizes attribute to judge: the sizes check is for <img> elements (the full recheck measures it).
   const byId = new Map(measured.images.map((record) => [record.id, record]));
   let selected: ImageRecord[];
   if (args.ids !== undefined) {
     const missing = args.ids.filter((id) => !byId.has(id));
     if (missing.length > 0) throw new Error(`no image ${missing.map((id) => safeText(id)).join(", ")} in ${safeText(args.file)}`);
-    selected = args.ids.map((id) => byId.get(id) as ImageRecord);
+    selected = args.ids.map((id) => byId.get(id) as ImageRecord).filter((r) => r.kind !== "css-background");
   } else {
-    selected = measured.images.filter(hasFix);
+    selected = measured.images.filter((r) => hasFix(r) && r.kind !== "css-background");
   }
   if (selected.length === 0) return { output: "no images to recheck\n", exitCode: 0 };
 
