@@ -14,9 +14,9 @@ import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
-import { matchLocalQuality } from "./calibrate.js";
+import { confirmMatch, matchLocalQuality, type SizeAt } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
-import { encode, ENCODE_THREADS, ENCODER_ID } from "./encode.js";
+import { encode, encodedBytes, ENCODE_THREADS, ENCODER_ID, type EncoderProfile } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
@@ -45,7 +45,7 @@ import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { countDocumentNavigations, gotoParsed, NETWORK_IDLE_TIMEOUT_MS, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
-import { minPassingQuality } from "./search.js";
+import { bisectQuality, confirmBisect, minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
 import { EstimateRegistry, hashOf, internBuffer, withEstimates, type EstimateStore } from "./estimate-jobs.js";
@@ -738,6 +738,11 @@ export interface QualityDeps {
    * under the GPU's key only when this did not move while it was computed: a fallback's CPU score is never kept under it.
    */
   cpuScored?: () => number;
+  /**
+   * AVIF only: search at the fast effort and confirm the answer at effort 4 (see bisectFast and calibrateFast). false runs
+   * the whole search at effort 4. The answer is the same either way when the confirmation holds.
+   */
+  fastSearch?: boolean;
 }
 
 export interface QualityEstimate {
@@ -750,6 +755,76 @@ export interface QualityEstimate {
 }
 
 const clampQuality = (q: number): number => Math.min(100, Math.max(1, Math.round(q)));
+
+/**
+ * The calibration match at the fast effort, confirmed at effort 4. The fast bytes run a little above effort 4's, so the
+ * target is scaled by their ratio at the first match and matched again; the match is then checked at effort 4 from two
+ * probes (confirmMatch). When that does not hold, the full match at effort 4 is run, so the result never differs.
+ */
+export async function calibrateFast(sizeFast: SizeAt, sizeAt: SizeAt, bytes: number): Promise<number> {
+  const first = await matchLocalQuality(sizeFast, bytes);
+  const ratio = (await sizeAt(first)) / (await sizeFast(first));
+  if (Number.isFinite(ratio) && ratio > 0) {
+    const confirmed = await confirmMatch(await matchLocalQuality(sizeFast, bytes / ratio), sizeAt, bytes);
+    if (confirmed !== undefined) {
+      count("fast calibration confirmed");
+      return confirmed;
+    }
+  }
+  count("fast calibration fallback");
+  return matchLocalQuality(sizeAt, bytes);
+}
+
+/** Fast bisections tried before the search gives up on the fast effort and runs at effort 4 (each one is confirmed). */
+const FAST_ROUNDS = 2;
+
+/**
+ * The bisection for the lowest passing quality at the fast effort, confirmed at effort 4 from the two qualities that
+ * decided it (confirmBisect). The fast scores run below effort 4's, so a failed confirmation moves the fast bar by the
+ * difference measured at the quality that decided it, and the bisection runs again (FAST_ROUNDS times at most). When no
+ * round confirms, the bisection runs at effort 4, so the result never differs.
+ */
+export async function bisectFast(
+  reference: RawImage,
+  format: "avif",
+  start: number,
+  bar: number,
+  deps: { encode: typeof encode; score: Scorer; scoreAt: (q: number) => Promise<number>; scoreFast: (q: number) => Promise<number> },
+): Promise<number> {
+  let fastBar = bar;
+  for (let round = 1; round <= FAST_ROUNDS; round++) {
+    const found = await bisectQuality(reference, format, start, "cdn-fast", fastBar, SCAN_TOLERANCE, {
+      encode: deps.encode,
+      score: deps.score,
+      scoreAt: deps.scoreFast,
+    });
+    if (await confirmBisect(found, async (q) => (await deps.scoreAt(q)) >= bar)) {
+      count(`fast bisect confirmed in round ${round}`);
+      return found.quality;
+    }
+    const at = found.failed ?? found.quality;
+    fastBar = bar - ((await deps.scoreAt(at)) - (await deps.scoreFast(at)));
+  }
+  count("fast bisect fallback");
+  return minPassingQuality(reference, format, start, "cdn", bar, SCAN_TOLERANCE, {
+    encode: deps.encode,
+    score: deps.score,
+    scoreAt: deps.scoreAt,
+  });
+}
+
+/** A function of one quality, computed once per quality. */
+function memoized<T>(fn: (q: number) => Promise<T>): (q: number) => Promise<T> {
+  const memo = new Map<number, Promise<T>>();
+  return (q) => {
+    let value = memo.get(q);
+    if (value === undefined) {
+      value = fn(q);
+      memo.set(q, value);
+    }
+    return value;
+  };
+}
 
 /** The bytes of the AVIF that meets `bar`, or undefined when none from FORMAT_START_QUALITY up to 100 does. */
 async function avifBytesAtBar(reference: RawImage, bar: number, enc: typeof encode, score: Scorer): Promise<number | undefined> {
@@ -773,6 +848,8 @@ async function avifBytesAtBar(reference: RawImage, bar: number, enc: typeof enco
  * calibrated to the file's bytes (calibrationOffset); the bar is the local encode's score at the current quality minus
  * delta (never under SCAN_THRESHOLD); the lowest passing quality gives the projected bytes by local ratio. For JPEG and
  * PNG (no local encoder) the bar is the file's own score minus delta, and the estimate is the AVIF that meets it.
+ * An AVIF is searched at the fast effort and its calibration and bisection are confirmed at effort 4 (calibrateFast,
+ * bisectFast), so the numbers reported are the effort-4 ones.
  */
 export async function estimateQuality(input: QualityInput, deltas: number[], deps: QualityDeps): Promise<QualityEstimate | undefined> {
   const enc = deps.encode ?? encode;
@@ -800,11 +877,22 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
       else count("cache writes skipped: CPU score");
       return value;
     };
-    const sizeAt = (q: number) => cached(`bytes|${format}|${q}|cdn`, async () => (await enc(reference, format, q, "cdn")).bytes);
+    // The bytes of a local encode: without an injected encoder the size-only path (no decode), which shares the encode cache.
+    const bytesOf = (q: number, profile: EncoderProfile) =>
+      deps.encode ? deps.encode(reference, format, q, profile).then((out) => out.bytes) : encodedBytes(reference, format, q, profile);
+    // Effort 4 ("cdn"): the numbers the estimate reports.
+    const sizeAt = (q: number) => cached(`bytes|${format}|${q}|cdn`, () => bytesOf(q, "cdn"));
     const scoreAt = (q: number) =>
       cached(`score|${format}|${q}|cdn`, async () => score(reference, (await enc(reference, format, q, "cdn")).decoded), true);
+    // The search's own encodes: AVIF at the fast effort ("cdn-fast"), confirmed at effort 4 below. Not cached: their keys
+    // would have to name the effort, and only the confirmed numbers are kept.
+    const fast = format === "avif" && deps.fastSearch !== false;
+    const sizeFast = memoized((q: number) => bytesOf(q, "cdn-fast"));
+    const scoreFast = memoized(async (q: number) => score(reference, (await enc(reference, format, q, "cdn-fast")).decoded));
     // The offset of the local encoder: one sample, so the median is the sample itself (see calibrationOffset).
-    const match = await measure("calibrate", () => matchLocalQuality(sizeAt, input.bytes));
+    const match = fast
+      ? await measure("calibrate", () => calibrateFast(sizeFast, sizeAt, input.bytes))
+      : await measure("calibrate", () => matchLocalQuality(sizeAt, input.bytes));
     const offset = Math.round(input.current - match);
     const localCurrent = clampQuality(input.current - offset);
     const currentBytes = await sizeAt(localCurrent);
@@ -817,9 +905,11 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
     let target: number | undefined;
     for (const delta of deltas) {
       const bar = Math.max(SCAN_THRESHOLD, servedScore - delta);
-      const best = await measure("bisect: quality", () =>
-        minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score, scoreAt }),
-      );
+      const best = fast
+        ? await measure("bisect: quality", () => bisectFast(reference, format, localCurrent, bar, { encode: enc, score, scoreAt, scoreFast }))
+        : await measure("bisect: quality", () =>
+            minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score, scoreAt }),
+          );
       const bestBytes = await sizeAt(best);
       ratio[delta] = currentBytes > 0 ? Math.min(1, bestBytes / currentBytes) : 1;
       if (delta === deltas[0]) target = Math.min(input.current, clampQuality(best + offset));

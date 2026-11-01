@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encode } from "../src/encode.js";
-import { calibrationOffset, encodedSizeAt, matchLocalQuality, matchLocalQualityExhaustive } from "../src/calibrate.js";
+import { calibrationOffset, confirmMatch, encodedSizeAt, matchLocalQuality, matchLocalQualityExhaustive } from "../src/calibrate.js";
 import type { RawImage } from "../src/ssim.js";
 import { gradientNoise } from "./image-fixtures.js";
 
@@ -120,5 +120,36 @@ describe("matchLocalQuality (coarse to fine)", () => {
     const { enc, calls } = await countingEnc(curve);
     await matchLocalQuality(encodedSizeAt(tiny, "avif", enc), curve[60]);
     expect(calls.n).toBeLessThanOrEqual(16);
+  });
+});
+
+describe("confirmMatch", () => {
+  it("finds the match of matchLocalQuality from a guess a few qualities away, on monotone curves", async () => {
+    let confirmed = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const curve = curveOf(seed, { flat: seed % 2 === 0, dip: false });
+      const target = Math.floor(prng(seed * 7)() * (curve[100] + 2000));
+      const { enc } = await countingEnc(curve);
+      const sizeAt = encodedSizeAt(tiny, "avif", enc);
+      const expected = await matchLocalQuality(sizeAt, target);
+      for (const guess of [expected - 2, expected, expected + 1]) {
+        const got = await confirmMatch(guess, sizeAt, target);
+        if (got !== undefined) {
+          expect(got).toBe(expected);
+          confirmed++;
+        }
+      }
+    }
+    // Every non-flat curve (the odd seeds) is confirmed; flat runs of equal bytes are left to the full match.
+    expect(confirmed).toBeGreaterThanOrEqual(3 * 100);
+  });
+
+  it("gives no confirmation when the walk leaves the step budget or the target is above or below every quality", async () => {
+    const curve = curveOf(3, { flat: false, dip: false });
+    const { enc } = await countingEnc(curve);
+    const sizeAt = encodedSizeAt(tiny, "avif", enc);
+    expect(await confirmMatch(50, sizeAt, curve[10])).toBeUndefined();
+    expect(await confirmMatch(10, sizeAt, curve[90], 2)).toBeUndefined();
+    expect(await confirmMatch(100, sizeAt, curve[100] * 2)).toBeUndefined();
   });
 });
