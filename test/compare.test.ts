@@ -4,19 +4,25 @@ import type { MeasuredPage } from "../src/locate-join.js";
 import { compareScans, parseCompareArgs, pairImages, renderCompare } from "../src/compare.js";
 
 /** A synthetic record: one image on one page, served at `bytes` on each of the given viewports. */
-function image(id: string, opts: { bytes: number; views?: string[]; undersized?: boolean; src?: string; alt?: string; file?: string }): ImageRecord {
+function image(
+  id: string,
+  opts: { bytes: number; views?: string[]; undersized?: boolean; src?: string; alt?: string; file?: string; rendered?: number; servedPx?: number; q?: number; loaded?: boolean },
+): ImageRecord {
   const views = opts.views ?? ["iphone-15", "desktop"];
-  // The srcset is the image's own path at two widths, as a real srcset is: the id is not part of it.
+  // The srcset is the image's own path at two widths, as a real srcset is: the id is not part of it. `q` changes the URL
+  // the browser asked for (a quality fix), so the same width is then a different file.
   const base = (opts.src ?? "https://shop.example/a.jpg").split("?")[0];
-  const src = `${base}?w=640`;
+  const qs = opts.q === undefined ? "" : `&q=${opts.q}`;
+  const src = `${base}?w=640${qs}`;
   const perViewport: ImagePerViewport[] = views.map((viewport) => ({
     viewport,
     dpr: 2,
-    renderedCssPx: 300,
+    renderedCssPx: opts.rendered ?? 300,
     neededPx: 600,
     servedBytes: opts.bytes,
+    servedPx: opts.servedPx,
     undersized: opts.undersized === true,
-    loaded: true,
+    loaded: opts.loaded ?? true,
   }));
   return {
     id,
@@ -35,8 +41,8 @@ function image(id: string, opts: { bytes: number; views?: string[]; undersized?:
     current: {
       src,
       srcsetCandidates: [
-        { url: `${base}?w=640`, width: 640 },
-        { url: `${base}?w=1080`, width: 1080 },
+        { url: `${base}?w=640${qs}`, width: 640 },
+        { url: `${base}?w=1080${qs}`, width: 1080 },
       ],
       format: "avif",
     },
@@ -162,5 +168,80 @@ describe("compareScans", () => {
     // Same pattern, different alt: each bag is paired with itself, not by position.
     expect(report.changes.map((c) => [c.beforeId, c.afterId])).toEqual([["x2", "y2"]]);
     expect(report.paired.saved).toBeCloseTo(20 * KB, 6);
+  });
+});
+
+describe("pairImages by rendered layout", () => {
+  it("pairs elements that share a key by their rendered width, not by document order", () => {
+    const before = [
+      image("d-narrow", { bytes: 10 * KB, rendered: 200, src: "https://shop.example/s.jpg?w=1" }),
+      image("d-wide", { bytes: 40 * KB, rendered: 400, src: "https://shop.example/s.jpg?w=1" }),
+    ];
+    const after = [
+      image("e-wide", { bytes: 40 * KB, rendered: 400, src: "https://shop.example/s.jpg?w=1" }),
+      image("e-narrow", { bytes: 10 * KB, rendered: 200, src: "https://shop.example/s.jpg?w=1" }),
+    ];
+    const joined = pairImages(before, after);
+    expect(joined.pairs.map(([b, a]) => [b.id, a.id])).toEqual([
+      ["d-narrow", "e-narrow"],
+      ["d-wide", "e-wide"],
+    ]);
+    expect(joined.before).toEqual([]);
+    expect(joined.after).toEqual([]);
+  });
+});
+
+describe("compareScans drift", () => {
+  const url = "https://shop.example/bags";
+  const none = { before: 0, after: 0 };
+
+  it("is zero for two identical scans: nothing saved, nothing excluded", () => {
+    const before = scan(url, [image("i1", { bytes: 50 * KB, servedPx: 640, src: "https://shop.example/i.jpg?w=1" })]);
+    const after = scan(url, [image("i2", { bytes: 50 * KB, servedPx: 640, src: "https://shop.example/i.jpg?w=1" })]);
+    const report = compareScans(before, after, none);
+    expect(report.paired.saved).toBe(0);
+    expect(report.paired.addedForSharpness).toBe(0);
+    expect(report.changes).toEqual([]);
+    expect(report.excluded.layoutChanged.images).toBe(0);
+    expect(report.excluded.serverVariance.views).toBe(0);
+    expect(report.excluded.notLoaded.views).toBe(0);
+  });
+
+  it("excludes an image whose rendered width changed, and prints the excluded total", () => {
+    const before = scan(url, [image("l1", { bytes: 100 * KB, rendered: 300, src: "https://shop.example/l.jpg?w=1" })]);
+    const after = scan(url, [image("l2", { bytes: 40 * KB, rendered: 150, src: "https://shop.example/l.jpg?w=1" })]);
+    const report = compareScans(before, after, none);
+    expect(report.paired.images).toBe(0);
+    expect(report.paired.saved).toBe(0);
+    expect(report.excluded.layoutChanged.images).toBe(1);
+    expect(report.excluded.layoutChanged.beforeBytes).toBeCloseTo(100 * KB, 6);
+    expect(report.excluded.layoutChanged.afterBytes).toBeCloseTo(40 * KB, 6);
+    expect(renderCompare(report, 10)).toMatch(/layout changed \(rendered width differs, not compared\): 1 image\(s\), 100\.0 KB -> 40\.0 KB\/view/);
+  });
+
+  it("treats the same file (same URL and width) served with different bytes as server variance", () => {
+    const before = scan(url, [image("v1", { bytes: 50 * KB, servedPx: 640, src: "https://shop.example/v.jpg?w=1" })]);
+    const after = scan(url, [image("v2", { bytes: 46 * KB, servedPx: 640, src: "https://shop.example/v.jpg?w=1" })]);
+    const report = compareScans(before, after, none);
+    expect(report.paired.saved).toBe(0);
+    expect(report.paired.addedForSharpness).toBe(0);
+    expect(report.excluded.serverVariance).toEqual({ images: 1, views: 2, bytes: 4 * KB });
+    expect(renderCompare(report, 10)).toMatch(/server variance \(same URL and width, different bytes\): 1 image\(s\), 2 view\(s\), 4\.0 KB\/view/);
+  });
+
+  it("counts a quality fix as a saving: same width, a different URL", () => {
+    const before = scan(url, [image("q1", { bytes: 100 * KB, servedPx: 640, q: 75, src: "https://shop.example/q.jpg?w=1" })]);
+    const after = scan(url, [image("q2", { bytes: 80 * KB, servedPx: 640, q: 60, src: "https://shop.example/q.jpg?w=1" })]);
+    const report = compareScans(before, after, none);
+    expect(report.paired.saved).toBeCloseTo(20 * KB, 6);
+    expect(report.excluded.serverVariance.views).toBe(0);
+  });
+
+  it("leaves out a view that one scan did not load, and counts those views", () => {
+    const before = scan(url, [image("n1", { bytes: 30 * KB, src: "https://shop.example/n.jpg?w=1" })]);
+    const after = scan(url, [image("n2", { bytes: 10 * KB, loaded: false, src: "https://shop.example/n.jpg?w=1" })]);
+    const report = compareScans(before, after, none);
+    expect(report.paired.saved).toBe(0);
+    expect(report.excluded.notLoaded.views).toBe(2);
   });
 });

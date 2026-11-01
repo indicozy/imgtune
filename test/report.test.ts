@@ -17,6 +17,11 @@ const compare: CompareReport = {
   after: "https://shop.example/bags",
   views: ["iphone-15", "desktop"],
   paired: { images: 12, beforeBytes: 300 * 1024, afterBytes: 250 * 1024, saved: 60 * 1024, addedForSharpness: 4 * 1024, grewWithoutSharpness: { images: 1, bytes: 1024 } },
+  excluded: {
+    layoutChanged: { images: 0, beforeBytes: 0, afterBytes: 0, list: [] },
+    serverVariance: { images: 0, views: 0, bytes: 0 },
+    notLoaded: { views: 0 },
+  },
   pageTotal: { before: 500 * 1024, after: 460 * 1024 },
   appeared: [{ id: "n1", where: "x", bytes: 1, views: 2 }],
   disappeared: [],
