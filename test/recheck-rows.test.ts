@@ -36,3 +36,19 @@ describe("recheck rows", () => {
     expect(rowLine({ id: "a", where: "x", verdict: "LAYOUT", predicted: 0 })).toMatch(/^a\s+LAYOUT  x /);
   });
 });
+
+describe("sharpness fixes are not savings", () => {
+  it("labels a PASS that adds bytes as a sharpness fix", () => {
+    expect(rowLine({ id: "a", where: "x", verdict: "PASS", predicted: -2048, measured: -2048 })).toMatch(/^a\s+PASS \(sharpness fix\)  x /);
+    expect(rowLine({ id: "b", where: "x", verdict: "PASS", predicted: 2048, measured: 2048 })).toMatch(/^b\s+PASS  x /);
+  });
+
+  it("says when a batch mixes sharpness fixes with savings, without netting them", () => {
+    const line = batchLine([
+      { id: "a", where: "x", verdict: "PASS", predicted: -2048, measured: -2048 },
+      { id: "b", where: "y", verdict: "FAIL", predicted: 512, measured: 512 },
+      { id: "c", where: "z", verdict: "PASS", predicted: 4096, measured: 4096 },
+    ]);
+    expect(line).toMatch(/mixed: sharpness fixes \(adds 2.0 KB\/view\) on 1 image\(s\); savings \(saves 4.0 KB\/view\) on 1 image\(s\); decide per group/);
+  });
+});
