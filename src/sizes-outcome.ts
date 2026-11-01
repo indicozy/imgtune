@@ -94,7 +94,7 @@ export async function applySizesOutcome(
     const reason =
       outcome.grew > 0
         ? `no saving: proposed sizes ${fix.sizes.value} picks larger candidates at ${outcome.biggerAt.join(", ")}`
-        : `no saving: proposed sizes ${fix.sizes.value} pick the same files as now`;
+        : `no saving: proposed sizes ${fix.sizes.value} pick files of the same size as now`;
     delete fix.sizes;
     fix.noSaving = reason;
     fix.bytes = { ...fix.bytes, saved: quality, sizes: 0, quality };

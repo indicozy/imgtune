@@ -87,6 +87,23 @@ describe("applySizesOutcome", () => {
     expect(r.fix.bytes.sizes).toBe(0);
   });
 
+  it("drops a proposal whose candidates are all the same size as the file now (the source is smaller than they are)", async () => {
+    // Every candidate is served at the same bytes (the source image is 714 px wide): the proposal changes no bytes.
+    const same = async () => bytesOfWidth(1200);
+    const r = record({
+      current: "100vw",
+      proposed: "714px",
+      widths: [640, 750, 1200],
+      servedWidth: 1200,
+      servedBytes: bytesOfWidth(1200),
+      undersized: true,
+      viewports: [{ name: "desktop", dpr: 2, rendered: 714 }],
+    });
+    await applySizesOutcome([r], new Map([["desktop", 1440]]), 1, same);
+    expect(r.fix.noSaving).toBe("no saving: proposed sizes 714px pick files of the same size as now");
+    expect(r.fix.sizes).toBeUndefined();
+  });
+
   it("keeps a proposal that saves, with the predicted saving as its sizes part", async () => {
     const r = record({
       current: "100vw",
