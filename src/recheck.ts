@@ -96,11 +96,76 @@ interface Check {
   failures: string[];
 }
 
-/** One image before and after: a row per viewport, the hint delta, and the failures (undersized, bytes up without a fix). */
-export function compareImage(before: ImageRecord, after: ImageRecord | undefined, unchangedSrc: boolean): Check {
+/** The source a record belongs to: its file, else its component (the same key a rescan gives it). */
+function sourceOf(record: ImageRecord): string | undefined {
+  const { file, component } = record.locator;
+  if (file !== undefined) return `file:${file}`;
+  return component.length > 0 ? `component:${component[0]}` : undefined;
+}
+
+/** How an earlier record was found again: by its id, by its source and URL pattern, or not at all. */
+export interface Pairing {
+  after?: ImageRecord;
+  /** "id": the same id. "source": the id changed (an edit moved the element or shifted its order), but its source file and URL match. */
+  by?: "id" | "source";
+  /** Records that matched the source and URL pattern, when there was more than one and none could be picked. */
+  ambiguous: number;
+}
+
+/**
+ * Finds an earlier image in a rescan. The id comes first. When it changed, the element is still the same one if its source
+ * file and its URL pattern (the loader URL without w and q, so a sizes or quality change does not move it) match one
+ * rescanned image; when several match, the one on the same line is taken, and only if that is unique too.
+ */
+export function pairRecord(before: ImageRecord, now: Map<string, ImageRecord>, fresh: ImageRecord[]): Pairing {
+  const same = now.get(before.id);
+  if (same !== undefined) return { after: same, by: "id", ambiguous: 0 };
+  const source = sourceOf(before);
+  const pattern = before.locator.urlPattern;
+  if (source === undefined) return { ambiguous: 0 };
+  let candidates = fresh.filter((r) => sourceOf(r) === source && (pattern === undefined || r.locator.urlPattern === pattern));
+  if (candidates.length > 1 && before.locator.line !== undefined) {
+    const line = candidates.filter((r) => r.locator.line === before.locator.line);
+    if (line.length === 1) candidates = line;
+  }
+  if (candidates.length === 1) return { after: candidates[0], by: "source", ambiguous: 0 };
+  return { ambiguous: candidates.length };
+}
+
+/**
+ * One image before and after: a row per viewport, the predicted saving next to the measured one (served bytes), the hint
+ * delta, and the failures (undersized, bytes up without a fix). `how` says how the image was found again.
+ */
+export function compareImage(
+  before: ImageRecord,
+  after: ImageRecord | undefined,
+  unchangedSrc: boolean,
+  how: Pairing = { ambiguous: 0 },
+): Check {
   const lines = [`${safeText(before.id)}  ${whereOf(before)}  ${safeText(before.page)}`];
-  if (after === undefined) return { lines: [...lines, "  gone: the image is not on the page any more"], failures: ["gone"] };
+  if (after === undefined) {
+    const source = sourceOf(before);
+    const looked = [
+      source !== undefined ? `source ${safeText(source.replace(/^(file|component):/, ""))}` : "no source",
+      before.locator.urlPattern !== undefined ? `URL ${safeText(before.locator.urlPattern)}` : "no URL pattern",
+    ].join(", ");
+    const why = how.ambiguous > 1 ? `${how.ambiguous} images match that source and URL, so none is picked` : "no image matches";
+    return {
+      lines: [
+        ...lines,
+        `  gone: the id is not on the page now (looked for ${looked}; ${why})`,
+        "  before concluding it is gone, rescan the page unchanged (pristine) and recheck it again: a moved or re-keyed element is not gone",
+      ],
+      failures: ["gone"],
+    };
+  }
   const failures: string[] = [];
+  if (how.by === "source") {
+    const was = before.locator.line;
+    const now = after.locator.line;
+    const moved = was !== undefined && now !== undefined && was !== now ? ` (line ${was} -> ${now})` : "";
+    lines.push(`  matched by source file and URL, not by id: the element moved or its order changed${moved}`);
+  }
   for (const p of before.perViewport.filter((v) => v.renderedCssPx > 0 && KNOWN_VIEWPORTS.includes(v.viewport))) {
     const q: ImagePerViewport | undefined = after.perViewport.find((v) => v.viewport === p.viewport);
     if (q === undefined) continue;
@@ -189,9 +254,10 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
   const out: string[] = [];
   const failures: string[] = [];
   for (const before of selected) {
-    const after = now.get(before.id);
+    const how = pairRecord(before, now, fresh.images ?? []);
+    const after = how.after;
     const unchangedSrc = before.current.src !== undefined && after !== undefined && earlierSrcs.has(after.current.src ?? "");
-    const check = compareImage(before, after, unchangedSrc);
+    const check = compareImage(before, after, unchangedSrc, how);
     out.push(...check.lines, "");
     for (const failure of check.failures) failures.push(`${before.id}: ${failure}`);
   }

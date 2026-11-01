@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
-import { compareImage, parseRecheckArgs, recheckScan, usableRecords } from "../src/recheck.js";
+import { compareImage, pairRecord, parseRecheckArgs, recheckScan, usableRecords } from "../src/recheck.js";
 import type { ImageRecord } from "../src/images.js";
 
 /** A record with one viewport, for the comparison rules. */
@@ -129,4 +129,63 @@ describe("the scan file is untrusted", () => {
     const hostile = { ...record(), page: "https://shop.example/\u001b[31m", locator: { component: ["Card\u0007"], selector: "img", classes: "", loader: "x" } } as unknown as ImageRecord;
     for (const line of compareImage(hostile, hostile, false).lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
+});
+
+/** A record with a source file, a line and a URL pattern, for the pairing rules. */
+function located(id: string, file: string, line: number, pattern = "https://cdn.example/a.jpg"): ImageRecord {
+  const base = record();
+  return {
+    ...base,
+    id,
+    locator: { ...base.locator, component: ["Card"], file, line, urlPattern: pattern },
+  } as ImageRecord;
+}
+
+describe("pairRecord (an earlier image in a rescan)", () => {
+  const card = "app/src/Card.tsx";
+
+  it("pairs by id when the id is the same", () => {
+    const before = located("aaa", card, 217);
+    const now = new Map([["aaa", located("aaa", card, 217)]]);
+    expect(pairRecord(before, now, [...now.values()])).toMatchObject({ by: "id" });
+  });
+
+  it("pairs by source file and URL pattern when an edit moved the element and its id changed", () => {
+    // The scan had the element at line 217; an edit added a line above it, so it is at 218 and its id is new.
+    const before = located("aaa", card, 217);
+    const fresh = [located("bbb", card, 218)];
+    const pairing = pairRecord(before, new Map(fresh.map((r) => [r.id, r])), fresh);
+    expect(pairing).toMatchObject({ by: "source", ambiguous: 0 });
+    expect(pairing.after?.id).toBe("bbb");
+  });
+
+  it("ignores the width and quality parameters: the pattern is the URL without them", () => {
+    // A sizes change picks another w= candidate; the pattern (no w or q) is the same, so the element is still found.
+    const before = located("aaa", card, 217, "/_next/image?url=p.jpg");
+    const fresh = [located("bbb", card, 217, "/_next/image?url=p.jpg")];
+    expect(pairRecord(before, new Map(fresh.map((r) => [r.id, r])), fresh).by).toBe("source");
+  });
+
+  it("does not pair across a different file, or a different image", () => {
+    const before = located("aaa", card, 217, "https://cdn.example/a.jpg");
+    const fresh = [located("bbb", "app/src/Other.tsx", 217), located("ccc", card, 217, "https://cdn.example/b.jpg")];
+    expect(pairRecord(before, new Map(fresh.map((r) => [r.id, r])), fresh)).toEqual({ ambiguous: 0 });
+  });
+
+  it("takes the candidate on the same line when several match, and refuses when that is not unique", () => {
+    const before = located("aaa", card, 217);
+    const fresh = [located("bbb", card, 217), located("ccc", card, 230)];
+    expect(pairRecord(before, new Map(fresh.map((r) => [r.id, r])), fresh)).toMatchObject({ by: "source" });
+    expect(pairRecord(before, new Map(), [located("x", card, 230), located("y", card, 240)])).toEqual({ ambiguous: 2 });
+  });
+});
+
+describe("compareImage: gone and the predicted-versus-measured line", () => {
+  it("says what was looked for and asks for a pristine rescan before calling it gone", () => {
+    const check = compareImage(located("aaa", "app/src/Card.tsx", 217), undefined, false, { ambiguous: 0 });
+    expect(check.failures).toEqual(["gone"]);
+    expect(check.lines.join("\n")).toContain("looked for source app/src/Card.tsx");
+    expect(check.lines.join("\n")).toContain("rescan the page unchanged (pristine) and recheck it again");
+  });
+
 });

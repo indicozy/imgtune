@@ -171,9 +171,13 @@ export interface BuildInput {
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
-/** The key that finds an element across runs: its source, else its components, else its test id, else its DOM path. */
+/**
+ * The key that finds an element across runs: its source file, else its components, else its test id, else its DOM path.
+ * The line is not part of it: an edit above an element moves its line, and an id that moved with it would read as gone
+ * on recheck. The ordinal among the elements of one file, in document order, tells them apart.
+ */
 function baseKey(img: ObservedImage, source: ResolvedSource | undefined): string {
-  if (source?.file) return `${source.file}:${source.line ?? 0}`;
+  if (source?.file) return source.file;
   if (source && source.component.length > 0) return `component:${source.component.join(">")}`;
   if (img.locator?.testid) return `testid:${img.locator.testid}`;
   return `css:${img.locator?.selector ?? "img"}`;
