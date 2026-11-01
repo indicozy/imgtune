@@ -872,6 +872,8 @@ export interface ViewportObservation {
   images: ObservedImage[];
   /** The elements with a CSS background image (none in a light read). */
   backgrounds?: ObservedBackground[];
+  /** Stylesheets the page links that the server refused or the browser could not load (their styles are not applied): zero on a sound page. */
+  stylesheetsFailed?: number;
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
 }
@@ -1211,6 +1213,8 @@ async function observeViewport(
   const responses = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
   let blockedRequests = 0;
+  // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
+  const failedSheets = new Set<string>();
   // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
   // time. Chromium gives the route handler no route for a redirect hop, so the route guard alone would miss them.
   const egress = await measure("egress proxy start", () =>
@@ -1262,7 +1266,12 @@ async function observeViewport(
           socket.connectToServer();
         }
       });
+      context.on("requestfailed", (request) => {
+        if (request.resourceType() === "stylesheet") failedSheets.add(request.url());
+      });
       context.on("response", (response) => {
+        // A stylesheet the server refused is not applied (Chromium still makes an empty sheet for it): counted for the scan's warning.
+        if (response.request().resourceType() === "stylesheet" && response.status() >= 400) failedSheets.add(response.url());
         const contentType = response.headers()["content-type"];
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
         if (!isImage) return;
@@ -1329,6 +1338,7 @@ async function observeViewport(
         nextjs: seen.nextjs,
         images: seen.images,
         backgrounds: seen.backgrounds,
+        stylesheetsFailed: failedSheets.size,
         responses,
       };
     } finally {
@@ -1895,6 +1905,8 @@ export interface PageResult {
   finalUrl?: string;
   /** True when the page's `load` event did not come within the cap; its figures were taken anyway. */
   loadTimedOut?: boolean;
+  /** Linked stylesheets that did not load, per viewport (only when some did): the widths measured there are not valid. */
+  stylesheetsFailed?: Record<string, number>;
   /** The robots.txt rule that disallowed the page, when it was scanned anyway (--ignore-robots). */
   robotsRule?: string;
   /** A note that the page ended on another URL, with the URL in it. */
@@ -2368,6 +2380,7 @@ async function scanPage(
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
   let loadTimedOut = false;
+  const sheetsFailed: Record<string, number> = {};
   try {
     for (const [index, outcome] of outcomes.entries()) {
       const viewport = run.viewports[index];
@@ -2377,6 +2390,7 @@ async function scanPage(
         return { ...base, status: "blocked", error: `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}` };
       }
       if (obs.loadTimedOut) loadTimedOut = true;
+      if ((obs.stylesheetsFailed ?? 0) > 0) sheetsFailed[viewport.name] = obs.stylesheetsFailed as number;
       if (obs.finalUrl !== undefined && new URL(obs.finalUrl).href !== url.href) {
         if (!(await landedOk(obs.finalUrl))) {
           return { ...base, status: "redirected", finalUrl: obs.finalUrl, error: `redirected to ${obs.finalUrl}` };
@@ -2391,6 +2405,12 @@ async function scanPage(
   const described: PageResult = { ...base };
   if (finalUrl !== undefined) described.finalUrl = finalUrl;
   if (loadTimedOut) described.loadTimedOut = true;
+  if (Object.keys(sheetsFailed).length > 0) {
+    described.stylesheetsFailed = sheetsFailed;
+    run.log(
+      `warning: ${safeText(pageUrl)}: a linked stylesheet did not load at ${Object.keys(sheetsFailed).map((name) => safeText(name)).join(", ")}; the page is not styled as the app is, so its widths and sizes verdicts are not valid (check the asset prefix the server was started with)`,
+    );
+  }
   if (robotsIgnored) described.robotsIgnored = true;
   if (robotsRule !== undefined) described.robotsRule = robotsRule;
   if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
@@ -2860,6 +2880,7 @@ export interface ScanSummary {
     error?: string;
     finalUrl?: string;
     loadTimedOut?: boolean;
+    stylesheetsFailed?: Record<string, number>;
     page?: PageNumbers;
   }[];
 }
@@ -2881,6 +2902,7 @@ export function summaryOf(results: PageResult[]): ScanSummary {
       ...(r.error !== undefined ? { error: r.error } : {}),
       ...(r.finalUrl !== undefined ? { finalUrl: r.finalUrl } : {}),
       ...(r.loadTimedOut !== undefined ? { loadTimedOut: r.loadTimedOut } : {}),
+      ...(r.stylesheetsFailed !== undefined ? { stylesheetsFailed: r.stylesheetsFailed } : {}),
       ...(r.page !== undefined ? { page: r.page } : {}),
     })),
   };

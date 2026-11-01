@@ -29,4 +29,10 @@ describe("recheck rows", () => {
       "batch: 3 image(s) in 1.3 s: 1 PASS, 1 FAIL, 1 GONE; predicted saves 7.0 KB/view in total, measured saves 3.0 KB/view in total (2 image(s) measured)",
     );
   });
+
+  it("counts the layout verdicts only when there are some", () => {
+    const line = batchLine([{ id: "a", where: "x", verdict: "LAYOUT", predicted: 0 }]);
+    expect(line).toMatch(/^batch: 1 image\(s\): 0 PASS, 0 FAIL, 0 GONE, 1 LAYOUT; /);
+    expect(rowLine({ id: "a", where: "x", verdict: "LAYOUT", predicted: 0 })).toMatch(/^a\s+LAYOUT  x /);
+  });
 });

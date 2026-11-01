@@ -15,7 +15,7 @@ import {
   reasonCounts,
   type DevImage,
 } from "../src/locate-join.js";
-import { judgeChoice, sizesRecheck } from "../src/sizes-recheck.js";
+import { judgeChoice, layoutDiffers, sizesRecheck } from "../src/sizes-recheck.js";
 import { parseLocateArgs, defaultLocateOut } from "../src/locate-only.js";
 import { parseSizesArgs } from "../src/sizes-recheck.js";
 import { locateNoteOf, type Hint } from "../src/hints.js";
@@ -234,6 +234,64 @@ describe("judgeChoice", () => {
     expect(up.fails.join(" ")).toMatch(/bytes rose 49 KB -> 88 KB/);
     const fixed = judgeChoice({ ...base, sizes: "200px", chosenUrl: "http://127.0.0.1:3300/img/p1-640.jpg", chosenBytes: 90_000, before: { servedBytes: 50_000, undersized: true } });
     expect(fixed.fails).toEqual([]);
+  });
+
+  it("judges undersize on the measured server's width, not the dev page's", () => {
+    // Measured 160 px at dpr 2 needs 320w: the 320w file passes. The dev page renders 668 px (the layout differs), so the
+    // verdict is not a pass, and the difference is reported.
+    const v = judgeChoice({
+      ...base,
+      dpr: 2,
+      viewportWidth: 1440,
+      rendered: 160,
+      devRendered: 668,
+      sizes: "160px",
+      proposed: "160px",
+      chosenUrl: "http://127.0.0.1:3300/img/p1-320.jpg",
+      chosenBytes: 20_000,
+    });
+    expect(v.needed).toBe(320);
+    expect(v.undersized).toBe(false);
+    expect(v.layout).toEqual({ dev: 668, measured: 160 });
+    expect(v.fails).toEqual([]);
+  });
+
+  it("fails undersize against the measured width even when the dev page renders wider", () => {
+    // Measured 668 px at dpr 2 needs 1280w (capped at the largest): sizes 160px chooses 320w, which is undersized, whatever
+    // the dev page shows (160 px there).
+    const v = judgeChoice({
+      ...base,
+      dpr: 2,
+      viewportWidth: 1440,
+      rendered: 668,
+      devRendered: 160,
+      sizes: "160px",
+      proposed: "160px",
+      chosenUrl: "http://127.0.0.1:3300/img/p1-320.jpg",
+      chosenBytes: 20_000,
+    });
+    expect(v.undersized).toBe(true);
+    expect(v.fails.join(" ")).toMatch(/undersized: 320w is below the 1280 px needed/);
+  });
+
+  it("reports no layout difference within the tolerance", () => {
+    expect(layoutDiffers(668, 668)).toBe(false);
+    expect(layoutDiffers(670, 668)).toBe(false);
+    expect(layoutDiffers(668, 620)).toBe(true);
+    expect(layoutDiffers(160, 168)).toBe(true);
+    expect(judgeChoice({ ...base, sizes: "200px", devRendered: 200, chosenUrl: "http://127.0.0.1:3300/img/p1-640.jpg" }).layout).toBeUndefined();
+  });
+
+  it("fails a loaded file that the page's sizes do not choose", () => {
+    // sizes 200px at dpr 3 chooses 640w; the page loaded 1280w.
+    const v = judgeChoice({ ...base, sizes: "200px", chosenUrl: "http://127.0.0.1:3300/img/p1-1280.jpg", chosenBytes: 160_000 });
+    expect(v.fails.join(" ")).toMatch(/the page loaded 1280w but its sizes choose 640w/);
+  });
+
+  it("fails when the hint's sizes are not on the dev page", () => {
+    const v = judgeChoice({ ...base, sizes: "1280px", proposed: "200px", chosenUrl: "http://127.0.0.1:3300/img/p1-1280.jpg", chosenBytes: 160_000 });
+    expect(v.landed).toBe(false);
+    expect(v.fails.join(" ")).toMatch(/the edit is not on the dev page/);
   });
 
   it("has no verdict for a plain image or a file that is not a candidate", () => {

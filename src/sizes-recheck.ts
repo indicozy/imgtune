@@ -69,12 +69,23 @@ export function parseSizesArgs(argv: string[]): SizesArgs {
   return { file, ids, url, ignoreRobots };
 }
 
+/** Two widths (CSS px) count as the same layout within this tolerance: a pixel or two of rounding, or 2 %. */
+export const LAYOUT_TOLERANCE_PX = 2;
+export const LAYOUT_TOLERANCE_RATIO = 0.02;
+
+/** True when the dev page renders an element at a different width from the measured server (beyond the tolerance). */
+export function layoutDiffers(devRendered: number, measured: number): boolean {
+  return Math.abs(devRendered - measured) > Math.max(LAYOUT_TOLERANCE_PX, LAYOUT_TOLERANCE_RATIO * measured);
+}
+
 /** What the browser chose at one viewport, and what the hint's sizes would choose there. */
 export interface ChoiceInput {
   dpr: number;
   viewportWidth: number;
-  /** The rendered CSS width of the element at this viewport. */
+  /** The rendered CSS width of the element on the MEASURED server at this viewport: the layout the verdict is judged on. */
   rendered: number;
+  /** The rendered CSS width of the element on the dev page now (undefined: not read). Differing from `rendered` is a layout difference. */
+  devRendered?: number;
   /** The sizes attribute on the dev page now. */
   sizes?: string;
   srcset: string;
@@ -89,7 +100,11 @@ export interface ChoiceInput {
   proposed?: string;
 }
 
-/** The verdict on one image at one viewport. `note` says why there is none (a plain image has no candidates to choose). */
+/**
+ * The verdict on one image at one viewport. `note` says why there is none (a plain image has no candidates to choose).
+ * `layout` is set when the dev page renders the element at another width than the measured server: the verdict then is
+ * not a pass, whatever the candidate, because the undersize judgement rests on the measured width.
+ */
 export interface ChoiceVerdict {
   needed: number;
   chosenWidth?: number;
@@ -97,14 +112,20 @@ export interface ChoiceVerdict {
   targetWidth?: number;
   fails: string[];
   note?: string;
+  layout?: { dev: number; measured: number };
+  /** The dev page's sizes are the hint's sizes (the edit is on the page). */
+  landed?: boolean;
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
 /**
- * The check of one choice. Fails when the chosen file is undersized (below the device pixels needed), when it is bigger than
- * the candidate the hint's sizes choose, and when its bytes rose on an image that was not undersized before (no sharpness
- * fix to pay for them). A choice that cannot be judged (no srcset, or the file is not one of its candidates) passes with a note.
+ * The check of one choice. The candidate is computed from the dev page's sizes, the viewport width and the DPR (the
+ * browser's own rule, not the layout); it must be the file the browser loaded. Undersize is judged against the measured
+ * server's rendered width. Fails when the page loaded another file than its sizes choose, when the chosen file is undersized,
+ * when it is bigger than the candidate the hint's sizes choose, when the hint's sizes are not on the dev page, and when its
+ * bytes rose on an image that was not undersized before (no sharpness fix to pay for them). A choice that cannot be judged
+ * (no srcset, or the file is not one of its candidates) passes with a note.
  */
 export function judgeChoice(input: ChoiceInput): ChoiceVerdict {
   const candidates = parseSrcset(input.srcset, input.pageUrl);
@@ -117,21 +138,35 @@ export function judgeChoice(input: ChoiceInput): ChoiceVerdict {
   const chosen = candidates.find((c) => c.url === input.chosenUrl);
   if (chosen === undefined) return { needed, fails: [], note: "the file loaded is not one of the srcset candidates" };
   const fails: string[] = [];
-  const undersized = isUndersized(chosen.width, needed, largest);
-  if (undersized) fails.push(`undersized: ${chosen.width}w is below the ${needed} px needed`);
-  let targetWidth: number | undefined;
-  if (input.proposed !== undefined) {
-    const slot = sizesSlotAt(input.proposed, input.viewportWidth);
-    if (slot !== undefined) targetWidth = rightCandidate(candidates, Math.ceil(slot * input.dpr)).width;
+  // The candidate the dev page's sizes choose here (no sizes attribute: the browser's default of 100vw).
+  const slot = input.sizes !== undefined ? sizesSlotAt(input.sizes, input.viewportWidth) : input.viewportWidth;
+  const analytic = slot === undefined ? undefined : rightCandidate(candidates, Math.ceil(slot * input.dpr));
+  if (analytic !== undefined && analytic.width !== chosen.width) {
+    fails.push(`the page loaded ${chosen.width}w but its sizes choose ${analytic.width}w (the dev page does not show these sizes)`);
   }
-  if (targetWidth !== undefined && chosen.width > targetWidth) {
-    fails.push(`bigger than the hint needs: ${chosen.width}w, the hint's sizes choose ${targetWidth}w`);
+  const judged = analytic ?? chosen;
+  const undersized = isUndersized(judged.width, needed, largest);
+  if (undersized) fails.push(`undersized: ${judged.width}w is below the ${needed} px needed`);
+  let targetWidth: number | undefined;
+  let landed: boolean | undefined;
+  if (input.proposed !== undefined) {
+    landed = input.sizes === input.proposed;
+    if (!landed) fails.push(`the edit is not on the dev page: sizes ${JSON.stringify(input.sizes ?? "none")}, the hint is ${JSON.stringify(input.proposed)}`);
+    const slotProposed = sizesSlotAt(input.proposed, input.viewportWidth);
+    if (slotProposed !== undefined) targetWidth = rightCandidate(candidates, Math.ceil(slotProposed * input.dpr)).width;
+  }
+  if (targetWidth !== undefined && judged.width > targetWidth) {
+    fails.push(`bigger than the hint needs: ${judged.width}w, the hint's sizes choose ${targetWidth}w`);
   }
   const before = input.before;
   if (before && input.chosenBytes !== undefined && input.chosenBytes > before.servedBytes && !before.undersized) {
     fails.push(`bytes rose ${kb(before.servedBytes)} -> ${kb(input.chosenBytes)} without a sharpness fix`);
   }
-  return { needed, chosenWidth: chosen.width, undersized, targetWidth, fails };
+  const layout =
+    input.devRendered !== undefined && layoutDiffers(input.devRendered, input.rendered)
+      ? { dev: input.devRendered, measured: input.rendered }
+      : undefined;
+  return { needed, chosenWidth: judged.width, undersized, targetWidth, fails, layout, landed };
 }
 
 const yesNo = (value: boolean | undefined): string => (value === true ? "yes" : "no");
@@ -197,6 +232,14 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
   if (light.status !== "ok") {
     return { output: `recheck: the dev page is ${light.status}${light.error ? `: ${safeText(light.error)}` : ""}\n`, exitCode: 1 };
   }
+  // A stylesheet that did not load on the dev page leaves its styles unapplied: its widths are not the app's, so no verdict.
+  const unstyled = light.observations.filter((o) => (o.stylesheetsFailed ?? 0) > 0).map((o) => o.viewport.name);
+  if (unstyled.length > 0) {
+    return {
+      output: `recheck: a linked stylesheet did not load on the dev page at ${unstyled.map((name) => safeText(name)).join(", ")}; the sizes verdicts are not valid (check the dev server's asset URLs)\n`,
+      exitCode: 1,
+    };
+  }
 
   // Per viewport: the dev elements and the join, computed once for every image of the batch.
   const perView = new Map<string, { observation: ViewportObservation; devImages: DevImage[]; join: LocateJoin }>();
@@ -210,12 +253,15 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
   const failures: string[] = [];
   const rows: RecheckRow[] = [];
   const details: string[] = [];
+  // Viewports where the dev page lays the element out at another width than the measured server, with the widths seen.
+  const layoutViews = new Map<string, { dev: number; measured: number }>();
   for (const record of selected) {
     const proposed = record.fix.sizes?.value;
     const now = JSON.stringify(safeText(record.current.sizes ?? "none"));
     const lines: string[] = [`${record.id}  ${whereOf(record)}  ${pathOf(record.page)}  sizes ${now} -> hint ${JSON.stringify(safeText(proposed ?? "-"))}`];
     const failed: string[] = [];
     let gone = false;
+    let unverified = false;
     const saved: number[] = [];
     for (const p of record.perViewport) {
       if (p.renderedCssPx <= 0) continue;
@@ -234,10 +280,12 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
       const dpr = view.observation.viewport.dpr;
       const width = view.observation.viewport.width;
       const response = view.observation.responses.get(dev.currentSrc);
+      // Undersize is judged on the measured server's width (the layout the bytes were measured on); the dev width is only compared.
       const verdict = judgeChoice({
         dpr,
         viewportWidth: width,
-        rendered: dev.renderedCssPx,
+        rendered: p.renderedCssPx,
+        devRendered: dev.renderedCssPx,
         sizes: dev.sizes,
         srcset: dev.srcset,
         pageUrl: target,
@@ -250,18 +298,24 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
       const bytes = response === undefined || response.bytesKnown === false ? "bytes ?" : `bytes ${kb(response.bytes)}`;
       const chosen = verdict.chosenWidth !== undefined ? `chosen ${verdict.chosenWidth}w` : "chosen ?";
       const targetText = verdict.targetWidth !== undefined ? `target ${verdict.targetWidth}w` : "target -";
+      if (verdict.layout !== undefined) {
+        layoutViews.set(p.viewport, verdict.layout);
+        unverified = true;
+      }
       const result =
         verdict.fails.length > 0
           ? `FAIL: ${verdict.fails.join("; ")}`
-          : verdict.note !== undefined
-            ? `n/a: ${verdict.note}`
-            : "pass";
+          : verdict.layout !== undefined
+            ? "NOT VERIFIED: layout differs from the measured server"
+            : verdict.note !== undefined
+              ? `n/a: ${verdict.note}`
+              : "pass";
       lines.push(
-        `  ${name}dpr ${dpr}  sizes ${JSON.stringify(safeText(dev.sizes ?? "none"))}  rendered ${dev.renderedCssPx} px  needed ${verdict.needed} px  ${chosen}  undersized ${yesNo(verdict.undersized)}  ${bytes} (was ${kb(p.servedBytes)})  ${targetText}  ${result}`,
+        `  ${name}dpr ${dpr}  sizes ${JSON.stringify(safeText(dev.sizes ?? "none"))}  rendered ${p.renderedCssPx} px measured, ${dev.renderedCssPx} px dev  needed ${verdict.needed} px  ${chosen}  undersized ${yesNo(verdict.undersized)}  ${bytes} (was ${kb(p.servedBytes)})  ${targetText}  ${result}`,
       );
       for (const fail of verdict.fails) failed.push(`${record.id}: ${p.viewport}: ${fail}`);
     }
-    const verdict = gone ? "GONE" : failed.length > 0 ? "FAIL" : "PASS";
+    const verdict = gone ? "GONE" : failed.length > 0 ? "FAIL" : unverified ? "LAYOUT" : "PASS";
     const predicted = record.fix.bytes.sizes ?? record.fix.bytes.saved;
     const measured = saved.length > 0 ? saved.reduce((sum, b) => sum + b, 0) / saved.length : undefined;
     rows.push({ id: record.id, where: whereOf(record), verdict, predicted, measured });
@@ -271,10 +325,22 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
     details.push(...lines, "");
   }
   const seconds = (Date.now() - started) / 1000;
+  for (const [viewport, widths] of layoutViews) {
+    out.push(
+      `warning: layout differs between dev and measured server at ${safeText(viewport)}: dev ${widths.dev} px, measured ${widths.measured} px (the verdict there is not a pass; fix the dev/measured difference first)`,
+    );
+  }
   out.push(...rows.map(rowLine));
   if (details.length > 0) out.push("", "not passed:", ...details);
   out.push(batchLine(rows, seconds) + " (sizes only: no body decoded, nothing scored)");
-  out.push(failures.length === 0 ? "ok: every chosen file is sharp and no bigger than the hint needs" : `FAILED: ${failures.length} check(s)`);
-  for (const failure of failures) out.push(`  ${safeText(failure)}`);
-  return { output: `${out.join("\n")}\n`, exitCode: failures.length === 0 ? 0 : 1 };
+  const unverifiedCount = rows.filter((r) => r.verdict === "LAYOUT").length;
+  if (failures.length > 0) {
+    out.push(`FAILED: ${failures.length} check(s)`);
+    for (const failure of failures) out.push(`  ${safeText(failure)}`);
+  } else if (unverifiedCount > 0) {
+    out.push(`NOT VERIFIED: ${unverifiedCount} image(s) at a viewport where the layout differs (see the warning above)`);
+  } else {
+    out.push("ok: every chosen file is sharp and no bigger than the hint needs");
+  }
+  return { output: `${out.join("\n")}\n`, exitCode: failures.length === 0 && unverifiedCount === 0 ? 0 : 1 };
 }

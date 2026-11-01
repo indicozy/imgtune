@@ -2,7 +2,8 @@
 // next to the measured one (per page view), and a batch total line. Detail lines are printed only for the images that did not
 // pass. Page-derived text in a row is already safe (the caller passes it through safeText).
 
-export type Verdict = "PASS" | "FAIL" | "GONE";
+/** LAYOUT: the dev page lays the image out at another width than the measured server, so no verdict is given. */
+export type Verdict = "PASS" | "FAIL" | "GONE" | "LAYOUT";
 
 export interface RecheckRow {
   id: string;
@@ -34,5 +35,6 @@ export function batchLine(rows: RecheckRow[], seconds?: number): string {
   const predicted = rows.reduce((sum, r) => sum + r.predicted, 0);
   const got = measured.reduce((sum, r) => sum + (r.measured as number), 0);
   const took = seconds === undefined ? "" : ` in ${seconds.toFixed(1)} s`;
-  return `batch: ${rows.length} image(s)${took}: ${count("PASS")} PASS, ${count("FAIL")} FAIL, ${count("GONE")} GONE; predicted ${perView(predicted)} in total, measured ${perView(got)} in total (${measured.length} image(s) measured)`;
+  const layout = count("LAYOUT") > 0 ? `, ${count("LAYOUT")} LAYOUT` : "";
+  return `batch: ${rows.length} image(s)${took}: ${count("PASS")} PASS, ${count("FAIL")} FAIL, ${count("GONE")} GONE${layout}; predicted ${perView(predicted)} in total, measured ${perView(got)} in total (${measured.length} image(s) measured)`;
 }
