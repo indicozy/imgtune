@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import type { Browser, Page, Response } from "playwright";
+import type { Browser, BrowserContext, Page, Response } from "playwright";
 import { launchChromium } from "./browser.js";
 import { srcsetWidths } from "./srcset-parse.js";
 import type { Viewport } from "./types.js";
@@ -193,6 +193,22 @@ export async function gotoParsed(
 }
 
 /** Resolves true when the page's `load` event has happened within `ms`, false when it timed out. Other errors throw. */
+/**
+ * Counts the main frame's document navigations of `page` from now on: each committed load of a document, from a link, a
+ * reload, a redirect or a script's location change. Same-document URL changes (history.pushState and replaceState, hash
+ * changes) are not counted. Playwright's `framenavigated` reports those too, so a settle would repeat with its full
+ * network-idle wait for each. CDP's Page.frameNavigated fires only for document commits.
+ */
+export async function countDocumentNavigations(context: BrowserContext, page: Page): Promise<() => number> {
+  let navigations = 0;
+  const cdp = await context.newCDPSession(page);
+  cdp.on("Page.frameNavigated", (event: { frame: { parentId?: string } }) => {
+    if (event.frame.parentId === undefined) navigations++;
+  });
+  await cdp.send("Page.enable");
+  return () => navigations;
+}
+
 export async function waitForLoadWithin(page: Page, ms: number): Promise<boolean> {
   try {
     await page.waitForLoadState("load", { timeout: ms });

@@ -22,7 +22,7 @@ import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locat
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
-import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
+import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
@@ -1110,19 +1110,21 @@ async function observeViewport(
       const page = await context.newPage();
       // Main-frame navigations are counted, so the figures are taken once the page has stopped moving. A light read counts
       // document loads only: a page that rewrites its URL while it scrolls (same-document navigations) would never settle.
-      let navigations = 0;
+      let navigations: () => number;
       if (light) {
+        let loads = 0;
         page.on("load", () => {
-          navigations++;
+          loads++;
         });
+        navigations = () => loads;
       } else {
-        page.on("framenavigated", (frame) => {
-          if (frame === page.mainFrame()) navigations++;
-        });
+        // Document navigations are counted, so the figures are taken once the page has stopped moving. Same-document URL
+        // changes are not: a page that rewrites its URL while it scrolls would otherwise never settle.
+        navigations = await countDocumentNavigations(context, page);
       }
       const loaded = await measure(`page load ${viewport.name}`, () => gotoParsed(page, pageUrl, loadCapMs));
       const docResponse: BrowserResponse | null = loaded.response;
-      const { seen, html } = await settledView(page, () => navigations, loadCapMs, light);
+      const { seen, html } = await settledView(page, navigations, loadCapMs, light);
       const status = docResponse?.status();
       await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
       count("image responses", responses.size);
