@@ -7,16 +7,27 @@
 - **Exact is measured, est. is estimated.** Estimates are local re-encodes scored against the original, not bytes a server sent.
   Where a loader could not be scored, the estimate is a floor.
 - **Live pages only.** A scan measures the page as the browser loads it, at six viewports, scrolled to the end.
+- **Only `<img>`, `srcset` and `<picture>` are measured.** CSS background images are not in the scan's records. The agent
+  handles them from the code, and their fix is marked `not-measured` or a code ceiling.
+- **Source locations need dev builds.** A production build has no component names or `file:line`. The agent matches those
+  hints by their search clues, `alt`, `testid` and the loader URL.
 - **Bot walls.** A page behind a challenge is recorded as `blocked`, and it is not retried.
-- **Chromium is required** for `scan`, `audit` and `verify`. Install it with `npx playwright install chromium`.
-- **Next.js projects.** The project commands (`audit`, `apply`, `verify`) are written for Next.js. `scan` works on any URL.
+- **Chromium is required** for `scan`. Install it with `npx playwright install chromium`.
+- **Savings are for the pages and viewports scanned.** A usage that does not render on them is not measured.
+- **Quality targets follow the loader.** Only loaders with a quality parameter get quality proposals. See
+  [Image loaders and CDNs](./loaders-and-cdns).
 - **Node.js 20.9 or later.**
 
 ## FAQ
 
-**Does ImgTune change my site?** Only `apply` edits your source files, and it edits literal `sizes` and `quality` props. `audit`
-and `verify` write reports under `.imgtune/`. Measuring also adds temporary instrumentation to the source, which an interrupted run
-restores. `scan` writes only its JSON output. ImgTune never commits.
+**Does ImgTune change my site?** No. `scan` writes its JSON, and the optional Markdown and summary files, and nothing else.
+`imgtune image` writes copies only when you pass `--write`, into a folder you name. Your agent makes the changes in your
+source, from the hints, and it never commits. Review the change with `git diff`.
+
+**Why doesn't ImgTune edit my code?** A fix needs the code around the image: the component, its props, the framework's image
+API. An agent reads that code well, and a measuring tool does not. So ImgTune measures, and the agent edits. The CLI is the
+trustworthy part: it reports the bytes, judges each candidate with SSIMULACRA2, and the rescan checks every change the agent
+makes. Because the hint is the same whatever the framework, the same loop works in any framework.
 
 **Why is there an est. number at all?** Not every site serves a smaller candidate for every image. The estimate shows what a re-encode
 or a resize would save. It is always labelled as an estimate.
@@ -27,7 +38,8 @@ ImgTune measures all six, because the width an image needs changes with the view
 **What does "fixable" mean?** The share of the bytes of the images that have a saving, rather than the share of all image bytes.
 
 **Can I scan a site I do not own?** The agent skill says to scan only sites you own, and to scan each one once. The scanner
-loads the pages a browser loads, and it checks robots.txt first.
+loads the pages a browser loads, and it checks robots.txt first. `--ignore-robots` scans a page that robots.txt disallows, and
+it is for sites you own or are authorised to test.
 
 **Where do the numbers come from?** The scan JSON, with the fields listed in [Output JSON fields](/reference/output-json).
 
@@ -35,5 +47,3 @@ loads the pages a browser loads, and it checks robots.txt first.
 browser estimates and are not the CLI's.
 
 **How long does the demo take on a phone?** On a mid-range phone, expect about 9–13 s for a 1200 px photo, and up to about 56 s at
-4000 px, with AVIF on. With the phone-only set (devices reporting 4 GB or less), a 4000 px photo takes 13–19 s. These were measured on
-two cores of a desktop CPU as a stand-in for a phone, not on a real one; older or budget phones will be slower. AVIF is the slowest codec, so skipping it is the quickest way to a result.

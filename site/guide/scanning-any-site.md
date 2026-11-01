@@ -1,6 +1,6 @@
 # Scanning any site
 
-`scan` measures live pages by URL. It needs no source, no config and no dev server.
+`scan` measures live pages by URL. It needs no source, no config file and no dev server.
 
 ```sh
 npx imgtune scan https://your-site https://your-site/products
@@ -8,7 +8,7 @@ npx imgtune scan https://your-site https://your-site/products
 
 Each URL is one page. For each page, ImgTune loads the page in headless Chromium at six viewports (four phones, a 1440 px
 desktop at 2x, and a 1280 px desktop at 1x), scrolls it to the end so lazy images load, and records every image: the size it
-renders at, the file the browser fetched, and its `srcset` candidates.
+renders at, the file the browser fetched, its `srcset` candidates, and the layout around it. Each image then gets a fix hint.
 
 ## Options
 
@@ -21,19 +21,62 @@ renders at, the file the browser fetched, and its `srcset` candidates.
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--aggressive` | also report a delta 4 column, beside the main numbers. It is never used for the headline |
 | `--fail-over <pct>` | exit with status 3 when a page's exact + est. share is above this percentage (default: never fail) |
+| `--urls-from <file\|sitemap-url>` | scan the URLs of a text file, a local `sitemap.xml`, or a remote sitemap of the same domain |
+| `--sample-per-pattern <N>` | with `--urls-from`, at most N URLs per route pattern (`/p/*`, `/c/*`), spread over the pattern |
+| `--storage-state <file>` | a Playwright storage state, for a logged-in session in every browser context |
+| `--ignore-robots` | scan a page that robots.txt disallows. A warning is printed, and the JSON records it |
+| `--resume` | reuse the complete pages already in `--out` that were scanned with the same options |
+| `--max-pages <N>` | stop after N pages, scanned or resumed. Run again with `--resume` to continue |
+| `--max-images <N>` | stop after the page that brings the images counted to N. Checked between pages |
 
 The six viewport names are `iphone-se`, `iphone-15`, `pixel-7`, `iphone-15-pro-max`, `desktop` and `desktop-1280`.
+
+## Scanning many pages
+
+For a catalogue, give ImgTune a list of pages instead of typing them. A text file has one URL per line, and `#` starts a
+comment. A sitemap works too:
+
+```sh
+npx imgtune scan --urls-from sitemap.xml --sample-per-pattern 5
+```
+
+`--sample-per-pattern` keeps at most that many URLs of each route pattern, so a site with ten thousand product pages is
+sampled, not read in full. Each pattern is spread across its URLs, not taken from the top of the list.
+
+A long run can be split into parts. Each page is written as soon as it is done:
+
+```sh
+npx imgtune scan --urls-from sitemap.xml --sample-per-pattern 5 --max-pages 40
+npx imgtune scan --urls-from sitemap.xml --sample-per-pattern 5 --max-pages 40 --resume
+```
+
+`--resume` reuses the complete pages from the first run. A page that was interrupted is scanned again. It is reused only when
+the options are the same, so changing a viewport starts it over.
+
+## Logged-in pages
+
+Pages behind a login are scanned with a session saved as a Playwright storage state:
+
+```sh
+npx imgtune scan https://your-site/account --storage-state .imgtune/state.json
+```
+
+The file holds session cookies. Never commit it. Keep it outside the repository, or add it to `.gitignore`. ImgTune never
+prints its contents.
 
 ## What a scan does not do
 
 - **robots.txt.** Before a page is scanned, its `robots.txt` is checked for the `*` user agent. A disallowed page is skipped and
-  recorded with the status `robots`.
+  recorded with the status `robots`. `--ignore-robots` scans it anyway, prints a warning and records `robotsIgnored`. Use it
+  only on a site you own or are authorised to test.
 - **Bot walls.** A page that returns a challenge or bot wall is recorded as `blocked` and is not retried.
 - **Redirects.** A page that ends on another site, or on a URL that robots.txt disallows, is recorded as `redirected`, and
-  nothing is measured for it.
+  nothing is measured for it. The `finalUrl` field says where it went.
 - **Stealth.** The scanner identifies itself with the default Chromium user agent and uses no stealth plugins.
 - **New requests to the CDN.** Besides the page, a scan fetches the page's own `srcset` candidates and, for a quality estimate,
   the original of a sampled image. Each URL is fetched at most once per scan. It never asks the CDN for new transformations.
+- **Hidden images.** An image that is not shown at any of the six viewports is not measured, and neither is one behind a click.
+  Lazy images that never load are counted in `notLoaded`.
 
 Scan only the sites you own, and scan each one once unless you need more.
 
@@ -46,10 +89,12 @@ Scan only the sites you own, and scan each one once unless you need more.
 - **Every hop.** Every request the browser makes is checked before it connects: each redirect, each image, script and
   other sub-resource, and each tunnel. The check is made on the address the connection goes to, so a DNS answer that
   changes later does not help. A refused request is dropped and counted as blocked.
-- **Sitemaps.** `audit` and `verify` read sitemaps, `scan` does not. A child sitemap is read only when it is on the same
-  registrable domain as the sitemap that lists it, and every redirect of it stays on that domain. Each file is capped at
-  50 MB, at most two levels of index are followed, at most 50 children are read, and each request has a 30 second
-  timeout. Compressed `.xml.gz` sitemaps are not read.
+- **Sitemaps.** A child sitemap is read only when it is on the same registrable domain as the sitemap that lists it, and every
+  redirect of it stays on that domain. Each file is capped at 50 MB, at most 50,000 URLs are read, at most two levels of index
+  are followed, at most 50 child sitemaps are read, and each request has a 15 second timeout. Compressed (`.gz`) sitemaps are
+  not read.
+- **Source maps.** Source maps come from the scanned site, so they are untrusted. They are read with caps: 20 MB each, 64 per
+  scan, and only a relative path under the project is kept as a source file.
 
 ## CPU use
 
@@ -62,5 +107,7 @@ The JSON for each page has the numbers listed in [Output JSON fields](/reference
 - **exact**: savings from the site's own smaller candidates, fetched and measured.
 - **est.**: savings from a local re-encode. It is an estimate.
 - **sharpness**: images smaller than their slot. Reported apart, and it contributes no saving.
+- **images**: one fix record per image, with its locator, its layout chain, its `sizes` at each viewport, and a fix hint with
+  two byte numbers: bytes saved, and bytes added for sharpness.
 
 Report exact and est. separately. [How it measures](./how-it-measures) explains each number.

@@ -10,6 +10,6 @@ fixes one of the three levers, or measures without deciding.
 - **Lighthouse** flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate. It tells you
   something is wrong. It does not tell you which `sizes` or quality to set.
 - **ImgTune** measures size, quality and format together, per image, on the live page at six viewports. A saving counts only when
-  SSIMULACRA2 says nobody can see the difference. In a Next.js project it writes the fix, verifies it against the server, and can undo it.
+  SSIMULACRA2 says nobody can see the difference. Your AI agent makes the change from the hint, and a rescan checks it.
 
 ImgTune does not replace a CDN or a compressor. It tells you which `sizes` and quality to use with them, and it checks the result.

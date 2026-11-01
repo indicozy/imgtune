@@ -21,7 +21,7 @@ For those images the estimate is a floor, and the page JSON counts them as `qual
 
 ## What this means in practice
 
-- With **next/image**, ImgTune can propose both `sizes` and `quality`. `apply` writes them into your source.
+- With **next/image**, ImgTune can propose both `sizes` and `quality`. Your agent writes them into your source, from the hint.
 - With a CDN that only resizes on request, the loader still tells you the widths. The fix is in `sizes`.
 - With a **generic** URL, ImgTune measures resolution. Quality is only proposed when the URL itself has a quality parameter.
 

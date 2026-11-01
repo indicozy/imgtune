@@ -35,6 +35,13 @@ An image smaller than the slot it fills is undersized. It is reported as **sharp
 savings. Growth from undersized images is never subtracted from other images' savings, and an undersized image contributes no
 saving itself.
 
+## Fix hints
+
+Every image with a saving, or with a `sizes` value that differs from the current one, gets a fix hint. The hint gives the
+`sizes`, quality and format to use, and two byte numbers: the bytes the fix saves per page view, and the bytes it adds for
+sharpness. The two are never netted. A scan's hints stand on the `measured-page` rung. See
+[Fix it with your agent](./fix-with-your-agent) for the other rungs.
+
 ## qualityNA
 
 When an image's quality cannot be scored, usually because its original is unknown, it is counted as `qualityNA`. Its resolution
