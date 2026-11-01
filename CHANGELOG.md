@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `imgtune run <url...> | --urls-from <file|sitemap>` is the whole agent flow in one command: survey every URL, rank the pages
+  by exact KB per view and route pattern, full-scan the worst (`--deep <N>`, default 5, at least one per worst pattern), locate
+  them on a dev server (`--dev <origin>`), and group the fix hints by call site (`--qualities`). It writes a run directory
+  (`survey/`, `deep/`, `located/`, `hints.json`, and `run.json`, a manifest that lists every file and every command it ran) and
+  prints a summary of at most 40 lines. The scan passthroughs are `--gpu`, `--gpu-device`, `--page-concurrency`,
+  `--idle-timeout` and `--no-cache`, plus `--root`, `--storage-state` and `--ignore-robots`.
+- `imgtune summary <run dir | scan.json ...>` prints the same one-screen summary again, from a run directory or from scan files.
+- Broken pages: a page whose document answered an HTTP error, whose linked stylesheet did not load, or that finds no images
+  where the survey found some is `broken`, with its reason and the likely fix. A broken page has no page numbers and counts in
+  no total. `scan --fail-on-broken` exits 4. `run` stops before the deep phase when more than half of the survey is broken.
+  A page now records `documentStatus` and `stylesheetHosts` when they apply.
 - Scan: `--survey` is a fast site-wide pass (viewports `iphone-15` and `desktop`, no quality estimate, four pages at once,
   a 3 s network-idle cap). Its numbers are exact savings only and are labelled so in the scan's output, the Markdown and
   the report. A survey is recorded in each page's options, so `--resume` and `compare` never mix it with a full scan.

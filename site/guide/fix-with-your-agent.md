@@ -26,7 +26,23 @@ project, copy the folder into your user skills directory (`~/.claude/skills/`) i
 
 The skill is also on [GitHub](https://github.com/indicozy/imgtune/tree/main/skills/imgtune).
 
-## The loop
+## Start with one command
+
+`imgtune run` does the survey, the worst pages, the deep scan, the locate on dev and the hints by call site, and prints a
+summary of at most 40 lines that says what to fix next:
+
+```sh
+npx imgtune run --urls-from sitemap.xml --sample-per-pattern 5 --dev http://localhost:3000
+npx imgtune summary .imgtune/run/<timestamp>
+```
+
+Then fix the top call sites in batches (`npx imgtune hints .imgtune/run/<timestamp>/located/*.json --limit 10`), check each batch
+on dev with `--sizes-only`, and run `imgtune run` again into a new `--out` for the final bytes. A run that stops on broken pages
+prints the cause (a CSS host the machine cannot reach, an asset prefix, a wrong route); fix that, not the numbers.
+
+The steps below are the same flow by hand, for a single page or a step you need to re-run.
+
+## The loop, by hand
 
 The skill works in four measured steps, in order. The bytes come from a built server, the source from the dev server, and
 the two are joined.
