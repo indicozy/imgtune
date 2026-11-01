@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Browser, BrowserContext, BrowserContextOptions, CDPSession, Page, Response as BrowserResponse } from "playwright";
@@ -50,7 +50,7 @@ import { bisectQuality, confirmBisect, minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
 import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
-import { EstimateRegistry, hashOf, internBuffer, withEstimates, type EstimateStore } from "./estimate-jobs.js";
+import { EstimateRegistry, hashOf, withEstimates, type EstimateStore } from "./estimate-jobs.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
 
 import { MAX_WIDTH, parseSrcset, type Candidate } from "./srcset-parse.js";
@@ -60,6 +60,7 @@ import type { Viewport } from "./types.js";
 import { IMGTUNE_VERSION } from "./version.js";
 import { count, measure, renderTiming, resetTiming, TIMING_ENABLED } from "./timing.js";
 import { mapLimit, settleLimit } from "./concurrency.js";
+import { getBlob, putBlob, readStagedJson, removeStage, stageDirOf, writeStagedJson } from "./stage.js";
 import { loadGroups } from "./loads.js";
 
 export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
@@ -2874,8 +2875,8 @@ async function scanPage(
     harness: boolean;
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
-    /** The responses' buffers of the run, by content hash: a file two pages share is held once (see internBuffer). */
-    interned: Map<string, Buffer>;
+    /** The run's stage (see stage.ts and runScan): the measured pages are written here before their analysis. */
+    stage?: { dir: string; options: ScanRecordOptions };
     storageState?: StorageState;
     thirdParty: ThirdPartyPolicy;
     qualityFor?: (inst: Instance) => boolean;
@@ -3010,16 +3011,18 @@ async function scanPage(
   if (robotsIgnored) described.robotsIgnored = true;
   if (robotsRule !== undefined) described.robotsRule = robotsRule;
   if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
-  // The page's responses are shared with the run's other pages where they are the same file (see internBuffer).
-  for (const obs of observations) {
-    for (const response of obs.responses.values()) {
-      if (response.buffer !== undefined) response.buffer = internBuffer(run.interned, response.buffer);
-    }
-  }
-  const ctx: Omit<AnalysisContext, "store"> = {
+  if (run.stage === undefined) return { analyse: (store) => analysePage({ ...analysisContextOf(run, pageUrl), store }, observations, described) };
+  return stagedMeasure(run, run.stage, pageUrl, described, observations);
+}
+
+/** What analysePage reads of a page besides its observations: the run's fetcher, encoders and options, for one page. */
+type PageRun = Parameters<typeof scanPage>[1];
+
+function analysisContextOf(run: PageRun, pageUrl: string): Omit<AnalysisContext, "store"> {
+  return {
     pageUrl,
     fetcher: run.fetcher,
-    allowPrivate,
+    allowPrivate: isLocalTarget(pageUrl),
     deps: run.deps,
     quality: run.quality,
     estimates: run.estimates,
@@ -3030,12 +3033,111 @@ async function scanPage(
     projectDir: run.projectDir,
     projectRoot: run.projectRoot,
   };
-  return { analyse: (store) => analysePage({ ...ctx, store }, observations, described) };
 }
 
 /** A page measured whose estimates are not in yet: `analyse` gives its result with the estimates of a store (see withEstimates). */
 export interface MeasuredPage {
   analyse: (store: EstimateStore) => Promise<PageResult>;
+  /** Phase 1: writes the measured state to the stage, marked incomplete (see stage.ts). Absent when the run does not stage. */
+  stage?: () => Promise<void>;
+  /** Phase 1: records the page's image count in its stage, once it is counted. */
+  countImages?: (images: number) => Promise<void>;
+  /** Phase 2: removes the page's stage, once its complete JSON is written. */
+  finish?: () => Promise<void>;
+}
+
+/** A staged page as its JSON file holds it: the measured observations, with each body as the name of its blob. */
+interface StagedPage {
+  version: 1;
+  url: string;
+  options: ScanRecordOptions;
+  described: PageResult;
+  observations: StagedObservation[];
+  /** The page's image count, once counted. Absent while the page is only measured: such a page is measured again. */
+  images?: number;
+}
+
+interface StagedObservation extends Omit<ViewportObservation, "responses"> {
+  responses: { url: string; record: Omit<ResponseRecord, "buffer">; blob?: string }[];
+}
+
+/**
+ * A measured page held in its stage (see stage.ts): `stage` writes its observations there (the bodies as blobs) and then
+ * drops them from memory, and `analyse` reads them back, so a run holds one page's bytes at a time in phase 2.
+ */
+function stagedMeasure(
+  run: PageRun,
+  stage: { dir: string; options: ScanRecordOptions },
+  pageUrl: string,
+  described: PageResult,
+  live?: ViewportObservation[],
+): MeasuredPage {
+  const file = join(stage.dir, pageFileName(new URL(pageUrl)));
+  let pending = live;
+  const ctx = analysisContextOf(run, pageUrl);
+  return {
+    stage: async () => {
+      if (pending === undefined) return;
+      const staged: StagedObservation[] = [];
+      for (const obs of pending) {
+        const { responses, ...rest } = obs;
+        const records: StagedObservation["responses"] = [];
+        for (const [url, record] of responses) {
+          const { buffer, ...meta } = record;
+          records.push({ url, record: meta, blob: buffer === undefined ? undefined : await putBlob(stage.dir, buffer) });
+        }
+        staged.push({ ...rest, responses: records });
+      }
+      const state: StagedPage = { version: 1, url: pageUrl, options: stage.options, described, observations: staged };
+      await writeStagedJson(stage.dir, file, state);
+      pending = undefined;
+    },
+    countImages: async (images) => {
+      const state = await readStagedJson<StagedPage>(file);
+      if (state !== undefined) await writeStagedJson(stage.dir, file, { ...state, images });
+    },
+    analyse: async (store) => {
+      const observations = pending ?? (await unstagedObservations(stage.dir, file));
+      return analysePage({ ...ctx, store }, observations, described);
+    },
+    finish: async () => {
+      await rm(file, { force: true });
+    },
+  };
+}
+
+/** The observations of a staged page's file, with their bodies read back from the blobs. */
+async function unstagedObservations(stageDir: string, file: string): Promise<ViewportObservation[]> {
+  const state = await readStagedJson<StagedPage>(file);
+  if (state === undefined) throw new Error(`staged page is missing or unreadable: ${safeText(file)}`);
+  const observations: ViewportObservation[] = [];
+  for (const staged of state.observations) {
+    const { responses: records, ...rest } = staged;
+    const responses = new Map<string, ResponseRecord>();
+    for (const { url, record, blob } of records) {
+      responses.set(url, blob === undefined ? { ...record } : { ...record, buffer: await getBlob(stageDir, blob) });
+    }
+    observations.push({ ...rest, responses });
+  }
+  return observations;
+}
+
+/**
+ * The measured page of an earlier run's stage, when the stage holds this URL's complete measurement with the same options
+ * (and every body it names): the scan measures the page no more, and runs only its analysis. Undefined otherwise.
+ */
+async function resumeStaged(run: PageRun, url: string): Promise<{ page: MeasuredPage; images: number } | undefined> {
+  const stage = run.stage;
+  if (stage === undefined) return undefined;
+  const state = await readStagedJson<StagedPage>(join(stage.dir, pageFileName(new URL(url))));
+  if (state === undefined || state.url !== url || state.images === undefined || !sameRecordOptions(state.options, stage.options)) return undefined;
+  for (const obs of state.observations) {
+    for (const response of obs.responses) {
+      if (response.blob === undefined) continue;
+      if (!(await stat(join(stage.dir, "blobs", response.blob)).then(() => true, () => false))) return undefined;
+    }
+  }
+  return { page: stagedMeasure(run, stage, url, state.described), images: state.images };
 }
 
 const isMeasured = (outcome: PageResult | MeasuredPage): outcome is MeasuredPage => "analyse" in outcome;
@@ -3090,7 +3192,6 @@ async function withBrowser<T>(
       ignoreRobots: opts.ignoreRobots === true,
       harness: opts.harness === true,
       sourceMaps: new Map(),
-      interned: new Map<string, Buffer>(),
       storageState: opts.storageState,
       thirdParty: opts.thirdParty ?? DEFAULT_THIRD_PARTY,
       qualityFor: opts.qualityFor,
@@ -3172,6 +3273,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
   return withScanRun(opts, async (browser, run, robotsFor) => {
     await mkdir(opts.outDir, { recursive: true });
     const options = recordOptionsOf(opts);
+    run.stage = { dir: stageDirOf(opts.outDir), options };
     const results = new Array<PageResult | undefined>(urls.length);
     // The finished pages in finishing order: the progress line counts them.
     const finished: PageResult[] = [];
@@ -3199,6 +3301,16 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
         opts.log(progressLine(finished, urls.length));
         return;
       }
+      // A page measured by an interrupted run: its estimates only. Its requests are collected as a measured page's are.
+      const staged = opts.resume ? await resumeStaged(run, url) : undefined;
+      if (staged !== undefined) {
+        await staged.page.analyse(collector);
+        measured.push({ index, url, page: staged.page });
+        images += staged.images;
+        measuredCount++;
+        opts.log(`measured ${safeText(url)} (${measuredCount} of ${urls.length}), from its stage: not measured again`);
+        return;
+      }
       opts.log(`scanning ${safeText(url)}`);
       const startedAt = performance.now();
       const outcome = await scanPage(browser, run, url, robotsFor);
@@ -3211,7 +3323,10 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
         return;
       }
       // The collecting pass: the page's estimate requests are recorded; its own numbers are provisional and replaced below.
+      // Staged as soon as it is measured: the collecting pass reads it back from the stage, so no bytes are held meanwhile.
+      await outcome.stage?.();
       const provisional = await outcome.analyse(collector);
+      await outcome.countImages?.(provisional.counts?.images ?? 0);
       measured.push({ index, url, page: outcome });
       images += provisional.counts?.images ?? 0;
       measuredCount++;
@@ -3229,9 +3344,12 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
         results[index] = result;
         finished.push(result);
         await writePage(url, result);
+        await page.finish?.();
         opts.log(progressLine(finished, urls.length));
       }
     }
+    // Every measured page is complete now: the stage's blobs go with it (an interrupted run never gets here).
+    await removeStage(stageDirOf(opts.outDir));
     const ran = results.filter((result): result is PageResult => result !== undefined);
     if (ran.length < urls.length) {
       // Images first: when both limits were reached, the one that stopped the run (as it did one page at a time) is named.
