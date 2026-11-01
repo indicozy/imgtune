@@ -22,6 +22,7 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--page-concurrency <N>` | scan up to N pages at once on one browser, 1 to 6 (default 1; `--survey` sets 4) |
 | `--idle-timeout <ms>` | cap on the wait for network idle after scroll, 0 to 600000 (default 10000; `0` skips the wait; `--survey` sets 3000) |
+| `--fresh-loads` | one page load per viewport instead of one per viewport class (the mobile and the desktop viewports); the default resizes the open page for the other viewports of its class |
 | `--aggressive` | also report a delta 4 column, beside the main numbers. It is never used for the headline |
 | `--fail-over <pct>` | exit with status 3 when a page's exact + est. share is above this percentage (default: never fail) |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file, a local `sitemap.xml`, or a remote sitemap of the same domain |

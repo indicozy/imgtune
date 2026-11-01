@@ -40,6 +40,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--survey` | a fast site-wide pass: viewports `iphone-15` and `desktop`, no quality estimate, `--page-concurrency 4`, `--idle-timeout 3000`. Exact savings only, labelled in the output. An explicit flag overrides its part |
 | `--page-concurrency <N>` | scan up to N pages at once on the shared browser, 1 to 6 (default 1). Results keep the input order |
 | `--idle-timeout <ms>` | cap on the wait for network idle after scroll, 0 to 600000 (default 10000). `0` skips the wait |
+| `--fresh-loads` | one page load per viewport, each in its own browser context (the old behaviour). By default each class of viewports (mobile, desktop) is one page load: the first viewport of the class loads the page, the others resize it (viewport and DPR changed in place, then re-scrolled and settled). The numbers are the same in the equivalence check; the mode is recorded in each page's options, so `--resume` and `compare` never mix the two silently |
 | `--root <dir>` | the folder project source files are read from, for `--locate-only` and source checks. Default: the nearest folder above the cwd that holds the file, else the nearest with a `package.json` or `.git`. Unread sources are named in the output with the folder they were looked up in |
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--markdown <file>` | write a PR-comment Markdown summary: per page, its top groups and the method |

@@ -9,6 +9,10 @@
   order and each page's JSON is written as it finishes; `--max-pages` and `--max-images` stop new pages and keep those in
   flight. The GPU scorer's CPU fallbacks are counted per page.
 - Scan: `--idle-timeout <ms>` (0 to 600000, default 10000) caps the wait for network idle after scroll; 0 skips it.
+- Scan: a page is loaded twice, not once per viewport: one load for the mobile viewports and one for the desktop ones. The
+  other viewports of a class change the viewport and device pixel ratio of the open page (re-scrolled and settled, no
+  reload), in ascending effective pixel width. `--fresh-loads` restores one browser context per viewport. The mode is
+  recorded in each page's options (`loads`): `--resume` rescans pages of the other mode and `compare` warns about it.
 
 - Caller map: a call site whose component is rendered for several callers lists each caller at the first owner level above
   the image that differs between usages (`callers:` in the grouped `hints`, `callers` in the JSON), with its file:line,

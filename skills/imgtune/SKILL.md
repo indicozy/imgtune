@@ -82,6 +82,10 @@ Every flag below is checked against `--help`; use only these.
   order; the numbers match one page at a time, within the run-to-run variation a page already has.
 - `--idle-timeout <ms>` (0 to 600000, default 10000): cap on the wait for network idle after scroll. A page with a request
   that never ends pays this on every settle; 0 skips the wait.
+- `--fresh-loads`: by default a page is loaded once for the desktop viewports and once for the mobile ones; the other
+  viewports of each class change the viewport and DPR of the open page (no reload). `--fresh-loads` loads every viewport
+  in its own context, as before (slower). Scans of the two modes are recorded apart (`loads` in the options): `--resume`
+  rescans a page of the other mode, and `compare` warns when the two were measured differently.
 - `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop
   early (after the page that brings the images counted to N); run again with `--resume` to continue.
 - `--viewports <names>`; `--root <dir>` (source folder, for a monorepo sub-folder); `--no-cache`.

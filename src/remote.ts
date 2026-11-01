@@ -57,6 +57,7 @@ import type { Viewport } from "./types.js";
 import { IMGTUNE_VERSION } from "./version.js";
 import { count, measure, renderTiming, resetTiming, TIMING_ENABLED } from "./timing.js";
 import { mapLimit, settleLimit } from "./concurrency.js";
+import { loadGroups } from "./loads.js";
 
 export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
 export { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -436,6 +437,8 @@ export interface ScanArgs {
   idleTimeoutMs?: number;
   /** --survey: the fast site-wide preset (see survey.ts and scanPlan). */
   survey?: boolean;
+  /** --fresh-loads: every viewport is its own page load, not a resize of its class's page (see loadGroups). */
+  freshLoads?: boolean;
   /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
   urlsFrom?: string;
   /** At most this many URLs per route pattern of the --urls-from list. */
@@ -525,6 +528,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--harness") args.harness = true;
     else if (arg === "--survey") args.survey = true;
+    else if (arg === "--fresh-loads") args.freshLoads = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -870,6 +874,8 @@ export interface ResponseRecord {
 
 export interface ViewportObservation {
   viewport: Viewport;
+  /** "fresh": the page was loaded for this viewport. "resized": the open page of its load group was changed to it (see readGroup). */
+  load: "fresh" | "resized";
   status?: number;
   /** The URL the page ends on, after any navigation of its own. Absent in old observations: the page URL. */
   finalUrl?: string;
@@ -1136,13 +1142,16 @@ async function settledView(
   loadCapMs: number,
   light = false,
   idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
+  afterSettle?: () => Promise<void>,
 ): Promise<PageView> {
   let last: PageView | undefined;
   for (let repeat = 0; ; repeat++) {
     const start = navigations();
     let view: PageView | undefined;
     try {
-      await settlePage(page, "img", { networkIdle: !light, networkIdleMs: idleTimeoutMs });
+      // A resized read waits for its network through afterSettle (Playwright's networkidle returns at once there).
+      await settlePage(page, "img", { networkIdle: !light && afterSettle === undefined, networkIdleMs: idleTimeoutMs });
+      if (afterSettle !== undefined) await afterSettle();
       view = await measure("read view", () => readView(page, light));
     } catch (err) {
       if (!isNavigationError(err)) throw err;
@@ -1212,26 +1221,119 @@ async function functionLocationsOf(session: CDPSession, index: number, scripts: 
   return frames;
 }
 
+/** One viewport's read of a page: its observation, or the error that stopped it. */
+export type ViewportOutcome = { ok: true; value: ViewportObservation } | { ok: false; error: unknown };
+
+/** Quiet time that counts as network idle after a resize (the rule Playwright's networkidle uses). */
+const NETWORK_QUIET_MS = 500;
+
 /**
- * One viewport's read of a page. `light` (the locate and sizes-only paths) reads no image bodies and no layout chain: the
- * image sizes come from the response headers, and nothing is decoded or scored.
+ * Resolves once no request has been in flight for NETWORK_QUIET_MS, or after `capMs` (the --idle-timeout cap). Playwright's
+ * own networkidle wait returns at once on a page that has already gone idle, so a resized read waits on the requests the
+ * resize and the scroll start, counted from the browser's events.
  */
-async function observeViewport(
+async function waitNetworkQuiet(busy: () => number, capMs: number): Promise<void> {
+  if (capMs <= 0) return;
+  const start = Date.now();
+  let quietSince = start;
+  for (;;) {
+    const now = Date.now();
+    if (busy() > 0) quietSince = now;
+    else if (now - quietSince >= NETWORK_QUIET_MS) return;
+    if (now - start >= capMs) {
+      count("network idle timeouts");
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/**
+ * Changes the open page to another viewport and device pixel ratio, without a load: the device metrics of the page, and
+ * the user agent when the viewport has its own and it is not the one the page has. Two frames run before the page is read,
+ * so the layout, the media queries and the resize listeners have all run.
+ */
+async function resizeTo(cdp: CDPSession, page: Page, viewport: Viewport, state: { userAgent?: string }): Promise<void> {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor: viewport.dpr,
+    mobile: viewport.mobile,
+    screenWidth: viewport.width,
+    screenHeight: viewport.height,
+  });
+  if (viewport.userAgent !== undefined && viewport.userAgent !== state.userAgent) {
+    await cdp.send("Emulation.setUserAgentOverride", { userAgent: viewport.userAgent });
+    state.userAgent = viewport.userAgent;
+  }
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+}
+
+/**
+ * The image responses a resized read reports, by URL. A resize re-selects the candidates, and the browser does not
+ * request one it already holds: an image whose candidate did not change keeps its element's copy with no response. So
+ * each read takes, from the document's responses, the URL of each image as shown, the background candidate each visible
+ * layer uses (the one the browser loaded, as pickLoaded gives it), and the URLs answered during the step. A fresh load
+ * at the viewport would answer the same set: the bytes and the buffers are the same bytes.
+ */
+function responsesOfStep(
+  fetched: Map<string, ResponseRecord>,
+  answered: Set<string>,
+  seen: { images: ObservedImage[]; backgrounds: ObservedBackground[] },
+  dpr: number,
+): Map<string, ResponseRecord> {
+  const out = new Map<string, ResponseRecord>();
+  const keep = (url: string): void => {
+    const record = fetched.get(url);
+    if (record !== undefined) out.set(url, record);
+  };
+  for (const url of answered) keep(url);
+  for (const img of seen.images) if (img.currentSrc) keep(img.currentSrc);
+  for (const bg of seen.backgrounds) {
+    if (bg.hidden) continue;
+    for (const layer of parseBackgroundImage(bg.backgroundImage)) {
+      if (layer.dataUri) continue;
+      const chosen = pickLoaded(layer.candidates, (url) => fetched.get(url)?.buffer !== undefined, dpr);
+      if (chosen) keep(chosen.url);
+    }
+  }
+  return out;
+}
+
+/**
+ * The reads of one load group (see loadGroups): the viewports of one page, one after another in one browser context. The
+ * first is a fresh load. Each later one is a resize of the open page, read after its own settle (see resizeTo); its
+ * observation is `load: "resized"`. A resize after which the page has navigated by itself is not its page any more: that
+ * viewport and the rest of the group are read by fresh loads (returned as `fresh`). An error stops the group: the rest
+ * are errors, as the page's first failure decides its status.
+ *
+ * `light` (the locate and sizes-only paths) reads no image bodies and no layout chain, and is always a single fresh load.
+ */
+async function readGroup(
   browser: Browser,
   pageUrl: string,
-  viewport: Viewport,
+  viewports: Viewport[],
   guard: RequestGuard,
-  loadCapMs: number = LOAD_EVENT_CAP_MS,
-  storageState?: StorageState,
-  light = false,
-  functionsWanted?: (img: ObservedImage) => boolean,
-  idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
-): Promise<ViewportObservation> {
-  const responses = new Map<string, ResponseRecord>();
+  loadCapMs: number,
+  storageState: StorageState | undefined,
+  light: boolean,
+  functionsWanted: ((img: ObservedImage) => boolean) | undefined,
+  idleTimeoutMs: number,
+): Promise<{ outcomes: ViewportOutcome[]; fresh: Viewport[] }> {
+  const first = viewports[0];
+  const outcomes: ViewportOutcome[] = [];
+  let fresh: Viewport[] = [];
+  // Every image response of the document, by URL (the latest one for a URL fetched twice).
+  const fetched = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
   let blockedRequests = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
   const failedSheets = new Set<string>();
+  // Requests the browser has not finished, by request id (a redirect keeps its id).
+  const busy = new Set<string>();
+  // The image URLs answered during the current step (see responsesOfStep).
+  let answered = new Set<string>();
+  const decoded = new WeakSet<ResponseRecord>();
   // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
   // time. Chromium gives the route handler no route for a redirect hop, so the route guard alone would miss them.
   const egress = await measure("egress proxy start", () =>
@@ -1241,11 +1343,11 @@ async function observeViewport(
   );
   try {
     const context = await measure("context start", () => browser.newContext({
-      viewport: { width: viewport.width, height: viewport.height },
-      deviceScaleFactor: viewport.dpr,
-      isMobile: viewport.mobile,
-      hasTouch: viewport.mobile,
-      userAgent: viewport.userAgent,
+      viewport: { width: first.width, height: first.height },
+      deviceScaleFactor: first.dpr,
+      isMobile: first.mobile,
+      hasTouch: first.mobile,
+      userAgent: first.userAgent,
       // A service worker could answer requests the route guard never sees, and would change what is measured.
       serviceWorkers: "block",
       // Loopback is proxied as well, so a request to 127.0.0.1 from a public page is checked like any other.
@@ -1293,7 +1395,8 @@ async function observeViewport(
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
         if (!isImage) return;
         const record: ResponseRecord = { url: response.url(), contentType, bytes: 0 };
-        responses.set(response.url(), record);
+        fetched.set(response.url(), record);
+        answered.add(response.url());
         if (light) {
           const length = Number(response.headers()["content-length"]);
           if (Number.isFinite(length) && length >= 0) record.bytes = length;
@@ -1328,43 +1431,127 @@ async function observeViewport(
         // changes are not: a page that rewrites its URL while it scrolls would otherwise never settle.
         navigations = await countDocumentNavigations(context, page);
       }
-      const loaded = await measure(`page load ${viewport.name}`, () => gotoParsed(page, pageUrl, loadCapMs));
-      const docResponse: BrowserResponse | null = loaded.response;
-      const { seen, html } = await settledView(page, navigations, loadCapMs, light, idleTimeoutMs);
-      const status = docResponse?.status();
-      if (debug !== undefined && functionsWanted !== undefined) {
-        for (const img of seen.images) {
-          if (!img.locator || !functionsWanted(img)) continue;
-          const frames = await measure("function locations", () => functionLocationsOf(debug.session, img.index, debug.scripts)).catch(() => []);
-          if (frames.length > 0) img.locator.functionLocations = frames;
+      // The requests in flight, for the network-idle wait after a resize (the browser's own events).
+      const cdp = viewports.length > 1 ? await context.newCDPSession(page) : undefined;
+      if (cdp !== undefined) {
+        cdp.on("Network.requestWillBeSent", (event: { requestId: string }) => busy.add(event.requestId));
+        cdp.on("Network.loadingFinished", (event: { requestId: string }) => busy.delete(event.requestId));
+        cdp.on("Network.loadingFailed", (event: { requestId: string }) => busy.delete(event.requestId));
+        await cdp.send("Network.enable");
+      }
+      const resizeState: { userAgent?: string } = { userAgent: first.userAgent };
+      let loaded: { response: BrowserResponse | null; loadTimedOut: boolean } | undefined;
+      for (const [step, viewport] of viewports.entries()) {
+        const blockedBefore = blockedRequests;
+        const navigatedBefore = navigations();
+        answered = new Set<string>();
+        try {
+          if (step === 0) {
+            loaded = await measure(`page load ${viewport.name}`, () => gotoParsed(page, pageUrl, loadCapMs));
+          } else {
+            await measure(`resize ${viewport.name}`, () => resizeTo(cdp as CDPSession, page, viewport, resizeState));
+          }
+          const { seen, html } = await settledView(
+            page,
+            navigations,
+            loadCapMs,
+            light,
+            idleTimeoutMs,
+            step === 0 ? undefined : () => waitNetworkQuiet(() => busy.size, idleTimeoutMs),
+          );
+          if (step > 0 && navigations() !== navigatedBefore) {
+            fresh = viewports.slice(step);
+            break;
+          }
+          const status = loaded?.response?.status();
+          if (debug !== undefined && functionsWanted !== undefined) {
+            for (const img of seen.images) {
+              if (!img.locator || !functionsWanted(img)) continue;
+              const frames = await measure("function locations", () => functionLocationsOf(debug.session, img.index, debug.scripts)).catch(() => []);
+              if (frames.length > 0) img.locator.functionLocations = frames;
+            }
+            await debug.session.detach().catch(() => undefined);
+          }
+          await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
+          const responses = step === 0 ? new Map(fetched) : responsesOfStep(fetched, answered, seen, viewport.dpr);
+          count("image responses", responses.size);
+          for (const record of responses.values()) {
+            if (!record.buffer || decoded.has(record)) continue;
+            decoded.add(record);
+            record.pixels = await measure("decode: pixel size", () => pixelSize(record.buffer as Buffer));
+          }
+          outcomes.push({
+            ok: true,
+            value: {
+              viewport,
+              load: step === 0 ? "fresh" : "resized",
+              status,
+              finalUrl: page.url(),
+              ...(step === 0 && loaded !== undefined ? { loadTimedOut: loaded.loadTimedOut } : {}),
+              blocked: isChallenge(status, seen.images.length, html),
+              blockedRequests: blockedRequests - blockedBefore,
+              nextjs: seen.nextjs,
+              images: seen.images,
+              backgrounds: seen.backgrounds,
+              stylesheetsFailed: failedSheets.size,
+              responses,
+            },
+          });
+        } catch (error) {
+          outcomes.push({ ok: false, error });
+          for (let later = step + 1; later < viewports.length; later++) outcomes.push({ ok: false, error });
+          break;
         }
-        await debug.session.detach().catch(() => undefined);
       }
-      await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
-      count("image responses", responses.size);
-      for (const record of responses.values()) {
-        if (record.buffer) record.pixels = await measure("decode: pixel size", () => pixelSize(record.buffer as Buffer));
-      }
-      return {
-        viewport,
-        status,
-        finalUrl: page.url(),
-        loadTimedOut: loaded.loadTimedOut,
-        blocked: isChallenge(status, seen.images.length, html),
-        blockedRequests,
-        nextjs: seen.nextjs,
-        images: seen.images,
-        backgrounds: seen.backgrounds,
-        stylesheetsFailed: failedSheets.size,
-        responses,
-      };
     } finally {
       await context.close();
     }
   } finally {
     await egress.close();
   }
+  return { outcomes, fresh };
 }
+
+/**
+ * The observations of one load group (see readGroup), one outcome per viewport in the order given. A group of one
+ * viewport is a fresh load, as before the grouping: `--fresh-loads` gives each viewport its own group.
+ */
+export async function observeLoads(
+  browser: Browser,
+  pageUrl: string,
+  viewports: Viewport[],
+  guard: RequestGuard,
+  loadCapMs: number = LOAD_EVENT_CAP_MS,
+  storageState?: StorageState,
+  light = false,
+  functionsWanted?: (img: ObservedImage) => boolean,
+  idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
+): Promise<ViewportOutcome[]> {
+  const { outcomes, fresh } = await readGroup(browser, pageUrl, viewports, guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs);
+  for (const viewport of fresh) {
+    const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs);
+    outcomes.push(outcome);
+  }
+  return outcomes;
+}
+
+/** One viewport's observation by a fresh load (the locate and sizes-only paths). */
+async function observeViewport(
+  browser: Browser,
+  pageUrl: string,
+  viewport: Viewport,
+  guard: RequestGuard,
+  loadCapMs: number = LOAD_EVENT_CAP_MS,
+  storageState?: StorageState,
+  light = false,
+  functionsWanted?: (img: ObservedImage) => boolean,
+  idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
+): Promise<ViewportObservation> {
+  const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs);
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
+}
+
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Analysis of one page
@@ -1977,11 +2164,16 @@ export interface ScanRecordOptions {
   idleTimeoutMs?: number;
   /** A --survey scan: its numbers are exact savings only. Absent (not false) otherwise, so older scans still match. */
   survey?: true;
+  /**
+   * How the viewports were loaded: "shared" (a class of viewports is one page load, resized for the rest: the default).
+   * Absent for a --fresh-loads scan, which is what every scan before this option was, so older scans still match.
+   */
+  loads?: "shared";
 }
 
 /** The options of one page's output, for the completeness check of --resume. */
 export function recordOptionsOf(
-  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey">,
+  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "freshLoads">,
 ): ScanRecordOptions {
   return {
     imgtuneVersion: IMGTUNE_VERSION,
@@ -1993,6 +2185,7 @@ export function recordOptionsOf(
     scorer: opts.gpu !== undefined ? "gpu" : "cpu",
     ...(opts.harness === true ? { harness: true as const } : {}),
     ...(opts.survey === true ? { survey: true as const } : {}),
+    ...(opts.freshLoads !== true ? { loads: "shared" as const } : {}),
     ...(opts.idleTimeoutMs !== undefined && opts.idleTimeoutMs !== NETWORK_IDLE_TIMEOUT_MS ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
   };
 }
@@ -2329,6 +2522,8 @@ export interface ScanOptions {
    * estimate at all (no quality sweep, no local resize of a plain image or a background), so its numbers are exact only.
    */
   survey?: boolean;
+  /** --fresh-loads: every viewport is its own page load, not a resize of its class's page (see loadGroups). */
+  freshLoads?: boolean;
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
@@ -2388,6 +2583,8 @@ async function scanPage(
     viewportConcurrency: number;
     /** The cap on the network-idle wait of each settle (see ScanOptions.idleTimeoutMs). */
     idleTimeoutMs: number;
+    /** --fresh-loads: each viewport is its own page load (see loadGroups). */
+    freshLoads: boolean;
     /** False in a survey: no local resize estimate (see AnalysisContext.estimates). */
     estimates: boolean;
     log: (message: string) => void;
@@ -2452,14 +2649,21 @@ async function scanPage(
     return landingRobots.allowed;
   };
 
-  // One pass per viewport, a few at a time, each in its own context. The outcomes are read in viewport order, so the first
-  // challenge, redirect or error decides the status as it does when the viewports load one after another. A challenge
-  // is still not retried.
+  // One load per group of viewports (see loadGroups): a class of viewports shares one page load, a few groups at a time.
+  // The outcomes are read in viewport order, so the first challenge, redirect or error decides the status as it does when
+  // the viewports load one after another. A challenge is still not retried.
   const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
   const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
-  const outcomes = await settleLimit(run.viewports, run.viewportConcurrency, (viewport) => {
-    count("viewport loads");
-    return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, run.storageState, false, undefined, run.idleTimeoutMs);
+  const groups = loadGroups(run.viewports, run.freshLoads);
+  const groupOutcomes = await settleLimit(groups, run.viewportConcurrency, (group) => {
+    count("page loads");
+    count("viewport loads", group.length);
+    return observeLoads(browser, pageUrl, group, guard, run.loadCapMs, run.storageState, false, undefined, run.idleTimeoutMs);
+  });
+  const outcomes = run.viewports.map((viewport) => {
+    const index = groups.findIndex((group) => group.includes(viewport));
+    const groupOutcome = groupOutcomes[index];
+    return groupOutcome.ok ? groupOutcome.value[groups[index].indexOf(viewport)] : groupOutcome;
   });
   const observations: ViewportObservation[] = [];
   let finalUrl: string | undefined;
@@ -2575,6 +2779,7 @@ async function withBrowser<T>(
       projectRoot: opts.root,
       viewportConcurrency: opts.viewportConcurrency ?? VIEWPORT_CONCURRENCY,
       idleTimeoutMs: opts.idleTimeoutMs ?? NETWORK_IDLE_TIMEOUT_MS,
+      freshLoads: opts.freshLoads === true,
       estimates: opts.survey !== true,
       log: opts.log,
       gpu,
@@ -3104,6 +3309,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     maxImages: args.maxImages,
     pageConcurrency: plan.pageConcurrency,
     idleTimeoutMs: plan.idleTimeoutMs,
+    freshLoads: args.freshLoads === true,
     storageState,
     gpu: args.gpu,
     cache: args.noCache !== true,

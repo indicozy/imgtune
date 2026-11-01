@@ -33,6 +33,10 @@ const OPTION_HELP = {
     "--idle-timeout <ms>",
     "cap on the wait for network idle after scroll, 0 to 600000 (default 10000; 0 skips the wait; --survey sets 3000)",
   ],
+  freshLoads: [
+    "--fresh-loads",
+    "one page load per viewport, each in its own browser context (the way scans were before the shared loads): slower, the same numbers in the equivalence check. The default loads a page once per viewport class and resizes it for the others",
+  ],
   noQuality: ["--no-quality", "skip the SSIMULACRA2 quality measurement"],
   markdown: ["--markdown <file>", "write a PR-comment Markdown summary: per page, its top groups and the method"],
   failOver: [
@@ -129,6 +133,7 @@ const SCAN_HELP = commandHelp(
     "maxImages",
     "pageConcurrency",
     "idleTimeout",
+    "freshLoads",
     "urlsFrom",
     "samplePerPattern",
     "storageState",

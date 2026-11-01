@@ -456,11 +456,12 @@ describe("scorer records", () => {
   const scanOptions = { viewports: [], aggressive: false, quality: true, ignoreRobots: false, storageState: undefined };
 
   it("treats a scan without a scorer field as a CPU scan when it is resumed", () => {
-    const cpu = recordOptionsOf({ ...scanOptions });
+    // A scan from before the scorer field was one load per viewport, as --fresh-loads is: its record matches that mode.
+    const cpu = recordOptionsOf({ ...scanOptions, freshLoads: true });
     const legacy: Partial<ScanRecordOptions> = { ...cpu };
     delete legacy.scorer;
     expect(sameRecordOptions(legacy as ScanRecordOptions, cpu)).toBe(true);
-    expect(sameRecordOptions(legacy as ScanRecordOptions, recordOptionsOf({ ...scanOptions, gpu: { device: 1 } }))).toBe(false);
+    expect(sameRecordOptions(legacy as ScanRecordOptions, recordOptionsOf({ ...scanOptions, freshLoads: true, gpu: { device: 1 } }))).toBe(false);
   });
 
   it("names the GPU on the output and in the summary when the GPU made the numbers", () => {
