@@ -7,8 +7,9 @@ import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { applyLocate, devImagesOf, isFlagged, joinLocate, joinKeyOfImage, joinKeyOfRecord, readMeasuredScan, reasonCounts, type LocateSummary, type MeasuredPage } from "./locate-join.js";
-import { observeLight } from "./remote.js";
+import { observeLight, rootOf } from "./remote.js";
 import type { PageResult } from "./remote.js";
+import { unreadSourceNote } from "./source-root.js";
 import { safeText } from "./text.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
@@ -21,6 +22,8 @@ export interface LocateArgs {
   viewport?: string;
   out?: string;
   ignoreRobots: boolean;
+  /** --root: the folder the project sources are read from. */
+  root?: string;
 }
 
 const USAGE = "usage: imgtune scan <dev-url> --locate-only --from <measured-scan.json> [--viewports <name>] [--locate-out <file>]";
@@ -33,6 +36,7 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
   let from: string | undefined;
   let viewport: string | undefined;
   let out: string | undefined;
+  let root: string | undefined;
   let ignoreRobots = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -41,12 +45,13 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
       ignoreRobots = true;
       continue;
     }
-    if (arg === "--from" || arg === "--viewports" || arg === "--locate-out") {
+    if (arg === "--from" || arg === "--viewports" || arg === "--locate-out" || arg === "--root") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
       i++;
       if (arg === "--from") from = value;
       else if (arg === "--locate-out") out = value;
+      else if (arg === "--root") root = value;
       else {
         if (!KNOWN_VIEWPORTS.includes(value)) throw new Error(`--viewports takes one viewport name for --locate-only, one of ${KNOWN_VIEWPORTS.join(", ")}`);
         viewport = value;
@@ -66,7 +71,7 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
   }
   if (url === undefined) throw new Error(USAGE);
   if (from === undefined) throw new Error(`--locate-only needs --from <measured-scan.json> (${USAGE})`);
-  return { url, from, viewport, out, ignoreRobots };
+  return { url, from, viewport, out, ignoreRobots, root };
 }
 
 /** The default output: the measured file's name with `.located.json` in its place. */
@@ -98,8 +103,10 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
   const flaggedSet = new Set(flagged);
   const flaggedPatterns = new Set(flagged.map((r) => joinKeyOfRecord(r)));
   const started = Date.now();
+  const root = await rootOf(args.root, cwd);
   const light = await observeLight(args.url, {
     cwd,
+    root,
     viewports: DEFAULT_VIEWPORTS.filter((v) => v.name === viewport).map((v) => ({ ...v })),
     log,
     ignoreRobots: args.ignoreRobots,
@@ -110,6 +117,11 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
   }
   const observation = light.observations[0];
   const devImages = devImagesOf(observation, args.url, light.resolved);
+  const unread = await unreadSourceNote(
+    devImages.flatMap((d) => (d.kind === "unread" && d.file !== undefined ? [d.file] : [])),
+    cwd,
+    root,
+  );
   const join = joinLocate(measured.images, viewport, devImages, (record) => flaggedSet.has(record));
   const seconds = (Date.now() - started) / 1000;
 
@@ -143,5 +155,5 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
   const exitCode = flagged.length > 0 && summary.joined === 0 ? 1 : 0;
   if (exitCode !== 0) lines.push("nothing located: is this the dev page of the measured scan, with the same images?");
   else lines.push(`next: imgtune hints ${safeText(outPath)}`);
-  return { output: `${lines.join("\n")}\n`, exitCode };
+  return { output: `${lines.join("\n")}\n${unread ?? ""}`, exitCode };
 }

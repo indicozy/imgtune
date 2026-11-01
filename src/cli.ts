@@ -15,6 +15,10 @@ const progress = (message: string) => {
 /** Option lines, keyed by flag. The scan help lists the flags the scan reads. */
 const OPTION_HELP = {
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
+  root: [
+    "--root <dir>",
+    "folder project source files are read from (default: the nearest folder above the cwd that holds the file, else the nearest with a package.json or .git)",
+  ],
   aggressive: ["--aggressive", "also report a delta 4 column (never used for the claim)"],
   viewports: ["--viewports <names>", "comma-separated viewport names to measure (default: all six)"],
   noQuality: ["--no-quality", "skip the SSIMULACRA2 quality measurement"],
@@ -93,6 +97,7 @@ const SCAN_HELP = commandHelp(
   ],
   [
     "out",
+    "root",
     "aggressive",
     "viewports",
     "noQuality",

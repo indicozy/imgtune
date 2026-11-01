@@ -26,6 +26,7 @@ import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitFor
 import { makeScorer, type Scorer } from "./metric.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
+import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
 import { MAX_WIDTH, parseSrcset, type Candidate } from "./srcset-parse.js";
 import { deriveSizes, type SizePoint } from "./sizes.js";
 import type { RawImage } from "./ssim.js";
@@ -377,6 +378,8 @@ export function pageFileName(url: URL): string {
 
 export interface ScanArgs {
   urls: string[];
+  /** --root: the folder that project source files are read from. */
+  root?: string;
   out: string;
   aggressive: boolean;
   quality: boolean;
@@ -440,6 +443,7 @@ function parseViewports(text: string): string[] {
 
 const VALUE_OPTIONS: readonly string[] = [
   "--out",
+  "--root",
   "--viewports",
   "--markdown",
   "--fail-over",
@@ -473,6 +477,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
       i++;
       if (arg === "--out") args.out = value;
+      else if (arg === "--root") args.root = value;
       else if (arg === "--viewports") args.viewports = parseViewports(value);
       else if (arg === "--markdown") args.markdown = value;
       else if (arg === "--summary-json") args.summaryJson = value;
@@ -1200,6 +1205,8 @@ export interface AnalysisContext {
   sourceMaps?: Map<string, Promise<SourceMapData | undefined>>;
   /** The project the scan runs in: resolved source files are read from here (local pages only). */
   projectDir?: string;
+  /** The --root given on the command line (absolute), or undefined: see source-root.ts. */
+  projectRoot?: string;
 }
 
 /** Largest source map read for a chunk: the scanned site is untrusted, so a map is capped in size. */
@@ -1246,7 +1253,7 @@ async function checkSource(
   if (ctx.projectDir === undefined) return "unread";
   let text = texts.get(file);
   if (!text) {
-    text = readProjectSource(ctx.projectDir, file);
+    text = sourceRootOf(ctx.projectDir, file, ctx.projectRoot).then((root) => readProjectSource(root, file));
     texts.set(file, text);
   }
   const source = await text;
@@ -1838,6 +1845,8 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
 export interface ScanOptions {
   outDir: string;
   cwd: string;
+  /** --root, absolute: the folder source files are read from (default: see source-root.ts). */
+  root?: string;
   aggressive: boolean;
   quality: boolean;
   viewports: Viewport[];
@@ -1916,6 +1925,7 @@ async function scanPage(
     qualityFor?: (inst: Instance) => boolean;
     /** The project directory the scan runs in: resolved sources are checked against its files. */
     projectDir?: string;
+    projectRoot?: string;
     log: (message: string) => void;
     /** The GPU scorer of this run, when --gpu was given and it started. */
     gpu?: GpuScorer;
@@ -2028,6 +2038,7 @@ async function scanPage(
       resized: new Map(),
       sourceMaps: run.sourceMaps,
       projectDir: run.projectDir,
+      projectRoot: run.projectRoot,
     },
     observations,
     described,
@@ -2077,6 +2088,7 @@ async function withBrowser<T>(
       storageState: opts.storageState,
       qualityFor: opts.qualityFor,
       projectDir: opts.cwd,
+      projectRoot: opts.root,
       log: opts.log,
       gpu,
     };
@@ -2191,6 +2203,8 @@ export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<Page
 /** Options of a light observation (see observeLight). */
 export interface LightOptions {
   cwd: string;
+  /** --root, absolute (see source-root.ts). */
+  root?: string;
   viewports: Viewport[];
   log: (message: string) => void;
   ignoreRobots: boolean;
@@ -2219,6 +2233,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
     {
       outDir: opts.cwd,
       cwd: opts.cwd,
+      root: opts.root,
       aggressive: false,
       quality: false,
       viewports: opts.viewports,
@@ -2260,6 +2275,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
         resized: new Map(),
         sourceMaps: run.sourceMaps,
         projectDir: run.projectDir,
+        projectRoot: run.projectRoot,
       };
       const resolved = new Map<ObservedImage, ResolvedSource>();
       for (const obs of observations) {
@@ -2528,6 +2544,14 @@ export async function readStorageState(path: string): Promise<StorageState> {
   return { cookies: (state.cookies ?? []) as Saved["cookies"], origins: (state.origins ?? []) as Saved["origins"] };
 }
 
+/** The absolute --root, or undefined. Throws when it is not a folder. */
+export async function rootOf(root: string | undefined, cwd: string): Promise<string | undefined> {
+  if (root === undefined) return undefined;
+  const absolute = resolve(cwd, root);
+  if (!(await isFolder(absolute))) throw new Error(`--root ${safeText(root)} is not a folder`);
+  return absolute;
+}
+
 /** `imgtune scan`: the arguments after `scan`. The JSON files are written to --out; --markdown and --summary-json too. */
 export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<ScanCommandResult> {
   const args = parseScanArgs(argv);
@@ -2547,10 +2571,12 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
   }
   if (urls.length === 0) throw new Error("no URL to scan");
   const storageState = args.storageState !== undefined ? await readStorageState(resolve(cwd, args.storageState)) : undefined;
+  const root = await rootOf(args.root, cwd);
   const report: ScanReport = {};
   const results = await runScan(urls, {
     outDir: resolve(cwd, args.out),
     cwd,
+    root,
     aggressive: args.aggressive,
     quality: args.quality,
     viewports,
@@ -2568,6 +2594,14 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     await writeOutput(resolve(cwd, args.summaryJson), `${JSON.stringify(summaryOf(results), null, 2)}\n`);
   }
   let output = renderScan(results, args.aggressive, (result) => join(args.out, pageFileName(new URL(result.url))));
+  const unreadFiles: string[] = [];
+  for (const result of results) {
+    for (const image of result.images ?? []) {
+      if (image.locator.kind === "unread" && image.locator.file !== undefined) unreadFiles.push(image.locator.file);
+    }
+  }
+  const unread = await unreadSourceNote(unreadFiles, cwd, root);
+  if (unread !== undefined) output += unread;
   const stop = report.stopped;
   if (stop !== undefined) {
     const flag = stop.reason === "max-pages" ? `--max-pages ${stop.limit}` : `--max-images ${stop.limit}`;
