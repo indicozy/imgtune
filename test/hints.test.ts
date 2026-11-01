@@ -6,6 +6,7 @@ import { hasFix, searchHintsOf, type ImageRecord } from "../src/images.js";
 import {
   combinedSizes,
   groupHints,
+  groupSizesOf,
   parseQualities,
   savesText,
   snapUp,
@@ -78,16 +79,19 @@ function page(images: ImageRecord[]): PageResult {
 }
 
 describe("parseHintsArgs", () => {
-  it("takes one file and the filters, with the defaults", () => {
-    expect(parseHintsArgs(["out/page.json"])).toEqual({ file: "out/page.json", limit: 10, offset: 0, format: "text", flat: false });
+  it("takes the scan files and the filters, with the defaults", () => {
+    expect(parseHintsArgs(["out/page.json"])).toEqual({ files: ["out/page.json"], file: "out/page.json", limit: 10, offset: 0, format: "text", flat: false });
     expect(
       parseHintsArgs(["out/page.json", "--page", "bags", "--component", "Card", "--limit", "5", "--offset", "10", "--min-kb", "2.5", "--format", "json"]),
-    ).toEqual({ file: "out/page.json", page: "bags", component: "Card", limit: 5, offset: 10, minKb: 2.5, format: "json", flat: false });
+    ).toEqual({ files: ["out/page.json"], file: "out/page.json", page: "bags", component: "Card", limit: 5, offset: 10, minKb: 2.5, format: "json", flat: false });
   });
 
-  it("refuses a missing file, a second file, a bad number, a bad format and an unknown option", () => {
+  it("reads several scan files, one per page, so call sites group across pages", () => {
+    expect(parseHintsArgs(["a.json", "b.json", "--limit", "3"]).files).toEqual(["a.json", "b.json"]);
+  });
+
+  it("refuses a missing file, a bad number, a bad format and an unknown option", () => {
     expect(() => parseHintsArgs([])).toThrow(/usage: imgtune hints/);
-    expect(() => parseHintsArgs(["a.json", "b.json"])).toThrow(/only one scan file/);
     expect(() => parseHintsArgs(["a.json", "--limit", "0"])).toThrow(/at least 1/);
     expect(() => parseHintsArgs(["a.json", "--offset", "-1"])).toThrow(/whole number/);
     expect(() => parseHintsArgs(["a.json", "--format", "yaml"])).toThrow(/text or json/);
@@ -377,6 +381,74 @@ describe("quality snap and the split saving", () => {
       "saves 15 KB/view = sizes 12 KB + quality 3 KB",
     );
     expect(savesText({ bytes: { saved: 90 * 1024, addedForSharpness: 0 } } as Hint)).toBe("saves 90 KB/view");
+  });
+});
+
+/** The record with its rendered width at each named viewport (the measurements the fitted sizes come from). */
+function measuredOn(r: ImageRecord, widths: Record<string, number>): ImageRecord {
+  return {
+    ...r,
+    perViewport: Object.entries(widths).map(([viewport, renderedCssPx]) => ({
+      viewport,
+      dpr: 2,
+      renderedCssPx,
+      neededPx: renderedCssPx * 2,
+      servedBytes: 1000,
+      undersized: false,
+      loaded: true,
+    })),
+  };
+}
+
+describe("fitted sizes of a call site (group-sizes.ts)", () => {
+  const A = "https://shop.example/shoes";
+  const B = "https://shop.example/pdp";
+  const card = "app/src/Card.tsx";
+  // Rendered widths: a card at half the viewport minus 20 px on the phones, a fixed 260 px on desktop.
+  const phones = { "iphone-se": 167.5, "iphone-15": 175, "pixel-7": 186, "iphone-15-pro-max": 195 };
+  const desktop = { desktop: 260, "desktop-1280": 260 };
+
+  it("gives one formula for the pages that need the same widths, never below a measured one", () => {
+    const hints = hintsOf(page([
+      measuredOn(onPage("a", A, card, 217, "160px"), { ...phones, ...desktop }),
+      measuredOn(onPage("b", B, card, 217, "300px"), { ...phones, ...desktop }),
+    ]));
+    const [group] = groupHints(hints);
+    const fitted = groupSizesOf(group);
+    expect(fitted?.mode).toBe("one");
+    expect(fitted?.value).toBe("(max-width: 640px) calc(50vw - 20px), 260px");
+    expect(combinedSizes(group)).toContain("one formula over 2 image(s)");
+  });
+
+  it("says shared component: pass sizes per caller, and gives each caller its own formula, when the pages need different widths", () => {
+    const hints = hintsOf(page([
+      measuredOn(onPage("a", A, card, 217, "160px"), { ...phones, ...desktop }),
+      measuredOn(onPage("b", B, card, 217, "160px"), { "iphone-se": 100, "iphone-15": 110, "pixel-7": 120, "iphone-15-pro-max": 130, desktop: 180, "desktop-1280": 180 }),
+    ]));
+    const [group] = groupHints(hints);
+    const fitted = groupSizesOf(group);
+    expect(fitted?.mode).toBe("per-caller");
+    expect(combinedSizes(group)).toBe("shared component: pass sizes per caller (each caller's formula is listed below)");
+    const lines = renderGroup(group, 1).join("\n");
+    expect(lines).toContain(`"shop.example/shoes"  1 image(s)  current "33vw"  proposed "${fitted?.callers[0].value}"`);
+    expect(lines).toContain(`"shop.example/pdp"  1 image(s)  current "33vw"  proposed "${fitted?.callers[1].value}"`);
+    expect(fitted?.callers[0].value).not.toBe(fitted?.callers[1].value);
+  });
+
+  it("gives one formula over the images of one page that differ, not the widest constant", () => {
+    const hints = hintsOf(page([
+      measuredOn(onPage("a", A, card, 217, "160px"), { ...phones, ...desktop }),
+      measuredOn(onPage("b", A, card, 217, "668px"), { ...phones, ...desktop }),
+    ]));
+    const [group] = groupHints(hints);
+    expect(groupSizesOf(group)?.mode).toBe("one");
+    expect(combinedSizes(group)).not.toMatch(/^max-safe/);
+  });
+
+  it("keeps the old text when an image has no measurement", () => {
+    const [group] = groupHints(hintsOf(page([onPage("a", A, card, 217, "160px"), onPage("b", A, card, 217, "668px")])));
+    expect(groupSizesOf(group)).toBeUndefined();
+    expect(combinedSizes(group)).toMatch(/^max-safe: 0px/);
   });
 });
 

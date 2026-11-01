@@ -7,10 +7,15 @@ import { hasFix, OWNER_PLACEHOLDERS } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 import { cleanLocate } from "./locate-join.js";
+import { DEFAULT_VIEWPORTS } from "./config.js";
+import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
 export interface HintsArgs {
+  /** The scan files, one per page. Call sites are grouped across all of them (a shared component is one call site). */
+  files: string[];
+  /** The first file (kept for the single-file reader). */
   file: string;
   page?: string;
   component?: string;
@@ -43,6 +48,8 @@ export interface Hint {
   find?: { component: string; glob: string };
   /** The rendered width range over the viewports the image was measured at, in CSS px. */
   rendered?: { min: number; max: number };
+  /** Each measured viewport's width and the rendered width of the image there (the points a group's sizes is fitted to). */
+  measured?: SizePoint[];
   selector: string;
   sizes: { current?: string; proposed?: string; basis?: string };
   width?: number;
@@ -65,7 +72,7 @@ export interface Hint {
 }
 
 const usage =
-  "usage: imgtune hints <scan.json> [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat] [--qualities 75,85,100]";
+  "usage: imgtune hints <scan.json> [<scan.json> ...] [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat] [--qualities 75,85,100]";
 
 function nonNegativeInteger(name: string, text: string): number {
   if (!/^\d+$/.test(text)) throw new Error(`${name} needs a whole number, not ${safeText(text)}`);
@@ -94,13 +101,11 @@ export function snapUp(target: number, allowed: number[]): number {
 
 /** The arguments after `hints`: one scan JSON file and the filters. Throws with the message the CLI prints. */
 export function parseHintsArgs(argv: string[]): HintsArgs {
-  const args: HintsArgs = { file: "", limit: DEFAULT_HINT_LIMIT, offset: 0, format: "text", flat: false };
-  let file: string | undefined;
+  const args: HintsArgs = { files: [], file: "", limit: DEFAULT_HINT_LIMIT, offset: 0, format: "text", flat: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
-      if (file !== undefined) throw new Error(`only one scan file is read at a time (${usage})`);
-      file = arg;
+      args.files.push(arg);
       continue;
     }
     if (arg === "--flat") {
@@ -127,8 +132,8 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
       args.format = value;
     }
   }
-  if (file === undefined) throw new Error(usage);
-  args.file = file;
+  if (args.files.length === 0) throw new Error(usage);
+  args.file = args.files[0];
   return args;
 }
 
@@ -168,6 +173,11 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
     }
     const widths = record.perViewport.map((p) => p.renderedCssPx).filter((w) => w > 0);
     if (widths.length > 0) hint.rendered = { min: Math.min(...widths), max: Math.max(...widths) };
+    const measured = record.perViewport.flatMap((p): SizePoint[] => {
+      const width = DEFAULT_VIEWPORTS.find((v) => v.name === p.viewport)?.width;
+      return width !== undefined && p.renderedCssPx > 0 ? [{ width, rendered: p.renderedCssPx }] : [];
+    });
+    if (measured.length > 0) hint.measured = measured;
     if (record.fix.width !== undefined) hint.width = record.fix.width;
     if (record.fix.quality !== undefined && record.current.quality !== undefined) {
       hint.quality = {
@@ -298,11 +308,74 @@ export function groupHints(hints: Hint[]): HintGroup[] {
 }
 
 /**
- * One sizes value for a group, or the reason there is none. Callers are the pages: when the pages propose different
- * values, the component is shared and each caller passes its own sizes. On one page with differing values, the widest
- * measured width is the safe floor (no image on the page is rendered wider).
+ * A call site's sizes, fitted to its measured widths (group-sizes.ts). `one`: one formula covers every image and page of the
+ * call site (the pages need the same widths, or there is one page). `per-caller`: the pages need different widths at the
+ * same viewport, so the component is shared and each caller passes its own formula.
+ */
+export interface GroupSizes {
+  mode: "one" | "per-caller";
+  /** The formula of `one` mode. */
+  value?: string;
+  /** Each caller's formula (the page's). In `one` mode they are all the same formula. */
+  callers: { page: string; value: string }[];
+  /** The distinct viewport widths the formula was checked at. */
+  views: number;
+  /** The most clauses any of the formulas has. */
+  clauses: number;
+}
+
+/** Whether the pages need different widths: at a viewport width they all measured, the largest and smallest differ by more than the tolerance. */
+function pagesDiffer(perPage: SizePoint[][]): boolean {
+  const widths = perPage[0].map((p) => p.width).filter((w) => perPage.every((points) => points.some((p) => p.width === w)));
+  return widths.some((w) => {
+    const values = perPage.map((points) => points.find((p) => p.width === w)?.rendered ?? 0);
+    const top = Math.max(...values);
+    return top - Math.min(...values) > Math.max(4, 0.02 * top);
+  });
+}
+
+/**
+ * The fitted sizes of a call site, or undefined when it has no measurement for every image, or when its images propose one
+ * value and the pages need the same widths (that value stands, as before). See GroupSizes.
+ */
+export function groupSizesOf(group: HintGroup): GroupSizes | undefined {
+  const proposals = new Set(group.hints.map((h) => h.sizes.proposed).filter((v): v is string => v !== undefined));
+  if (group.hints.some((h) => h.measured === undefined || h.measured.length === 0)) return undefined;
+  const pointsOf = (hints: Hint[]): SizePoint[] => hints.flatMap((h) => h.measured ?? []);
+  const perPage = group.pages.map((page) => ({ page, points: maxPerWidth(pointsOf(group.hints.filter((h) => h.page === page))) }));
+  const views = new Set(pointsOf(group.hints).map((p) => p.width)).size;
+  const differ = group.pages.length > 1 && pagesDiffer(perPage.map((p) => p.points));
+  if (!differ && proposals.size <= 1) return undefined;
+  if (differ) {
+    const callers: { page: string; value: string; clauses: number }[] = [];
+    for (const { page, points } of perPage) {
+      const fit = fitSizes(points);
+      if (fit === undefined) return undefined;
+      callers.push({ page, value: fit.value, clauses: fit.clauses });
+    }
+    return { mode: "per-caller", callers: callers.map(({ page, value }) => ({ page, value })), views, clauses: Math.max(...callers.map((c) => c.clauses)) };
+  }
+  const fit = fitSizes(pointsOf(group.hints));
+  if (fit === undefined) return undefined;
+  return {
+    mode: "one",
+    value: fit.value,
+    callers: perPage.map(({ page }) => ({ page, value: fit.value })),
+    views,
+    clauses: fit.clauses,
+  };
+}
+
+/**
+ * One sizes value for a group, or the reason there is none. A fitted formula (groupSizesOf) when the images are measured;
+ * otherwise the pages' values: when they differ, the component is shared and each caller passes its own sizes.
  */
 export function combinedSizes(group: HintGroup): string {
+  const fitted = groupSizesOf(group);
+  if (fitted?.mode === "one") {
+    return `${fitted.value} (one formula over ${group.hints.length} image(s), checked at ${fitted.views} viewport(s): never below a measured width)`;
+  }
+  if (fitted?.mode === "per-caller") return "shared component: pass sizes per caller (each caller's formula is listed below)";
   const proposals = [...new Set(group.hints.map((h) => h.sizes.proposed).filter((v): v is string => v !== undefined))];
   if (proposals.length === 0) return "no sizes change";
   if (proposals.length === 1) return `${proposals[0]} (the same on ${group.hints.length} image(s))`;
@@ -329,11 +402,16 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
         : "   owner call site: the image is rendered inside an unnamed component; search the file's imports",
     );
   }
+  const fitted = groupSizesOf(group);
   lines.push(`   sizes: ${safeText(combinedSizes(group))}`);
   for (const page of group.pages) {
     const mine = group.hints.filter((h) => h.page === page);
     const current = [...new Set(mine.map((h) => h.sizes.current ?? "none"))].map((v) => JSON.stringify(safeText(v))).join(", ");
-    const proposed = [...new Set(mine.map((h) => h.sizes.proposed ?? "-"))].map((v) => JSON.stringify(safeText(v))).join(", ");
+    const caller = fitted?.callers.find((c) => c.page === page)?.value;
+    const proposed =
+      caller !== undefined
+        ? JSON.stringify(safeText(caller))
+        : [...new Set(mine.map((h) => h.sizes.proposed ?? "-"))].map((v) => JSON.stringify(safeText(v))).join(", ");
     const widths = mine.flatMap((h) => (h.rendered ? [h.rendered.min, h.rendered.max] : []));
     const rendered = widths.length > 0 ? `${Math.min(...widths)}-${Math.max(...widths)} px` : "not rendered";
     lines.push(`   ${JSON.stringify(pathOf(page))}  ${mine.length} image(s)  current ${current}  proposed ${proposed}  rendered ${rendered}`);
@@ -384,32 +462,36 @@ export function locateNoteOf(result: PageResult, hints: Hint[]): string | undefi
   return `${without} of ${hints.length} image(s) have no file:line: locate them on the dev server (scan <dev-url> --locate-only --from <this file>)`;
 }
 
-/** `imgtune hints <scan.json> ...`: reads one page's scan file and returns the text or JSON to print. */
+/** `imgtune hints <scan.json> [<scan.json> ...] ...`: reads the pages' scan files, returns the text or JSON to print. */
 export async function hintsCommand(argv: string[], cwd: string): Promise<{ output: string; exitCode: number }> {
   const args = parseHintsArgs(argv);
-  const path = resolve(cwd, args.file);
-  let result: PageResult;
-  try {
-    result = JSON.parse(await readFile(path, "utf8")) as PageResult;
-  } catch (err) {
-    throw new Error(`cannot read ${safeText(args.file)} as a scan file: ${(err as Error).message}`);
+  const results: PageResult[] = [];
+  for (const file of args.files) {
+    let result: PageResult;
+    try {
+      result = JSON.parse(await readFile(resolve(cwd, file), "utf8")) as PageResult;
+    } catch (err) {
+      throw new Error(`cannot read ${safeText(file)} as a scan file: ${(err as Error).message}`);
+    }
+    if (!Array.isArray(result.images)) {
+      throw new Error(`${safeText(file)} has no image records: scan it with this version of imgtune`);
+    }
+    // The file's locate block is checked before anything prints it (a block that is not usable is dropped).
+    results.push({ ...result, locate: cleanLocate(result.locate) });
   }
-  if (!Array.isArray(result.images)) {
-    throw new Error(`${safeText(args.file)} has no image records: scan it with this version of imgtune`);
-  }
-  // The file's locate block is checked before anything prints it (a block that is not usable is dropped).
-  result = { ...result, locate: cleanLocate(result.locate) };
-  const all = hintsOf(result, args.qualities);
+  const perPage = results.map((result) => ({ result, hints: hintsOf(result, args.qualities) }));
+  const all = perPage.flatMap((p) => p.hints);
+  const notes = perPage.map((p) => locateNoteOf(p.result, p.hints)).filter((n): n is string => n !== undefined);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
     const groups = groupHints(filtered);
     const selectedGroups = groups.slice(args.offset, args.offset + args.limit);
-    const note = locateNoteOf(result, all);
     if (args.format === "json") {
       const body = {
-        page: result.url,
-        located: result.locate ?? null,
+        page: results.length === 1 ? results[0].url : undefined,
+        pages: results.map((r) => r.url),
+        located: results.length === 1 ? results[0].locate ?? null : undefined,
         groups: groups.length,
         images: filtered.length,
         offset: args.offset,
@@ -423,6 +505,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
           pages: group.pages.map((p) => pathOf(p)),
           saved: group.saved,
           sizes: combinedSizes(group),
+          sizesFitted: groupSizesOf(group) ?? null,
           ids: group.hints.map((h) => h.id),
           hints: group.hints,
         })),
@@ -430,13 +513,14 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
       return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
     }
     const text = renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page);
-    return { output: note !== undefined ? `${note}\n${text}` : text, exitCode: 0 };
+    return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
   }
   const selected = selectHints(all, args);
   if (args.format === "json") {
     const body = {
-      page: result.url,
-      located: result.locate ?? null,
+      page: results.length === 1 ? results[0].url : undefined,
+      pages: results.map((r) => r.url),
+      located: results.length === 1 ? results[0].locate ?? null : undefined,
       total: filtered.length,
       offset: args.offset,
       limit: args.limit,
@@ -444,9 +528,8 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
   }
-  const note = locateNoteOf(result, all);
   const text = renderHints(selected, filtered.length, args.offset, args.page);
-  return { output: note !== undefined ? `${note}\n${text}` : text, exitCode: 0 };
+  return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
 }
 
 /** How many hints the PR comment lists. */
