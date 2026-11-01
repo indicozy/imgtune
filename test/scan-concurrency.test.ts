@@ -1,5 +1,5 @@
 // `scan --page-concurrency`: pages in flight at once on one browser. The results keep the input order, each page is written
-// when it finishes, the limits stop new pages but keep the ones in flight, and --resume reads the pages back.
+// once its estimates are in, the limits stop new pages but keep the ones in flight, and --resume reads the pages back.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -75,7 +75,7 @@ describe("runScan with pageConcurrency", () => {
 
   const jsonFilesIn = (dir: string): number => readdirSync(dir).filter((name) => name.endsWith(".json")).length;
 
-  it("keeps the input order, and writes each page when it finishes", async () => {
+  it("keeps the input order, and writes each page once its estimates are in", async () => {
     const out = await mkdtemp(join(tmpdir(), "imgtune-conc-order-"));
     try {
       const urls = [`${base}/slow`, `${base}/p/a`, `${base}/p/b`];

@@ -32,6 +32,14 @@ export function cacheScope(original: Buffer, width: number, scorerId: string, en
   return [sha256(original), `w${width}`, scorerId, encoderId, `imgtune ${IMGTUNE_VERSION}`, `cache ${CACHE_VERSION}`].join("|");
 }
 
+/**
+ * The identity of a local resize estimate (see resizedEstimate): the served file's content hash, its format and the width it
+ * is shrunk to, with the tool version. Two images with the same bytes and the same target share one estimate.
+ */
+export function resizeScope(served: Buffer, format: string, width: number): string {
+  return [contentHash(served), format, `w${width}`, `imgtune ${IMGTUNE_VERSION}`, `cache ${CACHE_VERSION}`].join("|");
+}
+
 /** The served file's content hash, for a key of the score the browser's own file gets. */
 export function contentHash(data: Buffer): string {
   return sha256(data);
