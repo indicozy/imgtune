@@ -11,6 +11,9 @@ import {
   GpuScorer,
   gpuEligible,
   gpuNote,
+  gpuProgramIndex,
+  gpuScorerEnv,
+  openedDeviceLine,
   parseGpuDevice,
   startGpuScorer,
 } from "../src/gpu.js";
@@ -59,7 +62,10 @@ if (process.argv.includes("--check")) {
     process.exit(3);
   }
   const identical = process.env.MOCK_CHECK === "selftest" ? 80 : 99.5;
-  process.stdout.write(JSON.stringify({ device: process.env.MOCK_NAME ?? "Mock GPU", identical, perturbed: 60 }) + "\\n");
+  // MOCK_ECHO: the name carries the --device argument and the CUDA variables the program was started with.
+  const at = process.argv.indexOf("--device");
+  const echo = process.env.MOCK_ECHO === "1" ? \`|arg=\${process.argv[at + 1]}|vis=\${process.env.CUDA_VISIBLE_DEVICES ?? "-"}|order=\${process.env.CUDA_DEVICE_ORDER ?? "-"}\` : "";
+  process.stdout.write(JSON.stringify({ device: (process.env.MOCK_NAME ?? "Mock GPU") + echo, identical, perturbed: 60 }) + "\\n");
   process.exit(0);
 }
 process.stdin.on("data", (chunk) => {
@@ -164,6 +170,77 @@ describe("gpu scorer detection", () => {
     expect(ok.name).toBe("RTX Test");
     await expect(checkGpuScorer(bin, 1, env({ MOCK_CHECK: "selftest" }))).rejects.toThrow(/self-test failed/);
     await expect(checkGpuScorer(bin, 1, env({ MOCK_CHECK: "crash" }))).rejects.toThrow(/failed its check \(no CUDA device visible\)/);
+  });
+});
+
+describe("gpu device selection", () => {
+  it("restricts the program to the device only when the user set no CUDA_VISIBLE_DEVICES", () => {
+    expect(gpuScorerEnv(1, env({})).CUDA_VISIBLE_DEVICES).toBe("1");
+    expect(gpuProgramIndex(1, env({}))).toBe(0);
+  });
+
+  it("keeps a user's CUDA_VISIBLE_DEVICES and reads --gpu-device as an index within it", () => {
+    const user = env({ CUDA_VISIBLE_DEVICES: "0" });
+    expect(gpuScorerEnv(1, user).CUDA_VISIBLE_DEVICES).toBe("0");
+    expect(gpuProgramIndex(1, user)).toBe(1);
+    expect(gpuProgramIndex(0, env({ CUDA_VISIBLE_DEVICES: "1" }))).toBe(0);
+  });
+
+  it("never overwrites CUDA_DEVICE_ORDER", () => {
+    expect(gpuScorerEnv(1, env({ CUDA_DEVICE_ORDER: "FASTEST_FIRST" })).CUDA_DEVICE_ORDER).toBe("FASTEST_FIRST");
+    expect(gpuScorerEnv(1, env({})).CUDA_DEVICE_ORDER).toBeUndefined();
+    expect(gpuScorerEnv(1, env({ CUDA_DEVICE_ORDER: "PCI_BUS_ID" })).CUDA_DEVICE_ORDER).toBe("PCI_BUS_ID");
+  });
+
+  it("says which device was opened, how CUDA numbers it, and which list it came from", () => {
+    expect(openedDeviceLine(1, "RTX 4060", env({ CUDA_DEVICE_ORDER: "PCI_BUS_ID", CUDA_VISIBLE_DEVICES: "1" }))).toBe(
+      "--gpu: opened RTX 4060, device index 1 (CUDA_DEVICE_ORDER: PCI_BUS_ID; CUDA_VISIBLE_DEVICES=1)",
+    );
+    expect(openedDeviceLine(1, "RTX 4090", env({}))).toMatch(/device index 1 \(CUDA_DEVICE_ORDER: FASTEST_FIRST \(CUDA's default\); CUDA_VISIBLE_DEVICES=1 \(set by imgtune\)\)/);
+  });
+
+  it("opens the device the user's visible list names, passes the index, and prints the name", async () => {
+    const dir = await tempDir();
+    const bin = await mockScorer(dir);
+    const logs: string[] = [];
+    const saved = { ...process.env };
+    try {
+      process.env[GPU_SCORER_ENV] = bin;
+      process.env.MOCK_ECHO = "1";
+      process.env.MOCK_NAME = "RTX Test";
+      process.env.CUDA_VISIBLE_DEVICES = "0,1";
+      process.env.CUDA_DEVICE_ORDER = "PCI_BUS_ID";
+      const scorer = await startGpuScorer(1, (m) => logs.push(m));
+      expect(scorer).toBeDefined();
+      // The scorer's name is the program's own report of the device it opened, with the index and the variables it saw.
+      expect(scorer?.deviceName).toBe("RTX Test|arg=1|vis=0,1|order=PCI_BUS_ID");
+      expect(logs.join("\n")).toMatch(/--gpu: opened RTX Test\|arg=1\|vis=0,1\|order=PCI_BUS_ID, device index 1 \(CUDA_DEVICE_ORDER: PCI_BUS_ID; CUDA_VISIBLE_DEVICES=0,1\)/);
+      expect(scorer?.cuda).toEqual({ deviceOrder: "PCI_BUS_ID", visibleDevices: "0,1" });
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("restricts the program to the device when the user set nothing, and records that", async () => {
+    const dir = await tempDir();
+    const bin = await mockScorer(dir);
+    const logs: string[] = [];
+    const saved = { ...process.env };
+    try {
+      process.env[GPU_SCORER_ENV] = bin;
+      process.env.MOCK_ECHO = "1";
+      process.env.MOCK_NAME = "RTX Test";
+      delete process.env.CUDA_VISIBLE_DEVICES;
+      delete process.env.CUDA_DEVICE_ORDER;
+      const scorer = await startGpuScorer(1, (m) => logs.push(m));
+      expect(scorer?.deviceName).toBe("RTX Test|arg=0|vis=1|order=-");
+      expect(scorer?.cuda).toEqual({ deviceOrder: "FASTEST_FIRST", visibleDevices: "1" });
+      expect(logs.join("\n")).toMatch(/CUDA_VISIBLE_DEVICES=1 \(set by imgtune\)/);
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
   });
 });
 
@@ -303,7 +380,9 @@ describe("startGpuScorer", () => {
       expect(gpu).toBeInstanceOf(GpuScorer);
       expect(gpu?.deviceName).toBe("RTX 4060");
       expect(gpu?.device).toBe(1);
-      expect(logs).toEqual([]);
+      // The one line on success: the device it opened, before the first score.
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatch(/^--gpu: opened RTX 4060, device index 1 \(CUDA_DEVICE_ORDER: /);
     } finally {
       gpu?.close();
     }

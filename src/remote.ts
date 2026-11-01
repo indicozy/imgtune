@@ -1879,8 +1879,13 @@ export const ROBOTS_SKIPPED_LOCAL = "skipped (local host)";
  */
 export interface PageScorer {
   name: "cpu" | "gpu";
+  /** The device index the scorer opened (CUDA's numbering within the visible devices, see deviceOrder). */
   device?: number;
   deviceName?: string;
+  /** CUDA_DEVICE_ORDER as the scorer ran with it (FASTEST_FIRST when unset). */
+  deviceOrder?: string;
+  /** CUDA_VISIBLE_DEVICES as the scorer ran with it (imgtune's own restriction when the user set none). */
+  visibleDevices?: string;
   cpuFallbacks?: number;
 }
 
@@ -1973,7 +1978,7 @@ export function sameRecordOptions(a: ScanRecordOptions | undefined, b: ScanRecor
 export function scorerOf(gpu: GpuScorer | undefined, fallbacksBefore = 0): PageScorer {
   if (gpu === undefined) return { name: "cpu" };
   const cpuFallbacks = gpu.fallbackScores - fallbacksBefore;
-  return { name: "gpu", device: gpu.device, deviceName: gpu.deviceName, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
+  return { name: "gpu", device: gpu.device, deviceName: gpu.deviceName, ...gpu.cuda, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
 }
 
 /** The line that names the GPU scorer when the GPU made any of the numbers; undefined for a CPU run. */
@@ -2891,7 +2896,7 @@ export function summaryOf(results: PageResult[]): ScanSummary {
   const scorer: PageScorer =
     gpuPage === undefined
       ? { name: "cpu" }
-      : { name: "gpu", device: gpuPage.device, deviceName: gpuPage.deviceName, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
+      : { name: "gpu", device: gpuPage.device, deviceName: gpuPage.deviceName, deviceOrder: gpuPage.deviceOrder, visibleDevices: gpuPage.visibleDevices, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
   return {
     imgtuneVersion: IMGTUNE_VERSION,
     scorer,

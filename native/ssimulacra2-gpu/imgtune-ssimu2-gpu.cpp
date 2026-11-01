@@ -8,8 +8,9 @@
 //   imgtune-ssimu2-gpu --check [--device N]   score an identical and a perturbed pair, print one JSON line, exit 0
 //   imgtune-ssimu2-gpu [--device N]           serve requests on stdin, answer on stdout, until stdin closes
 //
-// --device N is the index of the GPU in this process's own view. imgtune sets CUDA_DEVICE_ORDER=PCI_BUS_ID and
-// CUDA_VISIBLE_DEVICES itself, so there N is 0. Frames are little-endian.
+// --device N is the index of the GPU in this process's own view (CUDA's numbering: fastest first unless the environment sets
+// CUDA_DEVICE_ORDER=PCI_BUS_ID). imgtune sets CUDA_VISIBLE_DEVICES itself only when the user has not, and then N is 0; a
+// user's CUDA_VISIBLE_DEVICES is kept and N indexes the devices it lists. Frames are little-endian.
 //   request:  u32 count (1..256); then count pairs of: u32 width, u32 height, width*height*3 bytes of reference
 //             RGB (8-bit, interleaved, sRGB), then width*height*3 bytes of test RGB.
 //   response: u32 status. 0: count x f64 scores follow (SSIMULACRA2, 100 = identical; scores can be negative).

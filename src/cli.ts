@@ -63,7 +63,7 @@ const OPTION_HELP = {
     "--gpu",
     "score with the GPU scorer (imgtune-ssimu2-gpu, see the docs); opt-in. Falls back to the CPU with a warning",
   ],
-  gpuDevice: ["--gpu-device <n>", "the GPU to score on, by nvidia-smi index (implies --gpu; default 0)"],
+  gpuDevice: ["--gpu-device <n>", "the GPU to score on, by CUDA index (implies --gpu; default 0; see the GPU notes)"],
   locateOnly: [
     "--locate-only",
     "read the source of the flagged images from a dev page (React owner data) or a built page with source maps (prod-sourcemap); not a measurement (needs --from)",
@@ -167,7 +167,9 @@ Options:
   --write <dir>         write optimised copies (best format, at the largest needed width) into this folder
   --format <text|json>  text (default) or JSON
   --gpu                 score with the GPU scorer (opt-in; falls back to the CPU with a warning)
-  --gpu-device <n>      the GPU to score on, by nvidia-smi index (implies --gpu; default 0)
+  --gpu-device <n>      the GPU to score on, by CUDA index (implies --gpu; default 0). CUDA numbers the GPUs fastest first
+                        unless CUDA_DEVICE_ORDER=PCI_BUS_ID; with CUDA_VISIBLE_DEVICES set, n indexes the devices it lists.
+                        The scorer prints the name of the GPU it opened: check it.
   --no-cache            do not read or write the result cache in .imgtune/cache
   -h, --help            show this help
 `;

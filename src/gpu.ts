@@ -35,9 +35,30 @@ function plain(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 80);
 }
 
-/** The environment of the program: the device is chosen by its PCI index, the order nvidia-smi uses. */
+/**
+ * The environment of the program. A CUDA_VISIBLE_DEVICES the user set is kept as it is: the device is then an index within
+ * the devices it lists, and the user's restriction (a GPU they excluded) is respected. Without one, imgtune restricts the
+ * program to `device`. CUDA_DEVICE_ORDER is never overwritten: CUDA numbers the devices fastest first unless it is set to
+ * PCI_BUS_ID (the order nvidia-smi lists them in).
+ */
 export function gpuScorerEnv(device: number, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...base, CUDA_DEVICE_ORDER: "PCI_BUS_ID", CUDA_VISIBLE_DEVICES: String(device) };
+  if (base.CUDA_VISIBLE_DEVICES !== undefined) return { ...base };
+  return { ...base, CUDA_VISIBLE_DEVICES: String(device) };
+}
+
+/** The `--device` argument the program gets: `device` within the user's visible list, else 0 (imgtune's own restriction). */
+export function gpuProgramIndex(device: number, base: NodeJS.ProcessEnv = process.env): number {
+  return base.CUDA_VISIBLE_DEVICES !== undefined ? device : 0;
+}
+
+/**
+ * The line that says which device the scorer opened and how it was numbered, printed before the first score. Index order
+ * is CUDA's (fastest first) unless CUDA_DEVICE_ORDER says otherwise, so the name is the thing to check.
+ */
+export function openedDeviceLine(device: number, name: string, base: NodeJS.ProcessEnv = process.env): string {
+  const order = base.CUDA_DEVICE_ORDER ?? "FASTEST_FIRST (CUDA's default)";
+  const visible = base.CUDA_VISIBLE_DEVICES !== undefined ? `CUDA_VISIBLE_DEVICES=${base.CUDA_VISIBLE_DEVICES}` : `CUDA_VISIBLE_DEVICES=${device} (set by imgtune)`;
+  return `--gpu: opened ${name}, device index ${device} (CUDA_DEVICE_ORDER: ${order}; ${visible})`;
 }
 
 async function isExecutable(path: string): Promise<boolean> {
@@ -69,7 +90,7 @@ export interface GpuCheck {
 /** Runs the program's self-test on a device. Rejects with the reason when the program fails or does not score right. */
 export function checkGpuScorer(binary: string, device: number, env: NodeJS.ProcessEnv = process.env): Promise<GpuCheck> {
   return new Promise((resolve, reject) => {
-    execFile(binary, ["--check", "--device", "0"], { env: gpuScorerEnv(device, env), timeout: CHECK_TIMEOUT_MS, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+    execFile(binary, ["--check", "--device", String(gpuProgramIndex(device, env))], { env: gpuScorerEnv(device, env), timeout: CHECK_TIMEOUT_MS, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const reason = plain(stderr.split("\n").find((line) => line.trim() !== "") ?? err.message);
         reject(new Error(`the GPU scorer failed its check (${reason})`));
@@ -160,6 +181,13 @@ export class GpuScorer implements GpuScoring {
 
   private readonly binary: string;
   private readonly env: NodeJS.ProcessEnv;
+  /** The CUDA device numbering and visible list the scorer ran with (written into the scan JSON, so a run can be checked). */
+  get cuda(): { deviceOrder: string; visibleDevices: string } {
+    return {
+      deviceOrder: this.env.CUDA_DEVICE_ORDER ?? "FASTEST_FIRST",
+      visibleDevices: this.env.CUDA_VISIBLE_DEVICES ?? String(this.device),
+    };
+  }
   private readonly warn: (message: string) => void;
   private child?: ChildProcess;
   private stderrTail = "";
@@ -235,7 +263,7 @@ export class GpuScorer implements GpuScoring {
 
   private start(): ChildProcess {
     if (this.child !== undefined) return this.child;
-    const child = spawn(this.binary, ["--device", "0"], { env: gpuScorerEnv(this.device, this.env), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(this.binary, ["--device", String(gpuProgramIndex(this.device, this.env))], { env: gpuScorerEnv(this.device, this.env), stdio: ["pipe", "pipe", "pipe"] });
     child.stdout?.on("data", (chunk: Buffer) => {
       this.buffered = Buffer.concat([this.buffered, chunk]);
       this.drain();
@@ -318,6 +346,7 @@ export async function startGpuScorer(device: number, log: (message: string) => v
     log(`--gpu ${device}: ${(err as Error).message}; scoring on the CPU`);
     return undefined;
   }
+  log(openedDeviceLine(device, check.name, env));
   return new GpuScorer({ binary, device, deviceName: check.name, env, warn: log });
 }
 
