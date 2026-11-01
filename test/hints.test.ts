@@ -3,7 +3,18 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasFix, searchHintsOf, type ImageRecord } from "../src/images.js";
-import { hintsCommand, hintsOf, parseHintsArgs, renderHint, renderHints, selectHints, type Hint } from "../src/hints.js";
+import {
+  combinedSizes,
+  groupHints,
+  hintsCommand,
+  hintsOf,
+  parseHintsArgs,
+  renderGroup,
+  renderHint,
+  renderHints,
+  selectHints,
+  type Hint,
+} from "../src/hints.js";
 import { renderPage, type PageResult } from "../src/remote.js";
 
 /** A synthetic image record. The fix defaults to a saving of `saved` bytes and a formula sizes value. */
@@ -65,10 +76,10 @@ function page(images: ImageRecord[]): PageResult {
 
 describe("parseHintsArgs", () => {
   it("takes one file and the filters, with the defaults", () => {
-    expect(parseHintsArgs(["out/page.json"])).toEqual({ file: "out/page.json", limit: 10, offset: 0, format: "text" });
+    expect(parseHintsArgs(["out/page.json"])).toEqual({ file: "out/page.json", limit: 10, offset: 0, format: "text", flat: false });
     expect(
       parseHintsArgs(["out/page.json", "--page", "bags", "--component", "Card", "--limit", "5", "--offset", "10", "--min-kb", "2.5", "--format", "json"]),
-    ).toEqual({ file: "out/page.json", page: "bags", component: "Card", limit: 5, offset: 10, minKb: 2.5, format: "json" });
+    ).toEqual({ file: "out/page.json", page: "bags", component: "Card", limit: 5, offset: 10, minKb: 2.5, format: "json", flat: false });
   });
 
   it("refuses a missing file, a second file, a bad number, a bad format and an unknown option", () => {
@@ -200,12 +211,12 @@ describe("hintsCommand", () => {
     const dir = await mkdtemp(join(tmpdir(), "imgtune-hints-"));
     const file = join(dir, "page.json");
     await writeFile(file, JSON.stringify(page([record("a", { saved: 5000 }), record("b", { saved: 9000 })])));
-    const text = await hintsCommand([file, "--limit", "1"], dir);
+    const text = await hintsCommand([file, "--flat", "--limit", "1"], dir);
     expect(text.exitCode).toBe(0);
     expect(text.output).toContain("2 image(s) with fix hints; showing 1-1");
     expect(text.output).toContain("1. b");
 
-    const json = await hintsCommand([file, "--format", "json", "--offset", "1"], dir);
+    const json = await hintsCommand([file, "--flat", "--format", "json", "--offset", "1"], dir);
     const body = JSON.parse(json.output) as { total: number; hints: { id: string }[] };
     expect(body.total).toBe(2);
     expect(body.hints.map((h) => h.id)).toEqual(["a"]);
@@ -305,5 +316,67 @@ describe("search hints for elements without a resolved file", () => {
       alt: "Hero",
       urlPattern: "https://cdn.example/a.jpg",
     });
+  });
+});
+
+/** A record on a given page, at a given call site, with its own proposed sizes. */
+function onPage(id: string, pageUrl: string, file: string, line: number, proposed: string, saved = 1000): ImageRecord {
+  return { ...record(id, { file, line, proposed, saved }), page: pageUrl };
+}
+
+describe("grouped hints (one entry per call site)", () => {
+  const A = "https://shop.example/shoes";
+  const B = "https://shop.example/pdp";
+  const card = "app/src/Card.tsx";
+
+  it("groups images of one file:line across pages, largest saving first", () => {
+    const groups = groupHints(hintsOf(page([
+      onPage("a", A, card, 217, "160px", 1000),
+      onPage("b", B, card, 217, "160px", 1000),
+      onPage("c", A, "app/src/Other.tsx", 9, "33vw", 5000),
+    ])));
+    expect(groups.map((g) => g.key)).toEqual([`file:app/src/Other.tsx:9`, `file:${card}:217`]);
+    expect(groups[1]).toMatchObject({ saved: 2000 });
+    expect(groups[1].pages).toEqual([A, B]);
+  });
+
+  it("says shared component when the pages propose different sizes, and lists each caller", () => {
+    const hints = hintsOf(page([onPage("a", A, card, 217, "(max-width: 1280px) calc(50vw - 20px), 668px"), onPage("b", B, card, 217, "160px")]));
+    const [group] = groupHints(hints);
+    expect(combinedSizes(group)).toBe("shared component: pass sizes from each caller (listed below)");
+    const lines = renderGroup(group, 1);
+    expect(lines.join("\n")).toContain('"shop.example/shoes"');
+    expect(lines.join("\n")).toContain('"shop.example/pdp"');
+  });
+
+  it("gives one sizes value when every page proposes the same one", () => {
+    const [group] = groupHints(hintsOf(page([onPage("a", A, card, 217, "160px"), onPage("b", B, card, 217, "160px")])));
+    expect(combinedSizes(group)).toBe("160px (the same on 2 image(s))");
+  });
+
+  it("gives the max-safe floor when one page's images differ", () => {
+    const [group] = groupHints(hintsOf(page([onPage("a", A, card, 217, "160px"), onPage("b", A, card, 217, "668px")])));
+    expect(combinedSizes(group)).toMatch(/^max-safe: 0px/);
+  });
+
+  it("lists the ids of a group, eight at most, and the rest as a count", () => {
+    const many = Array.from({ length: 10 }, (_, i) => onPage(`id${i}`, A, card, 217, "160px"));
+    const [group] = groupHints(hintsOf(page(many)));
+    const text = renderGroup(group, 1).join("\n");
+    expect(text).toContain("ids id0 id1 id2 id3 id4 id5 id6 id7 (+2 more; --flat lists each image)");
+  });
+
+  it("is the default view; --flat keeps the one-entry-per-image view", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-hints-"));
+    const file = join(dir, "page.json");
+    await writeFile(file, JSON.stringify(page([onPage("a", A, card, 217, "160px"), onPage("b", B, card, 217, "160px")])));
+    const grouped = await hintsCommand([file], dir);
+    expect(grouped.output).toContain("1 call site(s), 2 image(s) with fix hints");
+    const body = JSON.parse((await hintsCommand([file, "--format", "json"], dir)).output) as { callSites: { count: number; ids: string[] }[] };
+    expect(body.callSites[0]).toMatchObject({ count: 2, ids: ["a", "b"] });
+    const flat = await hintsCommand([file, "--flat"], dir);
+    expect(flat.output).toContain("2 image(s) with fix hints");
+    expect(parseHintsArgs([file, "--flat"]).flat).toBe(true);
+    expect(parseHintsArgs([file]).flat).toBe(false);
   });
 });

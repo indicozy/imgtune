@@ -17,6 +17,8 @@ export interface HintsArgs {
   offset: number;
   minKb?: number;
   format: "text" | "json";
+  /** One hint per image instead of one entry per file:line (the default groups them). */
+  flat: boolean;
 }
 
 /** One hint: an image record reduced to what an agent needs to make the fix. */
@@ -36,6 +38,8 @@ export interface Hint {
   classes?: string;
   /** Where to look for the element in the project when no file resolved (see SearchHints). */
   find?: { component: string; glob: string };
+  /** The rendered width range over the viewports the image was measured at, in CSS px. */
+  rendered?: { min: number; max: number };
   selector: string;
   sizes: { current?: string; proposed?: string; basis?: string };
   width?: number;
@@ -46,7 +50,7 @@ export interface Hint {
   notes: string[];
 }
 
-const usage = "usage: imgtune hints <scan.json> [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json]";
+const usage = "usage: imgtune hints <scan.json> [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat]";
 
 function nonNegativeInteger(name: string, text: string): number {
   if (!/^\d+$/.test(text)) throw new Error(`${name} needs a whole number, not ${safeText(text)}`);
@@ -57,13 +61,17 @@ const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offse
 
 /** The arguments after `hints`: one scan JSON file and the filters. Throws with the message the CLI prints. */
 export function parseHintsArgs(argv: string[]): HintsArgs {
-  const args: HintsArgs = { file: "", limit: DEFAULT_HINT_LIMIT, offset: 0, format: "text" };
+  const args: HintsArgs = { file: "", limit: DEFAULT_HINT_LIMIT, offset: 0, format: "text", flat: false };
   let file: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
       if (file !== undefined) throw new Error(`only one scan file is read at a time (${usage})`);
       file = arg;
+      continue;
+    }
+    if (arg === "--flat") {
+      args.flat = true;
       continue;
     }
     if (!OPTIONS.includes(arg)) throw new Error(`Unknown option ${safeText(arg)} (${usage})`);
@@ -117,6 +125,8 @@ export function hintsOf(result: PageResult): Hint[] {
     if (record.locator.file === undefined && search?.component !== undefined && search.glob !== undefined) {
       hint.find = { component: search.component, glob: search.glob };
     }
+    const widths = record.perViewport.map((p) => p.renderedCssPx).filter((w) => w > 0);
+    if (widths.length > 0) hint.rendered = { min: Math.min(...widths), max: Math.max(...widths) };
     if (record.fix.width !== undefined) hint.width = record.fix.width;
     if (record.fix.quality !== undefined && record.current.quality !== undefined) {
       hint.quality = {
@@ -195,6 +205,90 @@ export function renderHint(hint: Hint, rank: number): string[] {
   return lines;
 }
 
+/** The hints of one file:line across pages: the grouped view, one entry per call site. */
+export interface HintGroup {
+  key: string;
+  hints: Hint[];
+  /** The pages the group's images are on, in the order they were scanned. */
+  pages: string[];
+  /** Bytes the group saves per page view, summed over its images (each image's own per-view saving). */
+  saved: number;
+}
+
+/** The group a hint belongs to: its file:line, else its nearest component, else its selector. */
+export function groupKeyOf(hint: Hint): string {
+  if (hint.file !== undefined) return `file:${hint.file}:${hint.line ?? 0}`;
+  return `${hint.component[0] !== undefined ? "component" : "selector"}:${hint.component[0] ?? hint.selector}`;
+}
+
+/** Groups hints by call site across pages, largest saving first. The hints keep the order they came in. */
+export function groupHints(hints: Hint[]): HintGroup[] {
+  const groups = new Map<string, HintGroup>();
+  for (const hint of hints) {
+    const key = groupKeyOf(hint);
+    const group = groups.get(key) ?? { key, hints: [], pages: [], saved: 0 };
+    group.hints.push(hint);
+    if (!group.pages.includes(hint.page)) group.pages.push(hint.page);
+    group.saved += hint.bytes.saved;
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((a, b) => b.saved - a.saved || a.key.localeCompare(b.key));
+}
+
+/**
+ * One sizes value for a group, or the reason there is none. Callers are the pages: when the pages propose different
+ * values, the component is shared and each caller passes its own sizes. On one page with differing values, the widest
+ * measured width is the safe floor (no image on the page is rendered wider).
+ */
+export function combinedSizes(group: HintGroup): string {
+  const proposals = [...new Set(group.hints.map((h) => h.sizes.proposed).filter((v): v is string => v !== undefined))];
+  if (proposals.length === 0) return "no sizes change";
+  if (proposals.length === 1) return `${proposals[0]} (the same on ${group.hints.length} image(s))`;
+  if (group.pages.length > 1) return "shared component: pass sizes from each caller (listed below)";
+  const widest = Math.max(...group.hints.map((h) => h.rendered?.max ?? 0));
+  return `max-safe: ${widest}px, the widest measured width (the images on this page differ; one value covers them all)`;
+}
+
+/** The text of a group: its call site, the combined sizes, each page's sizes and rendered widths, the ids, and the quality. */
+export function renderGroup(group: HintGroup, rank: number): string[] {
+  const first = group.hints[0];
+  const where =
+    first.file !== undefined
+      ? `${JSON.stringify(`${first.file}:${first.line ?? 0}`)}${locationNote(first)}`
+      : JSON.stringify(first.component[0] ?? first.selector);
+  const name = first.file !== undefined && first.component[0] !== undefined ? ` (${JSON.stringify(first.component[0])})` : "";
+  const lines = [`${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view`];
+  if (first.kind === "owner") lines.push(`   owner call site: the image is rendered inside <${first.component[0] ?? "an unnamed component"}>; search that component`);
+  lines.push(`   sizes: ${safeText(combinedSizes(group))}`);
+  for (const page of group.pages) {
+    const mine = group.hints.filter((h) => h.page === page);
+    const current = [...new Set(mine.map((h) => h.sizes.current ?? "none"))].map((v) => JSON.stringify(safeText(v))).join(", ");
+    const proposed = [...new Set(mine.map((h) => h.sizes.proposed ?? "-"))].map((v) => JSON.stringify(safeText(v))).join(", ");
+    const widths = mine.flatMap((h) => (h.rendered ? [h.rendered.min, h.rendered.max] : []));
+    const rendered = widths.length > 0 ? `${Math.min(...widths)}-${Math.max(...widths)} px` : "not rendered";
+    lines.push(`   ${JSON.stringify(pathOf(page))}  ${mine.length} image(s)  current ${current}  proposed ${proposed}  rendered ${rendered}`);
+  }
+  const targets = group.hints.flatMap((h) => (h.quality ? [h.quality] : []));
+  if (targets.length > 0) {
+    const current = Math.max(...targets.map((q) => q.current));
+    const withTarget = targets.filter((q) => q.target !== undefined).map((q) => q.target as number);
+    const target = withTarget.length > 0 ? ` -> ${Math.max(...withTarget)}` : "";
+    lines.push(`   quality ${current}${target} (max of ${targets[0].samples}, ${safeText(targets[0].group)})`);
+  }
+  const ids = group.hints.map((h) => h.id);
+  const shown = ids.slice(0, 8).join(" ");
+  lines.push(`   ids ${shown}${ids.length > 8 ? ` (+${ids.length - 8} more; --flat lists each image)` : ""}`);
+  return lines;
+}
+
+/** The text of a grouped selection: a count line, then each group. */
+export function renderGroups(groups: HintGroup[], totalGroups: number, totalImages: number, offset: number, page?: string): string {
+  if (groups.length === 0) return `no images with fix hints${totalGroups > 0 ? " match the filters" : ""}\n`;
+  const head = `${totalGroups} call site(s), ${totalImages} image(s) with fix hints${page ? ` (page ${safeText(page)})` : ""}; showing ${offset + 1}-${offset + groups.length}\n`;
+  const body = groups.flatMap((group, i) => renderGroup(group, offset + i + 1));
+  return `${head}${body.join("\n")}\n`;
+}
+
 /** The text of a selection: a count line, then each hint. */
 export function renderHints(hints: Hint[], total: number, offset: number, page?: string): string {
   if (hints.length === 0) return `no images with fix hints${total > 0 ? " match the filters" : ""}\n`;
@@ -217,8 +311,36 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     throw new Error(`${safeText(args.file)} has no image records: scan it with this version of imgtune`);
   }
   const all = hintsOf(result);
-  const selected = selectHints(all, args);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
+  if (!args.flat) {
+    // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
+    const groups = groupHints(filtered);
+    const selectedGroups = groups.slice(args.offset, args.offset + args.limit);
+    if (args.format === "json") {
+      const body = {
+        page: result.url,
+        groups: groups.length,
+        images: filtered.length,
+        offset: args.offset,
+        limit: args.limit,
+        callSites: selectedGroups.map((group) => ({
+          key: group.key,
+          file: group.hints[0].file,
+          line: group.hints[0].line,
+          component: group.hints[0].component,
+          count: group.hints.length,
+          pages: group.pages.map((p) => pathOf(p)),
+          saved: group.saved,
+          sizes: combinedSizes(group),
+          ids: group.hints.map((h) => h.id),
+          hints: group.hints,
+        })),
+      };
+      return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
+    }
+    return { output: renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page), exitCode: 0 };
+  }
+  const selected = selectHints(all, args);
   if (args.format === "json") {
     const body = {
       page: result.url,
