@@ -21,6 +21,7 @@ import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
+import { applySizesOutcome } from "./sizes-outcome.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
@@ -1859,6 +1860,11 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
     resolved: sources,
     currentQuality,
   });
+  // A proposed sizes is a saving only when its predicted outcome saves more bytes than it adds (sizes-outcome.ts).
+  const widths = new Map(observations.map((o) => [o.viewport.name, o.viewport.width]));
+  await measure("sizes outcome", () =>
+    applySizesOutcome(images, widths, observations.length, async (url) => (await ctx.fetcher.get(url, { allowPrivate: ctx.allowPrivate }))?.length),
+  );
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),

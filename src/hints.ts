@@ -482,6 +482,9 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   const perPage = results.map((result) => ({ result, hints: hintsOf(result, args.qualities) }));
   const all = perPage.flatMap((p) => p.hints);
   const notes = perPage.map((p) => locateNoteOf(p.result, p.hints)).filter((n): n is string => n !== undefined);
+  // Sizes proposals the scan dropped because their predicted outcome adds bytes (or saves none): not hints, but counted.
+  const dropped = results.reduce((sum, r) => sum + (r.images ?? []).filter((i) => i.fix?.noSaving !== undefined).length, 0);
+  if (dropped > 0) notes.push(`${dropped} sizes proposal(s) left out: no saving (their predicted outcome adds bytes or changes nothing)`);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.

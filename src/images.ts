@@ -128,6 +128,11 @@ export interface ImageFix {
    * quality and format saving on top of it (est.). sizes + quality = saved.
    */
   bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number };
+  /**
+   * Set when the proposed sizes was dropped: its predicted outcome adds at least as many bytes as it saves (or saves none), so
+   * it is not a saving. `sizes` is then absent (see sizes-outcome.ts).
+   */
+  noSaving?: string;
 }
 
 export interface ImageRecord {
