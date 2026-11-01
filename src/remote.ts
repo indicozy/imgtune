@@ -44,10 +44,11 @@ import { applySizesOutcome } from "./sizes-outcome.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { countDocumentNavigations, gotoParsed, NETWORK_IDLE_TIMEOUT_MS, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
-import { countGpuFallbacks, gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
+import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
-import { cacheScope, CACHE_DIR, contentHash, ResultCache } from "./result-cache.js";
+import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
+import { EstimateRegistry, hashOf, internBuffer, withEstimates, type EstimateStore } from "./estimate-jobs.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
 
 import { MAX_WIDTH, parseSrcset, type Candidate } from "./srcset-parse.js";
@@ -645,21 +646,22 @@ function encodeWith(img: Sharp, format: EstimateFormat, quality: number): Promis
 const QUALITY_BISECT_STEPS = 7;
 
 /**
- * The file shrunk to `targetWidth` and encoded in its own format at the quality whose native-size bytes are closest to
- * the served bytes: a local estimate for a plain <img> that is wider than it needs to be (est.). PNG stays lossless.
- * Undefined for a format this cannot encode (gif, svg, ...).
+ * The most pixels a lossy file may have and still get a resize estimate. The bisection encodes the file at native size once
+ * per probe (7 probes), and that time grows with the pixels: a 22 MP AVIF takes about 30 s a probe. A larger file gets no
+ * estimate (est. is left out for it). Scaling the file down for the probes was tried and gave a different quality, so it is
+ * not used.
  */
-export async function resizedEstimate(
-  buffer: Buffer,
-  format: string,
-  requestedWidth: number,
-): Promise<{ bytes: number; buffer: Buffer } | undefined> {
-  const targetWidth = clampWidth(requestedWidth);
-  if (format === "png") {
-    const out = await openImage(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true }).png().toBuffer();
-    return { bytes: out.length, buffer: out };
-  }
+export const MATCH_MAX_PIXELS = 2_000_000;
+
+/**
+ * The quality at which the file, encoded in `format` at its native size, reaches the served bytes: the bisection a resize
+ * estimate starts from. It depends on the file and the format only, not on the width, so a run computes it once per file
+ * (see the memo of EstimateRegistry). Undefined for a format this cannot encode.
+ */
+export async function matchedQuality(buffer: Buffer, format: string): Promise<number | undefined> {
   if (!isEstimateFormat(format)) return undefined;
+  const meta = await openImage(buffer).metadata();
+  if (!meta.width || !meta.height || meta.width * meta.height > MATCH_MAX_PIXELS) return undefined;
   const served = buffer.length;
   // Bisection over the quality scale on the native image: the lowest quality whose bytes reach the served bytes.
   let lo = 1;
@@ -670,6 +672,28 @@ export async function resizedEstimate(
     if (bytes < served) lo = mid + 1;
     else hi = mid;
   }
+  return lo;
+}
+
+/**
+ * The file shrunk to `targetWidth` and encoded in its own format at the quality whose native-size bytes are closest to
+ * the served bytes (`quality`, when the caller has it from matchedQuality): a local estimate for a plain <img> that is wider
+ * than it needs to be (est.). PNG stays lossless. Undefined for a format this cannot encode (gif, svg, ...).
+ */
+export async function resizedEstimate(
+  buffer: Buffer,
+  format: string,
+  requestedWidth: number,
+  quality?: number,
+): Promise<{ bytes: number; buffer: Buffer } | undefined> {
+  const targetWidth = clampWidth(requestedWidth);
+  if (format === "png") {
+    const out = await openImage(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true }).png().toBuffer();
+    return { bytes: out.length, buffer: out };
+  }
+  if (!isEstimateFormat(format)) return undefined;
+  const lo = quality ?? (await matchedQuality(buffer, format));
+  if (lo === undefined) return undefined;
   const shrunk = openImage(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true });
   const out = await encodeWith(shrunk, format, lo);
   return { bytes: out.length, buffer: out };
@@ -1416,7 +1440,11 @@ export interface AnalysisContext {
   /** Only the images for which this is true get the quality and format search (recheck skips unchanged ones). */
   qualityFor?: (inst: Instance) => boolean;
   aggressive: boolean;
-  resized: Map<string, Promise<{ bytes: number; buffer: Buffer } | undefined>>;
+  /**
+   * Where the estimates (est.) come from: the run's jobs (see estimate-jobs.ts). A page measured with a collector has
+   * provisional estimates; it is analysed again with a reader once they are in.
+   */
+  store: EstimateStore;
   /** Source maps read so far, by chunk URL (the locator reads each chunk's map once). */
   sourceMaps?: Map<string, Promise<SourceMapData | undefined>>;
   /** The project the scan runs in: resolved source files are read from here (local pages only). */
@@ -1549,6 +1577,17 @@ async function resolveBackgroundSources(ctx: AnalysisContext, observations: View
 }
 
 /**
+ * The local resize estimate (est.) of a served file at `needed` device pixels, as a job of the run: one per unique file,
+ * format and target width (see resizeScope). The bisection it starts from is shared by all the widths of one file.
+ */
+function resizeEstimateOf(ctx: AnalysisContext, buffer: Buffer, format: string, needed: number): Promise<{ bytes: number; buffer: Buffer } | undefined> {
+  return ctx.store.get(resizeScope(buffer, format, clampWidth(needed)), buffer.length, async () => {
+    const quality = await ctx.store.memo(`match|${hashOf(buffer)}|${format}`, () => matchedQuality(buffer, format));
+    return resizedEstimate(buffer, format, needed, quality);
+  });
+}
+
+/**
  * One layer of a CSS background at one viewport. The file is the candidate the browser loaded; the needed pixels come from
  * the box and the background-size (see backgrounds.ts). The saving is a local resize to the needed width at the same
  * format (est.): a layer has no alternative file to measure, and no quality sweep.
@@ -1600,14 +1639,7 @@ async function measureBackground(
     undersized: served.width < UNDERSIZED_RATIO * needed,
   });
   if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
-    const key = `${chosen.url}|${needed}`;
-    let pending = ctx.resized.get(key);
-    if (!pending) {
-      count("background resize estimates");
-      pending = measure("background resize estimate", () => resizedEstimate(response.buffer as Buffer, served.format as string, needed)).catch(() => undefined);
-      ctx.resized.set(key, pending);
-    }
-    const resized = await pending;
+    const resized = await measure("background resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) instance.est = instance.estAggressive = Math.max(0, response.bytes - resized.bytes);
   }
   return instance;
@@ -1684,14 +1716,7 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   // No w-descriptor srcset: a wider file than needed is estimated by a local resize at its own format (est.).
   instance.kind = "plain";
   if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
-    const key = `${img.currentSrc}|${needed}`;
-    let pending = ctx.resized.get(key);
-    if (!pending) {
-      count("plain resize estimates");
-      pending = measure("plain resize estimate", () => resizedEstimate(response.buffer as Buffer, served.format as string, needed)).catch(() => undefined);
-      ctx.resized.set(key, pending);
-    }
-    const resized = await pending;
+    const resized = await measure("plain resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) instance.est = instance.estAggressive = Math.max(0, response.bytes - resized.bytes);
   }
   return instance;
@@ -1777,29 +1802,55 @@ async function estimateQualities(ctx: AnalysisContext, all: Instance[], refName:
   }
 }
 
+/**
+ * The identity of a quality sample's estimate: the original (by its URL, which the run fetches once), the served file (by
+ * its content), the width, the scorer and the encoder, the current quality and the deltas, with the tool version.
+ */
+export function qualityJobKey(original: string, right: NonNullable<Instance["right"]>, scorerId: string, current: number, deltas: number[]): string {
+  return [
+    "quality",
+    original,
+    `w${right.width}`,
+    scorerId,
+    ENCODER_ID,
+    `served ${hashOf(right.buffer)}`,
+    right.format,
+    `bytes ${right.bytes}`,
+    `q${current}`,
+    `deltas ${deltas.join(",")}`,
+    `imgtune ${IMGTUNE_VERSION}`,
+    `cache ${CACHE_VERSION}`,
+  ].join("|");
+}
+
 /** One quality sample: the original's body and the estimate for the member's served file. Undefined when either is missing. */
 async function sampleQuality(ctx: AnalysisContext, member: Instance): Promise<{ ratio: Record<number, number>; info: QualityInfo } | undefined> {
   const original = referenceUrl(member.url, ctx.pageUrl);
   const right = member.right;
   if (!original || !right) return undefined;
-  count("quality samples");
-  const buffer = await measure("fetch: original", () => ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate }));
-  if (!buffer) return undefined;
   const current = currentQuality(member.url, ctx.pageUrl);
   const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];
-  const estimate = await measure("quality estimate", () => estimateQuality(
-    {
-      original: buffer,
-      served: right.buffer,
-      format: right.format,
-      bytes: right.bytes,
-      width: right.width,
-      height: right.height,
-      current: current.quality,
-    },
-    deltas,
-    ctx.deps,
-  )).catch(() => undefined);
+  const key = qualityJobKey(original, right, ctx.deps.scorerId ?? "cpu", current.quality, deltas);
+  const estimate = await ctx.store.get(key, right.bytes, async () => {
+    count("quality samples");
+    const buffer = await measure("fetch: original", () => ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate }));
+    if (!buffer) return undefined;
+    return measure("quality estimate", () =>
+      estimateQuality(
+        {
+          original: buffer,
+          served: right.buffer,
+          format: right.format,
+          bytes: right.bytes,
+          width: right.width,
+          height: right.height,
+          current: current.quality,
+        },
+        deltas,
+        ctx.deps,
+      ),
+    ).catch(() => undefined);
+  });
   if (!estimate) return undefined;
   return {
     ratio: { ...estimate.ratio },
@@ -2380,6 +2431,8 @@ async function scanPage(
     harness: boolean;
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
+    /** The responses' buffers of the run, by content hash: a file two pages share is held once (see internBuffer). */
+    interned: Map<string, Buffer>;
     storageState?: StorageState;
     qualityFor?: (inst: Instance) => boolean;
     /** The project directory the scan runs in: resolved sources are checked against its files. */
@@ -2396,7 +2449,7 @@ async function scanPage(
   },
   pageUrl: string,
   robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
-): Promise<PageResult> {
+): Promise<PageResult | MeasuredPage> {
   const url = new URL(pageUrl);
   const allowPrivate = isLocalTarget(pageUrl);
   const base: PageResult = {
@@ -2498,26 +2551,35 @@ async function scanPage(
   if (robotsIgnored) described.robotsIgnored = true;
   if (robotsRule !== undefined) described.robotsRule = robotsRule;
   if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
-  return analysePage(
-    {
-      pageUrl,
-      fetcher: run.fetcher,
-      allowPrivate,
-      deps: run.deps,
-      quality: run.quality,
-      estimates: run.estimates,
-      qualityFor: run.qualityFor,
-      aggressive: run.aggressive,
-      resized: new Map(),
-      harness: run.harness,
-      sourceMaps: run.sourceMaps,
-      projectDir: run.projectDir,
-      projectRoot: run.projectRoot,
-    },
-    observations,
-    described,
-  );
+  // The page's responses are shared with the run's other pages where they are the same file (see internBuffer).
+  for (const obs of observations) {
+    for (const response of obs.responses.values()) {
+      if (response.buffer !== undefined) response.buffer = internBuffer(run.interned, response.buffer);
+    }
+  }
+  const ctx: Omit<AnalysisContext, "store"> = {
+    pageUrl,
+    fetcher: run.fetcher,
+    allowPrivate,
+    deps: run.deps,
+    quality: run.quality,
+    estimates: run.estimates,
+    qualityFor: run.qualityFor,
+    aggressive: run.aggressive,
+    harness: run.harness,
+    sourceMaps: run.sourceMaps,
+    projectDir: run.projectDir,
+    projectRoot: run.projectRoot,
+  };
+  return { analyse: (store) => analysePage({ ...ctx, store }, observations, described) };
 }
+
+/** A page measured whose estimates are not in yet: `analyse` gives its result with the estimates of a store (see withEstimates). */
+export interface MeasuredPage {
+  analyse: (store: EstimateStore) => Promise<PageResult>;
+}
+
+const isMeasured = (outcome: PageResult | MeasuredPage): outcome is MeasuredPage => "analyse" in outcome;
 
 /** The run's shared state: the browser's fetcher, the scorer, the robots cache and the options each page reads. */
 async function withScanRun<T>(
@@ -2569,6 +2631,7 @@ async function withBrowser<T>(
       ignoreRobots: opts.ignoreRobots === true,
       harness: opts.harness === true,
       sourceMaps: new Map(),
+      interned: new Map<string, Buffer>(),
       storageState: opts.storageState,
       qualityFor: opts.qualityFor,
       projectDir: opts.cwd,
@@ -2633,13 +2696,15 @@ export function progressLine(done: PageResult[], total: number): string {
 }
 
 /**
- * Scans the pages and writes each one's JSON to `outDir` as soon as it is done, with a progress line after each. Up to
- * `pageConcurrency` pages are in flight at once on the shared browser (each in its own contexts). Pages start in input
- * order, and the result keeps that order whatever order they finish in. With `resume`, a complete page with the same
- * options is taken from `outDir` instead.
+ * Scans the pages in two phases, with a progress line after each. Phase 1 measures every page (up to `pageConcurrency` in
+ * flight at once on the shared browser; pages start in input order) and collects the estimate jobs they need, so no
+ * estimate is computed yet. Phase 2 runs each unique job once and analyses every measured page with the results; only
+ * then is each page's JSON written, so a page is marked complete when its estimates are in. A page that ends before its
+ * analysis (robots.txt, a challenge, a redirect, a failed load) has no estimates and is written in phase 1. With `resume`,
+ * a complete page with the same options is taken from `outDir` instead.
  *
  * The limits are checked before a page starts, so the pages started are the pages kept. --max-pages counts the pages
- * started (scanned or resumed). --max-images counts the images of the pages finished so far: once it is reached no page
+ * started (scanned or resumed). --max-images counts the images of the pages measured so far: once it is reached no page
  * starts, but the pages already in flight finish and are kept.
  */
 export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
@@ -2649,35 +2714,63 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const results = new Array<PageResult | undefined>(urls.length);
     // The finished pages in finishing order: the progress line counts them.
     const finished: PageResult[] = [];
+    const registry = new EstimateRegistry();
+    const collector = registry.collector();
+    const measured: { index: number; url: string; page: MeasuredPage }[] = [];
     let started = 0;
     let images = 0;
+    let measuredCount = 0;
     const limitReached = (): boolean =>
       (opts.maxPages !== undefined && started >= opts.maxPages) || (opts.maxImages !== undefined && images >= opts.maxImages);
+    const writePage = async (url: string, result: PageResult): Promise<void> => {
+      await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, { root: opts.outDir });
+    };
     await mapLimit(urls, opts.pageConcurrency ?? 1, async (url, index) => {
       // Synchronous up to the first await, so pages start in input order even with several in flight.
       if (limitReached()) return;
       started++;
       const kept = opts.resume ? await resumable(opts.outDir, url, options, opts.log) : undefined;
-      let result: PageResult;
       if (kept) {
-        result = kept;
+        results[index] = kept;
+        finished.push(kept);
+        images += kept.counts?.images ?? 0;
         opts.log(`resumed ${safeText(url)}`);
-      } else {
-        opts.log(`scanning ${safeText(url)}`);
-        const startedAt = performance.now();
-        const scanned = await countGpuFallbacks(() => scanPage(browser, run, url, robotsFor));
-        result = { ...scanned.value, complete: true, options };
-        result.scorer = scorerOf(run.gpu, scanned.fallbacks);
-        if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - startedAt) / 1000).toFixed(1)} s\n`);
-        await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
-          root: opts.outDir,
-        });
+        opts.log(progressLine(finished, urls.length));
+        return;
       }
-      results[index] = result;
-      finished.push(result);
-      images += result.counts?.images ?? 0;
-      opts.log(progressLine(finished, urls.length));
+      opts.log(`scanning ${safeText(url)}`);
+      const startedAt = performance.now();
+      const outcome = await scanPage(browser, run, url, robotsFor);
+      if (!isMeasured(outcome)) {
+        const result: PageResult = { ...outcome, complete: true, options, scorer: scorerOf(run.gpu) };
+        results[index] = result;
+        finished.push(result);
+        await writePage(url, result);
+        opts.log(progressLine(finished, urls.length));
+        return;
+      }
+      // The collecting pass: the page's estimate requests are recorded; its own numbers are provisional and replaced below.
+      const provisional = await outcome.analyse(collector);
+      measured.push({ index, url, page: outcome });
+      images += provisional.counts?.images ?? 0;
+      measuredCount++;
+      if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - startedAt) / 1000).toFixed(1)} s\n`);
+      opts.log(`measured ${safeText(url)} (${measuredCount} of ${urls.length})`);
     });
+    if (measured.length > 0) {
+      const counts = registry.counts();
+      opts.log(`estimates: ${counts.unique} unique of ${counts.requests}, ${counts.skipped} skipped`);
+      await registry.runJobs(QUALITY_PARALLEL);
+      for (const { index, url, page } of measured) {
+        const tally = { fallbacks: 0 };
+        const analysed = await page.analyse(registry.reader(tally));
+        const result: PageResult = { ...analysed, complete: true, options, scorer: scorerOf(run.gpu, tally.fallbacks) };
+        results[index] = result;
+        finished.push(result);
+        await writePage(url, result);
+        opts.log(progressLine(finished, urls.length));
+      }
+    }
     const ran = results.filter((result): result is PageResult => result !== undefined);
     if (ran.length < urls.length) {
       // Images first: when both limits were reached, the one that stopped the run (as it did one page at a time) is named.
@@ -2696,8 +2789,10 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
  */
 export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<PageResult> {
   return withScanRun(opts, async (browser, run, robotsFor) => {
-    const scanned = await countGpuFallbacks(() => scanPage(browser, run, pageUrl, robotsFor));
-    return { ...scanned.value, scorer: scorerOf(run.gpu, scanned.fallbacks) };
+    const outcome = await scanPage(browser, run, pageUrl, robotsFor);
+    if (!isMeasured(outcome)) return { ...outcome, scorer: scorerOf(run.gpu) };
+    const { value, fallbacks } = await withEstimates((store) => outcome.analyse(store), QUALITY_PARALLEL);
+    return { ...value, scorer: scorerOf(run.gpu, fallbacks) };
   });
 }
 
@@ -2773,7 +2868,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
         deps: run.deps,
         quality: false,
         aggressive: false,
-        resized: new Map(),
+        store: new EstimateRegistry().collector(),
         sourceMaps: run.sourceMaps,
         projectDir: run.projectDir,
         projectRoot: run.projectRoot,

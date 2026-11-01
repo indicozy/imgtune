@@ -65,6 +65,7 @@ import { parseSrcset } from "../src/srcset-parse.js";
 import type { ImageRecord } from "../src/images.js";
 import type { encode } from "../src/encode.js";
 import { ssim, type RawImage } from "../src/ssim.js";
+import { withEstimates } from "../src/estimate-jobs.js";
 import type { Viewport } from "../src/types.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
@@ -1315,17 +1316,16 @@ describe.each(["webp", "avif"] as const)("analysePage with a Contentful-shaped %
       groups: [],
       counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
     };
-    const ctx: AnalysisContext = {
+    const ctx: Omit<AnalysisContext, "store"> = {
       pageUrl: "https://shop.example/",
       fetcher: fetcher as unknown as AnalysisContext["fetcher"],
       allowPrivate: false,
       deps: { score: (ref, test) => ssim(ref, test) * 100 },
       quality: true,
       aggressive: false,
-      resized: new Map(),
     };
 
-    const page = await analysePage(ctx, [observation], base);
+    const { value: page } = await withEstimates((store) => analysePage({ ...ctx, store }, [observation], base), 2);
 
     expect(gets).toContain(ORIGIN);
     const [report] = page.perViewport["iphone-15"].images;
@@ -1389,17 +1389,16 @@ describe("analysePage skips the quality sweep of a small file (fake fetcher, no 
       groups: [],
       counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
     };
-    const ctx: AnalysisContext = {
+    const ctx: Omit<AnalysisContext, "store"> = {
       pageUrl: "https://shop.example/",
       fetcher: fetcher as unknown as AnalysisContext["fetcher"],
       allowPrivate: false,
       deps: { score: (ref, test) => ssim(ref, test) * 100 },
       quality: true,
       aggressive: false,
-      resized: new Map(),
     };
 
-    const page = await analysePage(ctx, [observation], base);
+    const { value: page } = await withEstimates((store) => analysePage({ ...ctx, store }, [observation], base), 2);
 
     expect(gets).not.toContain(ORIGIN);
     const [report] = page.perViewport["iphone-15"].images;
