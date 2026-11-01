@@ -79,7 +79,7 @@ Every flag below is checked against `--help`; use only these.
 - `--survey`: the fast pass of "Site-wide: survey first" (two viewports, no quality, exact only). An explicit
   `--viewports`, `--page-concurrency` or `--idle-timeout` overrides its part.
 - `--page-concurrency <N>` (1 to 6, default 1): pages scanned at once on one browser. Results and the JSON files keep their
-  order and content; only the wall time changes.
+  order; the numbers match one page at a time, within the run-to-run variation a page already has.
 - `--idle-timeout <ms>` (0 to 600000, default 10000): cap on the wait for network idle after scroll. A page with a request
   that never ends pays this on every settle; 0 skips the wait.
 - `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop

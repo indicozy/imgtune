@@ -57,7 +57,9 @@ A survey and a full scan are not interchangeable. `compare` refuses to pair one 
 and `--resume` reuses a page only for the same kind of scan.
 
 Any flag of the survey can be set on its own. `--page-concurrency` and `--idle-timeout` work on a full scan too. Concurrency
-changes only the wall time: the JSON files, their order and their numbers are the same as one page at a time.
+changes the wall time and keeps the input order of the results. A page's numbers match one page at a time, within the
+run-to-run variation the page already has: on a heavy page, which of two duplicate images is the record, or a sub-pixel
+layout width, can differ between runs whatever the concurrency.
 
 ## Scanning many pages
 
