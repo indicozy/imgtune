@@ -7,6 +7,8 @@ import { sizesRecheck } from "./sizes-recheck.js";
 import { imageCommand } from "./image-file.js";
 import { compareCommand } from "./compare.js";
 import { reportCommand } from "./report.js";
+import { runCommand, DEFAULT_RUN_DIR, DEFAULT_DEEP } from "./run.js";
+import { summaryCommand } from "./summary.js";
 import { ChromiumMissingError } from "./browser.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
@@ -86,6 +88,10 @@ const OPTION_HELP = {
     "--sizes-only",
     "with --recheck: judge the sizes choice only (no bytes decoded, nothing scored), on the dev page",
   ],
+  failOnBroken: [
+    "--fail-on-broken",
+    "exit 4 when a page is broken (a document error, a failed stylesheet, or no images where the survey had some); each broken page gives the reason and the fix",
+  ],
   url: ["--url <dev page>", "with --recheck --sizes-only: the dev page to check (default: the page the scan file was located on)"],
 } as const;
 
@@ -141,8 +147,47 @@ const SCAN_HELP = commandHelp(
     "locateOut",
     "sizesOnly",
     "url",
+    "failOnBroken",
   ],
 );
+
+const RUN_HELP = `Usage: imgtune run <url> [<url> ...] | --urls-from <file|sitemap-url> [options]
+
+The whole agent flow in one command. Survey every URL (two viewports, exact savings only), rank the pages by exact KB per
+view and by route pattern, full-scan the worst ones (at least one per worst pattern), optionally locate them on a dev server
+(--dev), group the fix hints by call site, and write the run directory. Then it prints the one-screen summary.
+
+The run directory (default ${DEFAULT_RUN_DIR}/<timestamp>) holds survey/ (one JSON per page), deep/, located/ (with --dev),
+hints.json and run.json: the manifest, with every file and every command the run executed, so one step can be re-run.
+The run stops before the deep phase when more than half of the survey pages are broken (exit 4) or none was measured (exit 1).
+
+Options:
+  --urls-from <file|sitemap-url>  a URL list, a local sitemap.xml, or a remote sitemap (same domain)
+  --sample-per-pattern <N>        with --urls-from: at most N URLs per route pattern in the survey
+  --deep <N>                      deep pages to full-scan (default ${DEFAULT_DEEP}): the worst page of each worst pattern first
+  --out <dir>                     the run directory (default ${DEFAULT_RUN_DIR}/<timestamp>)
+  --dev <origin>                  locate the deep pages at the same paths on this dev server (a running dev server)
+  --qualities <list>              the framework's allowed qualities, e.g. 75,85,100 (passed to hints)
+  --gpu, --gpu-device <n>         score the deep pages with the GPU scorer (see the GPU notes; not the survey)
+  --page-concurrency <N>          pages at once in the survey (default 4) and in the deep phase (default 1)
+  --idle-timeout <ms>             cap on the network-idle wait (default 3000 in the survey, 10000 in the deep phase)
+  --no-cache                      do not read or write the result cache
+  --root <dir>                    the source folder for --dev (a monorepo sub-folder)
+  --storage-state <file>          a logged-in session (holds cookies: never commit it)
+  --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)
+  -h, --help                      show this help
+`;
+
+const SUMMARY_HELP = `Usage: imgtune summary <run dir | scan.json ...> [options]
+
+Prints the one-screen summary of a run directory (its run.json, survey/, deep/, located/ and hints.json), or of scan files
+(a folder of scan files works too). At most 40 lines: the site totals, the worst patterns, the deep pages, the top call
+sites by saving per view (file:line, or not located and why), the warnings and the next commands.
+
+Options:
+  --qualities <list>  with scan files: the framework's allowed qualities (passed to hints)
+  -h, --help          show this help
+`;
 
 const HINTS_HELP = `Usage: imgtune hints <scan.json> [<scan.json> ...] [options]
 
@@ -220,8 +265,10 @@ Commands:
   image     measure image files or URLs without a page (--width, --dpr, --formats, --write)
   compare   the per-image before and after of two scans of one page (saved and sharpness bytes)
   report    a Markdown run report from the ledger (and the compare JSON)
+  run       the whole flow: survey, worst pages, deep scan, locate (--dev), hints, one run directory and summary
+  summary   the one-screen summary of a run directory or of scan files
 
-Run "imgtune scan --help", "imgtune hints --help", "imgtune image --help", "imgtune compare --help" or "imgtune report --help" for the options of each command.
+Run "imgtune run --help", "imgtune summary --help", "imgtune scan --help", "imgtune hints --help", "imgtune image --help", "imgtune compare --help" or "imgtune report --help" for the options of each command.
 
 Options:
   --version           print the version
@@ -239,6 +286,8 @@ async function main(): Promise<void> {
     else if (argv[0] === "image") process.stdout.write(IMAGE_HELP);
     else if (argv[0] === "compare") process.stdout.write(COMPARE_HELP);
     else if (argv[0] === "report") process.stdout.write(REPORT_HELP);
+    else if (argv[0] === "run") process.stdout.write(RUN_HELP);
+    else if (argv[0] === "summary") process.stdout.write(SUMMARY_HELP);
     else process.stdout.write(argv.includes("scan") ? SCAN_HELP : USAGE);
     return;
   }
@@ -278,6 +327,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (argv[0] === "run") {
+    const outcome = await runCommand(argv.slice(1), process.cwd(), progress);
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
+    return;
+  }
+
+  if (argv[0] === "summary") {
+    const outcome = await summaryCommand(argv.slice(1), process.cwd());
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
+    return;
+  }
+
   if (argv[0] === "report") {
     const outcome = await reportCommand(argv.slice(1), process.cwd());
     process.stdout.write(outcome.output);
@@ -293,7 +356,7 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] !== "scan") {
-    console.error(`imgtune: Unknown command "${argv[0]}": expected scan, hints, image, compare or report`);
+    console.error(`imgtune: Unknown command "${argv[0]}": expected scan, run, summary, hints, image, compare or report`);
     process.exitCode = 2;
     return;
   }
