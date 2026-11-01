@@ -139,9 +139,10 @@ A real site has hundreds of usages: work in batches, so the context never holds 
 Every fix has one rung. Label it in the ledger and in the report.
 
 - **measured-page** (exact): the scan measured the usage on the live page, at each viewport. The scan only makes this rung.
-- **measured-harness**: the usage was measured in isolation. Add a temporary route such as `/__imgtune/<component>` that
-  renders each state, scan it, then remove the route before you finish. Storybook also works. Say which states were
-  rendered.
+- **measured-harness**: the usage renders only behind a condition the scan cannot reach. Add a temporary route
+  `/__imgtune/<component>?state=<name>` per state (`reference.md`, Harness routes), scan it on the dev server with
+  `npx imgtune scan <dev-url>/__imgtune/<component>?state=<name>`, then remove the route before you finish. Its records
+  are measured-harness (a Storybook URL needs `--harness`). Name the states in the ledger and the report.
 - **ceiling-code**: derived from the resolved classes and the layout constraints (the container width, the grid columns,
   the padding). It is an upper bound on the width needed, never an exact saving. Report it as a ceiling only.
 - **not-measured**: no number. Give the reason (for example: hidden, or behind a login the scan did not have).

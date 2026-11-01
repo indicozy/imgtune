@@ -50,6 +50,8 @@ describe("harness scan of a component whose image renders only in one state", ()
           return res.end(hero);
         }
         if (target.pathname === "/shop") return html(shop);
+        // A Storybook-style iframe URL: not under /__imgtune, so only --harness marks it as a harness.
+        if (target.pathname === "/iframe.html") return html(card(true));
         if (target.pathname === "/__imgtune/ProductCard" && harnessRoute) {
           return html(card(target.searchParams.get("state") === "member"));
         }
@@ -88,7 +90,7 @@ describe("harness scan of a component whose image renders only in one state", ()
     expect(record.evidence.rung).toBe("measured-harness");
     expect(record.fix.sizes).toMatchObject({ value: "300px", rung: "measured-harness" });
     expect(record.perViewport[0]).toMatchObject({ renderedCssPx: 300, servedPx: 1200, loaded: true });
-    expect(record.evidence.notes[0]).toMatch(/^measured in isolation: harness route \/__imgtune\/ProductCard/);
+    expect(record.evidence.notes[0]).toMatch(/^measured in isolation: harness \/__imgtune\/ProductCard/);
     expect(record.fix.bytes.saved).toBeGreaterThan(0);
   }, 120_000);
 
@@ -103,6 +105,15 @@ describe("harness scan of a component whose image renders only in one state", ()
   it("the guest state of the same route has no image, so there is nothing to fix there", async () => {
     const result = await scan("/__imgtune/ProductCard?state=guest");
     expect(result.images ?? []).toEqual([]);
+  }, 120_000);
+
+  it("a harness URL outside /__imgtune is measured-harness only with --harness", async () => {
+    const plain = await scan("/iframe.html");
+    expect(plain.images?.[0].evidence.rung).toBe("measured-page");
+    const [flagged] = await runScan([`${base}/iframe.html`], { outDir: out, cwd: out, aggressive: false, quality: false, viewports: [desktop], log: () => {}, harness: true });
+    expect(flagged.harness).toBe(true);
+    expect(flagged.images?.[0].evidence.rung).toBe("measured-harness");
+    expect(flagged.images?.[0].evidence.notes[0]).toMatch(/^measured in isolation: harness \/iframe\.html/);
   }, 120_000);
 
   it("once the route is removed (the skill's last step), the harness URL serves nothing to measure", async () => {

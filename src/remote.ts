@@ -448,6 +448,8 @@ export interface ScanArgs {
   storageState?: string;
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
   gpu?: { device: number };
+  /** --harness: the pages are harness routes (Storybook, a temporary route): their records are measured-harness. */
+  harness?: boolean;
 }
 
 /** The stderr warning for a page that robots.txt disallows and that is scanned anyway (--ignore-robots). */
@@ -514,6 +516,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--resume") args.resume = true;
     else if (arg === "--gpu") args.gpu ??= { device: 0 };
     else if (arg === "--no-cache") args.noCache = true;
+    else if (arg === "--harness") args.harness = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -1315,6 +1318,8 @@ export interface AnalysisContext {
   projectDir?: string;
   /** The --root given on the command line (absolute), or undefined: see source-root.ts. */
   projectRoot?: string;
+  /** The pages are harness routes (--harness): the records are measured-harness whatever their URL. */
+  harness?: boolean;
 }
 
 /** Largest source map read for a chunk: the scanned site is untrusted, so a map is capped in size. */
@@ -1826,6 +1831,8 @@ export interface PageResult {
   notLoaded?: number;
   /** The CSS background layers of the page: a separate line, not in the headline (see backgrounds.ts). */
   backgrounds?: BackgroundPage;
+  /** Scanned with --harness: measured in isolation (the rung of every record is measured-harness). */
+  harness?: true;
   /** Written once the page is done: a page without it (an interrupted run) is scanned again by --resume. */
   complete?: true;
   /** The options the page was scanned with: --resume reuses a page only when they are the same. */
@@ -1845,11 +1852,13 @@ export interface ScanRecordOptions {
   storageState: boolean;
   /** The scorer asked for. Scans from before --gpu have none: that is "cpu". */
   scorer: "cpu" | "gpu";
+  /** --harness: the pages are measured in isolation. Absent (not false) otherwise, so older scans still match. */
+  harness?: true;
 }
 
 /** The options of one page's output, for the completeness check of --resume. */
 export function recordOptionsOf(
-  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu">,
+  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness">,
 ): ScanRecordOptions {
   return {
     imgtuneVersion: IMGTUNE_VERSION,
@@ -1859,6 +1868,7 @@ export function recordOptionsOf(
     ignoreRobots: opts.ignoreRobots === true,
     storageState: opts.storageState !== undefined,
     scorer: opts.gpu !== undefined ? "gpu" : "cpu",
+    ...(opts.harness === true ? { harness: true as const } : {}),
   };
 }
 
@@ -2067,6 +2077,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   const { aggressiveExactEstPct, ...withoutAggressive } = numbers;
   const images = buildImageRecords({
     pageUrl: ctx.pageUrl,
+    harness: ctx.harness,
     observations,
     instances,
     refName,
@@ -2080,6 +2091,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   );
   const backgroundRecords = buildBackgroundRecords({
     pageUrl: ctx.pageUrl,
+    harness: ctx.harness,
     viewports: observations.map((o) => o.viewport),
     instances: bgInstances,
     refName,
@@ -2101,6 +2113,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
     images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
     ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
+    ...(ctx.harness === true ? { harness: true as const } : {}),
   };
 }
 
@@ -2147,6 +2160,8 @@ export interface ScanOptions {
   gpu?: { device: number };
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
+  /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
+  harness?: boolean;
 }
 
 /** How a run ended early: the limit that was reached, and how far the scan got. */
@@ -2191,6 +2206,7 @@ async function scanPage(
     resolver: Resolver;
     connectAddress?: (address: string) => string;
     ignoreRobots: boolean;
+    harness: boolean;
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
     storageState?: StorageState;
@@ -2309,6 +2325,7 @@ async function scanPage(
       qualityFor: run.qualityFor,
       aggressive: run.aggressive,
       resized: new Map(),
+      harness: run.harness,
       sourceMaps: run.sourceMaps,
       projectDir: run.projectDir,
       projectRoot: run.projectRoot,
@@ -2366,6 +2383,7 @@ async function withBrowser<T>(
       resolver,
       connectAddress: opts.connectAddress,
       ignoreRobots: opts.ignoreRobots === true,
+      harness: opts.harness === true,
       sourceMaps: new Map(),
       storageState: opts.storageState,
       qualityFor: opts.qualityFor,
@@ -2585,7 +2603,7 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
   const n = result.page;
   const lines = [
     head,
-    ...(rungOfPage(result.url) === "measured-harness" ? ["  measured in isolation (harness route): the component, not the page a visitor sees"] : []),
+    ...(result.harness === true || rungOfPage(result.url) === "measured-harness" ? ["  measured in isolation (harness route): the component, not the page a visitor sees"] : []),
     `  viewports: ${safeText(result.viewports.join(", "))}`,
     `  image bytes per view   ${kb(n.meanImageBytes)}`,
     `  saving exact           ${pct(n.exactPct)}`,
@@ -2872,6 +2890,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     viewports,
     log,
     ignoreRobots: args.ignoreRobots === true,
+    harness: args.harness === true,
     resume: args.resume === true,
     maxPages: args.maxPages,
     maxImages: args.maxImages,

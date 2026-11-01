@@ -111,6 +111,24 @@ element joined the record at that viewport (its key or alt changed, or the count
 
 Do not mark an image `gone` in the ledger from a single recheck.
 
+## Harness routes
+
+Some usages render only behind a condition the scan cannot reach (a logged-in state, a tier, a feature flag). A harness
+measures the component in isolation, so its numbers are the component's, not the page's.
+
+1. Add a route that renders the component in each state the usage has, one URL per state, for example
+   `/__imgtune/ProductCard?state=member`. Pages Router: `pages/__imgtune/ProductCard.tsx`. App Router: a folder whose name
+   starts with `%5F` and then `_`, `app/%5F_imgtune/ProductCard/page.tsx`; a plain `_` folder is private and not routed.
+2. Scan it on the dev server, so the React owner data gives `file:line`:
+   `npx imgtune scan http://localhost:3000/__imgtune/ProductCard?state=member --out .imgtune/harness`.
+   A route under `/__imgtune/` is recorded as measured-harness automatically. For another URL (a Storybook
+   `iframe.html?id=...`), add `--harness`.
+3. Fix from the hints as usual. Each record's rung is `measured-harness`, and its first note says it was measured in
+   isolation. Use `scan --recheck <file> --ids ...` on the harness URL to verify, not the built page: a usage the built page
+   does not render is not in its totals.
+4. Remove the route file (and any Storybook story you added for this) before you finish, and check `git status`. Name the
+   states you rendered in the ledger `fix` text and in the report. A state that renders no image has nothing to measure.
+
 ## Framework notes in detail
 
 ### next/image

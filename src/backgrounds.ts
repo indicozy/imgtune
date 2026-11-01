@@ -296,6 +296,7 @@ export function buildBackgroundRecords(input: {
   instances: BackgroundInstance[];
   refName: string;
   sources: Map<number, ResolvedSource>;
+  harness?: boolean;
 }): ImageRecord[] {
   const { pageUrl, viewports, instances, refName, sources } = input;
   const viewportCount = viewports.length;
@@ -376,7 +377,7 @@ export function buildBackgroundRecords(input: {
         width: member.needed > 0 ? member.needed : undefined,
         bytes: { saved, addedForSharpness: 0, sizes: 0, quality: saved },
       },
-      evidence: { rung: rungOfPage(pageUrl), notes },
+      evidence: { rung: rungOfPage(pageUrl, input.harness), notes },
     };
     if (best !== undefined) record.fix.format = best;
     records.push(record);

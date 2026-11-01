@@ -31,6 +31,10 @@ const OPTION_HELP = {
     "exit 3 when a page's exact + est. share is above this percentage (default: never fail)",
   ],
   summaryJson: ["--summary-json <file>", "write one JSON file with every page's status and numbers"],
+  harness: [
+    "--harness",
+    "the pages are harness routes (a temporary /__imgtune/<component> route, or Storybook): measured in isolation, rung measured-harness",
+  ],
   ignoreRobots: [
     "--ignore-robots",
     "scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON)",
@@ -109,6 +113,7 @@ const SCAN_HELP = commandHelp(
     "failOver",
     "summaryJson",
     "ignoreRobots",
+    "harness",
     "resume",
     "maxPages",
     "maxImages",

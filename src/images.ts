@@ -30,7 +30,8 @@ export type MeasuredRung = "measured-page" | "measured-harness";
  * The rung of a page's measurements: a harness route (`/__imgtune/<component>`) measures the component in isolation, not
  * the page the user sees, so its records are `measured-harness`. Any other scanned URL is `measured-page`.
  */
-export function rungOfPage(pageUrl: string): MeasuredRung {
+export function rungOfPage(pageUrl: string, harness = false): MeasuredRung {
+  if (harness) return "measured-harness";
   try {
     return new URL(pageUrl).pathname.split("/")[1] === HARNESS_SEGMENT ? "measured-harness" : "measured-page";
   } catch {
@@ -197,6 +198,8 @@ export interface ResolvedSource {
 
 export interface BuildInput {
   pageUrl: string;
+  /** --harness: the page is measured in isolation whatever its URL. */
+  harness?: boolean;
   observations: ViewportObservation[];
   instances: Instance[];
   refName: string;
@@ -277,7 +280,7 @@ export function hasFix(record: ImageRecord): boolean {
 export function buildImageRecords(input: BuildInput): ImageRecord[] {
   const { pageUrl, observations, instances, refName, resolved } = input;
   const viewportCount = observations.length;
-  const rung = rungOfPage(pageUrl);
+  const rung = rungOfPage(pageUrl, input.harness);
 
   // One key per element and viewport: the source key plus the ordinal among elements sharing it, in document order.
   const keyOf = new Map<Instance, string>();
@@ -401,7 +404,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       evidence: { rung, notes },
     };
     if (rung === "measured-harness") {
-      notes.unshift(`measured in isolation: harness route ${sanitizeText(new URL(pageUrl).pathname, 120)} (not the page a visitor sees)`);
+      notes.unshift(`measured in isolation: harness ${sanitizeText(new URL(pageUrl).pathname, 120)} (not the page a visitor sees)`);
     }
     if (source?.file) {
       const how = source.check === "owner" ? "owner call site, the image is inside its component" : source.check === "image" ? "verified: the line renders an image" : "not checked";
