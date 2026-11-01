@@ -17,7 +17,7 @@ import { sameSite } from "./site.js";
 import { confirmMatch, matchLocalQuality, type SizeAt } from "./calibrate.js";
 import { DEFAULT_THIRD_PARTY, isThirdPartyBlocked, parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
-import { encode, encodedBytes, ENCODE_THREADS, ENCODER_ID, type EncoderProfile } from "./encode.js";
+import { encode, encodedBytes, ENCODE_THREADS, ENCODER_ID, FAST_AVIF_EFFORT, type EncoderProfile } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
@@ -298,6 +298,8 @@ export interface ImageFinding {
   est: number;
   /** Quality and format savings at delta 4 (`--aggressive`); never used for the claim. */
   estAggressive: number;
+  /** The est. is an approximation (see Instance.estimate). */
+  approx?: boolean;
   growth: number;
 }
 
@@ -311,6 +313,8 @@ export interface ViewportTotals {
   growth: number;
   /** Bytes of the images that have a saving (exact or est). */
   fixableBytes: number;
+  /** An image's est. saving here is an approximation (see ImageFinding.approx). */
+  estApprox?: true;
 }
 
 export function viewportTotals(images: ImageFinding[], imageBytes: number): ViewportTotals {
@@ -321,6 +325,7 @@ export function viewportTotals(images: ImageFinding[], imageBytes: number): View
     totals.estAggressive += img.estAggressive;
     totals.growth += img.growth;
     if (img.exact + img.est > 0) totals.fixableBytes += img.bytes;
+    if (img.approx === true && img.est > 0) totals.estApprox = true;
   }
   return totals;
 }
@@ -334,6 +339,8 @@ export interface PageNumbers {
   sharpnessKB: number;
   /** Only with --aggressive. */
   aggressiveExactEstPct?: number;
+  /** Some of the est. saving is an approximation (above MATCH_MAX_PIXELS): the page's exact + est. is marked approx. */
+  estApprox?: true;
 }
 
 const mean = (values: number[]): number => (values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length);
@@ -348,6 +355,7 @@ export function pageNumbers(perViewport: ViewportTotals[]): PageNumbers {
     fixablePct: mean(perViewport.map((v) => share(v.exact + v.est, v.fixableBytes))),
     sharpnessKB: mean(perViewport.map((v) => v.growth / 1024)),
     aggressiveExactEstPct: mean(perViewport.map((v) => share(v.exact + v.estAggressive, v.imageBytes))),
+    ...(perViewport.some((v) => v.estApprox === true) ? { estApprox: true as const } : {}),
   };
 }
 
@@ -357,7 +365,7 @@ export interface SiteNumbers extends PageNumbers {
 
 /** Site numbers: the mean of its pages. */
 export function siteNumbers(pages: PageNumbers[]): SiteNumbers {
-  const pick = (key: keyof PageNumbers) => mean(pages.map((p) => p[key] ?? 0));
+  const pick = (key: Exclude<keyof PageNumbers, "estApprox">) => mean(pages.map((p) => p[key] ?? 0));
   return {
     pages: pages.length,
     meanImageBytes: pick("meanImageBytes"),
@@ -366,6 +374,7 @@ export function siteNumbers(pages: PageNumbers[]): SiteNumbers {
     fixablePct: pick("fixablePct"),
     sharpnessKB: pick("sharpnessKB"),
     aggressiveExactEstPct: pick("aggressiveExactEstPct"),
+    ...(pages.some((p) => p.estApprox === true) ? { estApprox: true as const } : {}),
   };
 }
 
@@ -653,11 +662,11 @@ function isEstimateFormat(format: string): format is EstimateFormat {
   return format === "jpeg" || format === "webp" || format === "avif";
 }
 
-/** Local encode of an already resized image in `format` at `quality`. */
-function encodeWith(img: Sharp, format: EstimateFormat, quality: number): Promise<Buffer> {
+/** Local encode of an already resized image in `format` at `quality` (AVIF at `effort`, 4 unless the caller says). */
+function encodeWith(img: Sharp, format: EstimateFormat, quality: number, effort = 4): Promise<Buffer> {
   if (format === "jpeg") return img.jpeg({ quality }).toBuffer();
   if (format === "webp") return img.webp({ quality }).toBuffer();
-  return img.avif({ quality, effort: 4 }).toBuffer();
+  return img.avif({ quality, effort }).toBuffer();
 }
 
 const QUALITY_BISECT_STEPS = 7;
@@ -671,25 +680,59 @@ const QUALITY_BISECT_STEPS = 7;
 export const MATCH_MAX_PIXELS = 2_000_000;
 
 /**
+ * The probes of the approximate match above MATCH_MAX_PIXELS. Each probe encodes the native image, so the count bounds the
+ * time of a large file; the match is then 100 / 2^5, about three quality steps, which is the precision an approximation
+ * can claim anyway.
+ */
+export const APPROX_MATCH_PROBES = 5;
+
+/**
+ * The lowest quality in 1..100 whose native-size bytes reach `served` bytes, by bisection with at most `probes` encodes at
+ * AVIF `effort` (the quality scale is the one the exact match uses).
+ */
+async function bisectMatch(buffer: Buffer, format: EstimateFormat, probes: number, effort: number): Promise<number> {
+  const served = buffer.length;
+  let lo = 1;
+  let hi = 100;
+  for (let step = 0; step < probes && lo < hi; step++) {
+    const mid = Math.floor((lo + hi) / 2);
+    const bytes = (await encodeWith(openImage(buffer).rotate(), format, mid, effort)).length;
+    if (bytes < served) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
  * The quality at which the file, encoded in `format` at its native size, reaches the served bytes: the bisection a resize
  * estimate starts from. It depends on the file and the format only, not on the width, so a run computes it once per file
- * (see the memo of EstimateRegistry). Undefined for a format this cannot encode.
+ * (see the memo of EstimateRegistry). Undefined for a format this cannot encode, and for a file over MATCH_MAX_PIXELS (see
+ * matchedQualityOf for that one).
  */
 export async function matchedQuality(buffer: Buffer, format: string): Promise<number | undefined> {
   if (!isEstimateFormat(format)) return undefined;
   const meta = await openImage(buffer).metadata();
   if (!meta.width || !meta.height || meta.width * meta.height > MATCH_MAX_PIXELS) return undefined;
-  const served = buffer.length;
-  // Bisection over the quality scale on the native image: the lowest quality whose bytes reach the served bytes.
-  let lo = 1;
-  let hi = 100;
-  for (let step = 0; step < QUALITY_BISECT_STEPS && lo < hi; step++) {
-    const mid = Math.floor((lo + hi) / 2);
-    const bytes = (await encodeWith(openImage(buffer).rotate(), format, mid)).length;
-    if (bytes < served) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
+  return bisectMatch(buffer, format, QUALITY_BISECT_STEPS, 4);
+}
+
+/** A match: its quality, and whether it is the approximation (above MATCH_MAX_PIXELS). */
+export interface MatchedQuality {
+  quality: number;
+  approx: boolean;
+}
+
+/**
+ * The match of matchedQuality for any file. Above MATCH_MAX_PIXELS it is approximate: the bisection runs at the fast AVIF
+ * effort (the quality search's own, `cdn-fast`), with APPROX_MATCH_PROBES probes and no effort-4 confirmation, so its
+ * estimate is marked approx. Undefined for a format this cannot encode.
+ */
+export async function matchedQualityOf(buffer: Buffer, format: string): Promise<MatchedQuality | undefined> {
+  if (!isEstimateFormat(format)) return undefined;
+  const meta = await openImage(buffer).metadata();
+  if (!meta.width || !meta.height) return undefined;
+  if (meta.width * meta.height <= MATCH_MAX_PIXELS) return { quality: await bisectMatch(buffer, format, QUALITY_BISECT_STEPS, 4), approx: false };
+  return { quality: await bisectMatch(buffer, format, APPROX_MATCH_PROBES, FAST_AVIF_EFFORT), approx: true };
 }
 
 /**
@@ -1751,6 +1794,8 @@ export interface Instance {
   exact: number;
   est: number;
   estAggressive: number;
+  /** "approx": the est. of this element is an approximation (see matchedQualityOf). Absent for an exact est. */
+  estimate?: "approx";
   growth: number;
   group: string;
   /** Quality ratio per delta (projected / served bytes): the image's own, or its group's median. */
@@ -1915,12 +1960,19 @@ async function resolveBackgroundSources(ctx: AnalysisContext, observations: View
 
 /**
  * The local resize estimate (est.) of a served file at `needed` device pixels, as a job of the run: one per unique file,
- * format and target width (see resizeScope). The bisection it starts from is shared by all the widths of one file.
+ * format and target width (see resizeScope). The bisection it starts from is shared by all the widths of one file. Above
+ * MATCH_MAX_PIXELS the match is approximate, and so is the estimate (`approx`).
  */
-function resizeEstimateOf(ctx: AnalysisContext, buffer: Buffer, format: string, needed: number): Promise<{ bytes: number; buffer: Buffer } | undefined> {
+function resizeEstimateOf(
+  ctx: AnalysisContext,
+  buffer: Buffer,
+  format: string,
+  needed: number,
+): Promise<{ bytes: number; buffer: Buffer; approx?: true } | undefined> {
   return ctx.store.get(resizeScope(buffer, format, clampWidth(needed)), buffer.length, async () => {
-    const quality = await ctx.store.memo(`match|${hashOf(buffer)}|${format}`, () => matchedQuality(buffer, format));
-    return resizedEstimate(buffer, format, needed, quality);
+    const match = await ctx.store.memo(`match|${hashOf(buffer)}|${format}`, () => matchedQualityOf(buffer, format));
+    const out = await resizedEstimate(buffer, format, needed, match?.quality);
+    return out && match?.approx ? { ...out, approx: true as const } : out;
   });
 }
 
@@ -1977,9 +2029,14 @@ async function measureBackground(
   });
   if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("background resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
-    if (resized) instance.est = instance.estAggressive = Math.max(0, response.bytes - resized.bytes);
+    if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
   }
   return instance;
+}
+
+/** The est. fields of an instance: the saving, and the approx marker when the estimate is one. */
+function approxEst(saving: number, approx: true | undefined): Pick<Instance, "est" | "estAggressive" | "estimate"> {
+  return approx ? { est: saving, estAggressive: saving, estimate: "approx" } : { est: saving, estAggressive: saving };
 }
 
 async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: ObservedImage): Promise<Instance> {
@@ -2054,7 +2111,7 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   instance.kind = "plain";
   if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("plain resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
-    if (resized) instance.est = instance.estAggressive = Math.max(0, response.bytes - resized.bytes);
+    if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
   }
   return instance;
 }
@@ -2239,6 +2296,8 @@ export interface ImageReport {
   exactSaved: number;
   estSaved: number;
   estAggressiveSaved?: number;
+  /** "approx": the est. saving is an approximation (see Instance.estimate). */
+  estimate?: "approx";
   sharpnessGrowth: number;
   group: string;
   quality?: QualityInfo;
@@ -2270,6 +2329,8 @@ export interface GroupReport {
   qualityHint?: string;
   /** Mean over the viewports the group is shown at: exact + est. bytes per page view. */
   savedBytes: number;
+  /** Some member's est. saving is an approximation: the group's savedBytes is marked approx. */
+  estApprox?: true;
   members: number;
   samples: string[];
   hint?: string;
@@ -2456,6 +2517,7 @@ function toReport(inst: Instance): ImageReport {
     exactSaved: inst.exact,
     estSaved: inst.est,
     estAggressiveSaved: inst.kind === "skipped" ? undefined : inst.estAggressive,
+    ...(inst.estimate !== undefined ? { estimate: inst.estimate } : {}),
     sharpnessGrowth: inst.growth,
     group: inst.group,
     quality: quality ? { ...quality } : undefined,
@@ -2499,6 +2561,7 @@ export function groupReports(instances: Instance[], viewportCount: number): Grou
       const name = inst.viewport.name;
       perViewport.set(name, (perViewport.get(name) ?? 0) + (suggestedSizes === undefined ? 0 : inst.exact) + inst.est);
     }
+    const estApprox = members.some((m) => m.estimate === "approx" && m.est > 0) ? { estApprox: true as const } : {};
     const savedBytes = [...perViewport.values()].reduce((sum, bytes) => sum + bytes, 0) / viewportCount;
     if (savedBytes <= 0) continue;
     const targets = members.flatMap((m) => (m.qualityInfo?.target !== undefined ? [m.qualityInfo.target] : []));
@@ -2514,6 +2577,7 @@ export function groupReports(instances: Instance[], viewportCount: number): Grou
       loader,
       qualityHint: qualityHintFor(loader, lead.qualityParam, estQuality),
       savedBytes,
+      ...estApprox,
       members: new Set(members.map((m) => m.element)).size,
       samples,
       hint: suggestedSizes && suggestedSizes !== sizes ? `set sizes="${suggestedSizes}"` : undefined,
@@ -2595,7 +2659,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
     const own = instances.filter((i) => i.viewport.name === obs.viewport.name);
     const imageBytes = [...obs.responses.values()].reduce((sum, r) => sum + r.bytes, 0);
     const vt = viewportTotals(
-      own.map((i) => ({ bytes: i.bytes, exact: i.exact, est: i.est, estAggressive: i.estAggressive, growth: i.growth })),
+      own.map((i) => ({ bytes: i.bytes, exact: i.exact, est: i.est, estAggressive: i.estAggressive, growth: i.growth, approx: i.estimate === "approx" })),
       imageBytes,
     );
     totals.push(vt);
@@ -3289,6 +3353,9 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
 
 
 const pct = (value: number): string => `${value.toFixed(1)}%`;
+/** Marks an est. figure that is an approximation (above MATCH_MAX_PIXELS, see matchedQualityOf). */
+export const APPROX_MARK = " ≈";
+export const APPROX_NOTE = "≈ = approximate est.: a file over MATCH_MAX_PIXELS is matched at the fast AVIF effort with a few probes, and not confirmed at effort 4.";
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
 /** One page: a short table and its top groups. `hintsFile` names the scan file, for the pointer to `imgtune hints`. */
@@ -3306,7 +3373,7 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
     `  viewports: ${safeText(result.viewports.join(", "))}`,
     `  image bytes per view   ${kb(n.meanImageBytes)}`,
     `  saving exact           ${pct(n.exactPct)}`,
-    `  saving exact + est.    ${pct(n.exactEstPct)}`,
+    `  saving exact + est.    ${pct(n.exactEstPct)}${n.estApprox === true ? APPROX_MARK : ""}`,
     `  of fixable images      ${pct(n.fixablePct)}`,
     `  sharpness (separate)   +${n.sharpnessKB.toFixed(1)} KB`,
   ];
@@ -3352,7 +3419,7 @@ export function renderScan(results: PageResult[], aggressive: boolean, hintsFile
     if (pages.length < 2) continue;
     const site = siteNumbers(pages);
     lines.push(
-      `${safeText(host)} (${site.pages} pages): exact ${pct(site.exactPct)} · exact + est. ${pct(site.exactEstPct)} · fixable ${pct(site.fixablePct)} · sharpness +${site.sharpnessKB.toFixed(1)} KB`,
+      `${safeText(host)} (${site.pages} pages): exact ${pct(site.exactPct)} · exact + est. ${pct(site.exactEstPct)}${site.estApprox === true ? APPROX_MARK : ""} · fixable ${pct(site.fixablePct)} · sharpness +${site.sharpnessKB.toFixed(1)} KB`,
     );
   }
   return `${lines.join("\n")}\n`;
@@ -3426,7 +3493,7 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
       continue;
     }
     const n = result.page;
-    const cells = [label, "ok", kbNumber(n.meanImageBytes), pct(n.exactPct), pct(n.exactEstPct), `+${n.sharpnessKB.toFixed(1)} KB`];
+    const cells = [label, "ok", kbNumber(n.meanImageBytes), pct(n.exactPct), `${pct(n.exactEstPct)}${n.estApprox === true ? APPROX_MARK : ""}`, `+${n.sharpnessKB.toFixed(1)} KB`];
     if (aggressive) cells.push(pct(n.aggressiveExactEstPct ?? 0));
     lines.push(mdRow(cells, width));
   }
@@ -3439,7 +3506,7 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
       const suggested = g.suggestedSizes === undefined ? "-" : mdCode(g.suggestedSizes);
       const loader = g.loader ? mdCode(g.loader) : "-";
       const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdCode(h)).join("; ");
-      lines.push(mdRow([current, suggested, kbNumber(g.savedBytes), loader, hint || "-"], 5));
+      lines.push(mdRow([current, suggested, `${kbNumber(g.savedBytes)}${g.estApprox === true ? APPROX_MARK : ""}`, loader, hint || "-"], 5));
     }
   }
   if (withHints) {
@@ -3465,7 +3532,7 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   const viewports = [...new Set(results.filter((r) => r.status === "ok").flatMap((r) => r.viewports))];
   lines.push(
     "",
-    `Method: savings are shares of each page view's image bytes, averaged over viewports. exact = the site's own smaller srcset candidates, measured; est. = a local re-encode (quality, format or a plain img resize), judged by SSIMULACRA2 at delta ${SCAN_DELTA}. Sharpness is undersized images, reported apart from the savings.`,
+    `Method: savings are shares of each page view's image bytes, averaged over viewports. exact = the site's own smaller srcset candidates, measured; est. = a local re-encode (quality, format or a plain img resize), judged by SSIMULACRA2 at delta ${SCAN_DELTA}. Sharpness is undersized images, reported apart from the savings.${results.some((r) => r.page?.estApprox === true) ? ` ${APPROX_NOTE}` : ""}`,
     "",
     `Viewports: ${viewports.length > 0 ? viewports.map((v) => mdCode(v)).join(", ") : "none measured"}.`,
   );

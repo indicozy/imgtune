@@ -4,7 +4,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { hintsCommand } from "./hints.js";
 import { safeText, shellWord } from "./text.js";
-import { pageFileName, type PageResult, siteNumbers, surveyLabelOf } from "./remote.js";
+import { APPROX_MARK, APPROX_NOTE, pageFileName, type PageResult, siteNumbers, surveyLabelOf } from "./remote.js";
 import { candidatesOf, patternRanking } from "./worst.js";
 import type { RunManifest } from "./run.js";
 
@@ -120,7 +120,7 @@ function surveyBlock(survey: PageResult[], label: string | undefined): string[] 
   lines.push(
     numbers.length === 0
       ? "  site: no page measured"
-      : `  site (${numbers.length} ok, mean): image KB/view ${kbText(siteNumbers(numbers).meanImageBytes / 1024)} · exact ${pctText(siteNumbers(numbers).exactPct)} · exact + est. ${pctText(siteNumbers(numbers).exactEstPct)}`,
+      : `  site (${numbers.length} ok, mean): image KB/view ${kbText(siteNumbers(numbers).meanImageBytes / 1024)} · exact ${pctText(siteNumbers(numbers).exactPct)} · exact + est. ${pctText(siteNumbers(numbers).exactEstPct)}${siteNumbers(numbers).estApprox === true ? APPROX_MARK : ""}`,
   );
   const ranks = patternRanking(candidatesOf(survey));
   if (ranks.length > 0) {
@@ -146,9 +146,10 @@ function deepBlock(deep: PageResult[]): string[] {
   for (const page of sorted.slice(0, DEEP_ROWS)) {
     const n = page.page as NonNullable<PageResult["page"]>;
     lines.push(
-      `  ${trim(labelOf(page.url), LABEL_WIDTH).padEnd(LABEL_WIDTH)} ${kbText(n.meanImageBytes / 1024).padStart(8)} ${pctText(n.exactPct).padStart(7)} ${pctText(n.exactEstPct).padStart(10)} ${`+${n.sharpnessKB.toFixed(1)}`.padStart(9)}`,
+      `  ${trim(labelOf(page.url), LABEL_WIDTH).padEnd(LABEL_WIDTH)} ${kbText(n.meanImageBytes / 1024).padStart(8)} ${pctText(n.exactPct).padStart(7)} ${(pctText(n.exactEstPct) + (n.estApprox === true ? APPROX_MARK : "")).padStart(10)} ${`+${n.sharpnessKB.toFixed(1)}`.padStart(9)}`,
     );
   }
+  if (sorted.slice(0, DEEP_ROWS).some((page) => (page.page as NonNullable<PageResult["page"]>).estApprox === true)) lines.push(`  ${APPROX_NOTE}`);
   return lines;
 }
 

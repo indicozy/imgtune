@@ -5,7 +5,7 @@ import sharp from "sharp";
 import { ESTIMATE_MIN_SAVING_BYTES, EstimateRegistry, internBuffer, withEstimates, type EstimateStore } from "../src/estimate-jobs.js";
 import { CACHE_VERSION, resizeScope } from "../src/result-cache.js";
 import { IMGTUNE_VERSION } from "../src/version.js";
-import { matchedQuality, MATCH_MAX_PIXELS, qualityJobKey, resizedEstimate } from "../src/remote.js";
+import { matchedQuality, matchedQualityOf, MATCH_MAX_PIXELS, qualityJobKey, resizedEstimate } from "../src/remote.js";
 
 const bigEnough = ESTIMATE_MIN_SAVING_BYTES;
 
@@ -182,6 +182,19 @@ describe("the number-preserving split of resizedEstimate", () => {
     expect(await resizedEstimate(big, "jpeg", 200)).toBeUndefined();
     const png = await sharp({ create: { width: 400, height: 300, channels: 3, background: "#835" } }).png().toBuffer();
     expect(await resizedEstimate(png, "png", 100)).toBeDefined();
+  });
+
+  it("matches a lossy file over MATCH_MAX_PIXELS approximately, and an exact match below it", async () => {
+    const side = Math.ceil(Math.sqrt(MATCH_MAX_PIXELS + 1));
+    const big = await sharp({ create: { width: side, height: side, channels: 3, background: "#835" } }).jpeg({ quality: 80 }).toBuffer();
+    const approx = await matchedQualityOf(big, "jpeg");
+    expect(approx).toMatchObject({ approx: true });
+    expect(approx?.quality).toBeGreaterThanOrEqual(1);
+    const estimate = await resizedEstimate(big, "jpeg", 200, approx?.quality);
+    expect(estimate?.bytes).toBeGreaterThan(0);
+    const small = await sharp({ create: { width: 640, height: 400, channels: 3, background: "#4a7" } }).jpeg({ quality: 95 }).toBuffer();
+    expect(await matchedQualityOf(small, "jpeg")).toEqual({ quality: await matchedQuality(small, "jpeg"), approx: false });
+    expect(await matchedQualityOf(small, "gif")).toBeUndefined();
   });
 });
 
