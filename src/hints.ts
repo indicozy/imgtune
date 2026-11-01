@@ -20,6 +20,8 @@ export interface HintsArgs {
   page?: string;
   component?: string;
   limit: number;
+  /** True when --limit was passed. JSON output is unlimited without it; text output keeps DEFAULT_HINT_LIMIT. */
+  limitGiven: boolean;
   offset: number;
   minKb?: number;
   format: "text" | "json";
@@ -107,7 +109,7 @@ export function snapUp(target: number, allowed: number[]): number {
 
 /** The arguments after `hints`: one scan JSON file and the filters. Throws with the message the CLI prints. */
 export function parseHintsArgs(argv: string[]): HintsArgs {
-  const args: HintsArgs = { files: [], file: "", limit: DEFAULT_HINT_LIMIT, offset: 0, format: "text", flat: false };
+  const args: HintsArgs = { files: [], file: "", limit: DEFAULT_HINT_LIMIT, limitGiven: false, offset: 0, format: "text", flat: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
@@ -126,6 +128,7 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
     else if (arg === "--component") args.component = value;
     else if (arg === "--limit") {
       args.limit = nonNegativeInteger(arg, value);
+      args.limitGiven = true;
       if (args.limit === 0) throw new Error("--limit needs a number of at least 1");
     } else if (arg === "--offset") args.offset = nonNegativeInteger(arg, value);
     else if (arg === "--min-kb") {
@@ -521,10 +524,12 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     }
     return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}`, exitCode: 0 };
   }
+  // JSON is not cut to the text default: it is all of it unless --limit is passed, and `truncated` says whether it is.
+  const jsonLimit = args.limitGiven ? args.limit : Number.MAX_SAFE_INTEGER;
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
     const groups = groupHints(filtered);
-    const selectedGroups = groups.slice(args.offset, args.offset + args.limit);
+    const selectedGroups = groups.slice(args.offset, args.offset + (args.format === "json" ? jsonLimit : args.limit));
     if (args.format === "json") {
       const body = {
         page: results.length === 1 ? results[0].url : undefined,
@@ -533,7 +538,8 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
         groups: groups.length,
         images: filtered.length,
         offset: args.offset,
-        limit: args.limit,
+        limit: args.limitGiven ? args.limit : null,
+        truncated: args.offset + selectedGroups.length < groups.length,
         callSites: selectedGroups.map((group) => ({
           key: group.key,
           file: group.hints[0].file,
@@ -553,7 +559,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     const text = renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page);
     return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
   }
-  const selected = selectHints(all, args);
+  const selected = selectHints(all, args.format === "json" ? { ...args, limit: jsonLimit } : args);
   if (args.format === "json") {
     const body = {
       page: results.length === 1 ? results[0].url : undefined,
@@ -561,7 +567,8 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
       located: results.length === 1 ? results[0].locate ?? null : undefined,
       total: filtered.length,
       offset: args.offset,
-      limit: args.limit,
+      limit: args.limitGiven ? args.limit : null,
+      truncated: args.offset + selected.length < filtered.length,
       hints: selected,
     };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };

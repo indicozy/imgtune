@@ -81,10 +81,10 @@ function page(images: ImageRecord[]): PageResult {
 
 describe("parseHintsArgs", () => {
   it("takes the scan files and the filters, with the defaults", () => {
-    expect(parseHintsArgs(["out/page.json"])).toEqual({ files: ["out/page.json"], file: "out/page.json", limit: 10, offset: 0, format: "text", flat: false });
+    expect(parseHintsArgs(["out/page.json"])).toEqual({ files: ["out/page.json"], file: "out/page.json", limit: 10, limitGiven: false, offset: 0, format: "text", flat: false });
     expect(
       parseHintsArgs(["out/page.json", "--page", "bags", "--component", "Card", "--limit", "5", "--offset", "10", "--min-kb", "2.5", "--format", "json"]),
-    ).toEqual({ files: ["out/page.json"], file: "out/page.json", page: "bags", component: "Card", limit: 5, offset: 10, minKb: 2.5, format: "json", flat: false });
+    ).toEqual({ files: ["out/page.json"], file: "out/page.json", page: "bags", component: "Card", limit: 5, limitGiven: true, offset: 10, minKb: 2.5, format: "json", flat: false });
   });
 
   it("reads several scan files, one per page, so call sites group across pages", () => {
@@ -243,6 +243,24 @@ describe("hintsCommand", () => {
     const body = JSON.parse(json.output) as { total: number; hints: { id: string }[] };
     expect(body.total).toBe(2);
     expect(body.hints.map((h) => h.id)).toEqual(["a"]);
+  });
+
+  it("prints every JSON hint unless --limit is passed, and says when it is cut", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-hints-"));
+    const file = join(dir, "page.json");
+    const many = Array.from({ length: 12 }, (_, i) => record(`r${String(i).padStart(2, "0")}`, { saved: 5000 + i }));
+    await writeFile(file, JSON.stringify(page(many)));
+    const all = JSON.parse((await hintsCommand([file, "--flat", "--format", "json"], dir)).output) as { hints: unknown[]; limit: number | null; truncated: boolean };
+    expect(all.hints).toHaveLength(12);
+    expect(all.limit).toBeNull();
+    expect(all.truncated).toBe(false);
+    const cut = JSON.parse((await hintsCommand([file, "--flat", "--format", "json", "--limit", "5"], dir)).output) as { hints: unknown[]; limit: number | null; truncated: boolean };
+    expect(cut.hints).toHaveLength(5);
+    expect(cut.limit).toBe(5);
+    expect(cut.truncated).toBe(true);
+    const grouped = JSON.parse((await hintsCommand([file, "--format", "json"], dir)).output) as { callSites: unknown[]; truncated: boolean };
+    expect(grouped.callSites.length).toBeGreaterThanOrEqual(1);
+    expect(grouped.truncated).toBe(false);
   });
 
   it("refuses a file without image records", async () => {
