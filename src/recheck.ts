@@ -8,6 +8,7 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImagePerViewport, type ImageRecord } from "./images.js";
 import { parseGpuDevice } from "./gpu.js";
 import { safeText, scanOnce, scorerNote, type PageResult } from "./remote.js";
+import { cleanRecord } from "./locate-join.js";
 
 export interface RecheckArgs {
   file: string;
@@ -78,7 +79,12 @@ export function usableRecords(images: unknown[], log: (message: string) => void)
       log(`warning: skipped image ${safeText(record.id)}: its record is malformed`);
       continue;
     }
-    out.push(record);
+    const cleaned = cleanRecord(record);
+    if (cleaned === undefined) {
+      log(`warning: skipped image ${safeText(record.id)}: its record is malformed`);
+      continue;
+    }
+    out.push(cleaned);
   }
   return out;
 }

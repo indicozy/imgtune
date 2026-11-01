@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { hasFix, OWNER_PLACEHOLDERS } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
+import { cleanLocate } from "./locate-join.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
@@ -374,8 +375,8 @@ export function renderHints(hints: Hint[], total: number, offset: number, page?:
  * have no file:line, the command that locates them. Undefined when every hint has its source.
  */
 export function locateNoteOf(result: PageResult, hints: Hint[]): string | undefined {
-  if (result.locate !== undefined) {
-    const l = result.locate;
+  const l = cleanLocate(result.locate);
+  if (l !== undefined) {
     return `located on the dev page at ${safeText(l.viewport)}: ${l.joined} of ${l.flagged} flagged image(s) have a file:line (the others: see scan --locate-only)`;
   }
   const without = hints.filter((h) => h.file === undefined).length;
@@ -396,6 +397,8 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   if (!Array.isArray(result.images)) {
     throw new Error(`${safeText(args.file)} has no image records: scan it with this version of imgtune`);
   }
+  // The file's locate block is checked before anything prints it (a block that is not usable is dropped).
+  result = { ...result, locate: cleanLocate(result.locate) };
   const all = hintsOf(result, args.qualities);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
   if (!args.flat) {

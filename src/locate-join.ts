@@ -303,6 +303,65 @@ export function locateLine(summary: LocateSummary): string {
 
 const VIEWPORT_NAMES: readonly string[] = DEFAULT_VIEWPORTS.map((v) => v.name);
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const LOCATE_REASON_CODES: readonly string[] = ["not-measured", "no-dev-image", "count-differs", "alt-differs"];
+const LOCATE_BY: readonly string[] = ["alt-order", "url-unique"];
+const LOCATOR_KINDS: readonly string[] = ["image", "owner", "unread", "unchecked"];
+/** Short labels from the scan file (dates, versions): printable, bounded, nothing that could format or inject text. */
+const SAFE_LABEL = /^[A-Za-z0-9 ._:+-]{1,40}$/;
+const MAX_URL_LENGTH = 2048;
+
+/** The URL as text when it parses and is http or https; undefined otherwise (javascript:, file:, data:, malformed). */
+export function httpUrl(text: unknown): string | undefined {
+  if (typeof text !== "string" || text.length > MAX_URL_LENGTH) return undefined;
+  try {
+    const url = new URL(text);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `locate` block of a measured scan (written by scan --locate-only), checked as a whole: the dev URL must be http or
+ * https, the viewport a known name, the labels short and plain, and every count a non-negative integer (joined no more
+ * than flagged). Undefined when any part is wrong: the block is then dropped, never printed or navigated.
+ */
+export function cleanLocate(raw: unknown): LocateSummary | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const block = raw as Record<string, unknown>;
+  const url = httpUrl(block.url);
+  if (url === undefined) return undefined;
+  if (typeof block.viewport !== "string" || !VIEWPORT_NAMES.includes(block.viewport)) return undefined;
+  if (typeof block.scannedAt !== "string" || !SAFE_LABEL.test(block.scannedAt)) return undefined;
+  if (typeof block.imgtuneVersion !== "string" || !SAFE_LABEL.test(block.imgtuneVersion)) return undefined;
+  if (!isFiniteNumber(block.seconds) || block.seconds < 0) return undefined;
+  for (const key of ["flagged", "joined", "notJoined", "devLeft", "noOrder"] as const) {
+    if (!isCount(block[key])) return undefined;
+  }
+  const flagged = block.flagged as number;
+  const joined = block.joined as number;
+  if (joined > flagged) return undefined;
+  if (block.reasons === null || typeof block.reasons !== "object" || Array.isArray(block.reasons)) return undefined;
+  const reasons: Record<string, number> = {};
+  for (const [code, count] of Object.entries(block.reasons as Record<string, unknown>)) {
+    if (!LOCATE_REASON_CODES.includes(code) || !isCount(count)) return undefined;
+    reasons[code] = count;
+  }
+  return {
+    url,
+    viewport: block.viewport,
+    scannedAt: block.scannedAt,
+    imgtuneVersion: block.imgtuneVersion,
+    seconds: block.seconds,
+    flagged,
+    joined,
+    notJoined: block.notJoined as number,
+    devLeft: block.devLeft as number,
+    noOrder: block.noOrder as number,
+    reasons,
+  };
+}
 
 /**
  * One record of a measured scan, checked and cleaned: the fields the join and the sizes check read must be the right
@@ -337,13 +396,23 @@ export function cleanRecord(raw: unknown): ImageRecord | undefined {
   if (locator.line !== undefined && !(Number.isInteger(locator.line) && locator.line >= 0)) {
     delete locator.line;
   }
+  if (locator.kind !== undefined && !LOCATOR_KINDS.includes(locator.kind)) delete locator.kind;
+  if (locator.verified !== undefined && typeof locator.verified !== "boolean") delete locator.verified;
   locator.component = Array.isArray(locator.component)
     ? locator.component.filter((c): c is string => typeof c === "string" && COMPONENT_NAME.test(c)).slice(0, 8)
     : [];
   if (typeof locator.urlPattern !== "string") delete locator.urlPattern;
   if (typeof locator.alt !== "string") delete locator.alt;
   if (typeof locator.loader !== "string") locator.loader = "unknown";
-  return { ...record, perViewport, locator };
+  // The record's own locate mark (which dev element joined it): a known viewport, a known rule and an index.
+  const mark = record.locate as unknown;
+  const locate =
+    mark !== null && typeof mark === "object" && VIEWPORT_NAMES.includes((mark as { viewport?: string }).viewport as string) &&
+    LOCATE_BY.includes((mark as { by?: string }).by as string) && isCount((mark as { devIndex?: unknown }).devIndex)
+      ? { viewport: (mark as { viewport: string }).viewport, by: (mark as { by: "alt-order" | "url-unique" }).by, devIndex: (mark as { devIndex: number }).devIndex }
+      : undefined;
+  const { locate: _dropped, ...rest } = record;
+  return { ...rest, perViewport, locator, ...(locate ? { locate } : {}) };
 }
 
 /**
@@ -354,7 +423,7 @@ export interface MeasuredPage extends PageResult {
   images: ImageRecord[];
 }
 
-export async function readMeasuredScan(file: string, cwd: string): Promise<{ page: MeasuredPage; dropped: number }> {
+export async function readMeasuredScan(file: string, cwd: string): Promise<{ page: MeasuredPage; dropped: number; locateDropped: boolean }> {
   const path = resolve(cwd, file);
   let size: number;
   try {
@@ -390,5 +459,6 @@ export async function readMeasuredScan(file: string, cwd: string): Promise<{ pag
     if (record === undefined) dropped++;
     else images.push(record);
   }
-  return { page: { ...page, images }, dropped };
+  const locate = page.locate === undefined ? undefined : cleanLocate(page.locate);
+  return { page: { ...page, images, locate }, dropped, locateDropped: page.locate !== undefined && locate === undefined };
 }

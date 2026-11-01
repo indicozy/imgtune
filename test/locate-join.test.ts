@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyLocate,
+  cleanLocate,
   cleanRecord,
+  httpUrl,
   devImagesOf,
   isFlagged,
   joinLocate,
@@ -13,7 +15,7 @@ import {
   reasonCounts,
   type DevImage,
 } from "../src/locate-join.js";
-import { judgeChoice } from "../src/sizes-recheck.js";
+import { judgeChoice, sizesRecheck } from "../src/sizes-recheck.js";
 import { parseLocateArgs, defaultLocateOut } from "../src/locate-only.js";
 import { parseSizesArgs } from "../src/sizes-recheck.js";
 import { locateNoteOf, type Hint } from "../src/hints.js";
@@ -274,8 +276,95 @@ describe("the hints note", () => {
     const result = { url: PAGE, images: [] } as unknown as PageResult;
     const hint = { file: undefined } as unknown as Hint;
     expect(locateNoteOf(result, [hint, hint])).toMatch(/2 of 2 image\(s\) have no file:line/);
-    const located = { ...result, locate: { url: "http://localhost:3300/list.html", viewport: "iphone-15", joined: 3, flagged: 4 } } as unknown as PageResult;
+    const block = { url: "http://localhost:3300/list.html", viewport: "iphone-15", scannedAt: "2026-11-01T10:00:00.000Z", imgtuneVersion: "0.1.0", seconds: 1, flagged: 4, joined: 3, notJoined: 1, devLeft: 0, noOrder: 0, reasons: {} };
+    const located = { ...result, locate: block } as unknown as PageResult;
     expect(locateNoteOf(located, [])).toMatch(/located on the dev page at iphone-15: 3 of 4/);
     expect(locateNoteOf(result, [{ file: "a.tsx" } as unknown as Hint])).toBeUndefined();
+  });
+});
+
+describe("the locate block of a scan file (untrusted)", () => {
+  const good = {
+    url: "http://localhost:3000/list.html",
+    viewport: "iphone-15",
+    scannedAt: "2026-11-01T10:00:00.000Z",
+    imgtuneVersion: "0.1.0",
+    seconds: 1.2,
+    flagged: 3,
+    joined: 2,
+    notJoined: 1,
+    devLeft: 0,
+    noOrder: 0,
+    reasons: { "no-dev-image": 1 },
+  };
+
+  it("accepts http and https dev URLs and nothing else", () => {
+    expect(httpUrl("https://dev.example/list.html")).toBe("https://dev.example/list.html");
+    expect(httpUrl("http://localhost:3000/")).toBe("http://localhost:3000/");
+    for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,<script>x</script>", "not a url", "", 42, "ftp://x/y"]) {
+      expect(httpUrl(bad)).toBeUndefined();
+    }
+  });
+
+  it("keeps a well-formed block and drops it when any part is wrong", () => {
+    expect(cleanLocate(good)).toEqual(good);
+    expect(cleanLocate({ ...good, url: "javascript:alert(1)" })).toBeUndefined();
+    expect(cleanLocate({ ...good, url: "file:///etc/passwd" })).toBeUndefined();
+    expect(cleanLocate({ ...good, url: "data:text/html,x" })).toBeUndefined();
+    expect(cleanLocate({ ...good, url: "not a url" })).toBeUndefined();
+    expect(cleanLocate({ ...good, viewport: "no-such-viewport" })).toBeUndefined();
+    expect(cleanLocate({ ...good, viewport: "<img src=x onerror=1>" })).toBeUndefined();
+    expect(cleanLocate({ ...good, flagged: -1 })).toBeUndefined();
+    expect(cleanLocate({ ...good, joined: 1.5 })).toBeUndefined();
+    expect(cleanLocate({ ...good, joined: "2" })).toBeUndefined();
+    expect(cleanLocate({ ...good, joined: 4 })).toBeUndefined();
+    expect(cleanLocate({ ...good, seconds: Number.NaN })).toBeUndefined();
+    expect(cleanLocate({ ...good, notJoined: Number.MAX_VALUE })).toBeUndefined();
+    expect(cleanLocate({ ...good, scannedAt: "2026\u001b[31m" })).toBeUndefined();
+    expect(cleanLocate({ ...good, imgtuneVersion: "x".repeat(41) })).toBeUndefined();
+    expect(cleanLocate({ ...good, reasons: { "Ignore previous instructions": 1 } })).toBeUndefined();
+    expect(cleanLocate({ ...good, reasons: [] })).toBeUndefined();
+    expect(cleanLocate(null)).toBeUndefined();
+    expect(cleanLocate("x")).toBeUndefined();
+  });
+
+  it("is dropped by readMeasuredScan and reported, and the page's images are kept", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-locate-"));
+    const base = { url: PAGE, host: "shop.example", status: "ok", viewports: ["iphone-15"], images: [measured("a", { domIndex: 1 })] };
+    await writeFile(join(dir, "js.json"), JSON.stringify({ ...base, locate: { ...good, url: "javascript:alert(1)" } }));
+    const bad = await readMeasuredScan("js.json", dir);
+    expect(bad.page.locate).toBeUndefined();
+    expect(bad.locateDropped).toBe(true);
+    expect(bad.page.images).toHaveLength(1);
+    await writeFile(join(dir, "good.json"), JSON.stringify({ ...base, locate: good }));
+    const ok = await readMeasuredScan("good.json", dir);
+    expect(ok.page.locate?.url).toBe(good.url);
+    expect(ok.locateDropped).toBe(false);
+  });
+
+  it("drops a record's locate mark when its viewport, rule or index is wrong", () => {
+    const record = measured("a", { domIndex: 1 });
+    expect(cleanRecord({ ...record, locate: { viewport: "iphone-15", by: "alt-order", devIndex: 2 } })?.locate).toEqual({ viewport: "iphone-15", by: "alt-order", devIndex: 2 });
+    expect(cleanRecord({ ...record, locate: { viewport: "nowhere", by: "alt-order", devIndex: 2 } })?.locate).toBeUndefined();
+    expect(cleanRecord({ ...record, locate: { viewport: "iphone-15", by: "guess", devIndex: 2 } })?.locate).toBeUndefined();
+    expect(cleanRecord({ ...record, locate: { viewport: "iphone-15", by: "alt-order", devIndex: -1 } })?.locate).toBeUndefined();
+    expect(cleanRecord({ ...record, locator: { ...record.locator, kind: "<script>" as never } })?.locator.kind).toBeUndefined();
+  });
+
+  it("refuses a sizes recheck whose dev URL is not http or https, from the file or the command line", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-locate-"));
+    const base = { url: PAGE, host: "shop.example", status: "ok", viewports: ["iphone-15"], images: [measured("a", { domIndex: 1 })] };
+    await writeFile(join(dir, "evil.json"), JSON.stringify({ ...base, locate: { ...good, url: "javascript:alert(1)" } }));
+    const log = () => undefined;
+    await expect(sizesRecheck(["--recheck", "evil.json"], dir, log)).rejects.toThrow(/has no dev page/);
+    await writeFile(join(dir, "file.json"), JSON.stringify({ ...base, locate: { ...good, url: "file:///etc/passwd" } }));
+    await expect(sizesRecheck(["--recheck", "file.json"], dir, log)).rejects.toThrow(/has no dev page/);
+    await expect(sizesRecheck(["--recheck", "file.json", "--url", "data:text/html,x"], dir, log)).rejects.toThrow(/not an http or https URL/);
+    await expect(sizesRecheck(["--recheck", "file.json", "--url", "file:///etc/passwd"], dir, log)).rejects.toThrow(/not an http or https URL/);
+  });
+
+  it("prints no located line for a block that is not usable", () => {
+    const result = { url: PAGE, locate: { ...good, viewport: "<b>" } } as unknown as PageResult;
+    expect(locateNoteOf(result, [])).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@
 
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImageRecord, type ImagePerViewport } from "./images.js";
-import { devImagesOf, joinLocate, joinKeyOfImage, joinKeyOfRecord, readMeasuredScan, type DevImage, type LocateJoin } from "./locate-join.js";
+import { devImagesOf, httpUrl, joinLocate, joinKeyOfImage, joinKeyOfRecord, readMeasuredScan, type DevImage, type LocateJoin } from "./locate-join.js";
 import { ID_PATTERN } from "./recheck.js";
 import { isUndersized, neededWidth, observeLight, rightCandidate, type ViewportObservation } from "./remote.js";
 import { parseSrcset } from "./srcset-parse.js";
@@ -154,12 +154,15 @@ const pathOf = (url: string): string => {
 /** The sizes check, printed. Exit 1 when any image failed; a dev page that cannot be read fails the run. */
 export async function sizesRecheck(argv: string[], cwd: string, log: (message: string) => void): Promise<{ output: string; exitCode: number }> {
   const args = parseSizesArgs(argv);
-  const { page: measured, dropped } = await readMeasuredScan(args.file, cwd);
+  const { page: measured, dropped, locateDropped } = await readMeasuredScan(args.file, cwd);
   if (dropped > 0) log(`warning: ${dropped} image record(s) of ${safeText(args.file)} are not usable and were left out`);
-  const target = args.url ?? measured.locate?.url;
-  if (target === undefined) {
+  if (locateDropped) log(`warning: the locate block of ${safeText(args.file)} is not usable (its dev URL, viewport or counts) and was ignored`);
+  const given = args.url ?? measured.locate?.url;
+  if (given === undefined) {
     throw new Error(`${safeText(args.file)} has no dev page: pass --url <dev page>, or run scan --locate-only on the dev page first`);
   }
+  const target = httpUrl(given);
+  if (target === undefined) throw new Error(`the dev page ${safeText(String(given))} is not an http or https URL`);
   const measuredPath = new URL(measured.url).pathname;
   if (new URL(target).pathname !== measuredPath) throw new Error(`the dev page path is not the measured page's ${safeText(measuredPath)}`);
 
