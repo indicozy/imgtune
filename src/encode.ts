@@ -6,6 +6,9 @@ import { count, measure } from "./timing.js";
 
 sharp.concurrency(4);
 
+/** Names the local encoder in result-cache keys: a new sharp or libvips gives new numbers, so it gets new keys. */
+export const ENCODER_ID = `sharp ${sharp.versions.sharp} vips ${sharp.versions.vips}`;
+
 export type EncoderProfile = "next-default" | "cdn";
 
 /** Decode the original, auto-rotate, downscale to `width` (never upscale) and return 8-bit RGBA pixels. */

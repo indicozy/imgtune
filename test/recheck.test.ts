@@ -35,7 +35,7 @@ function record(overrides: { renderedCssPx?: number; servedBytes?: number; under
 
 describe("parseRecheckArgs", () => {
   it("reads the scan file and the image ids", () => {
-    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ files: ["scan.json"], ids: ["a1", "b2"], ignoreRobots: false });
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ files: ["scan.json"], ids: ["a1", "b2"], ignoreRobots: false, noCache: false });
   });
 
   it("takes several scan files in order, and --viewports as a list of known names", () => {

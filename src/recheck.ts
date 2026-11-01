@@ -22,6 +22,8 @@ export interface RecheckArgs {
   gpu?: { device: number };
   /** --viewports: measure these instead of the viewports where the images rendered in the scan. */
   viewports?: string[];
+  /** --no-cache: the numbers are computed again, and none is kept. */
+  noCache?: boolean;
 }
 
 /** Browser contexts (one per viewport loaded) a recheck keeps in flight over all its pages together. */
@@ -45,6 +47,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
   let ignoreRobots = false;
   let gpu: { device: number } | undefined;
   let viewports: string[] | undefined;
+  let noCache = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--ignore-robots") {
@@ -53,6 +56,10 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
     }
     if (arg === "--gpu") {
       gpu ??= { device: 0 };
+      continue;
+    }
+    if (arg === "--no-cache") {
+      noCache = true;
       continue;
     }
     if (arg === "--recheck" || arg === "--ids" || arg === "--gpu-device" || arg === "--viewports") {
@@ -71,7 +78,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
     }
   }
   if (files.length === 0) throw new Error(USAGE);
-  return { files, ids, ignoreRobots, gpu, viewports };
+  return { files, ids, ignoreRobots, gpu, viewports, noCache };
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
@@ -333,6 +340,7 @@ async function recheckPage(
     qualityFor: (inst) => inst.url === "" || !earlierSrcs.has(inst.url),
     gpu: args.gpu,
     viewportConcurrency: options.viewportConcurrency,
+    cache: args.noCache !== true,
   });
   const seconds = (Date.now() - started) / 1000;
   if (fresh.status !== "ok") {

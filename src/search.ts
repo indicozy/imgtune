@@ -9,6 +9,11 @@ import { count } from "./timing.js";
 export interface SearchDeps {
   encode?: typeof encode;
   score?: Scorer;
+  /**
+   * The score of the local encode at a quality, when the caller has it already (the result cache). Set, it replaces the
+   * encode-and-score of each probe; the probes and their order are the same either way.
+   */
+  scoreAt?: (quality: number) => Promise<number>;
 }
 
 /** Lowest quality the search will consider, per format (in the profile's own quality scale). */
@@ -35,6 +40,7 @@ export async function minPassingQuality(
   const score = deps.score ?? ssim;
   const passes = async (q: number): Promise<boolean> => {
     count("bisect probes");
+    if (deps.scoreAt) return (await deps.scoreAt(q)) >= threshold;
     const { decoded } = await enc(ref, format, q, profile);
     return (await score(ref, decoded)) >= threshold;
   };

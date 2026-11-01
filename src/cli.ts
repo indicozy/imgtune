@@ -15,6 +15,7 @@ const progress = (message: string) => {
 /** Option lines, keyed by flag. The scan help lists the flags the scan reads. */
 const OPTION_HELP = {
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
+  noCache: ["--no-cache", "do not read or write the result cache in .imgtune/cache (the numbers are computed again)"],
   root: [
     "--root <dir>",
     "folder project source files are read from (default: the nearest folder above the cwd that holds the file, else the nearest with a package.json or .git)",
@@ -98,6 +99,7 @@ const SCAN_HELP = commandHelp(
   [
     "out",
     "root",
+    "noCache",
     "aggressive",
     "viewports",
     "noQuality",
@@ -155,6 +157,7 @@ Options:
   --format <text|json>  text (default) or JSON
   --gpu                 score with the GPU scorer (opt-in; falls back to the CPU with a warning)
   --gpu-device <n>      the GPU to score on, by nvidia-smi index (implies --gpu; default 0)
+  --no-cache            do not read or write the result cache in .imgtune/cache
   -h, --help            show this help
 `;
 

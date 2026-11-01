@@ -13,9 +13,9 @@ import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
-import { calibrationOffset } from "./calibrate.js";
+import { matchLocalQuality } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
-import { encode } from "./encode.js";
+import { encode, ENCODER_ID } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
@@ -26,7 +26,9 @@ import { countDocumentNavigations, gotoParsed, settlePage, settleWithin, waitFor
 import { makeScorer, type Scorer } from "./metric.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
+import { cacheScope, CACHE_DIR, contentHash, ResultCache } from "./result-cache.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
+
 import { MAX_WIDTH, parseSrcset, type Candidate } from "./srcset-parse.js";
 import { deriveSizes, type SizePoint } from "./sizes.js";
 import type { RawImage } from "./ssim.js";
@@ -380,6 +382,8 @@ export interface ScanArgs {
   urls: string[];
   /** --root: the folder that project source files are read from. */
   root?: string;
+  /** --no-cache: encode and score everything again, and keep nothing on disk. */
+  noCache?: boolean;
   out: string;
   aggressive: boolean;
   quality: boolean;
@@ -472,6 +476,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--resume") args.resume = true;
     else if (arg === "--gpu") args.gpu ??= { device: 0 };
+    else if (arg === "--no-cache") args.noCache = true;
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -650,6 +655,10 @@ export interface QualityInput {
 export interface QualityDeps {
   encode?: typeof encode;
   score: Scorer;
+  /** The result cache of this run (see result-cache.ts); undefined: nothing is read from or written to disk. */
+  cache?: ResultCache;
+  /** Names the scorer in the cache key: "cpu", or the GPU that scored. */
+  scorerId?: string;
 }
 
 export interface QualityEstimate {
@@ -694,21 +703,40 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
 
   if (input.format === "avif" || input.format === "webp") {
     const format = input.format;
-    const fit = await measure("calibrate", () =>
-      calibrationOffset([{ ref: reference, format, cdnQuality: input.current, cdnBytes: input.bytes }], { encode: enc }),
-    );
-    if (!fit) return undefined;
-    const offset = fit.offset;
+    // The local encode's bytes and scores come from the result cache when it has them; the search is the same either way.
+    const scope = deps.cache ? cacheScope(input.original, input.width, deps.scorerId ?? "cpu", ENCODER_ID) : undefined;
+    const cached = async (key: string, compute: () => Promise<number>): Promise<number> => {
+      if (deps.cache === undefined || scope === undefined) return compute();
+      const hit = await deps.cache.get(`${scope}|${key}`);
+      if (hit !== undefined) {
+        count("cache hits");
+        return hit;
+      }
+      count("cache misses");
+      const value = await compute();
+      await deps.cache.put(`${scope}|${key}`, value);
+      return value;
+    };
+    const sizeAt = (q: number) => cached(`bytes|${format}|${q}|cdn`, async () => (await enc(reference, format, q, "cdn")).bytes);
+    const scoreAt = (q: number) =>
+      cached(`score|${format}|${q}|cdn`, async () => score(reference, (await enc(reference, format, q, "cdn")).decoded));
+    // The offset of the local encoder: one sample, so the median is the sample itself (see calibrationOffset).
+    const match = await measure("calibrate", () => matchLocalQuality(sizeAt, input.bytes));
+    const offset = Math.round(input.current - match);
     const localCurrent = clampQuality(input.current - offset);
-    const currentOut = await enc(reference, format, localCurrent, "cdn");
+    const currentBytes = await sizeAt(localCurrent);
     // The bar is the served file's own score against the original, so it holds whatever quality the URL asks for.
-    const servedScore = await score(reference, await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height })));
+    const servedScore = await cached(`served|${contentHash(input.served)}`, async () =>
+      score(reference, await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height }))),
+    );
     let target: number | undefined;
     for (const delta of deltas) {
       const bar = Math.max(SCAN_THRESHOLD, servedScore - delta);
-      const best = await measure("bisect: quality", () => minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score }));
-      const bestBytes = (await enc(reference, format, best, "cdn")).bytes;
-      ratio[delta] = currentOut.bytes > 0 ? Math.min(1, bestBytes / currentOut.bytes) : 1;
+      const best = await measure("bisect: quality", () =>
+        minPassingQuality(reference, format, localCurrent, "cdn", bar, SCAN_TOLERANCE, { encode: enc, score, scoreAt }),
+      );
+      const bestBytes = await sizeAt(best);
+      ratio[delta] = currentBytes > 0 ? Math.min(1, bestBytes / currentBytes) : 1;
       if (delta === deltas[0]) target = Math.min(input.current, clampQuality(best + offset));
     }
     return { ratio, target };
@@ -1849,6 +1877,8 @@ export interface ScanOptions {
   root?: string;
   /** Viewports of this page loaded at once (default VIEWPORT_CONCURRENCY). Recheck lowers it when pages run together. */
   viewportConcurrency?: number;
+  /** Read and write the result cache under the scan's folder (default true; --no-cache turns it off). */
+  cache?: boolean;
   aggressive: boolean;
   quality: boolean;
   viewports: Viewport[];
@@ -2076,7 +2106,14 @@ async function withBrowser<T>(
     await probe.close();
     const resolver = opts.resolver ?? systemResolver;
     const fetcher = makeFetcher({ userAgent, resolver, connectAddress: opts.connectAddress });
-    const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd, gpu }) };
+    // The result cache (see result-cache.ts): under the scan's folder, bounded, and off with --no-cache.
+    const cache = opts.cache === false ? undefined : new ResultCache(join(opts.cwd, CACHE_DIR));
+    await cache?.trim();
+    const deps: QualityDeps = {
+      score: makeScorer("ssimulacra2", { projectDir: opts.cwd, gpu }),
+      cache,
+      scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu",
+    };
     const run = {
       viewports: opts.viewports,
       aggressive: opts.aggressive,
@@ -2591,6 +2628,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     maxImages: args.maxImages,
     storageState,
     gpu: args.gpu,
+    cache: args.noCache !== true,
     report,
   });
   if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);

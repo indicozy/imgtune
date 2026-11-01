@@ -8,11 +8,12 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import sharp from "sharp";
 import { isLocalTarget } from "./address.js";
-import { encode, loadReference } from "./encode.js";
+import { encode, ENCODER_ID, loadReference } from "./encode.js";
 import { makeFetcher, MAX_IMAGE_BYTES } from "./fetch.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
+import { cacheScope, CACHE_DIR, ResultCache } from "./result-cache.js";
 import type { RawImage } from "./ssim.js";
 import { decodeRaw, pixelSize, safeText, SCAN_TOLERANCE, scorerOf, type PageScorer } from "./remote.js";
 import { IMGTUNE_VERSION } from "./version.js";
@@ -41,6 +42,8 @@ export interface ImageArgs {
   format: "text" | "json";
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
   gpu?: { device: number };
+  /** --no-cache: the numbers are computed again, and none is kept in .imgtune/cache. */
+  noCache?: boolean;
 }
 
 const USAGE =
@@ -62,6 +65,10 @@ export function parseImageArgs(argv: string[]): ImageArgs {
     }
     if (arg === "--gpu") {
       args.gpu ??= { device: 0 };
+      continue;
+    }
+    if (arg === "--no-cache") {
+      args.noCache = true;
       continue;
     }
     const value = argv[i + 1];
@@ -243,8 +250,34 @@ export interface FileResult {
 const barOf = (minScore: number | undefined): FileResult["bar"] =>
   minScore === undefined ? { ssimulacra2: DEFAULT_FILE_BAR, basis: "default" } : { ssimulacra2: minScore, basis: "user" };
 
+/** The result cache of a run, and the scorer it is keyed by; `original` is the file's bytes (its content hash is the key). */
+export interface FileCache {
+  store: ResultCache;
+  scorerId: string;
+  original: Buffer;
+}
+
+/** The score of the local encode at a quality, from the result cache when it has it (the same keys as a scan's). */
+function scoreAtCached(cached: FileCache, reference: RawImage, format: ImageFormat, score: Scorer): (q: number) => Promise<number> {
+  const scope = cacheScope(cached.original, reference.width, cached.scorerId, ENCODER_ID);
+  return async (q) => {
+    const key = `${scope}|score|${format}|${q}|cdn`;
+    const hit = await cached.store.get(key);
+    if (hit !== undefined) return hit;
+    const value = await score(reference, (await encode(reference, format as "avif" | "webp", q, "cdn")).decoded);
+    await cached.store.put(key, value);
+    return value;
+  };
+}
+
 /** The lowest quality per format meeting the bar, at a reference of one size. */
-async function formatsAt(reference: RawImage, formats: ImageFormat[], score: Scorer, bar: number): Promise<Record<ImageFormat, FormatResult>> {
+async function formatsAt(
+  reference: RawImage,
+  formats: ImageFormat[],
+  score: Scorer,
+  bar: number,
+  cached?: FileCache,
+): Promise<Record<ImageFormat, FormatResult>> {
   const perFormat = {} as Record<ImageFormat, FormatResult>;
   for (const format of ALL_FORMATS) {
     if (!formats.includes(format)) continue;
@@ -252,7 +285,8 @@ async function formatsAt(reference: RawImage, formats: ImageFormat[], score: Sco
       perFormat.jpeg = await jpegAtBar(reference, bar, score);
       continue;
     }
-    const best = await minPassingQuality(reference, format, START_QUALITY, "cdn", bar, SCAN_TOLERANCE, { encode, score });
+    const scoreAt = cached && scoreAtCached(cached, reference, format, score);
+    const best = await minPassingQuality(reference, format, START_QUALITY, "cdn", bar, SCAN_TOLERANCE, { encode, score, scoreAt });
     const out = await encode(reference, format, best, "cdn");
     const passes = (await score(reference, out.decoded)) >= bar;
     perFormat[format] = passes ? { quality: best, bytes: out.bytes } : { missed: true };
@@ -295,6 +329,7 @@ export async function measureFile(
   buffer: Buffer,
   args: Pick<ImageArgs, "width" | "dprs" | "formats" | "minScore">,
   score: Scorer,
+  cached?: FileCache,
 ): Promise<FileResult> {
   const info = await pixelSize(buffer);
   const bar = barOf(args.minScore);
@@ -314,7 +349,7 @@ export async function measureFile(
   const sizes: SizeResult[] = [];
   for (const target of targets) {
     const reference = await referenceFor(buffer, target.px);
-    const perFormat = await formatsAt(reference, args.formats, score, bar.ssimulacra2);
+    const perFormat = await formatsAt(reference, args.formats, score, bar.ssimulacra2, cached);
     const fits = (Object.entries(perFormat) as [ImageFormat, FormatResult][]).filter(([, r]) => r.bytes !== undefined);
     const best = fits.sort((a, b) => (a[1].bytes as number) - (b[1].bytes as number))[0];
     sizes.push({
@@ -410,8 +445,11 @@ export async function imageCommand(
 ): Promise<{ output: string; exitCode: number }> {
   const args = parseImageArgs(argv);
   const gpu = args.gpu !== undefined ? await startGpuScorer(args.gpu.device, log) : undefined;
+  const store = args.noCache === true ? undefined : new ResultCache(join(cwd, CACHE_DIR));
+  await store?.trim();
+  const cache = store === undefined ? undefined : { store, scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu" };
   try {
-    return await measureInputs(args, cwd, userAgent, gpu);
+    return await measureInputs(args, cwd, userAgent, gpu, cache);
   } finally {
     gpu?.close();
   }
@@ -422,6 +460,7 @@ async function measureInputs(
   cwd: string,
   userAgent: string,
   gpu: GpuScorer | undefined,
+  cache?: { store: ResultCache; scorerId: string },
 ): Promise<{ output: string; exitCode: number }> {
   const inputs = await resolveInputs(args.inputs, cwd);
   const score = makeScorer("ssimulacra2", { projectDir: cwd, gpu });
@@ -445,7 +484,7 @@ async function measureInputs(
       continue;
     }
     buffers.set(input.label, buffer);
-    results.push(await measureFile(input, buffer, args, score));
+    results.push(await measureFile(input, buffer, args, score, cache && { ...cache, original: buffer }));
   }
   const notes = args.write !== undefined ? await writeCopies(results, inputs, cwd, args.write, buffers) : [];
   const failed = results.filter((r) => r.error !== undefined).length;
