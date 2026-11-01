@@ -27,7 +27,9 @@ export interface Hint {
   component: string[];
   file?: string;
   line?: number;
-  /** False when the source came from a non-local origin: printed as unverified. */
+  /** The source check (see LocatorKind): `owner` means the file:line is the call site of the component that renders the image. */
+  kind?: string;
+  /** False unless the source line was read from a local project and renders an image: printed as unverified. */
   verified?: boolean;
   testid?: string;
   alt?: string;
@@ -107,6 +109,7 @@ export function hintsOf(result: PageResult): Hint[] {
       hint.line = record.locator.line;
       hint.verified = record.locator.verified;
     }
+    if (record.locator.kind !== undefined) hint.kind = record.locator.kind;
     if (record.locator.testid !== undefined) hint.testid = record.locator.testid;
     if (record.locator.alt !== undefined) hint.alt = record.locator.alt;
     if (record.locator.classes) hint.classes = record.locator.classes;
@@ -145,12 +148,18 @@ export function selectHints(hints: Hint[], args: Pick<HintsArgs, "page" | "compo
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
+/** The mark after a hint's file:line: an owner call site, or an unverified source. */
+export function locationNote(hint: Hint): string {
+  if (hint.kind === "owner") return " (owner call site)";
+  return hint.verified === false ? " (unverified)" : "";
+}
+
 /** One hint as four short lines: where, sizes, quality and format, bytes and rung. */
 export function renderHint(hint: Hint, rank: number): string[] {
   // Page-derived names and attributes are printed as JSON strings, so a newline or an instruction inside them stays data.
   const where =
     hint.file !== undefined
-      ? `${JSON.stringify(`${hint.file}:${hint.line ?? 0}`)}${hint.verified === false ? " (unverified)" : ""}`
+      ? `${JSON.stringify(`${hint.file}:${hint.line ?? 0}`)}${locationNote(hint)}`
       : JSON.stringify(hint.component[0] ?? hint.selector);
   const component = hint.component.length > 0 && hint.file !== undefined ? ` (${JSON.stringify(hint.component[0])})` : "";
   const lines = [`${rank}. ${hint.id}  ${where}${component}  ${safeText(hint.page)}`];
@@ -161,6 +170,14 @@ export function renderHint(hint: Hint, rank: number): string[] {
   ].filter((a): a is string => a !== undefined);
   if (attributes.length > 0) lines.push(`   ${attributes.join("  ")}`);
   // The name is an identifier (COMPONENT_NAME), so it prints bare; the glob is built from the same name.
+  if (hint.kind === "owner") {
+    const name = hint.component[0];
+    lines.push(
+      name !== undefined
+        ? `   owner call site: the image is rendered inside <${name}>; search that component for the <img>`
+        : "   owner call site: the image is rendered inside an unnamed component; search the file's imports",
+    );
+  }
   if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
@@ -242,7 +259,7 @@ function quoted(value: string): string {
 function commentLine(hint: Hint): string {
   const location =
     hint.file !== undefined
-      ? `${quoted(`${hint.file}:${hint.line ?? 0}`)}${hint.verified === false ? " (unverified)" : ""}`
+      ? `${quoted(`${hint.file}:${hint.line ?? 0}`)}${locationNote(hint)}`
       : quoted(hint.component[0] ?? hint.selector);
   const component = hint.file !== undefined && hint.component[0] !== undefined ? ` (${quoted(hint.component[0])})` : "";
   const sizes =

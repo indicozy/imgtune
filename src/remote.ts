@@ -17,8 +17,8 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
-import type { OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
-import { COMPONENT_NAME, parseSourceMap, resolveOwners } from "./locate.js";
+import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
+import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from "./images.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
@@ -1169,6 +1169,8 @@ export interface AnalysisContext {
   resized: Map<string, Promise<{ bytes: number; buffer: Buffer } | undefined>>;
   /** Source maps read so far, by chunk URL (the locator reads each chunk's map once). */
   sourceMaps?: Map<string, Promise<SourceMapData | undefined>>;
+  /** The project the scan runs in: resolved source files are read from here (local pages only). */
+  projectDir?: string;
 }
 
 /** Largest source map read for a chunk: the scanned site is untrusted, so a map is capped in size. */
@@ -1200,8 +1202,46 @@ export function loadSourceMap(ctx: AnalysisContext, chunk: string): Promise<Sour
 }
 
 /** Each observed image's source (through its React owner trace) and component names. */
+/**
+ * What a resolved source is: on a local page, the project file is read (once per file, capped in size) and its line is
+ * checked for an image; on any other page nothing is read from the project and the source stays unchecked.
+ */
+async function checkSource(
+  ctx: AnalysisContext,
+  texts: Map<string, Promise<string | undefined>>,
+  file: string,
+  line: number,
+  component: string | undefined,
+): Promise<LocatorKind> {
+  if (!isLocalTarget(ctx.pageUrl)) return "unchecked";
+  if (ctx.projectDir === undefined) return "unread";
+  let text = texts.get(file);
+  if (!text) {
+    text = readProjectSource(ctx.projectDir, file);
+    texts.set(file, text);
+  }
+  const source = await text;
+  if (source === undefined) return "unread";
+  return imageAtLine(source, line, component) ? "image" : "owner";
+}
+
+/** A project file's text, or undefined when it is outside the project, not a file, too large, or unreadable. */
+async function readProjectSource(projectDir: string, file: string): Promise<string | undefined> {
+  const root = resolve(projectDir);
+  const path = resolve(root, file);
+  if (!path.startsWith(`${root}/`)) return undefined;
+  try {
+    const info = await stat(path);
+    if (!info.isFile() || info.size > MAX_SOURCE_READ) return undefined;
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 async function resolveSources(ctx: AnalysisContext, observations: ViewportObservation[]): Promise<Map<ObservedImage, ResolvedSource>> {
   const resolved = new Map<ObservedImage, ResolvedSource>();
+  const texts = new Map<string, Promise<string | undefined>>();
   for (const obs of observations) {
     for (const img of obs.images) {
       const owners = img.locator?.owners ?? [];
@@ -1211,7 +1251,8 @@ async function resolveSources(ctx: AnalysisContext, observations: ViewportObserv
       const component = owners
         .flatMap((o) => (o.name !== undefined && COMPONENT_NAME.test(o.name) && o.name.length > 2 ? [o.name] : []))
         .slice(0, MAX_OWNERS);
-      resolved.set(img, { file: found?.file, line: found?.line, component });
+      const check = found ? await checkSource(ctx, texts, found.file, found.line, component[0]) : undefined;
+      resolved.set(img, { file: found?.file, line: found?.line, component, check });
     }
   }
   return resolved;
@@ -1801,6 +1842,8 @@ async function scanPage(
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
     storageState?: StorageState;
     qualityFor?: (inst: Instance) => boolean;
+    /** The project directory the scan runs in: resolved sources are checked against its files. */
+    projectDir?: string;
     log: (message: string) => void;
   },
   pageUrl: string,
@@ -1910,6 +1953,7 @@ async function scanPage(
       aggressive: run.aggressive,
       resized: new Map(),
       sourceMaps: run.sourceMaps,
+      projectDir: run.projectDir,
     },
     observations,
     described,
@@ -1944,6 +1988,7 @@ async function withScanRun<T>(
       sourceMaps: new Map(),
       storageState: opts.storageState,
       qualityFor: opts.qualityFor,
+      projectDir: opts.cwd,
       log: opts.log,
     };
 

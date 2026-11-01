@@ -277,3 +277,46 @@ export async function resolveOwners(
   }
   return undefined;
 }
+
+/**
+ * What a resolved source is, once checked against the project file. `image`: the line (or its window) holds an image.
+ * `owner`: the file:line is the call site of the component that renders the image; the image itself is elsewhere (the
+ * component is named in the hint). `unread`: the project file is not readable from the scan's directory. `unchecked`:
+ * the page is not local, so no project file is read.
+ */
+export type LocatorKind = "image" | "owner" | "unread" | "unchecked";
+
+/** Lines on each side of a resolved line that are searched for an image token. */
+export const SOURCE_WINDOW = 3;
+/** Lines above a resolved line searched for the opening tag of an element that spans several lines. */
+const OPENING_SEARCH = 30;
+/** Largest project file read for the check. */
+export const MAX_SOURCE_READ = 2 * 1024 * 1024;
+
+/** An opening image tag or a srcset prop. */
+const IMAGE_TOKEN = /<(?:img|Image|picture|source)(?=[\s/>]|$)|\bsrc[sS]et\s*[={]/;
+
+/**
+ * Whether a project source line (1-based) renders an image: an image token within SOURCE_WINDOW lines of it, an opening
+ * image tag above it with no closing tag between, or the definition (`function Name`, `const Name`) of the component
+ * that renders the image. A call site such as `<Name ...>` is not an image: it is the owner call site, the case this
+ * check exists to catch.
+ */
+export function imageAtLine(text: string, line: number, component?: string): boolean {
+  const lines = text.split("\n");
+  const at = line - 1;
+  if (!Number.isInteger(line) || at < 0 || at >= lines.length) return false;
+  const definition =
+    component !== undefined && /^[A-Za-z_]\w*$/.test(component)
+      ? new RegExp(`\\b(?:function|const|let|class)\\s+${component}\\b`)
+      : undefined;
+  const last = Math.min(lines.length - 1, at + SOURCE_WINDOW);
+  for (let i = Math.max(0, at - SOURCE_WINDOW); i <= last; i++) {
+    if (IMAGE_TOKEN.test(lines[i]) || (definition !== undefined && definition.test(lines[i]))) return true;
+  }
+  for (let i = at - 1; i >= Math.max(0, at - OPENING_SEARCH); i--) {
+    if (IMAGE_TOKEN.test(lines[i])) return true;
+    if (/\/>|<\/[A-Za-z]/.test(lines[i])) break;
+  }
+  return false;
+}

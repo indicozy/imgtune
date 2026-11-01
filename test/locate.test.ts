@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   COMPONENT_NAME,
   MAX_MAP_LINES,
+  imageAtLine,
   sanitizeText,
   decodeMappings,
   loaderName,
@@ -240,3 +242,38 @@ describe("sanitizeText and COMPONENT_NAME", () => {
   });
 });
 
+
+describe("imageAtLine (the source check of a resolved file:line)", () => {
+  const fixture = (name: string) => readFileSync(new URL(`./fixtures/locate/${name}`, import.meta.url), "utf8");
+
+  it("finds the <Image> opening on the line itself", () => {
+    expect(imageAtLine(fixture("ProductCard.tsx"), 6)).toBe(true);
+  });
+
+  it("finds an image token within the window of the line", () => {
+    expect(imageAtLine(fixture("ProductCard.tsx"), 8)).toBe(true);
+  });
+
+  it("finds the opening tag of an element that spans lines, above the resolved line", () => {
+    // Line 12 is the height prop, 6 lines below the <Image opening.
+    expect(imageAtLine(fixture("ProductCard.tsx"), 12)).toBe(true);
+  });
+
+  it("refuses the owner call site: the image is inside the component, not on the line", () => {
+    expect(imageAtLine(fixture("ProductGrid.tsx"), 8, "ProductCard")).toBe(false);
+  });
+
+  it("accepts the definition line of the component that renders the image", () => {
+    expect(imageAtLine(fixture("ProductCard.tsx"), 3, "ProductCard")).toBe(true);
+  });
+
+  it("does not look past a closing tag above the line", () => {
+    const text = ["<Image", "  src={a}", "/>", "<Wrapper>", "  <span>text</span>", "  <Child />"].join("\n");
+    expect(imageAtLine(text, 6)).toBe(false);
+  });
+
+  it("is false for a line outside the file", () => {
+    expect(imageAtLine(fixture("ProductCard.tsx"), 0)).toBe(false);
+    expect(imageAtLine(fixture("ProductCard.tsx"), 999)).toBe(false);
+  });
+});

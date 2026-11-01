@@ -220,11 +220,30 @@ describe("hintsCommand", () => {
 });
 
 describe("locator verification and the source-map limits", () => {
-  it("marks a source verified only on a local origin", async () => {
-    const { locatorVerified } = await import("../src/images.js");
-    expect(locatorVerified("components/Card.tsx", "http://localhost:3000/shop")).toBe(true);
-    expect(locatorVerified("components/Card.tsx", "https://shop.example/bags")).toBe(false);
-    expect(locatorVerified(undefined, "https://shop.example/bags")).toBeUndefined();
+  const base: Hint = {
+    id: "c1c774f4dfb8",
+    page: "https://shop.example/bags",
+    component: [],
+    selector: "img",
+    sizes: { current: "33vw", proposed: "160px", basis: "layout-formula" },
+    bytes: { saved: 0, addedForSharpness: 0 },
+    rung: "measured-page",
+    notes: [],
+  };
+
+  it("prints an owner call site as the component to search, not as a verified source", () => {
+    const owner: Hint = {
+      ...base,
+      file: "components/ProductGrid.tsx",
+      line: 8,
+      component: ["ProductCard"],
+      kind: "owner",
+      verified: false,
+    };
+    const lines = renderHint(owner, 1);
+    expect(lines[0]).toContain('"components/ProductGrid.tsx:8" (owner call site) ("ProductCard")');
+    expect(lines[1]).toBe("   owner call site: the image is rendered inside <ProductCard>; search that component for the <img>");
+    expect(lines.join("\n")).not.toContain("(unverified)");
   });
 
   it("reads only same-origin maps, and at most MAX_MAPS_PER_SCAN in one scan", async () => {
@@ -253,9 +272,9 @@ describe("search hints for elements without a resolved file", () => {
   }
 
   it("a server component with no file prints where to look", () => {
-    const hint = hintsOf(page([serverRecord("abc123", ["ProductItem", "ProductGrid"])]))[0];
-    expect(hint.find).toEqual({ component: "ProductItem", glob: "**/ProductItem.*" });
-    expect(renderHint(hint, 1).join("\n")).toContain("   find: ProductItem in **/ProductItem.*");
+    const hint = hintsOf(page([serverRecord("abc123", ["Card", "ProductGrid"])]))[0];
+    expect(hint.find).toEqual({ component: "Card", glob: "**/Card.*" });
+    expect(renderHint(hint, 1).join("\n")).toContain("   find: Card in **/Card.*");
   });
 
   it("an element with a resolved file prints its file, not a search", () => {

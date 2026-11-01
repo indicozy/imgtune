@@ -13,8 +13,7 @@ import {
   type SizesBranch,
   type SizesResult,
 } from "./layout.js";
-import { isLocalTarget } from "./address.js";
-import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern } from "./locate.js";
+import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind } from "./locate.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
@@ -28,9 +27,12 @@ export interface ImageLocator {
   file?: string;
   line?: number;
   /**
-   * Whether the source came from a local development server (the page is on loopback or a private host). A source from
-   * any other origin is unverified: it is printed as such, and must be checked before it is trusted.
+   * The check of the resolved file:line (see LocatorKind). `image`: the line renders the image, so the source is verified.
+   * `owner`: the line is the call site of the component that renders the image; the image is inside that component.
+   * `unread` and `unchecked`: the project file was not read (a non-local page, or no project file here).
    */
+  kind?: LocatorKind;
+  /** True only when the source was read from a local project and its line renders an image (kind `image`). */
   verified?: boolean;
   testid?: string;
   alt?: string;
@@ -147,6 +149,8 @@ export interface ResolvedSource {
   file?: string;
   line?: number;
   component: string[];
+  /** The check of file:line against the project file (see LocatorKind). */
+  check?: LocatorKind;
 }
 
 export interface BuildInput {
@@ -169,11 +173,6 @@ function baseKey(img: ObservedImage, source: ResolvedSource | undefined): string
   return `css:${img.locator?.selector ?? "img"}`;
 }
 
-/** Whether a source resolved on this page is verified: only a page on a local (loopback or private) origin is. */
-export function locatorVerified(file: string | undefined, pageUrl: string): boolean | undefined {
-  return file === undefined ? undefined : isLocalTarget(pageUrl);
-}
-
 /** The loader, the URL pattern, and the tunable flags of one element, from its reference instance. */
 function locatorOf(member: Instance, pageUrl: string, source: ResolvedSource | undefined): ImageLocator {
   const img = member.img;
@@ -187,7 +186,8 @@ function locatorOf(member: Instance, pageUrl: string, source: ResolvedSource | u
   if (source?.file !== undefined) {
     locator.file = source.file;
     locator.line = source.line;
-    locator.verified = locatorVerified(source.file, pageUrl);
+    locator.kind = source.check ?? "unchecked";
+    locator.verified = locator.kind === "image";
   }
   if (img.locator?.testid !== undefined) locator.testid = sanitizeText(img.locator.testid, 120);
   if (img.locator?.alt !== undefined) locator.alt = sanitizeText(img.locator.alt, 120);
@@ -351,7 +351,10 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       fix,
       evidence: { rung: "measured-page", notes },
     };
-    if (source?.file) notes.push(`source: ${source.file}:${source.line ?? 0} (React owner, dev build)`);
+    if (source?.file) {
+      const how = source.check === "owner" ? "owner call site, the image is inside its component" : source.check === "image" ? "verified: the line renders an image" : "not checked";
+      notes.push(`source: ${source.file}:${source.line ?? 0} (React owner, dev build; ${how})`);
+    }
     else if (locator.component.length > 0) notes.push(`component: ${locator.component.join(" > ")} (no project file resolved)`);
     else notes.push("source: not resolved (production build, or no React owner)");
     if (layoutChain?.truncated) notes.push("layout chain cut at the depth cap");
