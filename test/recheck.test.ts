@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
-import { compareImage, pairRecord, parseRecheckArgs, recheckScan, usableRecords } from "../src/recheck.js";
+import { compareImage, pairRecord, parseRecheckArgs, recheckLimits, recheckScan, RECHECK_CONTEXTS, usableRecords } from "../src/recheck.js";
 import type { ImageRecord } from "../src/images.js";
 
 /** A record with one viewport, for the comparison rules. */
@@ -35,7 +35,37 @@ function record(overrides: { renderedCssPx?: number; servedBytes?: number; under
 
 describe("parseRecheckArgs", () => {
   it("reads the scan file and the image ids", () => {
-    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ file: "scan.json", ids: ["a1", "b2"], ignoreRobots: false });
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ files: ["scan.json"], ids: ["a1", "b2"], ignoreRobots: false });
+  });
+
+  it("takes several scan files in order, and --viewports as a list of known names", () => {
+    const args = parseRecheckArgs(["--recheck", "a.json", "--recheck", "b.json", "--viewports", "iphone-15,desktop"]);
+    expect(args.files).toEqual(["a.json", "b.json"]);
+    expect(args.viewports).toEqual(["iphone-15", "desktop"]);
+    expect(() => parseRecheckArgs(["--recheck", "a.json", "--viewports", "watch"])).toThrow(/viewport/i);
+  });
+
+  it("keeps all the pages' browser contexts within the budget", () => {
+    expect(RECHECK_CONTEXTS).toBe(3);
+    expect(recheckLimits(1)).toEqual({ pages: 1, viewportConcurrency: 3 });
+    expect(recheckLimits(2)).toEqual({ pages: 2, viewportConcurrency: 1 });
+    expect(recheckLimits(3)).toEqual({ pages: 3, viewportConcurrency: 1 });
+    const five = recheckLimits(5);
+    expect(five.pages).toBe(3);
+    expect(five.pages * five.viewportConcurrency).toBeLessThanOrEqual(RECHECK_CONTEXTS);
+  });
+
+  it("reports a failing page of several inside its own section, and the others still print", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-recheck-multi-"));
+    const bad = join(dir, "bad.json");
+    await writeFile(bad, JSON.stringify({ url: "file:///etc/passwd", images: [] }));
+    const robots = join(dir, "robots.json");
+    await writeFile(robots, JSON.stringify({ url: "https://shop.example/", robotsIgnored: true, images: [] }));
+    const result = await recheckScan(["--recheck", bad, "--recheck", robots], dir, () => {});
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("== ");
+    expect(result.output).toContain("not http or https");
+    expect(result.output).toContain("pass --ignore-robots to recheck it too");
   });
 
   it("needs the scan file, and refuses other options", () => {

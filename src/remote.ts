@@ -431,7 +431,7 @@ function parseFailOver(text: string): number {
   return value;
 }
 
-function parseViewports(text: string): string[] {
+export function parseViewports(text: string): string[] {
   const names = text.split(",").map((name) => name.trim()).filter((name) => name !== "");
   const known = DEFAULT_VIEWPORTS.map((viewport) => viewport.name);
   if (names.length === 0) throw new Error("--viewports needs at least one name");
@@ -1847,6 +1847,8 @@ export interface ScanOptions {
   cwd: string;
   /** --root, absolute: the folder source files are read from (default: see source-root.ts). */
   root?: string;
+  /** Viewports of this page loaded at once (default VIEWPORT_CONCURRENCY). Recheck lowers it when pages run together. */
+  viewportConcurrency?: number;
   aggressive: boolean;
   quality: boolean;
   viewports: Viewport[];
@@ -1926,6 +1928,7 @@ async function scanPage(
     /** The project directory the scan runs in: resolved sources are checked against its files. */
     projectDir?: string;
     projectRoot?: string;
+    viewportConcurrency: number;
     log: (message: string) => void;
     /** The GPU scorer of this run, when --gpu was given and it started. */
     gpu?: GpuScorer;
@@ -1993,7 +1996,7 @@ async function scanPage(
   // is still not retried.
   const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
   const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
-  const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) => {
+  const outcomes = await settleLimit(run.viewports, run.viewportConcurrency, (viewport) => {
     count("viewport loads");
     return observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, run.storageState);
   });
@@ -2089,6 +2092,7 @@ async function withBrowser<T>(
       qualityFor: opts.qualityFor,
       projectDir: opts.cwd,
       projectRoot: opts.root,
+      viewportConcurrency: opts.viewportConcurrency ?? VIEWPORT_CONCURRENCY,
       log: opts.log,
       gpu,
     };

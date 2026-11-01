@@ -7,30 +7,44 @@ import { resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImagePerViewport, type ImageRecord } from "./images.js";
 import { parseGpuDevice } from "./gpu.js";
-import { safeText, scanOnce, scorerNote, type PageResult } from "./remote.js";
+import { parseViewports, safeText, scanOnce, scorerNote, type PageResult } from "./remote.js";
+import { settleLimit } from "./concurrency.js";
 import { cleanRecord } from "./locate-join.js";
 
 export interface RecheckArgs {
-  file: string;
+  /** The scan files to recheck (one page each): repeat --recheck to give more. */
+  files: string[];
   /** The image ids to recheck; undefined: every image of the scan that has a fix hint. */
   ids?: string[];
   /** Recheck a page that robots.txt disallows (needed when the scan file says the page was scanned that way). */
   ignoreRobots: boolean;
   /** Score the recheck with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU. */
   gpu?: { device: number };
+  /** --viewports: measure these instead of the viewports where the images rendered in the scan. */
+  viewports?: string[];
+}
+
+/** Browser contexts (one per viewport loaded) a recheck keeps in flight over all its pages together. */
+export const RECHECK_CONTEXTS = 3;
+
+/** How many pages run together, and how many viewports each loads at once, so that all pages together stay within the budget. */
+export function recheckLimits(fileCount: number): { pages: number; viewportConcurrency: number } {
+  const pages = Math.max(1, Math.min(RECHECK_CONTEXTS, fileCount));
+  return { pages, viewportConcurrency: Math.max(1, Math.floor(RECHECK_CONTEXTS / pages)) };
 }
 
 /** An image id as imgtune writes it (12 hex digits); anything else in a scan file is refused. */
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-const USAGE = "usage: imgtune scan --recheck <scan.json> [--ids a,b,c] [--gpu] [--gpu-device n]";
+const USAGE = "usage: imgtune scan --recheck <scan.json> [--recheck <more.json> ...] [--ids a,b,c] [--viewports names] [--gpu] [--gpu-device n]";
 
 /** The arguments after `scan --recheck`. Throws with the message the CLI prints. */
 export function parseRecheckArgs(argv: string[]): RecheckArgs {
-  let file: string | undefined;
+  const files: string[] = [];
   let ids: string[] | undefined;
   let ignoreRobots = false;
   let gpu: { device: number } | undefined;
+  let viewports: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--ignore-robots") {
@@ -41,12 +55,13 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
       gpu ??= { device: 0 };
       continue;
     }
-    if (arg === "--recheck" || arg === "--ids" || arg === "--gpu-device") {
+    if (arg === "--recheck" || arg === "--ids" || arg === "--gpu-device" || arg === "--viewports") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
       i++;
-      if (arg === "--recheck") file = value;
+      if (arg === "--recheck") files.push(value);
       else if (arg === "--gpu-device") gpu = { device: parseGpuDevice(value) };
+      else if (arg === "--viewports") viewports = parseViewports(value);
       else {
         ids = value.split(",").map((id) => id.trim()).filter((id) => id !== "");
         if (ids.length === 0) throw new Error(`--ids needs at least one image id (${USAGE})`);
@@ -55,8 +70,8 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
       throw new Error(`${safeText(arg)} is not an option of --recheck (${USAGE})`);
     }
   }
-  if (file === undefined) throw new Error(USAGE);
-  return { file, ids, ignoreRobots, gpu };
+  if (files.length === 0) throw new Error(USAGE);
+  return { files, ids, ignoreRobots, gpu, viewports };
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
@@ -229,17 +244,49 @@ export function scorerMismatch(previous: PageResult, fresh: PageResult): string 
   return `the scan was scored on the ${name(before)} and this recheck on the ${name(after)}; the numbers may differ slightly, so compare them with care`;
 }
 
-/** `imgtune scan --recheck`: the text to print and the exit code (1 when an image failed the check). */
+/**
+ * `imgtune scan --recheck`: the text to print and the exit code (1 when an image failed the check). Several pages run
+ * together, with at most RECHECK_CONTEXTS browser contexts in flight in all (the viewports of each page share the rest).
+ */
 export async function recheckScan(argv: string[], cwd: string, log: (message: string) => void): Promise<{ output: string; exitCode: number }> {
   const args = parseRecheckArgs(argv);
+  if (args.files.length === 1) {
+    return recheckPage(args.files[0], args, cwd, log, { viewportConcurrency: RECHECK_CONTEXTS, several: false });
+  }
+  const { pages, viewportConcurrency } = recheckLimits(args.files.length);
+  const outcomes = await settleLimit(args.files, pages, (file) => recheckPage(file, args, cwd, log, { viewportConcurrency, several: true }));
+  const out: string[] = [];
+  let exitCode = 0;
+  outcomes.forEach((outcome, i) => {
+    const file = args.files[i];
+    out.push(`== ${safeText(file)} ==`);
+    if (outcome.ok) {
+      out.push(outcome.value.output.replace(/\n$/, ""));
+      exitCode = Math.max(exitCode, outcome.value.exitCode);
+    } else {
+      out.push(`error: ${safeText(outcome.error instanceof Error ? outcome.error.message : String(outcome.error))}`);
+      exitCode = 1;
+    }
+  });
+  return { output: `${out.join("\n")}\n`, exitCode };
+}
+
+/** One page of a recheck: its scan file, its images and viewports, and the rescan. */
+async function recheckPage(
+  file: string,
+  args: RecheckArgs,
+  cwd: string,
+  log: (message: string) => void,
+  options: { viewportConcurrency: number; several: boolean },
+): Promise<{ output: string; exitCode: number }> {
   let previous: PageResult;
   try {
-    previous = JSON.parse(await readFile(resolve(cwd, args.file), "utf8")) as PageResult;
+    previous = JSON.parse(await readFile(resolve(cwd, file), "utf8")) as PageResult;
   } catch {
-    throw new Error(`cannot read ${safeText(args.file)} as a scan file`);
+    throw new Error(`cannot read ${safeText(file)} as a scan file`);
   }
   if (!previous || typeof previous.url !== "string" || !Array.isArray(previous.images)) {
-    throw new Error(`${safeText(args.file)} has no image records: scan it with this version of imgtune`);
+    throw new Error(`${safeText(file)} has no image records: scan it with this version of imgtune`);
   }
   // The page is the file's claim, so it is checked like a scan's URL: http or https, and a robots.txt refusal is only
   // overridden by the flag on this command line, never by the file.
@@ -247,11 +294,11 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
   try {
     target = new URL(previous.url);
   } catch {
-    throw new Error(`${safeText(args.file)} names a page that is not a URL`);
+    throw new Error(`${safeText(file)} names a page that is not a URL`);
   }
-  if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error(`${safeText(args.file)} names a page that is not http or https`);
+  if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error(`${safeText(file)} names a page that is not http or https`);
   if (previous.robotsIgnored === true && !args.ignoreRobots) {
-    throw new Error(`${safeText(args.file)} was scanned with --ignore-robots; pass --ignore-robots to recheck it too`);
+    throw new Error(`${safeText(file)} was scanned with --ignore-robots; pass --ignore-robots to recheck it too`);
   }
   const images = usableRecords(previous.images, log);
   const byId = new Map(images.map((record) => [record.id, record]));
@@ -259,15 +306,16 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
   if (args.ids !== undefined) {
     const invalid = args.ids.filter((id) => !ID_PATTERN.test(id));
     if (invalid.length > 0) throw new Error(`not an image id: ${invalid.map((id) => safeText(id)).join(", ")}`);
+    // With several pages, an id may belong to another page: it is skipped here, and only an id on no page is an error.
     const missing = args.ids.filter((id) => !byId.has(id));
-    if (missing.length > 0) throw new Error(`no image ${missing.map((id) => safeText(id)).join(", ")} in ${safeText(args.file)}`);
-    selected = args.ids.map((id) => byId.get(id) as ImageRecord);
+    if (missing.length > 0 && !options.several) throw new Error(`no image ${missing.map((id) => safeText(id)).join(", ")} in ${safeText(file)}`);
+    selected = args.ids.filter((id) => byId.has(id)).map((id) => byId.get(id) as ImageRecord);
   } else {
     selected = images.filter(hasFix);
   }
   if (selected.length === 0) return { output: "no images to recheck\n", exitCode: 0 };
 
-  const viewports = viewportsOf(selected);
+  const viewports = args.viewports ?? viewportsOf(selected);
   if (viewports.length === 0) throw new Error("none of the images rendered in that scan");
   // The srcs the earlier scan loaded: an image that still loads one of them keeps its estimate.
   const earlierSrcs = new Set(selected.map((r) => r.current.src).filter((src): src is string => src !== undefined));
@@ -284,6 +332,7 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
     ignoreRobots: args.ignoreRobots,
     qualityFor: (inst) => inst.url === "" || !earlierSrcs.has(inst.url),
     gpu: args.gpu,
+    viewportConcurrency: options.viewportConcurrency,
   });
   const seconds = (Date.now() - started) / 1000;
   if (fresh.status !== "ok") {
