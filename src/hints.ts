@@ -369,6 +369,20 @@ export function renderHints(hints: Hint[], total: number, offset: number, page?:
   return `${head}${body.join("\n")}\n`;
 }
 
+/**
+ * The line that says where the sources of a file came from: the dev page it was located on, or, when hinted images still
+ * have no file:line, the command that locates them. Undefined when every hint has its source.
+ */
+export function locateNoteOf(result: PageResult, hints: Hint[]): string | undefined {
+  if (result.locate !== undefined) {
+    const l = result.locate;
+    return `located on the dev page at ${safeText(l.viewport)}: ${l.joined} of ${l.flagged} flagged image(s) have a file:line (the others: see scan --locate-only)`;
+  }
+  const without = hints.filter((h) => h.file === undefined).length;
+  if (without === 0) return undefined;
+  return `${without} of ${hints.length} image(s) have no file:line: locate them on the dev server (scan <dev-url> --locate-only --from <this file>)`;
+}
+
 /** `imgtune hints <scan.json> ...`: reads one page's scan file and returns the text or JSON to print. */
 export async function hintsCommand(argv: string[], cwd: string): Promise<{ output: string; exitCode: number }> {
   const args = parseHintsArgs(argv);
@@ -388,9 +402,11 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
     const groups = groupHints(filtered);
     const selectedGroups = groups.slice(args.offset, args.offset + args.limit);
+    const note = locateNoteOf(result, all);
     if (args.format === "json") {
       const body = {
         page: result.url,
+        located: result.locate ?? null,
         groups: groups.length,
         images: filtered.length,
         offset: args.offset,
@@ -410,12 +426,14 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
       };
       return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
     }
-    return { output: renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page), exitCode: 0 };
+    const text = renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page);
+    return { output: note !== undefined ? `${note}\n${text}` : text, exitCode: 0 };
   }
   const selected = selectHints(all, args);
   if (args.format === "json") {
     const body = {
       page: result.url,
+      located: result.locate ?? null,
       total: filtered.length,
       offset: args.offset,
       limit: args.limit,
@@ -423,7 +441,9 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
   }
-  return { output: renderHints(selected, filtered.length, args.offset, args.page), exitCode: 0 };
+  const note = locateNoteOf(result, all);
+  const text = renderHints(selected, filtered.length, args.offset, args.page);
+  return { output: note !== undefined ? `${note}\n${text}` : text, exitCode: 0 };
 }
 
 /** How many hints the PR comment lists. */

@@ -2,6 +2,8 @@
 import { scanCommand } from "./remote.js";
 import { hintsCommand } from "./hints.js";
 import { recheckScan } from "./recheck.js";
+import { locateCommand } from "./locate-only.js";
+import { sizesRecheck } from "./sizes-recheck.js";
 import { imageCommand } from "./image-file.js";
 import { ChromiumMissingError } from "./browser.js";
 import { IMGTUNE_VERSION } from "./version.js";
@@ -51,6 +53,20 @@ const OPTION_HELP = {
     "score with the GPU scorer (imgtune-ssimu2-gpu, see the docs); opt-in. Falls back to the CPU with a warning",
   ],
   gpuDevice: ["--gpu-device <n>", "the GPU to score on, by nvidia-smi index (implies --gpu; default 0)"],
+  locateOnly: [
+    "--locate-only",
+    "read the React source of the flagged images from a dev page <url>, not a measurement (needs --from; see the docs)",
+  ],
+  from: ["--from <scan.json>", "with --locate-only: the measured scan of the same page (its flagged images are located)"],
+  locateOut: [
+    "--locate-out <file>",
+    "with --locate-only: where the joined copy is written (default: the measured file's name with .located.json)",
+  ],
+  sizesOnly: [
+    "--sizes-only",
+    "with --recheck: judge the sizes choice only (no bytes decoded, nothing scored), on the dev page",
+  ],
+  url: ["--url <dev page>", "with --recheck --sizes-only: the dev page to check (default: the page the scan file was located on)"],
 } as const;
 
 type OptionKey = keyof typeof OPTION_HELP;
@@ -71,6 +87,8 @@ const SCAN_HELP = commandHelp(
     "Measure live pages by URL, with no source, config or dev server. Writes one JSON file per page to --out.",
     "With --recheck <scan.json> [--ids a,b,c]: rescans only the named images of an earlier scan, at the viewports where they",
     "rendered, and prints before and after. Exits 1 when an image became undersized or bytes rose without a sharpness fix.",
+    "The split flow: measure on a built server (scan), locate the flagged images on dev (scan <dev-url> --locate-only --from",
+    "<scan.json>), check each edit batch's sizes on dev (scan --recheck <located.json> --sizes-only --ids a,b), measure again.",
     "Needs Chromium for Playwright: npx playwright install chromium.",
   ],
   [
@@ -92,6 +110,11 @@ const SCAN_HELP = commandHelp(
     "ids",
     "gpu",
     "gpuDevice",
+    "locateOnly",
+    "from",
+    "locateOut",
+    "sizesOnly",
+    "url",
   ],
 );
 
@@ -154,6 +177,20 @@ async function main(): Promise<void> {
     if (argv[0] === "hints") process.stdout.write(HINTS_HELP);
     else if (argv[0] === "image") process.stdout.write(IMAGE_HELP);
     else process.stdout.write(argv.includes("scan") ? SCAN_HELP : USAGE);
+    return;
+  }
+
+  if (argv[0] === "scan" && argv.includes("--locate-only")) {
+    const outcome = await locateCommand(argv.slice(1), process.cwd(), progress);
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
+    return;
+  }
+
+  if (argv[0] === "scan" && argv.includes("--recheck") && argv.includes("--sizes-only")) {
+    const outcome = await sizesRecheck(argv.slice(1), process.cwd(), progress);
+    process.stdout.write(outcome.output);
+    process.exitCode = outcome.exitCode;
     return;
   }
 

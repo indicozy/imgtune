@@ -82,6 +82,11 @@ export function searchHintsOf(locator: Pick<ImageLocator, "component" | "alt" | 
 
 export interface ImagePerViewport {
   viewport: string;
+  /**
+   * The element's place in the document among the page's <img> elements, at this viewport. The locate join pairs elements
+   * of one URL in this order. Absent in scans from before --locate-only: such a scan cannot be joined.
+   */
+  domIndex?: number;
   dpr: number;
   renderedCssPx: number;
   /** Device pixels the image needs at this viewport (the scan's `needed`). */
@@ -141,6 +146,8 @@ export interface ImageRecord {
     naturalWidth?: number;
   };
   lazy?: boolean;
+  /** Set when the element's source was read from a dev page by `scan --locate-only` (see locate-join.ts). */
+  locate?: { viewport: string; by: "alt-order" | "url-unique"; devIndex: number };
   perViewport: ImagePerViewport[];
   layoutChain?: {
     viewport: string;
@@ -288,6 +295,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       const sizesPx = sizes ? sizesSlotAt(sizes, vw) : undefined;
       const entry: ImagePerViewport = {
         viewport: obs.viewport.name,
+        domIndex: inst.element,
         dpr: obs.viewport.dpr,
         renderedCssPx: round1(inst.renderedWidth),
         neededPx: inst.needed,

@@ -207,14 +207,18 @@ export async function waitForLoadWithin(page: Page, ms: number): Promise<boolean
  * The settle step of every measurement: scrolls the page to its bottom and back so lazy images start, then waits for the
  * network and for the images matched by `imageSelector` to complete.
  */
-export async function settlePage(page: Page, imageSelector: string): Promise<void> {
+export async function settlePage(page: Page, imageSelector: string, options: { networkIdle?: boolean } = {}): Promise<void> {
   await measure("settle: scroll", () => scrollThrough(page));
   await page.evaluate(() => window.scrollTo(0, 0));
-  await measure("settle: network idle", () =>
-    page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {
-      count("network idle timeouts");
-    }),
-  );
+  // A page that keeps a connection open (a dev server, a tracker) never reaches network idle: each wait would cost the
+  // full timeout. The light paths skip it: scrolling loads the lazy images, and the image wait below covers the rest.
+  if (options.networkIdle !== false) {
+    await measure("settle: network idle", () =>
+      page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {
+        count("network idle timeouts");
+      }),
+    );
+  }
   await measure("settle: images complete", () =>
     page
       .waitForFunction(

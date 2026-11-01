@@ -7,6 +7,7 @@ import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { mdCode, mdText, safeText } from "./text.js";
 import { commentHints } from "./hints.js";
+import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
@@ -757,8 +758,10 @@ export interface ObservedLocator {
 export interface ResponseRecord {
   url: string;
   contentType?: string;
-  /** Response body length: the bytes the browser transferred. */
+  /** Response body length: the bytes the browser transferred (the Content-Length header in a light observation). */
   bytes: number;
+  /** False when a light observation found no Content-Length: `bytes` is then 0 and not a measurement. */
+  bytesKnown?: boolean;
   buffer?: Buffer;
   pixels?: PixelSize;
 }
@@ -814,9 +817,9 @@ export const LAYOUT_DEPTH = 15;
 export const MAX_OWNERS = 8;
 
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
-async function readView(page: Page): Promise<PageView> {
+async function readView(page: Page, light = false): Promise<PageView> {
   const seen = await page.evaluate(
-    ({ depth, maxOwners }) => {
+    ({ depth, maxOwners, light }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -971,7 +974,7 @@ async function readView(page: Page): Promise<PageView> {
           nextImage: img.hasAttribute("data-nimg"),
           inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
           lazy: img.loading === "lazy",
-          layout: layoutOf(img),
+          layout: light ? undefined : layoutOf(img),
           locator: {
             testid: img.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
             alt: img.getAttribute("alt")?.slice(0, 120) ?? undefined,
@@ -982,7 +985,7 @@ async function readView(page: Page): Promise<PageView> {
       });
       return { nextjs, images };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, light },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -992,14 +995,14 @@ async function readView(page: Page): Promise<PageView> {
  * The settle step, then one read, taken again whenever the page navigated while it ran (a reload or a script's
  * location change after load). At most MAX_POST_LOAD_NAVIGATIONS repeats; past that, the last complete read is used.
  */
-async function settledView(page: Page, navigations: () => number, loadCapMs: number): Promise<PageView> {
+async function settledView(page: Page, navigations: () => number, loadCapMs: number, light = false): Promise<PageView> {
   let last: PageView | undefined;
   for (let repeat = 0; ; repeat++) {
     const start = navigations();
     let view: PageView | undefined;
     try {
-      await settlePage(page, "img");
-      view = await measure("read view", () => readView(page));
+      await settlePage(page, "img", { networkIdle: !light });
+      view = await measure("read view", () => readView(page, light));
     } catch (err) {
       if (!isNavigationError(err)) throw err;
     }
@@ -1014,6 +1017,10 @@ async function settledView(page: Page, navigations: () => number, loadCapMs: num
   }
 }
 
+/**
+ * One viewport's read of a page. `light` (the locate and sizes-only paths) reads no image bodies and no layout chain: the
+ * image sizes come from the response headers, and nothing is decoded or scored.
+ */
 async function observeViewport(
   browser: Browser,
   pageUrl: string,
@@ -1021,6 +1028,7 @@ async function observeViewport(
   guard: RequestGuard,
   loadCapMs: number = LOAD_EVENT_CAP_MS,
   storageState?: StorageState,
+  light = false,
 ): Promise<ViewportObservation> {
   const responses = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
@@ -1082,6 +1090,12 @@ async function observeViewport(
         if (!isImage) return;
         const record: ResponseRecord = { url: response.url(), contentType, bytes: 0 };
         responses.set(response.url(), record);
+        if (light) {
+          const length = Number(response.headers()["content-length"]);
+          if (Number.isFinite(length) && length >= 0) record.bytes = length;
+          else record.bytesKnown = false;
+          return;
+        }
         bodyReads.push(
           response.body().then(
             (body) => {
@@ -1094,14 +1108,21 @@ async function observeViewport(
       });
 
       const page = await context.newPage();
-      // Main-frame navigations are counted, so the figures are taken once the page has stopped moving.
+      // Main-frame navigations are counted, so the figures are taken once the page has stopped moving. A light read counts
+      // document loads only: a page that rewrites its URL while it scrolls (same-document navigations) would never settle.
       let navigations = 0;
-      page.on("framenavigated", (frame) => {
-        if (frame === page.mainFrame()) navigations++;
-      });
+      if (light) {
+        page.on("load", () => {
+          navigations++;
+        });
+      } else {
+        page.on("framenavigated", (frame) => {
+          if (frame === page.mainFrame()) navigations++;
+        });
+      }
       const loaded = await measure(`page load ${viewport.name}`, () => gotoParsed(page, pageUrl, loadCapMs));
       const docResponse: BrowserResponse | null = loaded.response;
-      const { seen, html } = await settledView(page, () => navigations, loadCapMs);
+      const { seen, html } = await settledView(page, () => navigations, loadCapMs, light);
       const status = docResponse?.status();
       await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
       count("image responses", responses.size);
@@ -1245,11 +1266,16 @@ async function readProjectSource(projectDir: string, file: string): Promise<stri
   }
 }
 
-async function resolveSources(ctx: AnalysisContext, observations: ViewportObservation[]): Promise<Map<ObservedImage, ResolvedSource>> {
+async function resolveSources(
+  ctx: AnalysisContext,
+  observations: ViewportObservation[],
+  wanted?: (img: ObservedImage) => boolean,
+): Promise<Map<ObservedImage, ResolvedSource>> {
   const resolved = new Map<ObservedImage, ResolvedSource>();
   const texts = new Map<string, Promise<string | undefined>>();
   for (const obs of observations) {
     for (const img of obs.images) {
+      if (wanted && !wanted(img)) continue;
       const owners = img.locator?.owners ?? [];
       const found = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
       // Component names come from the scanned page, so only identifiers are kept. A production build leaves one- and
@@ -1563,6 +1589,8 @@ export interface PageResult {
   complete?: true;
   /** The options the page was scanned with: --resume reuses a page only when they are the same. */
   options?: ScanRecordOptions;
+  /** Set on a page that `scan --locate-only` read the sources of from a dev page (see locate-join.ts). */
+  locate?: LocateSummary;
 }
 
 /** What a page's output depends on: the scan options and the imgtune version. */
@@ -2156,6 +2184,89 @@ export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<Page
     const result = await scanPage(browser, run, pageUrl, robotsFor);
     return { ...result, scorer: scorerOf(run.gpu, fallbacksBefore) };
   });
+}
+
+/** Options of a light observation (see observeLight). */
+export interface LightOptions {
+  cwd: string;
+  viewports: Viewport[];
+  log: (message: string) => void;
+  ignoreRobots: boolean;
+  /** Which elements get their source walked and checked (the flagged ones); the others are observed only. */
+  wanted: (img: ObservedImage, pageUrl: string) => boolean;
+  resolver?: Resolver;
+  loadCapMs?: number;
+}
+
+/** A light observation of a page: one read per viewport, and the sources of the wanted elements. */
+export interface LightObservation {
+  status: PageStatus;
+  error?: string;
+  observations: ViewportObservation[];
+  /** The resolved source of each wanted element (see resolveSources). */
+  resolved: Map<ObservedImage, ResolvedSource>;
+}
+
+/**
+ * Reads a page at the given viewports without measuring it: the images as rendered, their layout-independent attributes,
+ * the headers of the responses, and the React owner source of the wanted elements. No body is read, nothing is decoded,
+ * nothing is encoded or scored. robots.txt and the request guard apply as in a scan.
+ */
+export async function observeLight(pageUrl: string, opts: LightOptions): Promise<LightObservation> {
+  return withScanRun(
+    {
+      outDir: opts.cwd,
+      cwd: opts.cwd,
+      aggressive: false,
+      quality: false,
+      viewports: opts.viewports,
+      log: opts.log,
+      ignoreRobots: opts.ignoreRobots,
+      resolver: opts.resolver,
+      loadCapMs: opts.loadCapMs,
+    },
+    async (browser, run, robotsFor): Promise<LightObservation> => {
+      const url = new URL(pageUrl);
+      const allowPrivate = isLocalTarget(pageUrl);
+      const empty = (status: PageStatus, error: string): LightObservation => ({ status, error, observations: [], resolved: new Map() });
+      const robots = await checkRobots(pageUrl, allowPrivate, () => robotsFor(url.origin, false), run.ignoreRobots);
+      if (!robots.allowed) return empty("robots", "robots.txt disallows the page");
+      if (robots.ignored) run.log(robotsIgnoredWarning(pageUrl));
+      const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
+      const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
+      const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) =>
+        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true),
+      );
+      const observations: ViewportObservation[] = [];
+      for (const [index, outcome] of outcomes.entries()) {
+        const viewport = run.viewports[index];
+        if (!outcome.ok) return empty("failed", messageOf(outcome.error));
+        const obs = outcome.value;
+        if (obs.blocked) return empty("blocked", `challenge at ${viewport.name}${obs.status ? ` (HTTP ${obs.status})` : ""}`);
+        if (obs.finalUrl !== undefined && new URL(obs.finalUrl).pathname !== url.pathname) {
+          return empty("redirected", `the page ends on ${obs.finalUrl}, not ${url.pathname}`);
+        }
+        observations.push(obs);
+      }
+      const ctx: AnalysisContext = {
+        pageUrl,
+        fetcher: run.fetcher,
+        allowPrivate,
+        deps: run.deps,
+        quality: false,
+        aggressive: false,
+        resized: new Map(),
+        sourceMaps: run.sourceMaps,
+        projectDir: run.projectDir,
+      };
+      const resolved = new Map<ObservedImage, ResolvedSource>();
+      for (const obs of observations) {
+        const part = await resolveSources(ctx, [obs], (img) => opts.wanted(img, pageUrl));
+        for (const [img, source] of part) resolved.set(img, source);
+      }
+      return { status: "ok", observations, resolved };
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
