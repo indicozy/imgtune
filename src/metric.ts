@@ -21,6 +21,13 @@ export const METRICS: readonly Metric[] = ["ssimulacra2", "ssimulacra2-native", 
 /** Scores a decoded image against its reference on the metric's own scale. Synchronous scorers are fine too. */
 export type Scorer = (ref: RawImage, test: RawImage) => number | Promise<number>;
 
+/**
+ * A GPU scorer for `ssimulacra2` (gpu.ts). `tryScore` returns undefined when the CPU must score the pair instead.
+ */
+export interface GpuScoring {
+  tryScore(ref: RawImage, test: RawImage): Promise<number | undefined>;
+}
+
 export interface ScoreOptions {
   /** Project root. ssimulacra2 writes its PNG pair under `<projectDir>/.imgtune/tmp`. Defaults to the working directory. */
   projectDir?: string;
@@ -29,6 +36,8 @@ export interface ScoreOptions {
    * looked up on PATH, then in ~/.cargo/bin.
    */
   binary?: string;
+  /** `ssimulacra2` only: scores go to this GPU scorer first; the CPU scores what it leaves (see GpuScoring). */
+  gpu?: GpuScoring;
 }
 
 const BINARY = "ssimulacra2_rs";
@@ -56,6 +65,11 @@ async function withRunSlot<T>(fn: () => Promise<T>): Promise<T> {
 export async function score(metric: Metric, ref: RawImage, test: RawImage, opts: ScoreOptions = {}): Promise<number> {
   if (metric === "ssim") return ssim(ref, test);
   if (metric === "ssimulacra2-native") return ssimulacra2Native(ref, test, opts);
+  if (opts.gpu !== undefined) {
+    requireSameSize(ref, test);
+    const value = await opts.gpu.tryScore(ref, test);
+    if (value !== undefined) return value;
+  }
   return ssimulacra2Wasm(ref, test);
 }
 
@@ -127,7 +141,7 @@ function loadSsimWasm(): SsimWasm {
  * The pixels composited on white, as the native path does through sharp: the binary reads colour only, so the colour
  * under transparent pixels must not count. Opaque images are passed through without a copy.
  */
-function flattenOnWhite(img: RawImage): Uint8Array {
+export function flattenOnWhite(img: RawImage): Uint8Array {
   const src = new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength);
   let translucent = false;
   for (let i = 3; i < src.length; i += 4) {

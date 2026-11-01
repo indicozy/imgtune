@@ -23,6 +23,7 @@ import { buildImageRecords, hasFix, type ImageRecord, type ResolvedSource } from
 import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { gotoParsed, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
+import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { minPassingQuality } from "./search.js";
 import { MAX_WIDTH, parseSrcset, type Candidate } from "./srcset-parse.js";
 import { deriveSizes, type SizePoint } from "./sizes.js";
@@ -400,6 +401,8 @@ export interface ScanArgs {
   samplePerPattern?: number;
   /** A Playwright storage state file (cookies and local storage) applied to every context. */
   storageState?: string;
+  /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
+  gpu?: { device: number };
 }
 
 /** The stderr warning for a page that robots.txt disallows and that is scanned anyway (--ignore-robots). */
@@ -445,6 +448,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--urls-from",
   "--sample-per-pattern",
   "--storage-state",
+  "--gpu-device",
 ];
 
 /** A whole number of at least 1, for a limit option. */
@@ -462,6 +466,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--no-quality") args.quality = false;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--resume") args.resume = true;
+    else if (arg === "--gpu") args.gpu ??= { device: 0 };
     else if (VALUE_OPTIONS.includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -475,6 +480,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--urls-from") args.urlsFrom = value;
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
       else if (arg === "--storage-state") args.storageState = value;
+      else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
       else args.failOver = parseFailOver(value);
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option ${arg}`);
@@ -1508,12 +1514,25 @@ export type PageStatus = "ok" | "blocked" | "robots" | "redirected" | "failed";
 /** The `robots` value recorded for a page on a loopback or private host: its owner's own server is not checked. */
 export const ROBOTS_SKIPPED_LOCAL = "skipped (local host)";
 
+/**
+ * Which scorer made a page's SSIMULACRA2 numbers. `cpuFallbacks` counts the scores the CPU took after the GPU scorer
+ * failed during this page; it is absent when there were none.
+ */
+export interface PageScorer {
+  name: "cpu" | "gpu";
+  device?: number;
+  deviceName?: string;
+  cpuFallbacks?: number;
+}
+
 export interface PageResult {
   url: string;
   host: string;
   scannedAt: string;
   imgtuneVersion: string;
   metric: "ssimulacra2";
+  /** The scorer that made the numbers: the CPU, or the GPU (see PageScorer). Absent in scans from before --gpu. */
+  scorer?: PageScorer;
   delta: number;
   aggressiveDelta?: number;
   viewports: string[];
@@ -1555,10 +1574,14 @@ export interface ScanRecordOptions {
   ignoreRobots: boolean;
   /** A storage state (logged-in session) was applied to every context. Its contents are not recorded. */
   storageState: boolean;
+  /** The scorer asked for. Scans from before --gpu have none: that is "cpu". */
+  scorer: "cpu" | "gpu";
 }
 
 /** The options of one page's output, for the completeness check of --resume. */
-export function recordOptionsOf(opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState">): ScanRecordOptions {
+export function recordOptionsOf(
+  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu">,
+): ScanRecordOptions {
   return {
     imgtuneVersion: IMGTUNE_VERSION,
     aggressive: opts.aggressive,
@@ -1566,13 +1589,30 @@ export function recordOptionsOf(opts: Pick<ScanOptions, "aggressive" | "quality"
     viewports: opts.viewports.map((v) => v.name),
     ignoreRobots: opts.ignoreRobots === true,
     storageState: opts.storageState !== undefined,
+    scorer: opts.gpu !== undefined ? "gpu" : "cpu",
   };
 }
 
-/** Whether two recorded option sets are the same (the viewports in order). */
+/** Whether two recorded option sets are the same (the viewports in order; a missing scorer is the CPU). */
 export function sameRecordOptions(a: ScanRecordOptions | undefined, b: ScanRecordOptions): boolean {
   if (!a) return false;
-  return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify({ ...a, scorer: a.scorer ?? "cpu" }) === JSON.stringify(b);
+}
+
+/** The scorer a page was measured with. `fallbacksBefore`: the GPU's fallback count when the page started. */
+export function scorerOf(gpu: GpuScorer | undefined, fallbacksBefore = 0): PageScorer {
+  if (gpu === undefined) return { name: "cpu" };
+  const cpuFallbacks = gpu.fallbackScores - fallbacksBefore;
+  return { name: "gpu", device: gpu.device, deviceName: gpu.deviceName, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
+}
+
+/** The line that names the GPU scorer when the GPU made any of the numbers; undefined for a CPU run. */
+export function scorerNote(results: PageResult[]): string | undefined {
+  const gpuPages = results.filter((r) => r.scorer?.name === "gpu");
+  if (gpuPages.length === 0) return undefined;
+  const first = gpuPages[0].scorer as PageScorer;
+  const fallbacks = gpuPages.reduce((sum, r) => sum + (r.scorer?.cpuFallbacks ?? 0), 0);
+  return gpuNote(first.device ?? 0, first.deviceName ?? "unknown", fallbacks);
 }
 
 function toReport(inst: Instance): ImageReport {
@@ -1792,6 +1832,8 @@ export interface ScanOptions {
   storageState?: StorageState;
   /** Only the images for which this is true get the quality and format search (see AnalysisContext). */
   qualityFor?: (inst: Instance) => boolean;
+  /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
+  gpu?: { device: number };
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
 }
@@ -1845,6 +1887,8 @@ async function scanPage(
     /** The project directory the scan runs in: resolved sources are checked against its files. */
     projectDir?: string;
     log: (message: string) => void;
+    /** The GPU scorer of this run, when --gpu was given and it started. */
+    gpu?: GpuScorer;
   },
   pageUrl: string,
   robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>,
@@ -1966,6 +2010,20 @@ async function withScanRun<T>(
   body: (browser: Browser, run: Parameters<typeof scanPage>[1], robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>) => Promise<T>,
 ): Promise<T> {
   resetTiming();
+  // The GPU program is started once per run and closed however the run ends: a left-open child keeps the CLI alive.
+  const gpu = opts.gpu !== undefined ? await startGpuScorer(opts.gpu.device, opts.log) : undefined;
+  try {
+    return await withBrowser(opts, gpu, body);
+  } finally {
+    gpu?.close();
+  }
+}
+
+async function withBrowser<T>(
+  opts: ScanOptions,
+  gpu: GpuScorer | undefined,
+  body: (browser: Browser, run: Parameters<typeof scanPage>[1], robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>) => Promise<T>,
+): Promise<T> {
   const browser = await measure("browser launch", () => launchChromium());
   try {
     // The fetches send the desktop viewport's user agent: the default one of a fresh context.
@@ -1974,7 +2032,7 @@ async function withScanRun<T>(
     await probe.close();
     const resolver = opts.resolver ?? systemResolver;
     const fetcher = makeFetcher({ userAgent, resolver, connectAddress: opts.connectAddress });
-    const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd }) };
+    const deps: QualityDeps = { score: makeScorer("ssimulacra2", { projectDir: opts.cwd, gpu }) };
     const run = {
       viewports: opts.viewports,
       aggressive: opts.aggressive,
@@ -1990,6 +2048,7 @@ async function withScanRun<T>(
       qualityFor: opts.qualityFor,
       projectDir: opts.cwd,
       log: opts.log,
+      gpu,
     };
 
     const robotsCache = new Map<string, Promise<string | undefined>>();
@@ -2065,7 +2124,9 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       } else {
         opts.log(`scanning ${safeText(url)}`);
         const started = performance.now();
+        const fallbacksBefore = run.gpu?.fallbackScores ?? 0;
         result = { ...(await scanPage(browser, run, url, robotsFor)), complete: true, options };
+        result.scorer = scorerOf(run.gpu, fallbacksBefore);
         if (TIMING_ENABLED) process.stderr.write(`imgtune timing: ${safeText(url)} ${((performance.now() - started) / 1000).toFixed(1)} s\n`);
         await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, {
           root: opts.outDir,
@@ -2090,7 +2151,11 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
  * One page scanned in memory, with nothing written: the run recheck uses. Its images are the page's own records.
  */
 export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<PageResult> {
-  return withScanRun(opts, async (browser, run, robotsFor) => scanPage(browser, run, pageUrl, robotsFor));
+  return withScanRun(opts, async (browser, run, robotsFor) => {
+    const fallbacksBefore = run.gpu?.fallbackScores ?? 0;
+    const result = await scanPage(browser, run, pageUrl, robotsFor);
+    return { ...result, scorer: scorerOf(run.gpu, fallbacksBefore) };
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2135,6 +2200,8 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
 /** Per-site line for hosts with two or more scanned pages. */
 export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string): string {
   const lines: string[] = [];
+  const note = scorerNote(results);
+  if (note !== undefined) lines.push(note, "");
   for (const result of results) lines.push(...renderPage(result, aggressive, hintsFile?.(result)), "");
   const byHost = new Map<string, PageNumbers[]>();
   for (const result of results) {
@@ -2207,7 +2274,10 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   const head = ["page", "status", "image KB/view", "exact", "exact + est.", "sharpness"];
   if (aggressive) head.push(`exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}`);
   const align = ["---", "---", "---:", "---:", "---:", "---:", "---:"].slice(0, width);
-  const lines: string[] = ["## imgtune scan", "", mdRow(head, width), mdRow(align, width)];
+  const lines: string[] = ["## imgtune scan", ""];
+  const note = scorerNote(results);
+  if (note !== undefined) lines.push(note, "");
+  lines.push(mdRow(head, width), mdRow(align, width));
   for (const result of results) {
     const label = pageLabel(result.url);
     if (result.status !== "ok" || !result.page) {
@@ -2265,6 +2335,8 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
 /** One JSON for other tools: each page's URL, status and numbers, in scan order. */
 export interface ScanSummary {
   imgtuneVersion: string;
+  /** The scorer of the run: the GPU when any page was scored on it (its cpuFallbacks summed), else the CPU. */
+  scorer: PageScorer;
   pages: {
     url: string;
     host: string;
@@ -2277,8 +2349,15 @@ export interface ScanSummary {
 }
 
 export function summaryOf(results: PageResult[]): ScanSummary {
+  const gpuPage = results.find((r) => r.scorer?.name === "gpu")?.scorer;
+  const cpuFallbacks = results.reduce((sum, r) => sum + (r.scorer?.cpuFallbacks ?? 0), 0);
+  const scorer: PageScorer =
+    gpuPage === undefined
+      ? { name: "cpu" }
+      : { name: "gpu", device: gpuPage.device, deviceName: gpuPage.deviceName, ...(cpuFallbacks > 0 ? { cpuFallbacks } : {}) };
   return {
     imgtuneVersion: IMGTUNE_VERSION,
+    scorer,
     pages: results.map((r) => ({
       url: r.url,
       host: r.host,
@@ -2368,6 +2447,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     maxPages: args.maxPages,
     maxImages: args.maxImages,
     storageState,
+    gpu: args.gpu,
     report,
   });
   if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);

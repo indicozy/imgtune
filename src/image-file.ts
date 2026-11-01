@@ -10,10 +10,11 @@ import sharp from "sharp";
 import { isLocalTarget } from "./address.js";
 import { encode, loadReference } from "./encode.js";
 import { makeFetcher, MAX_IMAGE_BYTES } from "./fetch.js";
+import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import type { RawImage } from "./ssim.js";
-import { decodeRaw, pixelSize, safeText, SCAN_TOLERANCE } from "./remote.js";
+import { decodeRaw, pixelSize, safeText, SCAN_TOLERANCE, scorerOf, type PageScorer } from "./remote.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
 export type ImageFormat = "avif" | "webp" | "jpeg";
@@ -38,10 +39,12 @@ export interface ImageArgs {
   /** The SSIMULACRA2 bar, instead of DEFAULT_FILE_BAR. */
   minScore?: number;
   format: "text" | "json";
+  /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
+  gpu?: { device: number };
 }
 
 const USAGE =
-  "usage: imgtune image <file|url|glob> [...] [--width <css px>] [--dpr 1,2] [--formats avif,webp,jpeg] [--min-score <n>] [--write <dir>] [--format text|json]";
+  "usage: imgtune image <file|url|glob> [...] [--width <css px>] [--dpr 1,2] [--formats avif,webp,jpeg] [--min-score <n>] [--write <dir>] [--format text|json] [--gpu] [--gpu-device <n>]";
 
 function positiveNumber(name: string, text: string): number {
   if (!/^\d+(\.\d+)?$/.test(text) || Number(text) <= 0) throw new Error(`${name} needs a number above 0, not ${safeText(text)}`);
@@ -55,6 +58,10 @@ export function parseImageArgs(argv: string[]): ImageArgs {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
       args.inputs.push(arg);
+      continue;
+    }
+    if (arg === "--gpu") {
+      args.gpu ??= { device: 0 };
       continue;
     }
     const value = argv[i + 1];
@@ -74,7 +81,8 @@ export function parseImageArgs(argv: string[]): ImageArgs {
       const score = Number(value);
       if (!/^\d+(\.\d+)?$/.test(value) || score <= 0 || score > 100) throw new Error(`--min-score needs a number above 0 and at most 100, not ${safeText(value)}`);
       args.minScore = score;
-    } else if (arg === "--write") args.write = value;
+    } else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
+    else if (arg === "--write") args.write = value;
     else if (arg === "--format") {
       if (value !== "text" && value !== "json") throw new Error(`--format is text or json, not ${safeText(value)}`);
       args.format = value;
@@ -394,10 +402,29 @@ export async function writeCopies(results: FileResult[], inputs: ImageInput[], c
 }
 
 /** `imgtune image`: measures each input and returns the text or JSON to print. */
-export async function imageCommand(argv: string[], cwd: string, userAgent = `imgtune/${IMGTUNE_VERSION}`): Promise<{ output: string; exitCode: number }> {
+export async function imageCommand(
+  argv: string[],
+  cwd: string,
+  userAgent = `imgtune/${IMGTUNE_VERSION}`,
+  log: (message: string) => void = (message) => process.stderr.write(`imgtune: ${message}\n`),
+): Promise<{ output: string; exitCode: number }> {
   const args = parseImageArgs(argv);
+  const gpu = args.gpu !== undefined ? await startGpuScorer(args.gpu.device, log) : undefined;
+  try {
+    return await measureInputs(args, cwd, userAgent, gpu);
+  } finally {
+    gpu?.close();
+  }
+}
+
+async function measureInputs(
+  args: ImageArgs,
+  cwd: string,
+  userAgent: string,
+  gpu: GpuScorer | undefined,
+): Promise<{ output: string; exitCode: number }> {
   const inputs = await resolveInputs(args.inputs, cwd);
-  const score = makeScorer("ssimulacra2", { projectDir: cwd });
+  const score = makeScorer("ssimulacra2", { projectDir: cwd, gpu });
   const results: FileResult[] = [];
   const buffers = new Map<string, Buffer>();
   for (const input of inputs) {
@@ -422,11 +449,13 @@ export async function imageCommand(argv: string[], cwd: string, userAgent = `img
   }
   const notes = args.write !== undefined ? await writeCopies(results, inputs, cwd, args.write, buffers) : [];
   const failed = results.filter((r) => r.error !== undefined).length;
+  const scorer: PageScorer = gpu !== undefined ? scorerOf(gpu) : { name: "cpu" };
   if (args.format === "json") {
-    const body = { evidence: "file-mode", files: results, copies: notes };
+    const body = { evidence: "file-mode", scorer, files: results, copies: notes };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: failed > 0 ? 1 : 0 };
   }
+  const head = gpu !== undefined ? `${gpuNote(gpu.device, gpu.deviceName, gpu.fallbackScores)}\n\n` : "";
   const text = results.map(renderFile).join("\n");
   const tail = notes.length > 0 ? `copies:\n${notes.map((n) => `  ${n}`).join("\n")}\n` : "";
-  return { output: `${text}${tail}`, exitCode: failed > 0 ? 1 : 0 };
+  return { output: `${head}${text}${tail}`, exitCode: failed > 0 ? 1 : 0 };
 }

@@ -46,6 +46,11 @@ const OPTION_HELP = {
     "rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after",
   ],
   ids: ["--ids <a,b,c>", "with --recheck: only these image ids (from the scan JSON's images[].id)"],
+  gpu: [
+    "--gpu",
+    "score with the GPU scorer (imgtune-ssimu2-gpu, see the docs); opt-in. Falls back to the CPU with a warning",
+  ],
+  gpuDevice: ["--gpu-device <n>", "the GPU to score on, by nvidia-smi index (implies --gpu; default 0)"],
 } as const;
 
 type OptionKey = keyof typeof OPTION_HELP;
@@ -85,6 +90,8 @@ const SCAN_HELP = commandHelp(
     "storageState",
     "recheck",
     "ids",
+    "gpu",
+    "gpuDevice",
   ],
 );
 
@@ -118,6 +125,8 @@ Options:
   --min-score <n>       the SSIMULACRA2 bar, above 0 and at most 100 (default 90)
   --write <dir>         write optimised copies (best format, at the largest needed width) into this folder
   --format <text|json>  text (default) or JSON
+  --gpu                 score with the GPU scorer (opt-in; falls back to the CPU with a warning)
+  --gpu-device <n>      the GPU to score on, by nvidia-smi index (implies --gpu; default 0)
   -h, --help            show this help
 `;
 

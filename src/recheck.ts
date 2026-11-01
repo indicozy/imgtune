@@ -6,7 +6,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImagePerViewport, type ImageRecord } from "./images.js";
-import { safeText, scanOnce, type PageResult } from "./remote.js";
+import { parseGpuDevice } from "./gpu.js";
+import { safeText, scanOnce, scorerNote, type PageResult } from "./remote.js";
 
 export interface RecheckArgs {
   file: string;
@@ -14,29 +15,37 @@ export interface RecheckArgs {
   ids?: string[];
   /** Recheck a page that robots.txt disallows (needed when the scan file says the page was scanned that way). */
   ignoreRobots: boolean;
+  /** Score the recheck with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU. */
+  gpu?: { device: number };
 }
 
 /** An image id as imgtune writes it (12 hex digits); anything else in a scan file is refused. */
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-const USAGE = "usage: imgtune scan --recheck <scan.json> [--ids a,b,c]";
+const USAGE = "usage: imgtune scan --recheck <scan.json> [--ids a,b,c] [--gpu] [--gpu-device n]";
 
 /** The arguments after `scan --recheck`. Throws with the message the CLI prints. */
 export function parseRecheckArgs(argv: string[]): RecheckArgs {
   let file: string | undefined;
   let ids: string[] | undefined;
   let ignoreRobots = false;
+  let gpu: { device: number } | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--ignore-robots") {
       ignoreRobots = true;
       continue;
     }
-    if (arg === "--recheck" || arg === "--ids") {
+    if (arg === "--gpu") {
+      gpu ??= { device: 0 };
+      continue;
+    }
+    if (arg === "--recheck" || arg === "--ids" || arg === "--gpu-device") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
       i++;
       if (arg === "--recheck") file = value;
+      else if (arg === "--gpu-device") gpu = { device: parseGpuDevice(value) };
       else {
         ids = value.split(",").map((id) => id.trim()).filter((id) => id !== "");
         if (ids.length === 0) throw new Error(`--ids needs at least one image id (${USAGE})`);
@@ -46,7 +55,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
     }
   }
   if (file === undefined) throw new Error(USAGE);
-  return { file, ids, ignoreRobots };
+  return { file, ids, ignoreRobots, gpu };
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
@@ -202,6 +211,18 @@ export function compareImage(
   return { lines, failures };
 }
 
+/**
+ * The warning when the recheck's scorer is not the scan's: the numbers may then differ for that reason alone. A scan from
+ * before --gpu has no scorer and was scored on the CPU.
+ */
+export function scorerMismatch(previous: PageResult, fresh: PageResult): string | undefined {
+  const before = previous.scorer?.name ?? "cpu";
+  const after = fresh.scorer?.name ?? "cpu";
+  if (before === after) return undefined;
+  const name = (scorer: string) => (scorer === "gpu" ? "GPU" : "CPU");
+  return `the scan was scored on the ${name(before)} and this recheck on the ${name(after)}; the numbers may differ slightly, so compare them with care`;
+}
+
 /** `imgtune scan --recheck`: the text to print and the exit code (1 when an image failed the check). */
 export async function recheckScan(argv: string[], cwd: string, log: (message: string) => void): Promise<{ output: string; exitCode: number }> {
   const args = parseRecheckArgs(argv);
@@ -256,6 +277,7 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
     log,
     ignoreRobots: args.ignoreRobots,
     qualityFor: (inst) => inst.url === "" || !earlierSrcs.has(inst.url),
+    gpu: args.gpu,
   });
   const seconds = (Date.now() - started) / 1000;
   if (fresh.status !== "ok") {
@@ -264,6 +286,14 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
 
   const now = new Map((fresh.images ?? []).map((record) => [record.id, record]));
   const out: string[] = [];
+  const note = scorerNote([fresh]);
+  const mismatch = scorerMismatch(previous, fresh);
+  if (note !== undefined) out.push(note);
+  if (mismatch !== undefined) {
+    log(`warning: ${mismatch}`);
+    out.push(`warning: ${mismatch}`);
+  }
+  if (note !== undefined || mismatch !== undefined) out.push("");
   const failures: string[] = [];
   for (const before of selected) {
     const how = pairRecord(before, now, fresh.images ?? []);
