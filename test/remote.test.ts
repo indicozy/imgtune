@@ -1297,6 +1297,7 @@ describe.each(["webp", "avif"] as const)("analysePage with a Contentful-shaped %
     });
     const observation: ViewportObservation = {
       viewport,
+      load: "fresh",
       status: 200,
       blocked: false,
       blockedRequests: 0,
@@ -1371,6 +1372,7 @@ describe("analysePage skips the quality sweep of a small file (fake fetcher, no 
     };
     const observation: ViewportObservation = {
       viewport,
+      load: "fresh",
       status: 200,
       blocked: false,
       blockedRequests: 0,

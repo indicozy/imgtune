@@ -116,10 +116,13 @@ Every flag below is checked against `--help`; use only these.
 - `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks** (they need `imgtune-ssimu2-gpu`, see
   `reference.md`). CUDA numbers GPUs fastest first unless `CUDA_DEVICE_ORDER=PCI_BUS_ID`; check the printed `opened <name>`.
   Compare scans only when both used the same scorer (`scorer` in the JSON).
-- `--survey`: the fast pass of "Site-wide, by hand" (two viewports, no quality, exact only). An explicit `--viewports`,
-  `--page-concurrency` or `--idle-timeout` overrides its part.
+- `--survey`: the fast pass of "Site-wide: survey first" (two viewports, no quality, exact only). An explicit
+  `--viewports`, `--page-concurrency` or `--idle-timeout` overrides its part.
 - `--page-concurrency <N>` (1 to 6, default 1) and `--idle-timeout <ms>` (0 to 600000, default 10000): see `--help`.
 - `--fail-on-broken`: exit 4 when a page is broken (see "Broken pages").
+- `--shared-loads` (opt-in): one page load per viewport class (mobile, desktop); the other viewports of the class resize the
+  open page. It saves CPU but costs wall time, so by default each viewport is loaded fresh. Scans of the two modes are
+  recorded apart (`loads` in the options): `--resume` rescans a page of the other mode, and `compare` warns about it.
 - `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop
   early (after the page that brings the images counted to N); run again with `--resume` to continue.
 - `--viewports <names>`; `--root <dir>` (source folder, for a monorepo sub-folder); `--no-cache`.

@@ -106,6 +106,11 @@ export interface CompareReport {
   views: string[];
   /** Both scans are --survey scans: the numbers are exact savings only (see survey.ts). Absent for two full scans. */
   survey?: true;
+  /**
+   * The scans were loaded in different ways (one page load per viewport class against one per viewport, see loadGroups):
+   * the numbers should match, and this line says the two were measured differently. Absent when both used the same way.
+   */
+  loadsMixed?: { before: "shared" | "fresh"; after: "shared" | "fresh" };
   paired: {
     /** Paired images that are compared (layout unchanged, with at least one view both scans loaded). */
     images: number;
@@ -263,6 +268,8 @@ export const SURVEY_MIX_MESSAGE =
   "a survey scan (--survey) and a full scan have different numbers (exact savings only, against exact and est.): scan both the same way";
 
 const isSurvey = (page: MeasuredPage): boolean => page.options?.survey === true;
+/** How a scan's viewports were loaded: a scan with no record (every scan before --shared-loads) was one load per viewport. */
+const loadsOf = (page: MeasuredPage): "shared" | "fresh" => (page.options?.loads === "shared" ? "shared" : "fresh");
 
 export function compareScans(before: MeasuredPage, after: MeasuredPage, dropped: { before: number; after: number }): CompareReport {
   if (isSurvey(before) !== isSurvey(after)) throw new Error(SURVEY_MIX_MESSAGE);
@@ -384,6 +391,7 @@ export function compareScans(before: MeasuredPage, after: MeasuredPage, dropped:
     changes,
     dropped,
     ...(isSurvey(before) ? { survey: true as const } : {}),
+    ...(loadsOf(before) !== loadsOf(after) ? { loadsMixed: { before: loadsOf(before), after: loadsOf(after) } } : {}),
   };
 }
 
@@ -404,6 +412,10 @@ export function renderCompare(report: CompareReport, limit: number): string {
   const { paired, excluded } = report;
   const lines: string[] = [];
   if (report.survey) lines.push(surveyNote(report.views.length));
+  if (report.loadsMixed) {
+    const name = (mode: "shared" | "fresh"): string => (mode === "shared" ? "one load per viewport class (--shared-loads)" : "one load per viewport (the default)");
+    lines.push(`loads: before ${name(report.loadsMixed.before)}, after ${name(report.loadsMixed.after)}: the viewports were measured in different ways`);
+  }
   lines.push(`compare: ${pathOf(report.before)} (before) -> ${pathOf(report.after)} (after), ${report.views.length} viewport(s) in both`);
   lines.push(`paired images: ${paired.images} compared (matched by srcset URL pattern and alt, then rendered layout, in document order)`);
   lines.push(`  per view, paired images: before ${kb(paired.beforeBytes)}, after ${kb(paired.afterBytes)}`);

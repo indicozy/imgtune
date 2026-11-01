@@ -456,7 +456,8 @@ describe("scorer records", () => {
   const scanOptions = { viewports: [], aggressive: false, quality: true, ignoreRobots: false, storageState: undefined };
 
   it("treats a scan without a scorer field as a CPU scan when it is resumed", () => {
-    const cpu = recordOptionsOf({ ...scanOptions });
+    // A scan from before the scorer field was one load per viewport, as the default is: its record matches that mode.
+    const cpu = recordOptionsOf(scanOptions);
     const legacy: Partial<ScanRecordOptions> = { ...cpu };
     delete legacy.scorer;
     expect(sameRecordOptions(legacy as ScanRecordOptions, cpu)).toBe(true);
