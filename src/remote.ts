@@ -659,6 +659,11 @@ export interface QualityDeps {
   cache?: ResultCache;
   /** Names the scorer in the cache key: "cpu", or the GPU that scored. */
   scorerId?: string;
+  /**
+   * The number of pairs the CPU has scored so far, when a GPU scorer is in use (see GpuScorer.cpuScores). A score is stored
+   * under the GPU's key only when this did not move while it was computed: a fallback's CPU score is never kept under it.
+   */
+  cpuScored?: () => number;
 }
 
 export interface QualityEstimate {
@@ -705,7 +710,9 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
     const format = input.format;
     // The local encode's bytes and scores come from the result cache when it has them; the search is the same either way.
     const scope = deps.cache ? cacheScope(input.original, input.width, deps.scorerId ?? "cpu", ENCODER_ID) : undefined;
-    const cached = async (key: string, compute: () => Promise<number>): Promise<number> => {
+    const cpuScored = deps.cpuScored ?? (() => 0);
+    // A score is kept only when the CPU did not score anything while it was computed (its key names the GPU).
+    const cached = async (key: string, compute: () => Promise<number>, isScore = false): Promise<number> => {
       if (deps.cache === undefined || scope === undefined) return compute();
       const hit = await deps.cache.get(`${scope}|${key}`);
       if (hit !== undefined) {
@@ -713,21 +720,25 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
         return hit;
       }
       count("cache misses");
+      const before = cpuScored();
       const value = await compute();
-      await deps.cache.put(`${scope}|${key}`, value);
+      if (!isScore || cpuScored() === before) await deps.cache.put(`${scope}|${key}`, value);
+      else count("cache writes skipped: CPU score");
       return value;
     };
     const sizeAt = (q: number) => cached(`bytes|${format}|${q}|cdn`, async () => (await enc(reference, format, q, "cdn")).bytes);
     const scoreAt = (q: number) =>
-      cached(`score|${format}|${q}|cdn`, async () => score(reference, (await enc(reference, format, q, "cdn")).decoded));
+      cached(`score|${format}|${q}|cdn`, async () => score(reference, (await enc(reference, format, q, "cdn")).decoded), true);
     // The offset of the local encoder: one sample, so the median is the sample itself (see calibrationOffset).
     const match = await measure("calibrate", () => matchLocalQuality(sizeAt, input.bytes));
     const offset = Math.round(input.current - match);
     const localCurrent = clampQuality(input.current - offset);
     const currentBytes = await sizeAt(localCurrent);
     // The bar is the served file's own score against the original, so it holds whatever quality the URL asks for.
-    const servedScore = await cached(`served|${contentHash(input.served)}`, async () =>
-      score(reference, await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height }))),
+    const servedScore = await cached(
+      `served|${contentHash(input.served)}`,
+      async () => score(reference, await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height }))),
+      true,
     );
     let target: number | undefined;
     for (const delta of deltas) {
@@ -2113,6 +2124,7 @@ async function withBrowser<T>(
       score: makeScorer("ssimulacra2", { projectDir: opts.cwd, gpu }),
       cache,
       scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu",
+      cpuScored: gpu !== undefined ? () => gpu.cpuScores : undefined,
     };
     const run = {
       viewports: opts.viewports,

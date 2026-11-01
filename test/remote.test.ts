@@ -5,6 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { ResultCache } from "../src/result-cache.js";
 import {
   analysePage,
   applyQuality,
@@ -1560,5 +1562,51 @@ describe("the fix hints in the PR comment", () => {
     expect(leftOut).toBeDefined();
     expect(leftOut).not.toContain("<details>");
     expect(leftOut!.length).toBeLessThanOrEqual(COMMENT_LIMIT);
+  });
+});
+
+describe("estimateQuality and the GPU scorer's CPU fallback", () => {
+  /** The keys of every entry the result cache holds in `dir`. */
+  async function storedKeys(dir: string): Promise<string[]> {
+    const names = await readdir(dir);
+    const keys: string[] = [];
+    for (const name of names) keys.push(JSON.parse(await readFile(join(dir, name), "utf8")).k as string);
+    return keys;
+  }
+
+  it("keeps no score under the GPU's key when the CPU scored during the computation", async () => {
+    const pixels = gradientNoise(160, 120, 4, 7);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).webp({ quality: 60 }).toBuffer();
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-gpu-cache-"));
+    let cpuScored = 0;
+    // A scorer that falls back to the CPU on every call (the GPU has failed): the count moves while each score is computed.
+    const fallingBack = (ref: RawImage, test: RawImage) => {
+      cpuScored++;
+      return ssim(ref, test) * 100;
+    };
+    await estimateQuality(
+      { original, served, format: "webp", bytes: served.length, width: 160, height: 120, current: 60 },
+      [2],
+      { score: fallingBack, cache: new ResultCache(dir), scorerId: "gpu:Test", cpuScored: () => cpuScored },
+    );
+    const keys = await storedKeys(dir);
+    expect(keys.some((k) => k.includes("|score|") || k.includes("|served|"))).toBe(false);
+    expect(keys.some((k) => k.includes("|bytes|"))).toBe(true);
+  });
+
+  it("keeps the scores under the GPU's key when the GPU scored every pair", async () => {
+    const pixels = gradientNoise(160, 120, 4, 7);
+    const original = await rawToPng(pixels);
+    const served = await sharp(pixels.data, { raw: { width: 160, height: 120, channels: 4 } }).webp({ quality: 60 }).toBuffer();
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-gpu-cache-"));
+    await estimateQuality(
+      { original, served, format: "webp", bytes: served.length, width: 160, height: 120, current: 60 },
+      [2],
+      { score: (ref, test) => ssim(ref, test) * 100, cache: new ResultCache(dir), scorerId: "gpu:Test", cpuScored: () => 0 },
+    );
+    const keys = await storedKeys(dir);
+    expect(keys.some((k) => k.includes("|score|"))).toBe(true);
+    expect(keys.some((k) => k.includes("|served|"))).toBe(true);
   });
 });

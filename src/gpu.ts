@@ -152,6 +152,11 @@ export class GpuScorer implements GpuScoring {
   readonly deviceName: string;
   /** Scores the GPU could not take after it failed, so the CPU scored them. */
   fallbackScores = 0;
+  /**
+   * Every pair the CPU scored through this scorer: the fallbacks, and the pairs too small for the program (which never
+   * count as fallbacks). A caller that stores a score under this scorer's key checks that this did not move (see remote.ts).
+   */
+  cpuScores = 0;
 
   private readonly binary: string;
   private readonly env: NodeJS.ProcessEnv;
@@ -176,14 +181,19 @@ export class GpuScorer implements GpuScoring {
   async tryScore(ref: RawImage, test: RawImage): Promise<number | undefined> {
     if (this.failure !== undefined) {
       this.fallbackScores++;
+      this.cpuScores++;
       return undefined;
     }
-    if (!gpuEligible(ref.width, ref.height)) return undefined;
+    if (!gpuEligible(ref.width, ref.height)) {
+      this.cpuScores++;
+      return undefined;
+    }
     try {
       const [value] = await this.scoreBatch([[ref, test]]);
       return value;
     } catch (err) {
       this.fallbackScores++;
+      this.cpuScores++;
       this.kill(err instanceof Error ? err : new Error(String(err)));
       return undefined;
     }

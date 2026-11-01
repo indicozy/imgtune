@@ -219,6 +219,8 @@ describe("GpuScorer", () => {
     try {
       expect(await gpu.tryScore(black(4, 4), black(4, 4))).toBeUndefined();
       expect(gpu.fallbackScores).toBe(0);
+      // The CPU still scored the pair: the count that keeps a GPU-keyed cache write out sees it.
+      expect(gpu.cpuScores).toBe(1);
     } finally {
       gpu.close();
     }

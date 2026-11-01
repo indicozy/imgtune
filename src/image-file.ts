@@ -255,6 +255,8 @@ export interface FileCache {
   store: ResultCache;
   scorerId: string;
   original: Buffer;
+  /** The CPU-scored count of the GPU scorer (see QualityDeps.cpuScored in remote.ts); absent for the CPU. */
+  cpuScored?: () => number;
 }
 
 /** The score of the local encode at a quality, from the result cache when it has it (the same keys as a scan's). */
@@ -264,8 +266,10 @@ function scoreAtCached(cached: FileCache, reference: RawImage, format: ImageForm
     const key = `${scope}|score|${format}|${q}|cdn`;
     const hit = await cached.store.get(key);
     if (hit !== undefined) return hit;
+    // Stored only when the CPU scored nothing meanwhile: the key names the GPU (see QualityDeps.cpuScored).
+    const before = cached.cpuScored?.() ?? 0;
     const value = await score(reference, (await encode(reference, format as "avif" | "webp", q, "cdn")).decoded);
-    await cached.store.put(key, value);
+    if ((cached.cpuScored?.() ?? 0) === before) await cached.store.put(key, value);
     return value;
   };
 }
@@ -447,7 +451,10 @@ export async function imageCommand(
   const gpu = args.gpu !== undefined ? await startGpuScorer(args.gpu.device, log) : undefined;
   const store = args.noCache === true ? undefined : new ResultCache(join(cwd, CACHE_DIR));
   await store?.trim();
-  const cache = store === undefined ? undefined : { store, scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu" };
+  const cache =
+    store === undefined
+      ? undefined
+      : { store, scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu", cpuScored: gpu ? () => gpu.cpuScores : undefined };
   try {
     return await measureInputs(args, cwd, userAgent, gpu, cache);
   } finally {

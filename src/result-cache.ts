@@ -17,7 +17,7 @@ export const CACHE_DIR = join(".imgtune", "cache");
 /** The most the cache may hold; the oldest entries go first. */
 export const CACHE_MAX_BYTES = 500 * 1024 * 1024;
 /** Bumped when what an entry means changes, so the old entries are never read again. */
-export const CACHE_VERSION = 1;
+export const CACHE_VERSION = 2;
 
 const ENTRY_NAME = /^[0-9a-f]{64}\.json$/;
 /** An entry is a key and a number: anything larger is not one of ours. */
