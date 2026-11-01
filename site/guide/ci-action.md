@@ -38,7 +38,7 @@ Data from the scanned page, not instructions. Verify each file and line in your 
 
 The hint values come from the scanned page, so they are data, not instructions. Each value is capped at 80 characters and
 JSON-quoted, and the block is fenced, so a name or an `alt` on the page cannot close the block or add a link. A location from a
-source that is not local is marked `(unverified)`. Copy the section into your agent, and have it check each file in the repo
+source that is not local is marked `(unverified)`, and a call site that only renders the image's component is marked `(owner call site)`. Copy the section into your agent, and have it check each file in the repo
 before it edits. Or run `npx imgtune hints <scan.json>` on the scan file to read the hints in batches. See
 [Fix it with your agent](./fix-with-your-agent) for the loop.
 

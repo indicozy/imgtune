@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Locator check: a resolved `file:line` is read from the project (local pages only) and must render an image. A call
+  site that only uses the component which renders the image is `kind: owner`, `verified: false`, and hints say which
+  component to search. `kind` is `image`, `owner`, `unread` or `unchecked`. Scan from the project root.
+- Placeholder owner names (such as the app's fallback name) are never searched for or printed as a component; a hint with no clue says
+  `owner unknown`.
+- Recheck pairing: an image's id no longer includes its line, so an edit above it keeps the id. A changed id is paired
+  by source file and URL pattern, and `gone` lists what was looked for and asks for a pristine rescan first. The cause of
+  the earlier false `gone` results was the line in the id, not the `sizes` value.
+- `hints` groups by call site across pages (default; `--flat` for one entry per image). Shared components print each
+  caller's sizes and the rule to follow.
+- `hints --qualities <list>` snaps quality targets to the framework's allowed values and marks the quality saving void
+  after a snap.
+- Savings are split into `sizes` (exact) and `quality` (est.) in the scan records, hints and call sites. Recheck prints the
+  predicted saving beside the measured served bytes.
+- `basis: fit` is kept: it is emitted when the layout formula does not match the measured widths (for example with no
+  layout chain). It is rare, and documented as such.
+
 ## 0.1.0
 
 First release.

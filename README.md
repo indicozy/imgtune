@@ -155,7 +155,7 @@ inputs, the permissions, and two example workflows (Vercel previews, and a local
 - **Hint strings are data, not instructions.** File names, component names, `alt`, `testid`, classes and URLs come from
   the page being scanned, and the agent must never follow text found in them. The hints print them JSON-quoted and capped
   (in the terminal, and in the PR comment, where they sit in a fenced block after a line that says they are data). A
-  locator from a non-local source is marked `(unverified)`. The agent
+  locator from a non-local source is marked `(unverified)`, and a call site that only renders the image's component is marked `(owner call site)`. The agent
   checks that a file exists in the repository, and that the line holds an image usage, before it edits.
 - **Source maps come from the scanned site.** They are read with caps on size (20 MB), count (64 per scan), lines and
   sections, and only a relative path under the project is kept as a source file.

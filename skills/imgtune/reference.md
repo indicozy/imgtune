@@ -18,7 +18,8 @@ One JSON object per line, one line per image usage. Append; never rewrite earlie
 - `file`: `path:line`, or `null` when unmatched.
 - `rung`: `measured-page`, `measured-harness`, `ceiling-code` or `not-measured`.
 - `status`: `fixed`, `verified`, `failed`, `reverted`, `skipped`, `unmatched`, `reported`.
-- `verified`: true only after a passing `scan --recheck`.
+- `verified`: true only after a passing `scan --recheck`. (A hint's own `verified` is different: it means its source line
+  holds an image. See Call sites below.)
 - `saved_kb` and `added_kb`: keep them separate. Never store a net value.
 
 ### `.imgtune/HANDOFF.md`
@@ -35,6 +36,36 @@ Write this when stopping early. Keep it short enough to read first in the next s
 - Open: <unmatched count>, <not-measured count>, questions for the user
 - Resume: read this file and the ledger, then `npx imgtune hints <scan> --limit 10 --offset <N>`
 ```
+
+## Call sites, owners and shared components
+
+`hints` groups by call site: one entry per `file:line` (or component) across pages. Read the group, not each image.
+
+- **Plain `file:line`** (`verified`): the line in the project holds an image. Edit it.
+- **Owner call site** (`(owner call site)`, `the image is rendered inside <Name>`): the line is where `<Name>` is used,
+  not the image. The image is inside `<Name>`. Find its definition (`function Name`, `const Name`, `export default function
+  Name`) and fix the `<img>` or `<Image>` in that file. Use the call site only to confirm which component it is.
+- **`owner unknown`**: no file and no usable name. Use `alt`, `testid` or `urlPattern`, and grep before editing.
+- **Shared components**: the group lists each page's current and proposed `sizes`. One proposed value: apply it. `shared
+  component: pass sizes from each caller`: make `sizes` a prop, have each caller pass its own value (the list gives them),
+  and fix the component to use the prop. `max-safe`: one value covers every image on the page; it is the widest measured
+  width, so nothing is cut off.
+- **Quality snap**: pass the framework's allowed qualities with `--qualities`. A target below an allowed value is raised to
+  it (`q82 -> 85`), and the quality saving is then `void after snap`: it was estimated at the raw target, so it is not
+  counted, and the saving is the sizes part alone.
+
+## When `scan --recheck` says `gone`
+
+`gone` means no image on the page now matches the id, or its source file and URL pattern. Before you act on it:
+
+1. Set your edits aside (the page as the scan saw it: stash, or a clean copy), keep the dev server running, and run the
+   same `--recheck` with the same ids.
+2. If the ids are found there, the edit removed or changed the image, or the component no longer renders it under the
+   same file. Fix the edit, then recheck.
+3. If they are not found there either, the page no longer renders the image. Say so in the ledger (`skipped`, with the
+   reason), rather than marking it fixed.
+
+Do not mark an image `gone` in the ledger from a single recheck.
 
 ## Framework notes in detail
 
@@ -125,6 +156,9 @@ npx imgtune image "public/**/*.{jpg,jpeg,png}" --write .imgtune/copies --min-sco
 ## Verify checklist
 
 - [ ] `scan --recheck` exits 0 for every fixed id (or each failure is recorded and reverted).
+- [ ] The predicted and measured bytes in each recheck line agree in direction. A predicted saving with measured growth
+      is not verified, even when the check passes.
+- [ ] No `gone` image was marked fixed (see "When `scan --recheck` says `gone`").
 - [ ] No fix raised the bytes without a sharpness fix on the same usage.
 - [ ] Each fix is labelled with its rung.
 - [ ] The final scan on the built or preview server is compared with the before scan.

@@ -140,8 +140,9 @@ One entry per viewport name. Each has:
 | field | meaning |
 | --- | --- |
 | `component` | the component names, nearest first. Dev builds of React only |
-| `file`, `line` | the project-relative source file and line of the element, through the source map. Dev builds only |
-| `verified` | present with `file`. `true` when the page is on a loopback or private host. `false` means the source came from another origin, and it must be checked before it is trusted |
+| `file`, `line` | the project-relative source file and line of the element, through the source map. Dev builds only. The file is read from the directory the scan ran in |
+| `kind` | present with `file`: `image` (the line, or a window of three lines, holds an image tag, a srcset prop, or the component's definition), `owner` (the line is the call site of the component that renders the image: the image is inside that component), `unread` (the file was not found in the scan's directory), or `unchecked` (the page is not local, so no file was read) |
+| `verified` | `true` only for `kind: image`: the source is a local project file and its line renders an image. Everything else is `false` and must be checked before it is trusted |
 | `testid` | the `data-testid` of the element |
 | `alt` | the `alt` text of the element |
 | `selector` | a CSS selector for the element |
@@ -219,7 +220,7 @@ Each node in `nodes`:
 
 | field | meaning |
 | --- | --- |
-| `sizes` | present when a `sizes` value was derived: `value` (the CSS value), `basis` (`layout-formula`, `fit` or `measured-max`), `rung` (`measured-page`) and `branches` |
+| `sizes` | present when a `sizes` value was derived: `value` (the CSS value), `basis` (`layout-formula`, `fit` or `measured-max`), `rung` (`measured-page`) and `branches`. `fit` is a fitted line through the measured widths, used when the layout formula does not match them (for example when no layout chain was captured); it is rare but reachable |
 | `sizes.branches` | one per media branch: `lo` and `hi` (the viewport widths it covers), `value`, `basis` and `condition` (the media condition, or `default`) |
 | `width` | plain images only: the device pixels the file needs at the reference viewport |
 | `quality` | present when the image's group has a quality target and the current quality is known: `perFormat` (the target quality per format), `groupRule` (`max-of-targets`), `group` (the component, or the URL pattern, the maximum comes from), `samples` (the number of images scored in the group), `current`, and `qualityAssumed` |

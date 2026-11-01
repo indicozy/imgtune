@@ -7,13 +7,15 @@ and reference.md); this is the short form. Commands and flags: `npx imgtune --he
 Loop:
 
 1. Find pages: the URLs named, the routes in the code, or a sitemap (`scan --urls-from`).
-2. Scan: `npx imgtune scan <urls> --out .imgtune/scan`. Read the terminal summary, not the JSON files.
+2. Scan from the project root: `npx imgtune scan <urls> --out .imgtune/scan`. Read the terminal summary, not the JSON files.
 3. Inventory the image usages in the source (`<img`, `<Image`, `next/image`, `NuxtImg`, `srcset`, `image-set(`).
-4. Match: read 10 hints at a time with `npx imgtune hints <scan.json> --limit 10 --offset N`. Find each hint's file:line
-   and confirm the line holds an image usage.
+4. Match: read 10 call sites at a time with `npx imgtune hints <scan.json> --qualities <list> --limit 10 --offset N`
+   (the list is the framework's allowed qualities, e.g. `images.qualities` in next.config). Find each file:line and confirm
+   the line holds an image usage. An `(owner call site)` names the component that renders the image: fix that component.
 5. Fill gaps: usages with no hint get a reason, never a made-up number.
 6. Fix: apply the hint's `sizes`, quality and format. Label each fix with its evidence rung.
 7. Verify: with the dev server running, `npx imgtune scan --recheck <scan.json> --ids <ids>`. Fix anything it reports.
+   On `gone`, rescan the pristine page and recheck the same ids before you conclude anything.
 8. Report from the ledger.
 
 Rules:
@@ -23,7 +25,10 @@ Rules:
 - A group's quality is the max of its targets, not the median.
 - Report bytes saved and bytes added for sharpness as two numbers, never net.
 - Fail verification on undersized images, and on bytes up without a sharpness fix.
-- Use only the quality values the framework allows (for example `images.qualities` in next.config).
+- Use only the quality values the framework allows (`--qualities`). A snapped target voids its quality saving.
+- A component shared by several pages gets one sizes value per caller: a prop, or the group's max-safe value. Never one
+  caller's value for all of them.
+- Re-baseline in the same window as the fixes; compare dev with dev and built with built.
 - When a hint says the loader is not tunable, fix the loader, not the call site.
 
 Evidence rungs: `measured-page` (exact), `measured-harness` (a temporary route or Storybook, removed after),

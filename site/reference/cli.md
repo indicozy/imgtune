@@ -49,9 +49,15 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `-h, --help` | show this help |
 
 `--recheck` rescans the page at the URL the scan file recorded, so that server must be running (the dev server, for source
-locations). For each image it prints, per viewport, the rendered width, the served bytes and whether the image is undersized,
-before and after, and the hint's `sizes` and bytes saved. It writes nothing. It exits 1 when an image became undersized or
-bytes rose without a sharpness fix.
+locations). For each image it prints, per viewport, the rendered width, the served bytes and whether the image is undersized, before and
+after, and the hint's `sizes` and bytes saved, with the predicted saving beside the measured one (the served bytes change).
+It writes nothing. It exits 1 when an image became undersized or bytes rose without a sharpness fix.
+
+An image is found again by its id, which is keyed on the page, the source file, and the image's order in the file, so an
+edit that moves a line keeps it. When the id is not found, the image is paired with the rescanned image that has the same
+source file and the same URL pattern (the loader URL without its width and quality), and the output says so. `gone` means
+neither matched: the output lists what was looked for. Before you conclude an image is gone, rescan the page as it was
+before your edits and recheck the same ids: if they are found there, your edit removed or changed the image.
 
 Exit status: 0 on success, 3 when a `--fail-over` budget was exceeded, 2 when Chromium is missing, and 1 for other scan
 failures or a failed `--recheck`.
@@ -69,16 +75,24 @@ image, its component and `file:line` when they resolved, the sizes and quality t
 | --- | --- |
 | `--page <text>` | only pages whose URL contains the text |
 | `--component <name>` | only images whose component or file contains the text |
-| `--limit <N>` | hints to print (default 10) |
-| `--offset <N>` | skip the first N hints (for the next batch) |
+| `--flat` | one entry per image instead of one per call site (`file:line`, across pages) |
+| `--qualities <list>` | the framework's allowed qualities, e.g. `75,85,100`: each quality target is raised to the nearest allowed value (`q82 -> 85 (allowed: 75,85,100)`), and a quality saving the snap voids is `void after snap` |
+| `--limit <N>` | call sites to print (default 10; images with `--flat`) |
+| `--offset <N>` | skip the first N call sites (for the next batch) |
 | `--min-kb <N>` | only hints that save at least N KB per view |
 | `--format <text\|json>` | `text` (default) or `json` |
 | `-h, --help` | show this help |
 
-With `--format json`, the output is an object with `page`, `total` (the hints that match the filters), `offset`, `limit` and
-`hints`. Each hint has the fields `id`, `page`, `component`, `file`, `line`, `verified`, `testid`, `alt`, `classes`, `find`,
-`selector`, `sizes`, `width`, `quality`, `format`, `bytes`, `rung` and `notes`. The `bytes` field has `saved` and
-`addedForSharpness`, and both are per page view. See [Output JSON fields](./output-json).
+By default the text groups the hints by call site: one entry per `file:line` (or component) across pages, with its image
+count, its pages, each page's current and proposed sizes and rendered widths, the combined sizes, the quality and the ids.
+The combined sizes say `shared component: pass sizes from each caller` when the pages propose different values. Each
+entry's saving is split into sizes and quality when the scan gave the split. With `--format json` the default output is an
+object with `page`, `groups`, `images`, `offset`, `limit` and `callSites` (each with `key`, `file`, `line`, `component`,
+`count`, `pages`, `saved`, `sizes`, `ids` and its `hints`). With `--flat`, it is `page`, `total`, `offset`, `limit` and
+`hints`. Each hint has the fields `id`, `page`, `component`, `file`, `line`, `kind`, `verified`, `testid`, `alt`, `classes`,
+`find`, `selector`, `sizes`, `rendered`, `width`, `quality`, `format`, `bytes`, `rung` and `notes`. The `bytes` field has
+`saved` and `addedForSharpness` (both per page view), and `sizes` and `quality` when the scan gave the split. See
+[Output JSON fields](./output-json).
 
 ## image
 
