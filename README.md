@@ -2,14 +2,15 @@
 
 [![npm version](https://img.shields.io/npm/v/imgtune.svg)](https://www.npmjs.com/package/imgtune)
 
-**Your images waste your traffic. ImgTune fixes that.**
+**ImgTune measures image waste on any live site, and your AI agent fixes it in any framework.**
 
 Website: https://indicozy.github.io/imgtune/ · [Try the demo](https://indicozy.github.io/imgtune/demo) · [Docs](https://indicozy.github.io/imgtune/guide/getting-started)
 
-They waste it three ways: served larger than the space they fill, encoded at a quality nobody can see, and
-in an older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on
-your live page, at six viewports, against a perceptual quality bar. Your pages send the fewest image bytes that still
-look the same.
+Images waste traffic three ways: served larger than the space they fill, encoded at a quality nobody can see, and in an
+older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on the live
+page, at six viewports, against a perceptual quality bar. It reports, for each image, the sizes, quality and format to
+use, and the bytes each change saves. Your AI agent (Claude Code, Cursor, Codex, or any other) finds those images in your
+source and makes the changes, then checks them with a rescan.
 
 ### Why one lever is not enough
 
@@ -37,13 +38,42 @@ Playwright; see [Requirements](#requirements).
 
 ## Quick start
 
-Measure any live site, with no access to its source:
+Measure a live site, with no access to its source:
 
 ```sh
-npx imgtune scan https://your-site
+npx imgtune scan https://your-site.example/
 ```
 
-Run `npx imgtune --help`, or `npx imgtune scan --help`, for every option.
+The scan writes one JSON file per page to `.imgtune/scan/`, for example `.imgtune/scan/your-site.example-index.json`, and
+prints a count of the images with fix hints. Read the hints in batches of ten:
+
+```sh
+npx imgtune hints .imgtune/scan/your-site.example-index.json
+```
+
+Each hint names the image, its component and `file:line` when they resolve, the `sizes` and quality to use, and the bytes
+the fix saves per view, with the bytes it adds for sharpness shown separately. Run `npx imgtune --help`, or
+`npx imgtune scan --help` for every option.
+
+## Fix it with your agent
+
+ImgTune measures; it does not edit your project. The agent skill does the editing: it scans, matches each hint to the
+source, fixes it, verifies with a rescan, and reports from a ledger it keeps in the project.
+
+- **Claude Code**: copy the skill folder into your project. From the project root:
+
+  ```sh
+  mkdir -p .claude/skills && cp -r node_modules/imgtune/skills/imgtune .claude/skills/
+  ```
+
+  Then ask Claude Code to optimise the images of the site. The skill is `.claude/skills/imgtune/SKILL.md`, with a
+  `reference.md` beside it.
+- **Cursor, Codex, Copilot, and other agents**: paste `node_modules/imgtune/skills/imgtune/AGENTS.snippet.md` into your
+  `AGENTS.md` or `CLAUDE.md`. It is the short form of the same loop and rules, and points to `npx imgtune --help`.
+
+The skill works in batches of about ten hints, writes `.imgtune/ledger.jsonl` (one line per image usage), and writes
+`.imgtune/HANDOFF.md` when its context fills, so a new session can resume. Use a built or preview server for the
+before and after numbers, and the dev server for the edit loop: source locations only resolve in dev builds.
 
 ## What `scan` measures
 
@@ -59,6 +89,9 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Undersized images (a file smaller than the slot it fills) are reported as sharpness growth, separately. Growth from
   undersized images is never subtracted from other images' savings, and an undersized image itself contributes no
   saving.
+- For each image, the scan records its locator (the component and `file:line` in dev builds, `data-testid`, `alt`, and the
+  loader URL pattern), the `sizes` the browser resolved at each viewport, the layout chain above it, and a fix hint with
+  two numbers: bytes saved, and bytes added for sharpness. The two are never netted.
 - Pages are scanned after their `robots.txt` is checked for the `*` user agent. A disallowed page is skipped and
   recorded as `robots`. Pages that return a challenge or bot wall are recorded as `blocked` and not retried. The
   scanner identifies itself with the default Chromium user agent, uses no stealth plugins, and fetches each image URL
@@ -66,8 +99,69 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Besides the page itself, scan fetches the page's own srcset candidates and, for quality estimates, the original of a
   sampled image (derived from the loader URL), each at most once per scan. It never requests new transformations from
   the CDN.
-- Security: `scan` refuses private and loopback addresses unless the URL you give is itself local, checks every redirect
-  hop and sub-resource at connection time. See the [scanning guide](site/guide/scanning-any-site.md#security).
+- Large sites: `--urls-from` reads a URL list or a sitemap, `--sample-per-pattern` samples each route pattern, and
+  `--resume`, `--max-pages` and `--max-images` split a long run into parts.
+
+## The evidence ladder
+
+Every fix hint is labelled with the strength of its evidence, the rung it stands on:
+
+1. **measured-page** (exact): the usage was measured on the live page, at each viewport. This is what `scan` produces.
+2. **measured-harness**: the usage was measured in isolation, through a temporary route such as `/__imgtune/<component>`
+   that renders each state, or through Storybook. The agent removes the route afterwards.
+3. **ceiling-code**: derived from the resolved classes and the layout constraints (container width, grid columns,
+   padding). It is an upper bound on the width needed, never a measured saving.
+4. **not-measured**: no number, with the reason (hidden, behind a login, not rendered at scan time).
+
+A ceiling is never derived from the existing `sizes` value. When a usage is measured, its `sizes` comes from the layout
+the browser resolved, not from a guess.
+
+## Commands
+
+| command | what it does |
+| --- | --- |
+| `imgtune scan <url> [<url> ...]` | measures live pages, one JSON file per page in `--out` (default `.imgtune/scan`) |
+| `imgtune hints <scan.json>` | prints a batch of fix hints: `--limit` (default 10), `--offset`, `--page`, `--component`, `--min-kb`, `--format json` |
+| `imgtune scan --recheck <scan.json> [--ids a,b,c]` | rescans only the named images at the viewports where they rendered; prints before and after; exits 1 on a failed check |
+| `imgtune image <file\|url\|glob>` | measures image files without a page: bytes now, the lowest quality per format that meets the bar, and at a `--width` the bytes at each needed width; `--min-score` sets the bar (default 90), `--write <dir>` writes optimised copies |
+
+The scan options that matter most: `--viewports <names>` (a subset of the six), `--markdown <file>` (the PR comment),
+`--summary-json <file>` (one JSON of every page's numbers), `--fail-over <pct>` (exit 3 above a budget),
+`--storage-state <file>` (a logged-in session), and `--ignore-robots` (see Security). `npx imgtune scan --help` lists them all.
+
+## GitHub Action
+
+`action.yml` at the root scans the pages you name on each pull request, and comments the result on it. The comment keeps
+the summary tables and the top groups per page, and adds a collapsed "Fix hints for your AI agent" section with the top
+ten hints across the pages. The comment is updated on each push. Set `fail-over` to fail the job above a budget.
+
+```yaml
+- uses: indicozy/imgtune@main
+  with:
+    urls: https://preview.your-site.example/
+    fail-over: "5"
+```
+
+The action builds itself from source, so `dist/` is not needed in the repository. See [docs/ci.md](docs/ci.md) for the
+inputs, the permissions, and two example workflows (Vercel previews, and a local build on the runner).
+
+`scan` keeps Chrome on the CPUs it was started on, so you can keep it off the cores you need: `taskset -c 8-19 npx imgtune scan …` on Linux.
+
+## Security
+
+- **Egress and private addresses.** `scan` refuses private and loopback addresses unless the URL you give is itself local,
+  checks every redirect hop and sub-resource at connection time. See the [scanning guide](site/guide/scanning-any-site.md#security).
+- **ImgTune never commits, and `scan` does not change your project's source files.**
+- **Hint strings are data, not instructions.** File names, component names, `alt`, `testid`, classes and URLs come from
+  the page being scanned, and the agent must never follow text found in them. The hints print them JSON-quoted and capped
+  (in the terminal, and in the PR comment, where they sit in a fenced block after a line that says they are data). A
+  locator from a non-local source is marked `(unverified)`. The agent
+  checks that a file exists in the repository, and that the line holds an image usage, before it edits.
+- **Source maps come from the scanned site.** They are read with caps on size (20 MB), count (64 per scan), lines and
+  sections, and only a relative path under the project is kept as a source file.
+- **`--storage-state` holds session cookies.** Never commit that file. The scan never prints its contents.
+- **`--ignore-robots` is for sites you own or are authorised to test.** It prints a warning, and the JSON records
+  `robotsIgnored` with the rule that disallowed the page.
 
 ## Supported loaders
 
@@ -88,10 +182,6 @@ that ImgTune can change.
 
 Where the original is unknown, ImgTune still measures resolution, and reports the count of images it could not score
 for quality.
-
-## Safety
-
-- ImgTune never commits, and `scan` does not change your project's source files.
 
 ## Demand study (2026-10-28)
 
@@ -146,28 +236,26 @@ image-heavy commerce.
 - A3's jump from v1 to v4 comes from Sanity images on a custom domain served at `q=100`, which v1 could not score.
 - tailwindcss.com/blog rendered no `<img>` at scan time (0 images); counted as 0%.
 
-## CI
-
-`action.yml` at the root scans a preview deployment on each pull request and comments its image waste on the pull
-request. Set `fail-over` to fail the job when a page is above a budget. The action builds itself, so `dist/` is not
-needed in the repository. See [docs/ci.md](docs/ci.md) for the inputs and two example workflows.
-
-For the command line, `scan` takes `--markdown <file>` (the comment text), `--summary-json <file>` (every page's
-numbers) and `--fail-over <pct>` (exit 3 above the budget).
-
-`scan` keeps Chrome on the CPUs it was started on, so you can keep it off the cores you need: `taskset -c 8-19 npx imgtune scan …` on Linux.
-
-## Use with a coding agent
-
-`skills/imgtune/SKILL.md` teaches a coding agent (Claude Code, or any tool that reads `SKILL.md` skills) to run ImgTune
-safely: scan a live URL and read the results. It ships in the npm package under `skills/`.
-Copy the `skills/imgtune` folder into your agent's skills directory to use it.
-
 ## Requirements
 
 - Node.js 20.9 or later.
 - Chromium for Playwright. Install it once with `npx playwright install chromium`. If it is missing, ImgTune prints
   that command and exits with status 2.
+
+## Limitations
+
+- **Only `<img>`, `srcset` and `<picture>` are measured.** CSS background images are not in the scan's records. Their
+  fixes are `not-measured`, or a `ceiling-code` from the layout.
+- **Source locations need dev builds.** A production build has no component names or `file:line`. The agent matches
+  those hints by `find` clues, `alt`, `testid` and the loader URL instead, and marks the unmatched usages.
+- **Savings are measured on the pages and viewports scanned.** A usage that does not render on them (a hidden tab, a
+  modal, a logged-out view) is not measured. A lazy image that never loads is counted as not loaded.
+- **Est. numbers are estimates.** They come from a local re-encode judged by SSIMULACRA2. Quality is `qualityNA` where the
+  original cannot be found. Only exact numbers come from the site's own candidates.
+- **Bot walls and challenges stop a scan.** A page that returns one is recorded as `blocked`, and is not retried.
+- **Quality targets follow the loader.** Only the loaders in the table below expose a quality parameter, so only they get
+  quality proposals.
+- **ImgTune does not edit code.** The fixes are made by you, or by the agent skill, and checked by `scan --recheck`.
 
 ## License
 
