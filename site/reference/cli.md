@@ -14,7 +14,7 @@ ImgTune prints that command and exits with status 2. `image` and `hints` need no
 
 | command | what it does |
 | --- | --- |
-| `scan` | measure live pages by URL, with no source, config or dev server. Writes one JSON file per page. With `--recheck`, rescans fixed images |
+| `scan` | measure live pages by URL on a built server (no source needed). Writes one JSON file per page. With `--locate-only`, reads the source of the flagged images from a dev page. With `--recheck`, rechecks fixed images (`--sizes-only` on dev, in seconds) |
 | `hints` | print a batch of the per-image fix hints of a scan file |
 | `image` | measure image files or URLs without a page: the bytes, the lowest quality per format, and the bytes at a width |
 
@@ -23,7 +23,9 @@ ImgTune prints that command and exits with status 2. `image` and `hints` need no
 ```sh
 npx imgtune scan <url> [<url> ...] [options]
 npx imgtune scan --urls-from <file|sitemap-url> [options]
+npx imgtune scan <dev-url> --locate-only --from <scan.json> [--viewports <name>] [--locate-out <file>]
 npx imgtune scan --recheck <scan.json> [--ids a,b,c]
+npx imgtune scan --recheck <located.json> --sizes-only [--ids a,b,c] [--url <dev-url>]
 ```
 
 Measure live pages by URL. Writes one JSON file per page to `--out`.
@@ -46,23 +48,41 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--storage-state <file>` | a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it |
 | `--recheck <scan.json>` | rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after |
 | `--ids <a,b,c>` | with `--recheck`: only these image ids (from the scan JSON's `images[].id`) |
+| `--locate-only` | read the React owner source of the flagged images (a saving or sharpness growth) from the dev page `<url>`, at one viewport. No image bytes are read, nothing is decoded or scored. Needs `--from` |
+| `--from <scan.json>` | with `--locate-only`: the measured scan of the same page |
+| `--locate-out <file>` | with `--locate-only`: where the joined copy is written (default: the measured file's name with `.located.json`) |
+| `--sizes-only` | with `--recheck`: judge the browser's sizes choice on the dev page (the `sizes`, rendered width, DPR, the file chosen and its bytes) against the hint and the measured file. Nothing decoded, nothing scored |
+| `--url <dev-url>` | with `--recheck --sizes-only`: the page to check (default: the dev page the file was located on) |
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in). Needs the `imgtune-ssimu2-gpu` program; without it, a warning and the CPU. See [GPU scoring](#gpu-scoring-gpu) |
 | `--gpu-device <n>` | the GPU to score on, by its `nvidia-smi` index (implies `--gpu`; default 0) |
 | `-h, --help` | show this help |
 
-`--recheck` rescans the page at the URL the scan file recorded, so that server must be running (the dev server, for source
-locations). For each image it prints, per viewport, the rendered width, the served bytes and whether the image is undersized, before and
+`--locate-only` joins the flagged images of a measured scan to the dev page's elements. The URL pattern of an image is its whole
+srcset (widths and qualities taken out, the page's origin taken out), so a built server and a dev server give the same key.
+Within a viewport, elements with the same key and alt pair in document order, but only when the counts on both sides are
+equal. A count that differs joins nothing, and the summary gives the reason. A key that is unique on both sides pairs with
+any alt (`url-unique`). The output is the measured file with each joined record's `locator` (file, line, component,
+verified) and `locate` set; the byte numbers are the built page's. A scan from before this version has no element order
+(`domIndex`) and cannot be located: scan again.
+
+`--recheck --sizes-only` reads the dev page at each viewport where the images rendered, in seconds. Per image it prints the
+`sizes` attribute, the rendered CSS width, the DPR, the candidate the browser chose (its width and the bytes of its
+response), whether it is undersized, the hint's target candidate and a verdict. It fails a choice that is undersized, that
+is bigger than the hint's sizes need, or whose bytes rose without a sharpness fix on an image that was not undersized.
+Plain images (no srcset) get `n/a`. It exits 1 on a failure and writes nothing.
+
+`--recheck` (the full one) rescans the page at the URL the scan file recorded, so that server must be running. For each image it prints, per viewport, the rendered width, the served bytes and whether the image is undersized, before and
 after, and the hint's `sizes` and bytes saved, with the predicted saving beside the measured one (the served bytes change).
 It writes nothing. It exits 1 when an image became undersized or bytes rose without a sharpness fix.
 
 An image is found again by its id, which is keyed on the page, the source file, and the image's order in the file, so an
-edit that moves a line keeps it. When the id is not found, the image is paired with the rescanned image that has the same
+edit that moves a line keeps it. The sizes check finds an image again by its join key and alt (see above). When the id is not found, the image is paired with the rescanned image that has the same
 source file and the same URL pattern (the loader URL without its width and quality), and the output says so. `gone` means
 neither matched: the output lists what was looked for. Before you conclude an image is gone, rescan the page as it was
 before your edits and recheck the same ids: if they are found there, your edit removed or changed the image.
 
 Exit status: 0 on success, 3 when a `--fail-over` budget was exceeded, 2 when Chromium is missing, and 1 for other scan
-failures or a failed `--recheck`.
+failures, a failed `--recheck` or `--sizes-only`, and a `--locate-only` that located nothing.
 
 ## hints
 

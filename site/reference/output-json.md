@@ -93,6 +93,13 @@ One entry per viewport name. Each has:
 | `loader` | the loader the URL came from, such as `next-default` or `generic` |
 | `duplicateOf` | the index of the element measured instead, when this element repeats its URL. Its savings are zero |
 
+## locate
+
+Set by `scan --locate-only` on the located copy of a page: `url` (the dev page), `viewport`, `scannedAt`, `imgtuneVersion`,
+`seconds`, `flagged` (images with a saving or sharpness growth), `joined`, `notJoined`, `devLeft` (dev images of a flagged URL
+with no measured partner), `noOrder` (elements without `domIndex`) and `reasons` (not joined, by code: `not-measured`,
+`no-dev-image`, `count-differs`, `alt-differs`).
+
 ## groups
 
 | field | meaning |
@@ -151,6 +158,18 @@ One entry per viewport name. Each has:
 | `urlPattern` | the loader URL with its width, quality and CDN transform taken out |
 | `loader` | `next-default`, a CDN adapter's name, `cdn:<host>`, `plain-img`, or `unknown` |
 | `searchHints` | present when no file resolved: the component, the file name it would have, a glob to search the project with, and the `alt` and URL pattern. These are clues only; nothing is read from the project |
+
+### images[].locate
+
+Set on a flagged image that `scan --locate-only` joined to a dev page element: `viewport` (the dev viewport), `by` (`alt-order`:
+URL pattern, alt and document order; `url-unique`: the only image with that URL on both pages), and `devIndex` (its place among
+the dev page's `<img>` elements). Its `locator.file`, `line`, `component`, `kind` and `verified` come from the dev page; the
+bytes do not.
+
+### images[].perViewport[].domIndex
+
+The element's place among the page's `<img>` elements at that viewport. The locate join pairs same-URL elements in this order.
+Scans from before `--locate-only` do not have it.
 
 ### images[].tunable
 

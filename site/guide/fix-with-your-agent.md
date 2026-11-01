@@ -28,31 +28,36 @@ The skill is also on [GitHub](https://github.com/indicozy/imgtune/tree/main/skil
 
 ## The loop
 
-The skill works through eight steps, in order.
+The skill works in four measured steps, in order. The bytes come from a built server, the source from the dev server, and
+the two are joined.
 
-1. **Find pages.** Use the URLs you name, the routes in the code, or a sitemap (`--urls-from`). For a large catalogue,
-   `--sample-per-pattern` takes a spread of each route pattern. Pages behind a login need `--storage-state`.
-2. **Scan.** `npx imgtune scan <urls> --out .imgtune/scan` writes one JSON file per page. The agent reads the terminal
-   summary, not the files, which are large.
-3. **Inventory the code.** It lists the image usages in the source (`<Image`, `next/image`, `<img`, `<picture`, `NuxtImg`,
-   `srcset`, `image-set(`), so each hint has something to match.
-4. **Match.** The hint's `file:line` must exist in the repository, and the line must hold an image usage. A hint with no
-   file gets its search clues (component, glob, `alt`, URL pattern), confirmed with a grep. A match it cannot confirm is
-   `unmatched`, not a guess.
-5. **Fill gaps.** A usage with no hint was not measured: it is hidden, behind a click, or only in a harness. It gets an
-   evidence rung and a reason. No number is invented.
-6. **Fix.** The hint's `sizes`, quality and format go into the matched usage, following the framework notes in
-   `reference.md`. Each fix is labelled with its rung.
-7. **Verify.** With the dev server running, rescan just the fixed images:
+1. **Measure (built server).** Find the pages: the URLs you name, the routes in the code, or a sitemap (`--urls-from`; a
+   large catalogue with `--sample-per-pattern`; logins with `--storage-state`). Then
+   `npx imgtune scan <built-urls> --out .imgtune/scan` from the project root writes one JSON file per page. The agent
+   reads the terminal summary, not the files, which are large.
+2. **Locate (dev server).** `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json` reads the source of
+   the flagged images from the dev page, at one viewport, without reading any image bytes. It writes a copy of the page
+   with each image's `file:line` joined in. Images that do not join are reported with the reason; none is guessed.
+3. **Match and fix, in batches.** The agent inventories the image usages (`<Image`, `next/image`, `<img`, `<picture`,
+   `NuxtImg`, `srcset`, `image-set(`), reads 10 hints at a time, and confirms each `file:line` holds an image usage. An
+   owner call site names the component to fix. A hint with no file gets its search clues, confirmed with a grep. A match it
+   cannot confirm is `unmatched`, not a guess. Each fix follows the framework notes in `reference.md` and is labelled with
+   its rung.
+4. **Check each batch (dev, seconds).** With the dev server running:
 
    ```sh
-   npx imgtune scan --recheck .imgtune/scan/<page>.json --ids <id1>,<id2>
+   npx imgtune scan --recheck .imgtune/<page>.located.json --sizes-only --ids <id1>,<id2>
    ```
 
-   It exits 1 when an image became undersized, or when bytes went up without a sharpness fix. Fix what it reports and
-   recheck. After the last batch, run one final scan on a built or preview server and compare it with the first scan.
-8. **Report.** The report is built from the ledger, not from memory: the numbers, the count per rung, the unmatched and
-   not-measured usages with their reasons, and the extras reported but not fixed.
+   For each image and viewport it shows the `sizes` the browser read, the rendered width, the file it chose and its bytes.
+   It fails a choice that is undersized, bigger than the hint's sizes need, or heavier than before without a sharpness fix,
+   and it exits 1 on a failure. Fix what fails and check again.
+5. **Final bytes (built server).** After the last batch, rebuild and restart the built server and measure the same pages
+   again. The before and after numbers are both built.
+6. **Report.** Built from the ledger, not from memory: the numbers, the count per rung, the unmatched and not-measured
+   usages with their reasons, and the extras reported but not fixed.
+
+The full recheck (bytes and scoring, `npx imgtune scan --recheck <file> --ids ...`) stays available for single images.
 
 ## Batches, the ledger and the handoff
 
@@ -94,10 +99,10 @@ Every fix has one rung. It is shown in the ledger and in the report.
 
 ## Which server to use
 
-- **Before and after numbers:** a built production server (`npm run build`, then `npm start`), or the deployed preview URL.
+- **Bytes, before and after:** a built production server (`npm run build`, then `npm start`), or the deployed preview URL.
   Measure both states on the same kind of server, so the numbers compare.
-- **The edit loop:** the dev server, on the URL the scan file recorded. Component names and `file:line` only resolve in dev
-  builds, so the dev server is needed to match hints to source, and for `--recheck`.
+- **Source and the edit loop:** the dev server. Component names and `file:line` only resolve in dev builds, so the locate
+  step runs there, and the per-batch sizes check runs there too. Dev is seconds per check, not the minutes of a full scan.
 
 ## Rules
 

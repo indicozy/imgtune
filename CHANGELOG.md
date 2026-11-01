@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Split measure and locate. `scan <built-url>` measures the bytes on a built server or a preview (no source needed).
+  `scan <dev-url> --locate-only --from <scan.json>` reads the React source of the flagged images from a dev page, at one
+  viewport (default `iphone-15`), with no image bytes read and nothing scored. It writes `<scan>.located.json`: the measured
+  file with `file:line` and component joined in, and a `locate` summary (joined, not joined by reason). Elements join on
+  the whole srcset as URL patterns (origin, widths and qualities taken out) and alt, in document order, only when the counts
+  on both sides are equal; a count that differs joins nothing. Scans from before this version (no `domIndex`) cannot be
+  located: scan again.
+- `scan --recheck <file> --sizes-only [--ids ...] [--url <dev-url>]`: the per-batch check on dev, in seconds. Per image and
+  viewport: the `sizes` attribute, the rendered width, the DPR, the candidate chosen and its bytes (Content-Length), undersized,
+  the hint's target, and a verdict. Fails an undersized choice, a choice bigger than the hint's sizes need, and bytes that rose
+  without a sharpness fix. No bytes decoded, nothing scored. The full `--recheck` is unchanged.
+- `hints` on a located file prints where the sources came from, and says how many hinted images still have no `file:line`.
+- The agent skill, its reference and the AGENTS snippet use the four-step flow: measure (built), locate (dev), check each
+  batch (dev, sizes only), measure again (built, the real before and after).
 - `--gpu` and `--gpu-device <n>` (`scan`, `scan --recheck`, `image`): SSIMULACRA2 scoring on an NVIDIA GPU, opt-in. It runs
   through `imgtune-ssimu2-gpu`, an external program built from `native/ssimulacra2-gpu/` against libvship (Vship). A missing
   or failing program prints a warning and the run scores on the CPU. Encoding stays on the CPU. On nextjs.org scoring took

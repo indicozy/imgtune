@@ -29,12 +29,14 @@ Write this when stopping early. Keep it short enough to read first in the next s
 ```md
 # imgtune handoff
 
-- Scan: .imgtune/scan/<host>-<path>.json (scanned <date>, server: <built | preview | dev>)
+- Step: <1 measure | 2 locate | 3 fix | 4 sizes check | 5 final built scan>
+- Measured: .imgtune/scan/<host>-<path>.json (built or preview server, scanned <date>)
+- Located: .imgtune/scan/<host>-<path>.located.json (dev page <url>, viewport <name>; "<n> of <m> located")
 - Next hint offset: <N> (of <total> with fix hints)
 - Ledger: .imgtune/ledger.jsonl (<n> lines; last id <id>)
 - Done: <counts by status>
 - Open: <unmatched count>, <not-measured count>, questions for the user
-- Resume: read this file and the ledger, then `npx imgtune hints <scan> --limit 10 --offset <N>`
+- Resume: read this file and the ledger, then `npx imgtune hints <located file> --limit 10 --offset <N>`
 ```
 
 ## Call sites, owners and shared components
@@ -54,9 +56,44 @@ Write this when stopping early. Keep it short enough to read first in the next s
   it (`q82 -> 85`), and the quality saving is then `void after snap`: it was estimated at the raw target, so it is not
   counted, and the saving is the sizes part alone.
 
+## The split flow: measure, locate, check, measure
+
+The bytes come from a built server and the source from a dev server. Each side does what it is good at, and the two are
+joined on the page's images:
+
+1. `scan <built-url> --out .imgtune/scan`: the measurement (served bytes, savings, sharpness, sizes). The records have no
+   source (a built page has no React owner data).
+2. `scan <dev-url> --locate-only --from <scan.json>`: reads one viewport of the dev page. It walks the React owner data
+   only for the flagged images, reads no image bytes, and decodes and scores nothing. It writes the measured file with
+   `file:line` and component joined in (`locator`, and `locate` on each joined record: viewport, rule, dev element).
+3. `hints <located.json>`: the hints as before. The file:line is the dev page's, the bytes are the built page's.
+4. `scan --recheck <located.json> --sizes-only --ids ...`: after each edit, on dev, in seconds. Per viewport it prints the
+   `sizes` the browser read, the rendered width, the DPR, the chosen candidate and its bytes (the response's
+   Content-Length), the undersized flag, the hint's target, and a verdict.
+5. `scan <built-url> --out .imgtune/final`: the real before and after, built against built.
+
+How the join works (src/locate-join.ts):
+
+- The key of an image is its whole srcset, as URL patterns: the widths and qualities are taken out, and the page's own
+  origin is taken out, so a built server and a dev server give the same key. A sizes edit changes which candidate the
+  browser loads, not the key.
+- Within a viewport, elements with the same key and alt text pair in document order, but only when the counts are equal on
+  both sides. A count that differs joins nothing; the summary gives the reason (`count-differs`, `no-dev-image`,
+  `alt-differs`, `not-measured`). A key that is unique on both sides pairs even when its alt differs (`url-unique`).
+- Records from scans before this version have no element order (`domIndex`). They cannot be joined: scan again.
+- Only flagged images (a saving or sharpness growth) are located. Unflagged elements still count in the groups.
+
+The sizes check's verdict, per image and viewport: `FAIL` when the chosen file is undersized (below 0.9 times the device
+pixels needed), when it is bigger than the candidate the hint's sizes choose, or when its bytes rose on an image that was
+not undersized before. A plain image (no srcset) has no choice to judge: `n/a`. `gone` means no element joined at that
+viewport.
+
+Use `--url <dev-url>` when the located file is not the page you check (the default is the dev page it was located on).
+
 ## When `scan --recheck` says `gone`
 
-`gone` means no image on the page now matches the id, or its source file and URL pattern. Before you act on it:
+`gone` means no image on the page now matches the id, or its source file and URL pattern. For `--sizes-only` it means no
+element joined the record at that viewport (its key or alt changed, or the count differs). Before you act on it:
 
 1. Set your edits aside (the page as the scan saw it: stash, or a clean copy), keep the dev server running, and run the
    same `--recheck` with the same ids.
@@ -168,12 +205,12 @@ Use it only when the user asks. It is opt-in and it speeds up only the SSIMULACR
 
 ## Verify checklist
 
-- [ ] `scan --recheck` exits 0 for every fixed id (or each failure is recorded and reverted).
-- [ ] The predicted and measured bytes in each recheck line agree in direction. A predicted saving with measured growth
-      is not verified, even when the check passes.
+- [ ] `scan --recheck --sizes-only` exits 0 for every fixed id (or each failure is recorded and reverted).
+- [ ] The final scan on the built server shows the bytes. The predicted and measured bytes agree in direction. A predicted
+      saving with measured growth is not verified, even when the check passes.
 - [ ] No `gone` image was marked fixed (see "When `scan --recheck` says `gone`").
 - [ ] No fix raised the bytes without a sharpness fix on the same usage.
 - [ ] Each fix is labelled with its rung.
-- [ ] The final scan on the built or preview server is compared with the before scan.
+- [ ] The final built scan is compared with the first built scan (built against built).
 - [ ] The report lists saved and added-for-sharpness as two numbers.
 - [ ] The ledger has a line for every usage the batches touched.
