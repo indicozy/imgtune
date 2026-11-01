@@ -161,6 +161,25 @@ describe("imgtune run on a local site", () => {
     expect(logs.some((m) => m.startsWith("survey:"))).toBe(true);
   }, 300_000);
 
+  it("with --dev, locates each deep page at the same path on the dev origin, and hints read the located copies", async () => {
+    const out = join(scratch, "run-dev");
+    const urls = [`${base}/p/one`, `${base}/c/ok`];
+    const { exitCode } = await runCommand([...urls, "--deep", "2", "--out", out, "--dev", base], scratch, () => undefined);
+    expect(exitCode).toBe(0);
+    const manifest = await readJson<RunManifest>(join(out, "run.json"));
+    expect(manifest.phases.map((p) => p.name)).toEqual(["survey", "deep", "locate", "hints"]);
+    const locate = manifest.commands.filter((c) => c.phase === "locate");
+    expect(locate).toHaveLength(2);
+    for (const command of locate) expect(command.command).toMatch(/^imgtune scan http:\/\/127\.0\.0\.1:\d+\/(p\/one|c\/ok) --locate-only --from .+ --locate-out .+located\.json$/);
+    const located = manifest.files.filter((f) => f.kind === "located").map((f) => f.path);
+    expect(located).toHaveLength(2);
+    for (const path of located) expect(path.endsWith(".located.json")).toBe(true);
+    // The hints command reads the located copies: the located file is what each page's hints came from.
+    const hintsCommand = manifest.commands.find((c) => c.phase === "hints");
+    expect(hintsCommand?.command).toMatch(/located\/.*\.located\.json/);
+    expect(hintsCommand?.command).not.toMatch(/deep\/.*\.json .*deep\//);
+  }, 300_000);
+
   it("stops before the deep phase when more than half of the survey is broken, with exit 4 and the fix", async () => {
     const out = join(scratch, "run-stop");
     const urls = [`${base}/gone/a`, `${base}/gone/b`, `${base}/gone/c`, `${base}/p/one`];
