@@ -91,7 +91,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--fail-on-broken` | exit 4 when a page is broken: a document error, a failed stylesheet, or no images where the survey had some. Each broken page prints its reason and fix. Broken pages are left out of every total |
 | `--summary-json <file>` | write one JSON file with every page's status and numbers |
 | `--ignore-robots` | scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON) |
-| `--resume` | reuse the complete pages already in `--out` that were scanned with the same options |
+| `--resume` | reuse the complete pages already in `--out` that were scanned with the same options. A page measured by an interrupted run (staged in `--out/.staged`) is not measured again: only its analysis runs |
 | `--max-pages <N>` | stop after N pages (scanned or resumed); run again with `--resume` to continue |
 | `--no-cache` | do not read or write `.imgtune/cache`. The cache keeps the local encode sizes and scores, so a rescan or a second run reuses them; the numbers are the same either way |
 | `--max-images <N>` | stop after the page that brings the images counted to N (checked between pages) |

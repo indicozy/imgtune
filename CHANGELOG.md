@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Scan: a lossy image over 2 MP (MATCH_MAX_PIXELS) keeps its resize estimate. Its quality match runs at the fast AVIF effort
+  with at most 5 probes and no effort-4 confirmation, so the estimate is approximate: its record says `estimate: "approx"`
+  and the scan summary, the Markdown report and `imgtune summary` show it with ≈. On nextjs.org/conf the exact + est. share
+  is 94.6% ≈ (the 3840-px images, about 6.5 MB per view of est. saving).
+- Scan: each measured page is written to `<out>/.staged` as soon as it is measured, with its bodies as blobs, and is
+  complete only once its analysis is written. `--resume` after an interruption measures no staged page again and runs
+  only the analysis; the stage folder is removed when the run finishes.
 - `imgtune run <url...> | --urls-from <file|sitemap>` is the whole agent flow in one command: survey every URL, rank the pages
   by exact KB per view and route pattern, full-scan the worst (`--deep <N>`, default 5, at least one per worst pattern), locate
   them on a dev server (`--dev <origin>`), and group the fix hints by call site (`--qualities`). It writes a run directory

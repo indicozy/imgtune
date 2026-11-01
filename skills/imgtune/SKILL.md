@@ -123,7 +123,8 @@ Every flag below is checked against `--help`; use only these.
 - `--shared-loads` (opt-in): one page load per viewport class (mobile, desktop); the other viewports of the class resize the
   open page. It saves CPU but costs wall time, so by default each viewport is loaded fresh. Scans of the two modes are
   recorded apart (`loads` in the options): `--resume` rescans a page of the other mode, and `compare` warns about it.
-- `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop
+- `--resume` reuses the complete pages in `--out` with the same options, and a page an interrupted run had measured (staged in
+  `--out/.staged`) is analysed without being measured again. `--max-pages <N>` or `--max-images <N>` stop
   early (after the page that brings the images counted to N); run again with `--resume` to continue.
 - `--viewports <names>`; `--root <dir>` (source folder, for a monorepo sub-folder); `--no-cache`.
 - `--summary-json <file>` (each page's status and numbers) and `--markdown <file>` (a Markdown summary).
