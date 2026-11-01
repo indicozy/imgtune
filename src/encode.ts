@@ -4,7 +4,9 @@ import { LruCache } from "./lru.js";
 import type { RawImage } from "./ssim.js";
 import { count, measure } from "./timing.js";
 
-sharp.concurrency(4);
+/** libvips threads per encode: one encode scales to about this many CPUs (measured: 2.9 s on 1 CPU, 1.2 s on 4). */
+export const ENCODE_THREADS = 4;
+sharp.concurrency(ENCODE_THREADS);
 
 /** Names the local encoder in result-cache keys: a new sharp or libvips gives new numbers, so it gets new keys. */
 export const ENCODER_ID = `sharp ${sharp.versions.sharp} vips ${sharp.versions.vips}`;

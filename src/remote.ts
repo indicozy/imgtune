@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import { mkdir, readFile, stat } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Browser, BrowserContextOptions, Page, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
@@ -15,7 +16,7 @@ import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from ".
 import { sameSite } from "./site.js";
 import { matchLocalQuality } from "./calibrate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
-import { encode, ENCODER_ID } from "./encode.js";
+import { encode, ENCODE_THREADS, ENCODER_ID } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
@@ -36,7 +37,7 @@ import type { RawImage } from "./ssim.js";
 import type { Viewport } from "./types.js";
 import { IMGTUNE_VERSION } from "./version.js";
 import { count, measure, renderTiming, resetTiming, TIMING_ENABLED } from "./timing.js";
-import { settleLimit } from "./concurrency.js";
+import { mapLimit, settleLimit } from "./concurrency.js";
 
 export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
 export { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -48,7 +49,24 @@ const MIN_RENDERED_PX = 16;
 const PLAIN_RESIZE_RATIO = 1.1;
 /** At most this many images per group are scored for quality, at the reference viewport. */
 const SAMPLES_PER_GROUP = 8;
+/**
+ * A served file below this size is not swept for quality: the sweep saves at most the file's own bytes, so the saving is
+ * under 2 KB. Such an image gets its group's ratio (if the group has samples) and is marked sweep "skipped-small".
+ */
+export const SWEEP_MIN_BYTES = 2048;
+/** Quality samples estimated at once: each encode runs ENCODE_THREADS libvips threads, so two pairs fill the CPUs without contention. */
+const QUALITY_PARALLEL = Math.max(1, Math.min(2, Math.floor(availableParallelism() / ENCODE_THREADS)));
 const TOP_GROUPS = 10;
+
+/** How an image's quality was set: its own sample (sampled), its group's ratio, or no sweep (skipped-small). */
+export interface QualityInfo {
+  current: number;
+  qualityAssumed: boolean;
+  target?: number;
+  format?: string;
+  sampled: boolean;
+  sweep?: "skipped-small";
+}
 
 /** Default output directory, relative to the working directory. */
 export const DEFAULT_OUT = ".imgtune/scan";
@@ -1223,7 +1241,7 @@ export interface Instance {
   group: string;
   /** Quality ratio per delta (projected / served bytes): the image's own, or its group's median. */
   qualityRatio?: Record<number, number>;
-  qualityInfo?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
+  qualityInfo?: QualityInfo;
   /** Set on an element that repeats a URL measured at another element of the viewport: it contributes nothing. */
   duplicateOf?: number;
   loader: string;
@@ -1464,50 +1482,83 @@ async function estimateQualities(ctx: AnalysisContext, all: Instance[], refName:
     if (list) list.push(inst);
     else groups.set(inst.group, [inst]);
   }
-  for (const members of groups.values()) {
+  // The samples of each group, in document order: the first SAMPLES_PER_GROUP images at the reference viewport that have a
+  // known original and a file a sweep can save on (see sweepMark). Planned first, so the estimates can run side by side.
+  const plans = [...groups.values()].map((members) => {
+    const samples: Instance[] = [];
+    for (const member of members.filter((m) => m.viewport.name === refName)) {
+      if (samples.length >= SAMPLES_PER_GROUP) break;
+      if (!referenceUrl(member.url, ctx.pageUrl) || sweepMark(member)) continue;
+      samples.push(member);
+    }
+    return { members, samples };
+  });
+  const sampled = plans.flatMap((plan) => plan.samples);
+  const outcomes = await mapLimit(sampled, QUALITY_PARALLEL, (member) => sampleQuality(ctx, member));
+  const outcomeOf = new Map(sampled.map((member, i) => [member, outcomes[i]]));
+  for (const { members, samples } of plans) {
     const ratios2: number[] = [];
     const ratios4: number[] = [];
-    let attempts = 0;
-    for (const member of members.filter((m) => m.viewport.name === refName)) {
-      if (attempts >= SAMPLES_PER_GROUP) break;
-      const original = referenceUrl(member.url, ctx.pageUrl);
-      if (!original) continue;
-      attempts++;
-      count("quality samples");
-      const buffer = await measure("fetch: original", () => ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate }));
-      const right = member.right;
-      if (!buffer || !right) continue;
-      const current = currentQuality(member.url, ctx.pageUrl);
-      const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];
-      const estimate = await measure("quality estimate", () => estimateQuality(
-        {
-          original: buffer,
-          served: right.buffer,
-          format: right.format,
-          bytes: right.bytes,
-          width: right.width,
-          height: right.height,
-          current: current.quality,
-        },
-        deltas,
-        ctx.deps,
-      )).catch(() => undefined);
-      if (!estimate) continue;
-      member.qualityRatio = { ...estimate.ratio };
-      member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, target: estimate.target, format: estimate.format, sampled: true };
-      ratios2.push(estimate.ratio[SCAN_DELTA]);
-      if (ctx.aggressive) ratios4.push(estimate.ratio[SCAN_AGGRESSIVE_DELTA]);
+    for (const member of samples) {
+      const outcome = outcomeOf.get(member);
+      if (!outcome) continue;
+      member.qualityRatio = { ...outcome.ratio };
+      member.qualityInfo = outcome.info;
+      ratios2.push(outcome.ratio[SCAN_DELTA]);
+      if (ctx.aggressive) ratios4.push(outcome.ratio[SCAN_AGGRESSIVE_DELTA]);
     }
     const group2 = median(ratios2);
     const group4 = median(ratios4);
-    if (group2 === undefined) continue;
     for (const member of members) {
       if (member.qualityRatio || !referenceUrl(member.url, ctx.pageUrl)) continue;
+      const mark = sweepMark(member);
+      // A member with no group ratio gets no quality info, unless it is marked skipped-small (then the mark says why).
+      if (group2 === undefined && mark === undefined) continue;
       const current = currentQuality(member.url, ctx.pageUrl);
-      member.qualityRatio = ctx.aggressive && group4 !== undefined ? { [SCAN_DELTA]: group2, [SCAN_AGGRESSIVE_DELTA]: group4 } : { [SCAN_DELTA]: group2 };
-      member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, sampled: false };
+      if (group2 !== undefined) {
+        member.qualityRatio = ctx.aggressive && group4 !== undefined ? { [SCAN_DELTA]: group2, [SCAN_AGGRESSIVE_DELTA]: group4 } : { [SCAN_DELTA]: group2 };
+      }
+      member.qualityInfo = { current: current.quality, qualityAssumed: current.assumed, sampled: false, ...mark };
     }
   }
+}
+
+/** One quality sample: the original's body and the estimate for the member's served file. Undefined when either is missing. */
+async function sampleQuality(ctx: AnalysisContext, member: Instance): Promise<{ ratio: Record<number, number>; info: QualityInfo } | undefined> {
+  const original = referenceUrl(member.url, ctx.pageUrl);
+  const right = member.right;
+  if (!original || !right) return undefined;
+  count("quality samples");
+  const buffer = await measure("fetch: original", () => ctx.fetcher.get(original, { allowPrivate: ctx.allowPrivate }));
+  if (!buffer) return undefined;
+  const current = currentQuality(member.url, ctx.pageUrl);
+  const deltas = ctx.aggressive ? [SCAN_DELTA, SCAN_AGGRESSIVE_DELTA] : [SCAN_DELTA];
+  const estimate = await measure("quality estimate", () => estimateQuality(
+    {
+      original: buffer,
+      served: right.buffer,
+      format: right.format,
+      bytes: right.bytes,
+      width: right.width,
+      height: right.height,
+      current: current.quality,
+    },
+    deltas,
+    ctx.deps,
+  )).catch(() => undefined);
+  if (!estimate) return undefined;
+  return {
+    ratio: { ...estimate.ratio },
+    info: { current: current.quality, qualityAssumed: current.assumed, target: estimate.target, format: estimate.format, sampled: true },
+  };
+}
+
+/**
+ * The sweep mark of a member whose served file is too small for a sweep to matter: the quality and format sweep saves at
+ * most the bytes of the file it acts on, so below SWEEP_MIN_BYTES the saving is under 2 KB. Such a member is not sampled.
+ */
+function sweepMark(member: Instance): { sweep: "skipped-small" } | undefined {
+  return member.right !== undefined && member.right.bytes < SWEEP_MIN_BYTES ? { sweep: "skipped-small" } : undefined;
 }
 
 /**
@@ -1548,7 +1599,7 @@ export interface ImageReport {
   estAggressiveSaved?: number;
   sharpnessGrowth: number;
   group: string;
-  quality?: { current: number; qualityAssumed: boolean; target?: number; format?: string; sampled: boolean };
+  quality?: QualityInfo;
   qualityNA: boolean;
   loader: string;
   /** Index of the element measured instead, when this element repeats its URL (its savings are zero). */
@@ -1888,6 +1939,8 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
 // ---------------------------------------------------------------------------------------------------------------------
 
 export interface ScanOptions {
+  /** A browser the caller started and closes (several scans share it). Without it, the scan starts and closes its own. */
+  browser?: Browser;
   outDir: string;
   cwd: string;
   /** --root, absolute: the folder source files are read from (default: see source-root.ts). */
@@ -2115,7 +2168,8 @@ async function withBrowser<T>(
   gpu: GpuScorer | undefined,
   body: (browser: Browser, run: Parameters<typeof scanPage>[1], robotsFor: (origin: string, allowPrivate: boolean) => Promise<string | undefined>) => Promise<T>,
 ): Promise<T> {
-  const browser = await measure("browser launch", () => launchChromium());
+  const shared = opts.browser;
+  const browser = shared ?? (await measure("browser launch", () => launchChromium()));
   try {
     // The fetches send the desktop viewport's user agent: the default one of a fresh context.
     const probe = await browser.newContext();
@@ -2165,7 +2219,7 @@ async function withBrowser<T>(
     };
     return await body(browser, run, robotsFor);
   } finally {
-    await browser.close();
+    if (shared === undefined) await browser.close();
     for (const line of renderTiming()) process.stderr.write(`${line}\n`);
   }
 }

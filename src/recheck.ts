@@ -4,6 +4,8 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { Browser } from "playwright";
+import { launchChromium } from "./browser.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImagePerViewport, type ImageRecord } from "./images.js";
 import { parseGpuDevice } from "./gpu.js";
@@ -265,7 +267,11 @@ export async function recheckScan(argv: string[], cwd: string, log: (message: st
     return recheckPage(args.files[0], args, cwd, log, { viewportConcurrency: RECHECK_CONTEXTS, several: false });
   }
   const { pages, viewportConcurrency } = recheckLimits(args.files.length);
-  const outcomes = await settleLimit(args.files, pages, (file) => recheckPage(file, args, cwd, log, { viewportConcurrency, several: true }));
+  // The pages share one browser (each page still has its own contexts): it starts once and closes once.
+  const browser = await launchChromium();
+  const outcomes = await settleLimit(args.files, pages, (file) => recheckPage(file, args, cwd, log, { viewportConcurrency, several: true, browser })).finally(
+    () => browser.close(),
+  );
   const out: string[] = [];
   let exitCode = 0;
   outcomes.forEach((outcome, i) => {
@@ -288,7 +294,7 @@ async function recheckPage(
   args: RecheckArgs,
   cwd: string,
   log: (message: string) => void,
-  options: { viewportConcurrency: number; several: boolean },
+  options: { viewportConcurrency: number; several: boolean; browser?: Browser },
 ): Promise<{ output: string; exitCode: number }> {
   let previous: PageResult;
   try {
@@ -334,6 +340,7 @@ async function recheckPage(
   log(`recheck target: ${safeText(target.href)}${args.ignoreRobots ? " (robots.txt ignored: --ignore-robots)" : ""}`);
   const started = Date.now();
   const fresh = await scanOnce(target.href, {
+    browser: options.browser,
     outDir: resolve(cwd),
     cwd,
     aggressive: false,

@@ -15,6 +15,7 @@ import {
   decodeRaw,
   estimateQuality,
   qualityHintFor,
+  SWEEP_MIN_BYTES,
   groupKey,
   isChallenge,
   isUndersized,
@@ -1332,6 +1333,78 @@ describe.each(["webp", "avif"] as const)("analysePage with a Contentful-shaped %
     expect(report.format).toBe(format);
     expect(report.quality).toMatchObject({ current: 70, qualityAssumed: false, sampled: true });
     expect(page.counts.byLoader).toEqual({ contentful: 1 });
+  }, 120_000);
+});
+
+describe("analysePage skips the quality sweep of a small file (fake fetcher, no network)", () => {
+  it("marks a file under SWEEP_MIN_BYTES skipped-small, and never fetches its original", async () => {
+    const ORIGIN = "https://images.ctfassets.net/space/env/tiny.jpg";
+    const ctf = (w: number) => `${ORIGIN}?w=${w}&q=70&fm=webp`;
+    // A flat image: its served files are a few hundred bytes, far under the sweep threshold.
+    const original = await sharp({ create: { width: 256, height: 160, channels: 3, background: { r: 200, g: 100, b: 50 } } }).png().toBuffer();
+    const served128 = await sharp(original).resize(128).toFormat("webp", { quality: 70 }).toBuffer();
+    expect(served128.length).toBeLessThan(SWEEP_MIN_BYTES);
+    const gets: string[] = [];
+    const fetcher = {
+      get: async (url: string) => {
+        gets.push(url);
+        return url === ORIGIN ? original : undefined;
+      },
+      hostIsBlocked: async () => false,
+    };
+    const viewport: Viewport = { name: "iphone-15", width: 390, height: 844, dpr: 3, mobile: true };
+    const image: ObservedImage = {
+      index: 0,
+      currentSrc: ctf(128),
+      renderedWidth: 40,
+      renderedHeight: 25,
+      srcset: `${ctf(64)} 64w, ${ctf(128)} 128w`,
+      sizes: "40px",
+      classes: "tiny",
+      nextImage: false,
+      inFirstViewport: true,
+    };
+    const observation: ViewportObservation = {
+      viewport,
+      status: 200,
+      blocked: false,
+      blockedRequests: 0,
+      nextjs: false,
+      images: [image],
+      responses: new Map([
+        [ctf(128), { url: ctf(128), contentType: "image/webp", bytes: served128.length, buffer: served128, pixels: await pixelSize(served128) }],
+      ]),
+    };
+    const base: PageResult = {
+      url: "https://shop.example/",
+      host: "shop.example",
+      scannedAt: new Date(0).toISOString(),
+      imgtuneVersion: "test",
+      metric: "ssimulacra2",
+      delta: 2,
+      viewports: ["iphone-15"],
+      status: "ok",
+      nextjs: false,
+      perViewport: {},
+      groups: [],
+      counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
+    };
+    const ctx: AnalysisContext = {
+      pageUrl: "https://shop.example/",
+      fetcher: fetcher as unknown as AnalysisContext["fetcher"],
+      allowPrivate: false,
+      deps: { score: (ref, test) => ssim(ref, test) * 100 },
+      quality: true,
+      aggressive: false,
+      resized: new Map(),
+    };
+
+    const page = await analysePage(ctx, [observation], base);
+
+    expect(gets).not.toContain(ORIGIN);
+    const [report] = page.perViewport["iphone-15"].images;
+    expect(report.quality).toMatchObject({ sampled: false, sweep: "skipped-small" });
+    expect(report.quality?.target).toBeUndefined();
   }, 120_000);
 });
 
