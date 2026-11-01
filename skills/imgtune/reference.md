@@ -222,7 +222,11 @@ Use it only when the user asks. It is opt-in and it speeds up only the SSIMULACR
 - The program is `imgtune-ssimu2-gpu`, built from `native/ssimulacra2-gpu/` in the imgtune repo against libvship (Vship,
   not bundled). Install it on `PATH` or set `IMGTUNE_GPU_SCORER`. Check it with `imgtune-ssimu2-gpu --check --device 0`
   (prints the device name and the self-test scores).
-- Ask which GPU to use and pass its `nvidia-smi` index with `--gpu-device`. Without it, index 0 is used.
+- Ask which GPU to use and pass its index with `--gpu-device`. CUDA numbers GPUs fastest first unless
+  `CUDA_DEVICE_ORDER=PCI_BUS_ID` (the order `nvidia-smi` lists them in); set it yourself when the index must match
+  `nvidia-smi`. A `CUDA_VISIBLE_DEVICES` the user set is kept: the index is then within the devices it lists. Without
+  `--gpu-device`, index 0 is used. The run prints `--gpu: opened <name>, device index <n> (CUDA_DEVICE_ORDER: ...;
+  CUDA_VISIBLE_DEVICES=...)` before the first score: check the name is the GPU you meant.
 - Output begins `scored on GPU; may differ slightly from CPU`. Each page's JSON has `scorer`. Any `--gpu` warning on stderr
   means the run fell back to the CPU for some or all scores: report that.
 - A `scan --recheck` whose scorer differs from the scan's prints a warning. Do not compare those numbers as a before and after.
@@ -287,11 +291,27 @@ the device pixels it needs) against the file served now, with the candidate's by
 
 ## Recheck output
 
-Full and `--sizes-only` rechecks print one line per image: `<id>  PASS|FAIL|GONE  <where>  predicted saves|adds X KB/view,
+Full and `--sizes-only` rechecks print one line per image: `<id>  PASS|FAIL|GONE|LAYOUT  <where>  predicted saves|adds X KB/view,
 measured saves|adds Y KB/view`. The predicted number is the hint's saving; the measured one is the served bytes change at
 the viewports both scans have (sizes-only: the dev page's chosen file). Detail lines (viewports, reasons) follow under
 `not passed:` for the images that did not pass. The last line is the batch total: counts of each verdict, and the predicted
 and measured sums. The exit status and the `ok:` / `FAILED:` lines are unchanged.
+
+- `PASS (sharpness fix)`: the PASS adds bytes (an undersized image given a sharper file). A batch with both kinds prints a
+  `mixed:` line with each total on its own. Decide per group; do not net them.
+- `LAYOUT`: the dev page renders the element at another width than the measured server (beyond 2 px or 2 %). The verdict is
+  not a pass: the warning names the viewport. Undersize is always judged on the measured server's width. The exit is 1 and
+  the last line is `NOT VERIFIED:`.
+- A sizes proposal undersized at any measured viewport is not emitted as a saving: its record says `sizes proposal left
+  out: <viewport>: ...` and its bytes are left out.
+
+## A page that loads unstyled
+
+When a linked stylesheet fails to load (the server refuses it, or a built page's stylesheet URL points at a CDN that does not
+have this build's file), the page renders without its utility styles. An image with a `width` attribute then measures at
+that attribute, and every width and sizes verdict on the page is wrong. The scan prints `warning: ... a linked stylesheet did
+not load at <viewport>` and records `stylesheetsFailed` on the page; the sizes-only check stops with no verdict. Fix the
+server's asset URLs (the asset-prefix env the build used, set the same when starting the server), then scan again.
 
 ## The run report
 

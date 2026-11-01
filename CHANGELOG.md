@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Fix: the GPU scorer no longer overwrites the user's `CUDA_VISIBLE_DEVICES` (a GPU the user excluded could run the scorer).
+  `--gpu-device` is an index within the user's visible list; imgtune never sets `CUDA_DEVICE_ORDER`. The scorer prints the
+  device it opened (name, index, order, visible list) and the scan JSON records `deviceOrder` and `visibleDevices`.
+- Fix: the sizes-only check judges undersize on the measured server's width, computes the chosen candidate from the dev
+  page's `sizes` (and checks it is the file the browser loaded), and reports a dev/measured layout difference as `LAYOUT`
+  (not a pass). It stops with no verdict when the dev page has a stylesheet that did not load.
+- Scans warn when a linked stylesheet did not load (`stylesheetsFailed` on the page): the widths measured on such a page
+  are not the app's. Earlier numbers measured on a page whose utility stylesheet was refused are void.
+- A sizes proposal undersized at any measured viewport is not a saving (the per-image records and the group report).
+  The candidate evaluation moves to `src/candidates.ts`, with a reader for the calc, min, max and clamp forms.
+- `hints --format json` is not cut to the text default of 10: JSON is unlimited unless `--limit` is passed, and carries
+  `truncated`.
+- `imgtune report` accepts `--compare` once per page; the byte totals are summed.
+- A PASS that adds bytes is labelled `PASS (sharpness fix)`; a batch that mixes them with savings prints a `mixed:` line.
+- Security: page-derived text in the sizes output is cleaned of bidi overrides and zero-width marks, and capped.
+
 - CSS background images are measured (`kind: "css-background"` records): every layer of a computed `background-image` that
   names a file, with its box, `background-size`, the file the browser loaded, the device pixels it needs, undersized, and a
   local resize estimate. Gradients, inline `data:` images and hidden or tiny elements are skipped with a reason. The headline

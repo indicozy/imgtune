@@ -59,7 +59,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--sizes-only` | with `--recheck`: judge the browser's sizes choice on the dev page (the `sizes`, rendered width, DPR, the file chosen and its bytes) against the hint and the measured file. Nothing decoded, nothing scored |
 | `--url <dev-url>` | with `--recheck --sizes-only`: the page to check (default: the dev page the file was located on) |
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in). Needs the `imgtune-ssimu2-gpu` program; without it, a warning and the CPU. See [GPU scoring](#gpu-scoring-gpu) |
-| `--gpu-device <n>` | the GPU to score on, by its `nvidia-smi` index (implies `--gpu`; default 0) |
+| `--gpu-device <n>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)) |
 | `-h, --help` | show this help |
 
 `--locate-only` joins the flagged images of a measured scan to the dev page's elements. The URL pattern of an image is its whole
@@ -168,7 +168,7 @@ and dot folders are skipped). See [Repo images and file mode](/guide/repo-images
 | `--write <dir>` | write optimised copies (best format, at the largest needed width) into this folder |
 | `--format <text\|json>` | `text` (default) or `json` |
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in; see [GPU scoring](#gpu-scoring-gpu)) |
-| `--gpu-device <n>` | the GPU to score on, by its `nvidia-smi` index (implies `--gpu`; default 0) |
+| `--gpu-device <n>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)) |
 | `--no-cache` | do not read or write `.imgtune/cache` (see `scan --no-cache`) |
 | `-h, --help` | show this help |
 
@@ -182,8 +182,10 @@ Opt-in, for `scan`, `scan --recheck` and `image`. Only SSIMULACRA2 scoring moves
   from [Vship](https://codeberg.org/Line-fr/Vship), which is not bundled. Put the binary on `PATH`, or set
   `IMGTUNE_GPU_SCORER` to its path. Check a device by hand with
   `CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 imgtune-ssimu2-gpu --check --device 0`.
-- **The device.** `--gpu-device <n>` takes the `nvidia-smi` index. Without it, device 0 is used. Choose the device
-  deliberately: the GPU may be busy with other work.
+- **The device.** `--gpu-device <n>` is a CUDA index. CUDA numbers the GPUs fastest first unless the environment sets
+  `CUDA_DEVICE_ORDER=PCI_BUS_ID`, so to match `nvidia-smi` set that too. A user's `CUDA_VISIBLE_DEVICES` is kept, and the
+  index is within the devices it lists. Without `--gpu-device`, device 0 is used. The scorer prints the device it opened
+  (name and index) before the first score: check the name. The scan JSON records `deviceOrder` and `visibleDevices`.
 - **Fallback.** A missing program, or one that fails its self-test, prints `--gpu: ...` and the run scores on the CPU. A
   failure during the run prints the same warning, and the scores from then on are the CPU's. Nothing hard-fails.
 - **What it says.** The output starts with `scored on GPU; may differ slightly from CPU (device <n>: <name>)`. Each page

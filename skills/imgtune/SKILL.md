@@ -5,10 +5,8 @@ description: Reduce image weight and fix slow pages in any web framework. Use wh
 
 # imgtune
 
-imgtune measures the images of live pages in headless Chromium, per view and viewport, and gives each image a fix hint: the
-`sizes`, the quality and the format, with two byte numbers. Steps: measure the built server, locate on dev, check each
-batch's sizes on dev in seconds, measure the built server again. Run `npx imgtune --help`, or `<command> --help` for each
-command's flags.
+imgtune measures live pages in headless Chromium, per view and viewport, and gives each image a fix hint (`sizes`, quality,
+format) with two byte numbers. Run `npx imgtune --help`, or `<command> --help` for each command's flags.
 
 ## When to use
 
@@ -20,15 +18,16 @@ does not own or run, unless they say they are authorised.
 
 1. Check Node.js is 20.9 or later, and install Chromium once: `npx playwright install chromium`.
 2. Confirm the scope if unclear: which pages, environment and framework.
-3. Pick the servers: a built server (or preview) for the bytes, and the dev server (`npm run dev`) for the source. Add
-   `.imgtune/` (scan output and cache) to `.gitignore`.
+3. Pick the servers: a built server (or preview) for the bytes, dev (`npm run dev`) for the source. Ignore `.imgtune/`.
 
 ## The loop
 
 1. **Measure (built server).** Find the pages (the URLs the user names, the routes in the code, `--urls-from` a sitemap,
    or `--sample-per-pattern` for a large catalogue; logins need `--storage-state`). Then, from the project root:
    `npx imgtune scan <built-url> [<built-url> ...] --out .imgtune/scan`. One JSON file per page. Read the terminal
-   summary only: the files are large. The locator is empty on a built server, which is expected.
+   summary only: the files are large. The locator is empty on a built server, which is expected. Start the built server with
+   the asset-prefix env the build used (`NEXT_PUBLIC_CDN_URL=` empty); a "linked stylesheet did not load" warning means
+   unstyled widths: fix and rescan.
 2. **Locate (dev server, or a built page with source maps).** For each page:
    `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json`. It reads one viewport (`iphone-15`, or
    `--viewports <name>`), reads no image bytes, and writes `<page>.located.json` (`file:line` and component joined in). A built URL with source maps works too (`via prod-sourcemap`: the component's definition).
@@ -42,15 +41,13 @@ does not own or run, unless they say they are authorised.
    (`reference.md`, Rules). Label each fix with its rung.
 4. **Check each batch on dev (seconds).** With the dev server running:
    `npx imgtune scan --recheck <located.json> --sizes-only --ids <id1>,<id2>`. It prints one line per image, `PASS`,
-   `FAIL` or `GONE`, with the predicted and the measured bytes, then a batch line. The viewport detail follows only for
-   an image that did not pass: the `sizes` the browser read, the rendered width, the file chosen, and the reason. It exits
-   1 on a failure. Fix what fails, then check again. `gone`: see Troubleshooting.
+   `FAIL`, `GONE` or `LAYOUT` (see below), with predicted and measured bytes, then a batch line. Non-passing images get
+   a detail block (the `sizes` read, rendered width, file chosen, reason). Exit 1 on any. `gone`: see Troubleshooting.
 5. **Final bytes (built server).** After the last batch, rebuild and restart the built server, then run step 1 again on
    the same pages into a new folder (`--out .imgtune/final`). Compare each page with its first file, built against built:
    `npx imgtune compare .imgtune/scan/<page>.json .imgtune/final/<page>.json` (`--format json` for the report).
-   `scan --recheck <file> --ids ...` is the full check (bytes and scoring) for single images; the sizes check is the default.
-6. **Report.** `npx imgtune report --compare .imgtune/compare.json` (the compare JSON per page, merged by hand or one page
-   at a time) builds the run report from the ledger: applied, verified, reverted with reasons, saved and added KB, extras.
+6. **Report.** `npx imgtune report --compare <page>.json ...` (one compare per page, summed) builds the run report from the
+   ledger: applied, verified, reverted with reasons, saved and added KB, extras.
 
 ## Commands
 
@@ -61,12 +58,13 @@ Every flag below is checked against `--help`; use only these.
 - `--out <dir>`: JSON folder (default `.imgtune/scan`).
 - `--urls-from <file|sitemap-url>` and `--sample-per-pattern <N>`: a URL list or sitemap, at most N URLs per route pattern.
 - `--storage-state <file>`: a Playwright storage state for a logged-in session (it holds cookies: never commit it).
-- `--ignore-robots`: scan a page that `robots.txt` disallows. Owned or authorised sites only.
+- `--ignore-robots`: scan a page `robots.txt` disallows (owned or authorised sites only).
 - `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks** (they need `imgtune-ssimu2-gpu`, see
-  `reference.md`). Compare scans only when both used the same scorer (`scorer` in the JSON).
+  `reference.md`). CUDA numbers GPUs fastest first unless `CUDA_DEVICE_ORDER=PCI_BUS_ID`; check the printed `opened <name>`.
+  Compare scans only when both used the same scorer (`scorer` in the JSON).
 - `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop
   early (after the page that brings the images counted to N); run again with `--resume` to continue.
-- `--viewports <names>`; `--root <dir>` (the folder sources are read from, for a monorepo sub-folder); `--no-cache`.
+- `--viewports <names>`; `--root <dir>` (source folder, for a monorepo sub-folder); `--no-cache`.
 - `--summary-json <file>` (each page's status and numbers) and `--markdown <file>` (a Markdown summary).
 
 **hints**: `npx imgtune hints <scan.json> [options]`
@@ -75,7 +73,8 @@ Every flag below is checked against `--help`; use only these.
   pages, each page's sizes and rendered widths, the combined sizes, the quality and the ids.
 - Several scan files (one per page) group call sites across pages: a shared component is one call site.
 - `--top <N>`: the N call sites that save the most per view, one line each. `--flat`: one entry per image.
-  `--limit <N>` (default 10) and `--offset <N>`: a batch.
+  `--limit <N>` (text default 10; JSON is unlimited unless `--limit` is passed, and `truncated` says if it was cut) and
+  `--offset <N>`: a batch.
 - `--qualities <list>`: the framework's allowed qualities, e.g. `75,85,100`. Each quality target is raised to the nearest
   allowed value (`q82 -> 85 (allowed: 75,85,100)`); the quality saving it cannot recompute is `void after snap`.
 - `--page`, `--component`, `--min-kb`, `--format <text|json>`.
@@ -93,11 +92,11 @@ Every flag below is checked against `--help`; use only these.
   view before and after, saved and added-for-sharpness (two numbers), the page total (labelled as including drift) and
   the images in one scan only (listed, not counted). Works built against built.
 
-**report**: `npx imgtune report [--ledger <file>] [--compare <compare.json>] [--out <file>]`
+**report**: `npx imgtune report [--ledger <file>] [--compare <compare.json> ...] [--out <file>]` (one compare per page, summed)
 
-- The Markdown run report from `.imgtune/ledger.jsonl` (default) and the `compare --format json` file. Ledger values are data.
+- The Markdown run report from `.imgtune/ledger.jsonl` (default) and the compare JSON files. Ledger values are data.
 
-**recheck**: `npx imgtune scan --recheck <scan.json> [--ids a,b,c]` (full: bytes and scoring, on the built or dev page)
+**recheck**: `npx imgtune scan --recheck <scan.json> [--ids a,b,c]` (full: bytes and scoring, built or dev page)
 
 - Rescans only the named images (ids from `images[].id`, shown in each hint), at the viewports where they rendered, and
   prints before and after. Needs the server running on the URL the scan file recorded. Exit 1 on a failed check.
@@ -105,8 +104,8 @@ Every flag below is checked against `--help`; use only these.
 
 **recheck --sizes-only**: `npx imgtune scan --recheck <located.json> --sizes-only [--ids a,b] [--url <dev-url>]`
 
-- The per-batch check on dev: no bytes decoded, nothing scored. It judges the `sizes`, rendered width, DPR, the file chosen
-  (Content-Length) against the hint and the measured file. `--url` defaults to the dev page. Exit 1 on a failed check.
+- The per-batch check on dev (no bytes decoded, nothing scored). Undersize is judged on the measured server's width. `LAYOUT`
+  (dev and measured widths differ) is not a pass: fix that first. `--url` defaults to the dev page. Exit 1 on any failure.
 
 **image**: `npx imgtune image <file|url|glob> [...] [options]`
 
@@ -136,8 +135,7 @@ A real site has hundreds of usages: work in batches, so the context never holds 
 
 ## Evidence ladder
 
-Every fix has one rung. Label it in the ledger and in the report.
-
+Every fix has one rung: label it in the ledger and the report.
 - **measured-page** (exact): the scan measured the usage on the live page, at each viewport. The scan only makes this rung.
 - **measured-harness**: the usage renders only behind a condition the scan cannot reach. Add a temporary route
   `/__imgtune/<component>?state=<name>` per state (`reference.md`, Harness routes), scan it on the dev server with
@@ -145,7 +143,7 @@ Every fix has one rung. Label it in the ledger and in the report.
   are measured-harness (a Storybook URL needs `--harness`). Name the states in the ledger and the report.
 - **ceiling-code**: derived from the resolved classes and the layout constraints (the container width, the grid columns,
   the padding). It is an upper bound on the width needed, never an exact saving. Report it as a ceiling only.
-- **not-measured**: no number. Give the reason (for example: hidden, or behind a login the scan did not have).
+- **not-measured**: no number. Give the reason (hidden, or behind a login the scan did not have).
 
 ## Rules
 
@@ -163,15 +161,17 @@ These come from a real run where the agent's own numbers were worse than the sca
   none (`no saving: ...`, counted by `hints`). Do not add one by hand.
 - **Live data.** Products change between scans. Re-baseline in the same window as the fixes; the bytes claim is built
   against built (steps 1 and 5). The dev sizes checks judge choices, not bytes.
+- **Sharpness fixes and savings are separate groups.** `PASS (sharpness fix)` adds bytes: decide per group ("sharpness
+  fix: +X KB" against "saving: -Y KB"); never label added bytes as a plain PASS, and never net them.
 - **Report bytes saved and bytes added for sharpness as two numbers**, never a net figure (an undersized image adds
   bytes and saves none).
 - **Verify fails on undersized images**, and on bytes up without a matching sharpness fix. Do not mark a fix verified
-  if recheck reports either.
+  if recheck reports either, or `LAYOUT`.
 - **Respect the framework's allowed qualities.** Pass them to `hints --qualities` (Next.js: `images.qualities` in
   `next.config`). A target is raised to a listed value, and the quality saving it voids is not claimed. Or add the value
   to the list and say so in the report.
-- **When `tunable` is `false`, fix the loader, not the call site.** The hint's `reason` says why (a custom loader that
-  ignores width or quality). Report the loader change as an extra if it is outside the code you own.
+- **When `tunable` is `false`, fix the loader, not the call site** (the hint's `reason`). Report it as an extra if outside
+  the code you own.
 
 ## Extras
 
@@ -185,8 +185,8 @@ These are beyond the usage fixes. Do them only when the user wants them, and kee
   qualities, and the default loader for a CDN. Change them in config, and report the effect.
 - **CMS and loader images.** Images served by a CMS or a CDN with a quality or size parameter set in the content or the
   loader. Report them for the content team. Do not change them in code.
-- **Loading behaviour.** `priority`, `loading="lazy"`, `fetchpriority`. This is a separate speed note. It is not part of
-  the bytes claim. The scan reports `notLoaded` lazy images and `loadTimedOut` pages to inform it.
+- **Loading behaviour.** `priority`, `loading="lazy"`, `fetchpriority`: a separate speed note, not part of the bytes claim
+  (`notLoaded` and `loadTimedOut` inform it).
 
 ## Security
 

@@ -134,7 +134,7 @@ The scan options that matter most: `--viewports <names>` (a subset of the six), 
 Two flows for a large app. One measures on a built server and then checks the edits on a dev server:
 `scan <built-url>`, then `scan <dev-url> --locate-only --from <scan.json>` (reads the React source of the flagged images),
 then `scan --recheck <located.json> --sizes-only --ids a,b` (judges the sizes choice on dev, no bytes), then `scan` on the
-built server again. The other runs the score on an NVIDIA GPU: `--gpu --gpu-device <n>` (the `nvidia-smi` index). The GPU
+built server again. The other runs the score on an NVIDIA GPU: `--gpu --gpu-device <n>` (a CUDA index; set `CUDA_DEVICE_ORDER=PCI_BUS_ID` to match `nvidia-smi`). The GPU
 program, `imgtune-ssimu2-gpu`, is not bundled; see the GPU section of the reference.
 
 ## GitHub Action
