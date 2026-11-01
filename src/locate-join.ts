@@ -7,7 +7,7 @@ import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import type { ImageLocator, ImagePerViewport, ImageRecord, ResolvedSource } from "./images.js";
-import { COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind } from "./locate.js";
+import { COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind, type LocatorVia } from "./locate.js";
 import { ID_PATTERN } from "./recheck.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { ObservedImage, PageResult, ViewportObservation } from "./remote.js";
@@ -54,6 +54,7 @@ export interface DevImage {
   file?: string;
   line?: number;
   kind?: LocatorKind;
+  via?: LocatorVia;
 }
 
 /** Why a flagged record did not join: a code for the summary, and the text for the reader. */
@@ -145,6 +146,7 @@ export function devImagesOf(
       file: source?.file,
       line: source?.line,
       kind: source?.check,
+      via: source?.via,
     };
   });
 }
@@ -279,20 +281,23 @@ export function applyLocate(records: ImageRecord[], join: LocateJoin, viewport: 
     delete locator.line;
     delete locator.kind;
     delete locator.verified;
+    delete locator.via;
     if (dev.file !== undefined && dev.line !== undefined) {
       delete locator.searchHints;
       locator.file = dev.file;
       locator.line = dev.line;
+      if (dev.via !== undefined) locator.via = dev.via;
       locator.kind = dev.kind ?? "unchecked";
       locator.verified = locator.kind === "image";
     }
     if (dev.component.length > 0) locator.component = dev.component;
     const notes = record.evidence.notes.filter((note) => !/^(source|component): /.test(note));
     const how = by === "alt-order" ? "URL, alt and order" : "unique URL";
+    const where = dev.via === "prod-sourcemap" ? `the built page's source map at ${viewport}` : `the dev page at ${viewport}`;
     notes.push(
       dev.file !== undefined
-        ? `source: ${dev.file}:${dev.line ?? 0} (located on the dev page at ${viewport}, joined by ${how})`
-        : `located on the dev page at ${viewport} (joined by ${how}): no project file resolved`,
+        ? `source: ${dev.file}:${dev.line ?? 0} (located on ${where}, joined by ${how})`
+        : `located on ${where} (joined by ${how}): no project file resolved`,
     );
     return { ...record, locator, locate: { viewport, by, devIndex: dev.index }, evidence: { ...record.evidence, notes } };
   });
@@ -393,8 +398,10 @@ export function cleanRecord(raw: unknown): ImageRecord | undefined {
       delete locator.line;
       delete locator.kind;
       delete locator.verified;
+      delete locator.via;
     }
   }
+  if (locator.via !== undefined && locator.via !== "react-dev" && locator.via !== "prod-sourcemap") delete locator.via;
   if (locator.line !== undefined && !(Number.isInteger(locator.line) && locator.line >= 0)) {
     delete locator.line;
   }

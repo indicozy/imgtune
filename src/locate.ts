@@ -257,6 +257,29 @@ export function loaderName(src: string, pageUrl: string): string {
  * The owner that names the image's source: the first (nearest) one with a project file, from React 18's recorded source
  * or from its stack frames resolved through the chunk's source map. Undefined when none resolves.
  */
+/** How a locator was found: the React dev data (owner source or stack frames), or a production source map. */
+export type LocatorVia = "react-dev" | "prod-sourcemap";
+
+/**
+ * A production build has no React owner source. The owner components' function locations (read by the browser through
+ * the debugger: `[[FunctionLocation]]`, see remote.ts) map through the chunk's source map to the component's definition.
+ * The first location that resolves to a project file wins. Undefined when none does.
+ */
+export async function resolveFunctionLocations(
+  frames: StackFrame[],
+  loadMap: (chunkUrl: string) => Promise<SourceMapData | undefined>,
+): Promise<{ file: string; line: number } | undefined> {
+  for (const frame of frames.slice(0, 8)) {
+    const chunk = frame.url.split("?")[0];
+    const map = await loadMap(chunk);
+    if (!map) continue;
+    const found = originalPosition(map, frame.line, frame.col);
+    const file = found ? projectPath(found.source) : undefined;
+    if (found && file) return { file, line: found.line };
+  }
+  return undefined;
+}
+
 export async function resolveOwners(
   owners: OwnerTrace[],
   loadMap: (chunkUrl: string) => Promise<SourceMapData | undefined>,

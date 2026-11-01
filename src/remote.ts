@@ -2,7 +2,7 @@
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { Browser, BrowserContextOptions, Page, Response as BrowserResponse } from "playwright";
+import type { Browser, BrowserContext, BrowserContextOptions, CDPSession, Page, Response as BrowserResponse } from "playwright";
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
@@ -19,8 +19,8 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode, ENCODE_THREADS, ENCODER_ID } from "./encode.js";
 import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
-import type { LocatorKind, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
-import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveOwners } from "./locate.js";
+import type { LocatorKind, LocatorVia, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
+import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, rungOfPage, type ImageRecord, type ResolvedSource } from "./images.js";
 import {
   backgroundPage,
@@ -837,7 +837,15 @@ export interface ObservedLocator {
   alt?: string;
   selector: string;
   owners: OwnerTrace[];
+  /**
+   * Where the owner components are defined: each owner's function location, mapped to its chunk (the debugger's
+   * [[FunctionLocation]], nearest first). Read only for the images a locate asks for (see observeViewport).
+   */
+  functionLocations?: StackFrame[];
 }
+
+/** The most owner components whose function location is read per image (nearest first). */
+export const MAX_FUNCTION_LOCATIONS = 8;
 
 export interface ResponseRecord {
   url: string;
@@ -1132,6 +1140,60 @@ async function settledView(page: Page, navigations: () => number, loadCapMs: num
   }
 }
 
+/** A debugger session that knows each script's URL by id, with pauses skipped (a page's own `debugger;` must not stop it). */
+async function startDebugger(
+  context: BrowserContext,
+  page: Page,
+): Promise<{ session: CDPSession; scripts: Map<string, string> } | undefined> {
+  try {
+    const session = await context.newCDPSession(page);
+    const scripts = new Map<string, string>();
+    session.on("Debugger.scriptParsed", (event: { scriptId: string; url: string }) => {
+      if (scripts.size < 5000) scripts.set(event.scriptId, event.url);
+    });
+    await session.send("Debugger.enable");
+    await session.send("Debugger.setSkipAllPauses", { skip: true });
+    return { session, scripts };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The function locations of the owner components of the image at `index` (document order among the <img> elements): the
+ * fiber chain's function types, each read as [[FunctionLocation]] (0-based in CDP, so 1-based here, as stack frames are).
+ * Only functions whose script is known are returned. Nothing is written to the page.
+ */
+async function functionLocationsOf(session: CDPSession, index: number, scripts: Map<string, string>): Promise<StackFrame[]> {
+  const expression = `(() => {
+    const img = document.querySelectorAll("img")[${index}];
+    if (!img) return [];
+    const key = Object.keys(img).find((k) => k.startsWith("__reactFiber$"));
+    const out = [];
+    let fiber = key ? img[key] : undefined;
+    for (let i = 0; fiber && i < 200 && out.length < ${MAX_FUNCTION_LOCATIONS}; i++, fiber = fiber.return) {
+      if (typeof fiber.type === "function") out.push(fiber.type);
+    }
+    return out;
+  })()`;
+  const evaluated = await session.send("Runtime.evaluate", { expression, returnByValue: false });
+  const arrayId = evaluated.result.objectId;
+  if (arrayId === undefined) return [];
+  const items = await session.send("Runtime.getProperties", { objectId: arrayId, ownProperties: true });
+  const frames: StackFrame[] = [];
+  for (const item of items.result) {
+    if (!/^\d+$/.test(item.name) || item.value?.objectId === undefined) continue;
+    const props = await session.send("Runtime.getProperties", { objectId: item.value.objectId, ownProperties: true });
+    const location = props.internalProperties?.find((p) => p.name === "[[FunctionLocation]]")?.value?.value as
+      | { scriptId?: string; lineNumber?: number; columnNumber?: number }
+      | undefined;
+    const url = location?.scriptId !== undefined ? scripts.get(location.scriptId) : undefined;
+    if (url === undefined || location?.lineNumber === undefined) continue;
+    frames.push({ url, line: location.lineNumber + 1, col: (location.columnNumber ?? 0) + 1 });
+  }
+  return frames;
+}
+
 /**
  * One viewport's read of a page. `light` (the locate and sizes-only paths) reads no image bodies and no layout chain: the
  * image sizes come from the response headers, and nothing is decoded or scored.
@@ -1144,6 +1206,7 @@ async function observeViewport(
   loadCapMs: number = LOAD_EVENT_CAP_MS,
   storageState?: StorageState,
   light = false,
+  functionsWanted?: (img: ObservedImage) => boolean,
 ): Promise<ViewportObservation> {
   const responses = new Map<string, ResponseRecord>();
   const bodyReads: Promise<void>[] = [];
@@ -1223,6 +1286,8 @@ async function observeViewport(
       });
 
       const page = await context.newPage();
+      // Function locations (locate on a production build): the debugger reports each chunk's script, before the page runs.
+      const debug = functionsWanted !== undefined ? await startDebugger(context, page) : undefined;
       // Main-frame navigations are counted, so the figures are taken once the page has stopped moving. A light read counts
       // document loads only: a page that rewrites its URL while it scrolls (same-document navigations) would never settle.
       let navigations: () => number;
@@ -1241,6 +1306,14 @@ async function observeViewport(
       const docResponse: BrowserResponse | null = loaded.response;
       const { seen, html } = await settledView(page, navigations, loadCapMs, light);
       const status = docResponse?.status();
+      if (debug !== undefined && functionsWanted !== undefined) {
+        for (const img of seen.images) {
+          if (!img.locator || !functionsWanted(img)) continue;
+          const frames = await measure("function locations", () => functionLocationsOf(debug.session, img.index, debug.scripts)).catch(() => []);
+          if (frames.length > 0) img.locator.functionLocations = frames;
+        }
+        await debug.session.detach().catch(() => undefined);
+      }
       await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
       count("image responses", responses.size);
       for (const record of responses.values()) {
@@ -1409,10 +1482,16 @@ async function resolveSources(
     for (const img of obs.images) {
       if (wanted && !wanted(img)) continue;
       const owners = img.locator?.owners ?? [];
-      const found = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
+      const dev = owners.length > 0 ? await resolveOwners(owners, (chunk) => loadSourceMap(ctx, chunk)) : undefined;
+      // A production build has no owner source: the function locations of the owners stand in (prod-sourcemap).
+      const prod = dev === undefined && img.locator?.functionLocations?.length
+        ? await resolveFunctionLocations(img.locator.functionLocations, (chunk) => loadSourceMap(ctx, chunk))
+        : undefined;
+      const found = dev ?? prod;
+      const via: LocatorVia | undefined = dev ? "react-dev" : prod ? "prod-sourcemap" : undefined;
       const component = componentNamesOf(owners);
       const check = found ? await checkSource(ctx, texts, found.file, found.line, component[0]) : undefined;
-      resolved.set(img, { file: found?.file, line: found?.line, component, check });
+      resolved.set(img, { file: found?.file, line: found?.line, component, check, via });
     }
   }
   return resolved;
@@ -2553,7 +2632,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
       const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
       const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy };
       const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) =>
-        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true),
+        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true, (img) => opts.wanted(img, pageUrl)),
       );
       const observations: ViewportObservation[] = [];
       for (const [index, outcome] of outcomes.entries()) {

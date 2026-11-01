@@ -13,7 +13,7 @@ import {
   type SizesBranch,
   type SizesResult,
 } from "./layout.js";
-import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind } from "./locate.js";
+import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind, type LocatorVia } from "./locate.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
@@ -44,6 +44,11 @@ export interface ImageLocator {
   component: string[];
   /** Project-relative source file and line of the element (dev builds, through the source map). */
   file?: string;
+  /**
+   * How the file:line was found: `react-dev` (the React owner's source, or its stack through the source map), or
+   * `prod-sourcemap` (a production build: the owner component's definition, through its chunk's source map).
+   */
+  via?: LocatorVia;
   line?: number;
   /**
    * The check of the resolved file:line (see LocatorKind). `image`: the line renders the image, so the source is verified.
@@ -192,6 +197,7 @@ export interface ResolvedSource {
   file?: string;
   line?: number;
   component: string[];
+  via?: LocatorVia;
   /** The check of file:line against the project file (see LocatorKind). */
   check?: LocatorKind;
 }
@@ -235,6 +241,7 @@ function locatorOf(member: Instance, pageUrl: string, source: ResolvedSource | u
   if (source?.file !== undefined) {
     locator.file = source.file;
     locator.line = source.line;
+    if (source.via !== undefined) locator.via = source.via;
     locator.kind = source.check ?? "unchecked";
     locator.verified = locator.kind === "image";
   }
@@ -408,7 +415,8 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     }
     if (source?.file) {
       const how = source.check === "owner" ? "owner call site, the image is inside its component" : source.check === "image" ? "verified: the line renders an image" : "not checked";
-      notes.push(`source: ${source.file}:${source.line ?? 0} (React owner, dev build; ${how})`);
+      const origin = source.via === "prod-sourcemap" ? "component definition, production source map" : "React owner, dev build";
+      notes.push(`source: ${source.file}:${source.line ?? 0} (${origin}; ${how})`);
     }
     else if (locator.component.length > 0) notes.push(`component: ${locator.component.join(" > ")} (no project file resolved)`);
     else notes.push("source: not resolved (production build, or no React owner)");

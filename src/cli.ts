@@ -66,7 +66,7 @@ const OPTION_HELP = {
   gpuDevice: ["--gpu-device <n>", "the GPU to score on, by nvidia-smi index (implies --gpu; default 0)"],
   locateOnly: [
     "--locate-only",
-    "read the React source of the flagged images from a dev page <url>, not a measurement (needs --from; see the docs)",
+    "read the source of the flagged images from a dev page (React owner data) or a built page with source maps (prod-sourcemap); not a measurement (needs --from)",
   ],
   from: ["--from <scan.json>", "with --locate-only: the measured scan of the same page (its flagged images are located)"],
   locateOut: [

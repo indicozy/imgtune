@@ -29,9 +29,9 @@ does not own or run, unless they say they are authorised.
    or `--sample-per-pattern` for a large catalogue; logins need `--storage-state`). Then, from the project root:
    `npx imgtune scan <built-url> [<built-url> ...] --out .imgtune/scan`. One JSON file per page. Read the terminal
    summary only: the files are large. The locator is empty on a built server, which is expected.
-2. **Locate (dev server).** Start the dev server, then for each page:
+2. **Locate (dev server, or a built page with source maps).** For each page:
    `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json`. It reads one viewport (`iphone-15`, or
-   `--viewports <name>`), reads no image bytes, and writes `<page>.located.json` (`file:line` and component joined in).
+   `--viewports <name>`), reads no image bytes, and writes `<page>.located.json` (`file:line` and component joined in). A built URL with source maps works too (`via prod-sourcemap`: the component's definition).
    Read its summary: `located N of M flagged`, and the reasons for the rest. Never make up a join.
 3. **Match and fix in batches.** Inventory the code (search `<Image`, `next/image`, `<img`, `<picture`, `NuxtImg`,
    `image-set(`, `srcset`; read the allowed qualities, e.g. `images.qualities`). Read 10 call sites with
