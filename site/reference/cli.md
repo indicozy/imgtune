@@ -15,8 +15,10 @@ ImgTune prints that command and exits with status 2. `image` and `hints` need no
 | command | what it does |
 | --- | --- |
 | `scan` | measure live pages by URL on a built server (no source needed). Writes one JSON file per page. With `--locate-only`, reads the source of the flagged images from a dev page. With `--recheck`, rechecks fixed images (`--sizes-only` on dev, in seconds) |
-| `hints` | print a batch of the per-image fix hints of a scan file |
+| `hints` | print a batch of the per-image fix hints of one or more scan files (one per page) |
 | `image` | measure image files or URLs without a page: the bytes, the lowest quality per format, and the bytes at a width |
+| `compare` | the per-image before and after of two scans of one page: saved and added-for-sharpness bytes, paired by URL pattern and alt |
+| `report` | a Markdown run report from the agent's ledger, with the compare JSON for the bytes |
 
 ## scan
 
@@ -105,12 +107,15 @@ image, its component and `file:line` when they resolved, the sizes and quality t
 | `--limit <N>` | call sites to print (default 10; images with `--flat`) |
 | `--offset <N>` | skip the first N call sites (for the next batch) |
 | `--min-kb <N>` | only hints that save at least N KB per view |
+| `--top <N>` | the N call sites that save the most per view, one line each (no batch) |
 | `--format <text\|json>` | `text` (default) or `json` |
 | `-h, --help` | show this help |
 
 By default the text groups the hints by call site: one entry per `file:line` (or component) across pages, with its image
 count, its pages, each page's current and proposed sizes and rendered widths, the combined sizes, the quality and the ids.
-The combined sizes say `shared component: pass sizes from each caller` when the pages propose different values. Each
+The sizes of a call site are fitted to its measured widths: one formula (`one formula over N image(s)`), or, when the pages
+need different widths, `shared component: pass sizes per caller` with each page's own formula. Proposals that would add
+bytes are left out (the scan's `no saving` note; the count is printed). Each
 entry's saving is split into sizes and quality when the scan gave the split. With `--format json` the default output is an
 object with `page`, `groups`, `images`, `offset`, `limit` and `callSites` (each with `key`, `file`, `line`, `component`,
 `count`, `pages`, `saved`, `sizes`, `ids` and its `hints`). With `--flat`, it is `page`, `total`, `offset`, `limit` and
@@ -118,6 +123,27 @@ object with `page`, `groups`, `images`, `offset`, `limit` and `callSites` (each 
 `find`, `selector`, `sizes`, `rendered`, `width`, `quality`, `format`, `bytes`, `rung` and `notes`. The `bytes` field has
 `saved` and `addedForSharpness` (both per page view), and `sizes` and `quality` when the scan gave the split. See
 [Output JSON fields](./output-json).
+
+## compare
+
+```
+npx imgtune compare <before.json> <after.json> [--format text|json] [--limit N]
+```
+
+Pairs the images of two scans of one page by their srcset URL pattern and alt, in document order. Prints the paired
+images' bytes per view before and after, the saved bytes and the bytes added for sharpness (two numbers, never netted), a
+warning for growth on images that were not undersized, the page total (labelled as including data drift), and the images
+in one scan only (listed, not counted). `--format json` gives every change.
+
+## report
+
+```
+npx imgtune report [--ledger <file>] [--compare <compare.json>] [--out <file>]
+```
+
+Builds a Markdown report from `.imgtune/ledger.jsonl` (default) and the `compare --format json` file: totals by status,
+the bytes, rungs, and tables of reverted (with reasons), failed, skipped, unmatched and extra usages. Ledger values are
+data: they appear in code spans in pipe-free table cells. `--out` writes the file instead of printing it.
 
 ## image
 

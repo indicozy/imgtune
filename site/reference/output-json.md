@@ -262,3 +262,9 @@ Each node in `nodes`:
 `--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
 `error`, `finalUrl`, `loadTimedOut` and `page` (the page numbers above). `--markdown` writes the same numbers as a Markdown
 table, with each page's top groups and the method. The CI action posts that Markdown as its comment.
+
+## Dropped sizes proposals
+
+An image record's `fix` may carry `noSaving`: the reason a proposed `sizes` was left out (its predicted outcome adds
+bytes, or changes no bytes). In that case `fix.sizes` is absent and `fix.bytes.sizes` is 0. The reason also appears in the
+record's `evidence.notes`.

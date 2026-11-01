@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Fix: a score the CPU made (a GPU scorer's fallback, or a pair too small for the GPU) is no longer stored under the GPU's
+  cache key. The cache version moves to 2, so entries written before are not read.
+- `imgtune compare <before.json> <after.json>`: the per-image before and after of two scans of one page, paired by URL
+  pattern and alt. Saved and added-for-sharpness bytes are two numbers; unpaired images are listed, not counted.
+- Shared and varied call sites get a fitted `sizes`: a linear `vw + px` per band of viewports where the measurements allow,
+  a ceiling constant elsewhere, never below a measured width at any measured viewport. When pages need different widths,
+  the call site says `shared component: pass sizes per caller` and each page gets its own formula. `hints` takes several
+  scan files, so call sites group across pages.
+- A sizes proposal whose predicted outcome adds bytes (or saves none) is not a saving: the scan leaves it out with a
+  `no saving` reason, and `hints` counts it. The prediction uses the candidate each proposed value would pick, per viewport.
+- `imgtune hints --top N`: the N call sites that save the most per view, one line each.
+- Recheck (full and `--sizes-only`) prints one line per image (`PASS`, `FAIL` or `GONE`, predicted and measured bytes) and a
+  batch line; the detail follows only for images that did not pass.
+- `imgtune report`: a Markdown run report from `.imgtune/ledger.jsonl` and the compare JSON. Ledger values are escaped as
+  code in pipe-free table cells.
+
 - Faster scans, same numbers. The AVIF and WebP calibration no longer encodes all 25 local qualities of each match: a
   parallel search over the coarse grid and then the refine window encodes about half as many, and any probe that shows
   bytes falling as quality rises falls back to the full scan. Targets and ratios are identical to the previous build on

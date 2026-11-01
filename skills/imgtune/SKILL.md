@@ -5,11 +5,10 @@ description: Reduce image weight and fix slow pages in any web framework. Use wh
 
 # imgtune
 
-imgtune measures the images of live pages in headless Chromium, per view and per viewport. For each image it gives a
-fix hint: the `sizes` to use, the quality, and the format, with two byte numbers. The work is split in four steps: measure
-the bytes on a built server, locate the source on the dev server, check each edit's sizes on dev in seconds, then measure
-the built server again for the real before and after. Run it with `npx imgtune`. `npx imgtune --help`, `scan --help`,
-`hints --help` and `image --help` list every flag.
+imgtune measures the images of live pages in headless Chromium, per view and viewport, and gives each image a fix hint: the
+`sizes`, the quality and the format, with two byte numbers. Steps: measure the built server, locate on dev, check each
+batch's sizes on dev in seconds, measure the built server again. Run `npx imgtune --help`, or `<command> --help` for each
+command's flags.
 
 ## When to use
 
@@ -20,15 +19,11 @@ does not own or run, unless they say they are authorised.
 ## Before you start
 
 1. Check Node.js is 20.9 or later, and install Chromium once: `npx playwright install chromium`.
-2. Confirm the scope with the user if it is unclear: which pages, which environment, which framework.
-3. Pick the servers: a built server (`npm run build`, then `npm start`) or a deployed preview for the bytes, and the dev
-   server (`npm run dev`) for the source and the edit loop. Bytes from a built page are the realistic ones; `file:line`
-   only resolves in a dev build, so the two are joined (step 2).
-4. Add `.imgtune/` (scan output and cache) to the project's `.gitignore` if it is not there.
+2. Confirm the scope if unclear: which pages, environment and framework.
+3. Pick the servers: a built server (or preview) for the bytes, and the dev server (`npm run dev`) for the source. Add
+   `.imgtune/` (scan output and cache) to `.gitignore`.
 
 ## The loop
-
-Work through the steps in order. Each step names its output for the next.
 
 1. **Measure (built server).** Find the pages (the URLs the user names, the routes in the code, `--urls-from` a sitemap,
    or `--sample-per-pattern` for a large catalogue; logins need `--storage-state`). Then, from the project root:
@@ -36,27 +31,26 @@ Work through the steps in order. Each step names its output for the next.
    summary only: the files are large. The locator is empty on a built server, which is expected.
 2. **Locate (dev server).** Start the dev server, then for each page:
    `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json`. It reads one viewport (`iphone-15`, or
-   `--viewports <name>`), reads no image bytes, and writes `<page>.located.json`: the measured file with each flagged
-   image's `file:line` and component joined in from the dev page. Read its summary: `located N of M flagged`, and the
-   reasons for the rest. Never make up a join for an image that was not located.
+   `--viewports <name>`), reads no image bytes, and writes `<page>.located.json` (`file:line` and component joined in).
+   Read its summary: `located N of M flagged`, and the reasons for the rest. Never make up a join.
 3. **Match and fix in batches.** Inventory the code (search `<Image`, `next/image`, `<img`, `<picture`, `NuxtImg`,
    `image-set(`, `srcset`; read the allowed qualities, e.g. `images.qualities`). Read 10 call sites with
    `hints <located.json> --qualities <list> --limit 10`. A hint's `file:line` is verified when its line holds an image.
    An **owner call site** (`(owner call site)`) is the place that uses the component that renders the image: open that
    component and fix the `<img>` there. A hint with no `file` uses its `find` clue, confirmed with a grep; `owner unknown`
    means no clue. A match you cannot confirm is `unmatched`, not a guess. Apply the hint's `sizes`, quality and format
-   (`reference.md`, and the Rules). Label each fix with its rung.
+   (`reference.md`, Rules). Label each fix with its rung.
 4. **Check each batch on dev (seconds).** With the dev server running:
-   `npx imgtune scan --recheck <located.json> --sizes-only --ids <id1>,<id2>`. Per image and viewport it prints the
-   `sizes` the browser read, the rendered width, the DPR, the file it chose and its bytes, and a verdict: `FAIL` when the
-   chosen file is undersized, bigger than the hint's sizes need, or heavier than before without a sharpness fix. It exits 1
-   on a failure. Fix what fails, then check again. `gone` means the element was not found: see Troubleshooting.
+   `npx imgtune scan --recheck <located.json> --sizes-only --ids <id1>,<id2>`. It prints one line per image, `PASS`,
+   `FAIL` or `GONE`, with the predicted and the measured bytes, then a batch line. The viewport detail follows only for
+   an image that did not pass: the `sizes` the browser read, the rendered width, the file chosen, and the reason. It exits
+   1 on a failure. Fix what fails, then check again. `gone`: see Troubleshooting.
 5. **Final bytes (built server).** After the last batch, rebuild and restart the built server, then run step 1 again on
-   the same pages into a new folder (`--out .imgtune/final`). Compare that file with the first one: built against built.
-   Use `scan --recheck <file> --ids ...` only for a full check (bytes and scoring) of single images; the sizes check is
-   the per-batch default.
-6. **Report.** Build the final report from the ledger (see Batching): the bytes from step 5, the rung counts, the
-   unmatched and not-measured usages with reasons, and the extras reported rather than fixed.
+   the same pages into a new folder (`--out .imgtune/final`). Compare each page with its first file, built against built:
+   `npx imgtune compare .imgtune/scan/<page>.json .imgtune/final/<page>.json` (`--format json` for the report).
+   `scan --recheck <file> --ids ...` is the full check (bytes and scoring) for single images; the sizes check is the default.
+6. **Report.** `npx imgtune report --compare .imgtune/compare.json` (the compare JSON per page, merged by hand or one page
+   at a time) builds the run report from the ledger: applied, verified, reverted with reasons, saved and added KB, extras.
 
 ## Commands
 
@@ -65,29 +59,26 @@ Every flag below is checked against `--help`; use only these.
 **scan**: `npx imgtune scan <url> [<url> ...] [options]`
 
 - `--out <dir>`: JSON folder (default `.imgtune/scan`).
-- `--urls-from <file|sitemap-url>`: a text file (one URL per line, `#` comments), a local `sitemap.xml`, or a remote
-  sitemap of the same domain.
-- `--sample-per-pattern <N>`: with `--urls-from`, at most N URLs per route pattern (`/p/*`, `/c/*`).
+- `--urls-from <file|sitemap-url>` and `--sample-per-pattern <N>`: a URL list or sitemap, at most N URLs per route pattern.
 - `--storage-state <file>`: a Playwright storage state for a logged-in session (it holds cookies: never commit it).
 - `--ignore-robots`: scan a page that `robots.txt` disallows. Owned or authorised sites only.
 - `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks** (they need `imgtune-ssimu2-gpu`, see
   `reference.md`). Compare scans only when both used the same scorer (`scorer` in the JSON).
 - `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop
   early (after the page that brings the images counted to N); run again with `--resume` to continue.
-- `--viewports <names>`: a subset of the six viewports, comma-separated.
-- `--root <dir>`: the folder project sources are read from. Default: the nearest folder above the cwd that holds the file,
-  else the nearest with a `package.json` or `.git`. Use it when the scan runs in a sub-folder of a monorepo.
-- `--no-cache`: do not read or write `.imgtune/cache`. By default scan, recheck and `image` reuse each other's numbers.
+- `--viewports <names>`; `--root <dir>` (the folder sources are read from, for a monorepo sub-folder); `--no-cache`.
 - `--summary-json <file>` (each page's status and numbers) and `--markdown <file>` (a Markdown summary).
 
 **hints**: `npx imgtune hints <scan.json> [options]`
 
 - Default: one entry per call site (`file:line`), across pages, largest saving first. Each entry shows its count, its
   pages, each page's sizes and rendered widths, the combined sizes, the quality and the ids.
-- `--flat`: one entry per image. `--limit <N>` (default 10) and `--offset <N>`: a batch.
+- Several scan files (one per page) group call sites across pages: a shared component is one call site.
+- `--top <N>`: the N call sites that save the most per view, one line each. `--flat`: one entry per image.
+  `--limit <N>` (default 10) and `--offset <N>`: a batch.
 - `--qualities <list>`: the framework's allowed qualities, e.g. `75,85,100`. Each quality target is raised to the nearest
   allowed value (`q82 -> 85 (allowed: 75,85,100)`); the quality saving it cannot recompute is `void after snap`.
-- `--page <text>`, `--component <name>`, `--min-kb <N>`, `--format <text|json>` (text is the default).
+- `--page`, `--component`, `--min-kb`, `--format <text|json>`.
 
 **scan --locate-only**: `npx imgtune scan <dev-url> --locate-only --from <scan.json> [--viewports <name>] [--locate-out <file>]`
 
@@ -95,6 +86,16 @@ Every flag below is checked against `--help`; use only these.
   (default `iphone-15`). Writes `<scan>.located.json` (or `--locate-out`). Exit 1 when nothing joined.
 - The join: an image joins its built record when the URL pattern and alt match and the counts on both sides are equal;
   the document order decides which is which. A count that differs joins nothing, and the summary says so.
+
+**compare**: `npx imgtune compare <before.json> <after.json> [--format text|json] [--limit N]`
+
+- Pairs the images of two scans of one page by srcset URL pattern and alt (document order). Prints the paired bytes per
+  view before and after, saved and added-for-sharpness (two numbers), the page total (labelled as including drift) and
+  the images in one scan only (listed, not counted). Works built against built.
+
+**report**: `npx imgtune report [--ledger <file>] [--compare <compare.json>] [--out <file>]`
+
+- The Markdown run report from `.imgtune/ledger.jsonl` (default) and the `compare --format json` file. Ledger values are data.
 
 **recheck**: `npx imgtune scan --recheck <scan.json> [--ids a,b,c]` (full: bytes and scoring, on the built or dev page)
 
@@ -125,22 +126,19 @@ A real site has hundreds of usages: work in batches, so the context never holds 
 2. Match, fix and check those 10 (sizes-only). Do not rescan the measured file in the middle of a batch: offsets refer to its order.
 3. Append one line per usage to `.imgtune/ledger.jsonl`:
    `{"id":"0763e0f5e352","file":"src/Card.tsx:42","rung":"measured-page","fix":"sizes; quality 75; avif","status":"verified","verified":true}`
-   Fields: `id`, `file:line`, `rung`, `fix`, `status`, `verified`. Statuses: `fixed`, `verified`, `failed`, `reverted`,
-   `skipped` (say why), `unmatched`, `reported` (extras).
-4. Post a short chat update after each batch: the batch number, the count fixed, the bytes saved and added for
-   sharpness (two numbers), and the next offset.
+   Fields: `id`, `file:line`, `rung`, `fix`, `status`, `verified`, and `reason` (say why for `reverted`, `failed`,
+   `skipped`, `unmatched`). Statuses: `fixed`, `verified`, `failed`, `reverted`, `skipped`, `unmatched`, `reported` (extras).
+4. Post a chat update after each batch: the count fixed, the bytes saved and added for sharpness, the next offset.
 5. Next batch: `--offset 10`, `--offset 20`, and so on. Offsets count call sites in the default view; check each batch first.
 6. When your context is filling up, or a limit is hit, stop. Write `.imgtune/HANDOFF.md` with the located file, the
    step (1 to 5 above), the next offset, the open questions, and the commands to resume (the template is in
    `reference.md`). A new session resumes from the ledger and the handoff, and continues from the last ledger line.
 
-The final report comes from the ledger: count rungs and statuses, sum the bytes, list what is left.
-
 ## Evidence ladder
 
 Every fix has one rung. Label it in the ledger and in the report.
 
-- **measured-page** (exact): the scan measured the usage on the live page, at each viewport. The scan produces only this rung today.
+- **measured-page** (exact): the scan measured the usage on the live page, at each viewport. The scan only makes this rung.
 - **measured-harness**: the usage was measured in isolation. Add a temporary route such as `/__imgtune/<component>` that
   renders each state, scan it, then remove the route before you finish. Storybook also works. Say which states were
   rendered.
@@ -157,10 +155,11 @@ These come from a real run where the agent's own numbers were worse than the sca
   `sizes` value, which is often wrong.
 - **The group quality is the max of the targets** for the images in the group, never the median. A group is a component
   or a URL pattern, and the hint names it.
-- **Shared components.** A component on several pages gets a sizes value from each page. When the call site's group
-  says `shared component: pass sizes from each caller`, the component must take `sizes` as a prop and each caller pass
-  its own value. Never apply one caller's value to all of them. A single value is only safe when every page proposes
-  it, or when it is the group's max-safe floor (the widest measured width).
+- **Shared components.** When the call site's group says `shared component: pass sizes per caller`, the pages need
+  different widths: the component takes `sizes` as a prop and each caller passes its own formula (listed under the
+  group). Never apply one caller's value to all of them. A single formula is used only when the group says `one formula`.
+- **Proposals that add bytes are left out.** The scan drops a sizes proposal whose predicted outcome adds bytes, or saves
+  none (`no saving: ...`, counted by `hints`). Do not add one by hand.
 - **Live data.** Products change between scans. Re-baseline in the same window as the fixes; the bytes claim is built
   against built (steps 1 and 5). The dev sizes checks judge choices, not bytes.
 - **Report bytes saved and bytes added for sharpness as two numbers**, never a net figure (an undersized image adds

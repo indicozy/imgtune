@@ -221,3 +221,73 @@ Use it only when the user asks. It is opt-in and it speeds up only the SSIMULACR
 - [ ] The final built scan is compared with the first built scan (built against built).
 - [ ] The report lists saved and added-for-sharpness as two numbers.
 - [ ] The ledger has a line for every usage the batches touched.
+
+## Compare: the before and after of one page
+
+`imgtune compare <before.json> <after.json>` (built against built, or any two scans of one page).
+
+- Pairing: an image joins the other scan's image when its srcset URL pattern (origin, widths and qualities taken out) and
+  its alt match. Images with the same key pair in document order. A key with unequal counts pairs the first n and lists
+  the rest as unpaired. A fix that changes an image's pattern (a new format, a new host) makes it unpaired: say so.
+- Numbers, per view (the mean over the viewports both scans measured the image at): before and after bytes of the paired
+  images, `saved` (the file got smaller), `added for sharpness` (the image was undersized before), and `grew without a
+  sharpness reason` (a warning, never counted as saved). Two numbers, never netted.
+- The page total is each scan's own image total: it includes data drift, so it is not the claim.
+- Unpaired images (in one scan only) are listed as `appeared` or `disappeared`, with their bytes, and are not counted.
+- `--format json` gives every paired change and every unpaired image; `imgtune report --compare` reads that JSON.
+
+## Fitted sizes for shared and varied call sites
+
+A call site (its file:line, or its component) with several images gets one `sizes` value fitted to the rendered widths
+measured at each viewport (group-sizes.ts):
+
+- Points: the largest rendered width at each viewport width, over the group's images on each page.
+- Bands: consecutive viewports join one band while a linear `vw + px` line fits all of them (the slope in vw to one
+  decimal, the offset in whole px rounded up, never more than the larger of 2% or 4 px above a measured width). A band that
+  takes no line is a ceiling constant.
+- Joined by media conditions at the known breakpoints (640, 768, 1024, 1280) between bands; at most four clauses (the
+  widest bands join into one constant when there are more).
+- Checked at every measured viewport with the browser's own evaluation (`sizesSlotAt`). If a check ever failed, the fit is
+  the single constant covering the widest measured width.
+- Shared components: if the pages need different widths at the same viewport (more than the larger of 4 px or 2%), the
+  call site is `shared component: pass sizes per caller`, and each page has its own formula. Otherwise one formula covers
+  every image and page (`one formula over N image(s)`). A call site whose images all propose the same value keeps it.
+- A group with an image that has no measurement keeps the older text (the widest measured width as a floor).
+
+## Sizes proposals with no saving
+
+The scan predicts each sizes proposal per viewport: the candidate the proposed sizes would pick (the smallest at or above
+the device pixels it needs) against the file served now, with the candidate's bytes from the scan's fetcher.
+
+- Kept: the proposal saves more than it adds on images that were not undersized, or it is a sharpness fix (the image was
+  undersized and the larger file fixes it). Its `sizes` part is the predicted saving, and the quality part is unchanged.
+- Dropped: `no saving: proposed sizes <value> picks larger candidates at <views>` (it adds bytes on an image that was not
+  undersized), or `no saving: ... picks files of the same size as now` (the candidates are equal in bytes: often a source
+  image smaller than the widths asked for). The record keeps the reason in `fix.noSaving`; `hints` counts the dropped
+  proposals and does not list them. Do not add a dropped value by hand.
+- A proposal the scan cannot judge (a candidate that cannot be read, or no decoded size) keeps the measured numbers.
+
+## Recheck output
+
+Full and `--sizes-only` rechecks print one line per image: `<id>  PASS|FAIL|GONE  <where>  predicted saves|adds X KB/view,
+measured saves|adds Y KB/view`. The predicted number is the hint's saving; the measured one is the served bytes change at
+the viewports both scans have (sizes-only: the dev page's chosen file). Detail lines (viewports, reasons) follow under
+`not passed:` for the images that did not pass. The last line is the batch total: counts of each verdict, and the predicted
+and measured sums. The exit status and the `ok:` / `FAILED:` lines are unchanged.
+
+## The run report
+
+`imgtune report` reads `.imgtune/ledger.jsonl` and, with `--compare`, the JSON of `imgtune compare --format json`. It
+prints a Markdown report: totals by status (applied is fixed, verified or failed), the bytes (saved, added for sharpness,
+growth without a reason, the page total with drift, unpaired counts), rungs, and tables of reverted (with reasons), failed,
+skipped and unmatched usages, and extras. Each ledger line is checked; a line that is not usable is counted and left out.
+Every value is in a code span in a pipe-free table cell (no backslash escapes), so a page-derived or ledger text cannot
+break the table, format, link or mention.
+
+Ledger fields: `id` (letters, digits, `_`, `-`), `file`, `rung`, `fix`, `status`, `verified`, and `reason` (for reverted,
+failed, skipped and unmatched usages).
+
+## Top call sites
+
+`imgtune hints <scan.json> --top 10` prints the ten call sites with the most saving per view, one line each (where, the
+images and pages, the saving split into sizes and quality). Several scan files group across pages.
