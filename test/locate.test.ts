@@ -12,6 +12,7 @@ import {
   projectPath,
   resolveOwners,
   resolveOwnerChain,
+  cleanOwnerChain,
   urlPattern,
   type OwnerTrace,
   type SourceMapData,
@@ -227,6 +228,43 @@ describe("resolveOwnerChain", () => {
 
   it("is empty when no owner resolves", async () => {
     expect(await resolveOwnerChain([{ name: "Card", frames: [] }], noMaps)).toEqual([]);
+  });
+
+  it("drops page-controlled names that are not identifiers (escapes, bidi marks, huge names)", async () => {
+    const owners: OwnerTrace[] = [
+      { name: "Card\u001b[31m", source: { file: "webpack://app/./src/A.tsx", line: 1 }, frames: [] },
+      { name: "Card\u202eevil", source: { file: "webpack://app/./src/B.tsx", line: 2 }, frames: [] },
+      { name: "A".repeat(200), source: { file: "webpack://app/./src/C.tsx", line: 3 }, frames: [] },
+      { name: "Good", source: { file: "webpack://app/./src/D.tsx", line: 4 }, frames: [] },
+    ];
+    const chain = await resolveOwnerChain(owners, noMaps);
+    expect(chain).toEqual([
+      { file: "src/A.tsx", line: 1 },
+      { file: "src/B.tsx", line: 2 },
+      { file: "src/C.tsx", line: 3 },
+      { file: "src/D.tsx", line: 4, component: "Good" },
+    ]);
+  });
+
+  it("drops negative, fractional and non-numeric lines", async () => {
+    const owners: OwnerTrace[] = [
+      { name: "A", source: { file: "webpack://app/./src/A.tsx", line: -1 }, frames: [] },
+      { name: "B", source: { file: "webpack://app/./src/B.tsx", line: 2.5 }, frames: [] },
+      { name: "C", source: { file: "webpack://app/./src/C.tsx", line: Number.NaN }, frames: [] },
+      { name: "D", source: { file: "webpack://app/./src/D.tsx", line: 7 }, frames: [] },
+    ];
+    expect(await resolveOwnerChain(owners, noMaps)).toEqual([{ file: "src/D.tsx", line: 7, component: "D" }]);
+  });
+
+  it("caps a 1000-owner chain at MAX_CHAIN entries", async () => {
+    const owners: OwnerTrace[] = Array.from({ length: 1000 }, (_, i) => ({ name: "C", source: { file: "webpack://app/./src/A.tsx", line: i + 1 }, frames: [] }));
+    const chain = await resolveOwnerChain(owners, noMaps);
+    expect(chain).toHaveLength(8);
+    expect(chain[7].line).toBe(8);
+  });
+
+  it("cleanOwnerChain rejects a file that is not a project path", () => {
+    expect(cleanOwnerChain([{ file: "/etc/passwd", line: 1 }, { file: "../../x.tsx", line: 1 }])).toEqual([]);
   });
 });
 

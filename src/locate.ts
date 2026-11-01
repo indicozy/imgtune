@@ -329,9 +329,35 @@ export async function resolveOwnerChain(
   loadMap: (chunkUrl: string) => Promise<SourceMapData | undefined>,
 ): Promise<OwnerSource[]> {
   const chain: OwnerSource[] = [];
-  for (const owner of owners) {
+  for (const owner of owners.slice(0, MAX_CHAIN * 4)) {
     const found = await ownerSourceOf(owner, loadMap);
     if (found) chain.push(owner.name !== undefined ? { ...found, component: owner.name } : found);
+  }
+  // The page controls every name and line here: the chain is checked before anything keeps or prints it.
+  return cleanOwnerChain(chain);
+}
+
+/** Most owners kept in a chain. */
+export const MAX_CHAIN = 8;
+
+/**
+ * An owner chain as a scan or a page supplied it: each entry a project path (projectPath), a whole line (an integer of 0 or
+ * more) and, when present, a component identifier (COMPONENT_NAME, so no control or bidi characters and at most 64 characters).
+ * Entries that do not fit are dropped and the rest keep their order; the chain is capped at MAX_CHAIN.
+ */
+export function cleanOwnerChain(raw: unknown): OwnerSource[] {
+  if (!Array.isArray(raw)) return [];
+  const chain: OwnerSource[] = [];
+  for (const entry of raw) {
+    if (chain.length >= MAX_CHAIN) break;
+    if (entry === null || typeof entry !== "object") continue;
+    const { file: rawFile, line, component } = entry as { file?: unknown; line?: unknown; component?: unknown };
+    const file = typeof rawFile === "string" ? projectPath(rawFile) : undefined;
+    if (file === undefined || file !== rawFile) continue;
+    if (!(typeof line === "number" && Number.isInteger(line) && line >= 0)) continue;
+    const owner: OwnerSource = { file, line };
+    if (typeof component === "string" && COMPONENT_NAME.test(component)) owner.component = component;
+    chain.push(owner);
   }
   return chain;
 }

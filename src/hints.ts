@@ -506,7 +506,7 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
     for (const caller of callers.callers) {
       const where = caller.file !== null ? JSON.stringify(safeText(`${caller.file}:${caller.line ?? 0}`)) : "\"no project owner\"";
       const name = caller.component !== undefined ? ` (${JSON.stringify(safeText(caller.component))})` : "";
-      const pages = caller.pages.map((p) => JSON.stringify(pathOf(p))).join(", ");
+      const pages = caller.pages.map((p) => JSON.stringify(safeText(pathOf(p)))).join(", ");
       const sizes = caller.sizes !== null ? JSON.stringify(safeText(caller.sizes)) : "not measured";
       lines.push(`     ${where}${name}  ${caller.count} image(s), ${caller.pages.length} page(s) ${pages}  sizes ${sizes}`);
     }

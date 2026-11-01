@@ -7,7 +7,7 @@ import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import type { ImageLocator, ImagePerViewport, ImageRecord, ResolvedSource } from "./images.js";
-import { COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind, type LocatorVia, type OwnerSource } from "./locate.js";
+import { cleanOwnerChain, COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind, type LocatorVia, type OwnerSource } from "./locate.js";
 import { ID_PATTERN } from "./recheck.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { ObservedImage, PageResult, ViewportObservation } from "./remote.js";
@@ -375,29 +375,7 @@ export function cleanLocate(raw: unknown): LocateSummary | undefined {
   };
 }
 
-/** Most owners kept in a chain (the scan reads at most this many). */
-const MAX_CHAIN = 8;
-
-/**
- * An owner chain from a scan file: each entry a project path, a whole line and, when present, a component identifier.
- * Entries that do not fit are dropped; the rest keep their order.
- */
-export function cleanOwnerChain(raw: unknown): OwnerSource[] {
-  if (!Array.isArray(raw)) return [];
-  const chain: OwnerSource[] = [];
-  for (const entry of raw) {
-    if (chain.length >= MAX_CHAIN) break;
-    if (entry === null || typeof entry !== "object") continue;
-    const { file: rawFile, line, component } = entry as { file?: unknown; line?: unknown; component?: unknown };
-    const file = typeof rawFile === "string" ? projectPath(rawFile) : undefined;
-    if (file === undefined || file !== rawFile) continue;
-    if (!(typeof line === "number" && Number.isInteger(line) && line >= 0)) continue;
-    const owner: OwnerSource = { file, line };
-    if (typeof component === "string" && COMPONENT_NAME.test(component)) owner.component = component;
-    chain.push(owner);
-  }
-  return chain;
-}
+export { cleanOwnerChain } from "./locate.js";
 
 /**
  * One record of a measured scan, checked and cleaned: the fields the join and the sizes check read must be the right
