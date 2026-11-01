@@ -37,6 +37,9 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--out <dir>` | directory for the JSON files (default: `.imgtune/scan`) |
 | `--aggressive` | also report a delta 4 column (never used for the claim) |
 | `--viewports <names>` | comma-separated viewport names to measure (default: all six) |
+| `--survey` | a fast site-wide pass: viewports `iphone-15` and `desktop`, no quality estimate, `--page-concurrency 4`, `--idle-timeout 3000`. Exact savings only, labelled in the output. An explicit flag overrides its part |
+| `--page-concurrency <N>` | scan up to N pages at once on the shared browser, 1 to 6 (default 1). Results keep the input order |
+| `--idle-timeout <ms>` | cap on the wait for network idle after scroll, 0 to 600000 (default 10000). `0` skips the wait |
 | `--root <dir>` | the folder project source files are read from, for `--locate-only` and source checks. Default: the nearest folder above the cwd that holds the file, else the nearest with a `package.json` or `.git`. Unread sources are named in the output with the folder they were looked up in |
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--markdown <file>` | write a PR-comment Markdown summary: per page, its top groups and the method |

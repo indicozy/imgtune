@@ -33,7 +33,7 @@ The numbers are per page view, and the savings are shares of the image bytes, as
 | `images` | one fix record per image element, merged across viewports (below) |
 | `notLoaded` | the number of lazy images that never loaded at any viewport |
 | `complete` | `true` once the page is done. A page without it (an interrupted run) is scanned again by `--resume` |
-| `options` | the options the page was scanned with: `imgtuneVersion`, `aggressive`, `quality`, `viewports`, `ignoreRobots` and `storageState` (a boolean; the state itself is not recorded). `--resume` reuses a page only when they match |
+| `options` | the options the page was scanned with: `imgtuneVersion`, `aggressive`, `quality`, `viewports`, `ignoreRobots` and `storageState` (a boolean; the state itself is not recorded). `survey: true` on a `--survey` page and `idleTimeoutMs` when it is not the default, each present only when set. `--resume` reuses a page only when they match |
 
 `status` values:
 

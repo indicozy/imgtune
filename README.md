@@ -100,7 +100,8 @@ desktop at 1x), scrolls it to the end, and records every image.
   sampled image (derived from the loader URL), each at most once per scan. It never requests new transformations from
   the CDN.
 - Large sites: `--urls-from` reads a URL list or a sitemap, `--sample-per-pattern` samples each route pattern, and
-  `--resume`, `--max-pages` and `--max-images` split a long run into parts.
+  `--resume`, `--max-pages` and `--max-images` split a long run into parts. `--survey` is a fast pass over every URL
+  (two viewports, exact savings only, labelled as such); full-scan the worst pages after it.
 
 ## The evidence ladder
 

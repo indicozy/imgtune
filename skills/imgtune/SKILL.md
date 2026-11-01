@@ -23,7 +23,8 @@ does not own or run, unless they say they are authorised.
 ## The loop
 
 1. **Measure (built server).** Find the pages (the URLs the user names, the routes in the code, `--urls-from` a sitemap,
-   or `--sample-per-pattern` for a large catalogue; logins need `--storage-state`). Then, from the project root:
+   or `--sample-per-pattern` for a large catalogue; logins need `--storage-state`; for a whole site, survey first, see
+   "Site-wide: survey first"). Then, from the project root:
    `npx imgtune scan <built-url> [<built-url> ...] --out .imgtune/scan`. One JSON file per page. Read the terminal
    summary only: the files are large. The locator is empty on a built server, which is expected. Start the built server with
    the same asset-prefix env as the build (Next.js: `NEXT_PUBLIC_CDN_URL=` empty for both `next build` and `next start`).
@@ -49,6 +50,19 @@ does not own or run, unless they say they are authorised.
 6. **Report.** `npx imgtune report --compare <page>.json ...` (one compare per page, summed) builds the run report from the
    ledger: applied, verified, reverted with reasons, saved and added KB, extras.
 
+## Site-wide: survey first
+
+For a whole site, do not full-scan every page first. Survey all the URLs (or a sample), then full-scan only the worst:
+
+1. **Survey.** `npx imgtune scan --urls-from sitemap.xml --survey --out .imgtune/survey` (or add `--sample-per-pattern 5`
+   for a large catalogue). A survey measures two viewports (`iphone-15`, `desktop`), skips the quality estimate, scans four
+   pages at once and waits at most 3 s for the network to go idle. Its numbers are exact savings only, and every output
+   says so: `survey: 2 viewports, exact savings only, no est.`
+2. **Rank.** Read the site line and the per-page numbers (`--summary-json`). Pick the worst route patterns (the most image
+   KB per view, the largest exact saving), and the pages that stand for them.
+3. **Full scan the worst only.** `npx imgtune scan <worst pages> --out .imgtune/scan` (six viewports, exact and est.). Do
+   not compare a survey with a full scan: `compare` refuses, and `--resume` never reuses a survey page for a full scan.
+
 ## Commands
 
 Every flag below is checked against `--help`; use only these.
@@ -62,6 +76,12 @@ Every flag below is checked against `--help`; use only these.
 - `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks** (they need `imgtune-ssimu2-gpu`, see
   `reference.md`). CUDA numbers GPUs fastest first unless `CUDA_DEVICE_ORDER=PCI_BUS_ID`; check the printed `opened <name>`.
   Compare scans only when both used the same scorer (`scorer` in the JSON).
+- `--survey`: the fast pass of "Site-wide: survey first" (two viewports, no quality, exact only). An explicit
+  `--viewports`, `--page-concurrency` or `--idle-timeout` overrides its part.
+- `--page-concurrency <N>` (1 to 6, default 1): pages scanned at once on one browser. Results and the JSON files keep their
+  order and content; only the wall time changes.
+- `--idle-timeout <ms>` (0 to 600000, default 10000): cap on the wait for network idle after scroll. A page with a request
+  that never ends pays this on every settle; 0 skips the wait.
 - `--resume` reuses the complete pages in `--out` with the same options. `--max-pages <N>` or `--max-images <N>` stop
   early (after the page that brings the images counted to N); run again with `--resume` to continue.
 - `--viewports <names>`; `--root <dir>` (source folder, for a monorepo sub-folder); `--no-cache`.

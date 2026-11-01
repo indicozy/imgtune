@@ -18,7 +18,10 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 | `--summary-json <file>` | one JSON file with every page's status and numbers |
 | `--markdown <file>` | a Markdown summary: per page, its top groups and the method. Used as the CI comment |
 | `--viewports <names>` | a comma-separated subset of the six viewport names (default: all six) |
+| `--survey` | a fast site-wide pass: two viewports (`iphone-15`, `desktop`), no quality, 4 pages at once, a 3 s network-idle cap. Exact savings only. See below |
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
+| `--page-concurrency <N>` | scan up to N pages at once on one browser, 1 to 6 (default 1; `--survey` sets 4) |
+| `--idle-timeout <ms>` | cap on the wait for network idle after scroll, 0 to 600000 (default 10000; `0` skips the wait; `--survey` sets 3000) |
 | `--aggressive` | also report a delta 4 column, beside the main numbers. It is never used for the headline |
 | `--fail-over <pct>` | exit with status 3 when a page's exact + est. share is above this percentage (default: never fail) |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file, a local `sitemap.xml`, or a remote sitemap of the same domain |
@@ -30,6 +33,31 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 | `--max-images <N>` | stop after the page that brings the images counted to N. Checked between pages |
 
 The six viewport names are `iphone-se`, `iphone-15`, `pixel-7`, `iphone-15-pro-max`, `desktop` and `desktop-1280`.
+
+## Site-wide: survey first
+
+A whole site is faster to read in two passes. First, survey every URL (or a sample of each route pattern):
+
+```sh
+npx imgtune scan --urls-from sitemap.xml --survey --out .imgtune/survey
+npx imgtune scan --urls-from sitemap.xml --survey --sample-per-pattern 5 --out .imgtune/survey
+```
+
+A survey measures two viewports, `iphone-15` and `desktop`, with no quality estimate, four pages at once, and at most 3 s
+of waiting for the network to go idle. Its numbers are exact savings only, and every output says so, for example
+`survey: 2 viewports, exact savings only, no est.`
+
+Then full-scan only the worst route patterns, or the pages that stand for them, with all six viewports and the estimate:
+
+```sh
+npx imgtune scan https://your-site/products/a https://your-site/category/b --out .imgtune/scan
+```
+
+A survey and a full scan are not interchangeable. `compare` refuses to pair one with the other, `report` never mixes them,
+and `--resume` reuses a page only for the same kind of scan.
+
+Any flag of the survey can be set on its own. `--page-concurrency` and `--idle-timeout` work on a full scan too. Concurrency
+changes only the wall time: the JSON files, their order and their numbers are the same as one page at a time.
 
 ## Scanning many pages
 

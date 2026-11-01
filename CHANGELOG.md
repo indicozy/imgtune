@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Scan: `--survey` is a fast site-wide pass (viewports `iphone-15` and `desktop`, no quality estimate, four pages at once,
+  a 3 s network-idle cap). Its numbers are exact savings only and are labelled so in the scan's output, the Markdown and
+  the report. A survey is recorded in each page's options, so `--resume` and `compare` never mix it with a full scan.
+- Scan: `--page-concurrency <N>` (1 to 6, default 1) scans up to N pages at once on one browser. Results keep the input
+  order and each page's JSON is written as it finishes; `--max-pages` and `--max-images` stop new pages and keep those in
+  flight. The GPU scorer's CPU fallbacks are counted per page.
+- Scan: `--idle-timeout <ms>` (0 to 600000, default 10000) caps the wait for network idle after scroll; 0 skips it.
+
 - Caller map: a call site whose component is rendered for several callers lists each caller at the first owner level above
   the image that differs between usages (`callers:` in the grouped `hints`, `callers` in the JSON), with its file:line,
   pages and its own sizes formula. The dev owner chain is read at `--locate-only` and kept on each located record

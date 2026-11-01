@@ -24,6 +24,15 @@ const OPTION_HELP = {
   ],
   aggressive: ["--aggressive", "also report a delta 4 column (never used for the claim)"],
   viewports: ["--viewports <names>", "comma-separated viewport names to measure (default: all six)"],
+  survey: [
+    "--survey",
+    "fast site-wide pass: viewports iphone-15 and desktop, no quality estimate, 4 pages at once, 3 s network-idle cap. Exact savings only, labelled as such; an explicit flag here overrides its part",
+  ],
+  pageConcurrency: ["--page-concurrency <N>", "scan up to N pages at once on one browser, 1 to 6 (default 1; --survey sets 4)"],
+  idleTimeout: [
+    "--idle-timeout <ms>",
+    "cap on the wait for network idle after scroll, 0 to 600000 (default 10000; 0 skips the wait; --survey sets 3000)",
+  ],
   noQuality: ["--no-quality", "skip the SSIMULACRA2 quality measurement"],
   markdown: ["--markdown <file>", "write a PR-comment Markdown summary: per page, its top groups and the method"],
   failOver: [
@@ -108,6 +117,7 @@ const SCAN_HELP = commandHelp(
     "noCache",
     "aggressive",
     "viewports",
+    "survey",
     "noQuality",
     "markdown",
     "failOver",
@@ -117,6 +127,8 @@ const SCAN_HELP = commandHelp(
     "resume",
     "maxPages",
     "maxImages",
+    "pageConcurrency",
+    "idleTimeout",
     "urlsFrom",
     "samplePerPattern",
     "storageState",
