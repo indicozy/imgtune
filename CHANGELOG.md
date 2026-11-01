@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- CSS background images are measured (`kind: "css-background"` records): every layer of a computed `background-image` that
+  names a file, with its box, `background-size`, the file the browser loaded, the device pixels it needs, undersized, and a
+  local resize estimate. Gradients, inline `data:` images and hidden or tiny elements are skipped with a reason. The headline
+  numbers stay `<img>`-only (the page's `backgrounds` line reports the layers apart). Page-controlled values are capped
+  (4096 characters, 8 layers) and parsed in one pass.
+- A harness route (`/__imgtune/<component>`, or any URL scanned with `--harness`) is measured-harness, not measured-page:
+  its records and report say the component was measured in isolation. The skill's harness step is fixed for App Router
+  (a `%5F_` folder: a plain `_` folder is private) and says to verify with recheck on the harness URL.
+- `scan --locate-only` works on a built page that ships source maps: the owner components' definitions, read through the
+  debugger and mapped by the chunk's source map, give `file:line` with `via: prod-sourcemap` (never verified: the definition
+  is not an image line). The same caps apply. Dev data stays the first choice.
 - Fix: a score the CPU made (a GPU scorer's fallback, or a pair too small for the GPU) is no longer stored under the GPU's
   cache key. The cache version moves to 2, so entries written before are not read.
 - `imgtune compare <before.json> <after.json>`: the per-image before and after of two scans of one page, paired by URL

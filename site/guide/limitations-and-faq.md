@@ -7,10 +7,13 @@
 - **Exact is measured, est. is estimated.** Estimates are local re-encodes scored against the original, not bytes a server sent.
   Where a loader could not be scored, the estimate is a floor.
 - **Live pages only.** A scan measures the page as the browser loads it, at six viewports, scrolled to the end.
-- **Only `<img>`, `srcset` and `<picture>` are measured.** CSS background images are not in the scan's records. The agent
-  handles them from the code, and their fix is marked `not-measured` or a code ceiling.
-- **Source locations need dev builds.** A production build has no component names or `file:line`. The agent matches those
-  hints by their search clues, `alt`, `testid` and the loader URL.
+- **CSS backgrounds are measured apart.** An element whose `background-image` names a file gets its own records
+  (`kind: "css-background"`), and the report gives a separate line for them. The headline numbers stay `<img>`-only. There is
+  no `sizes` in CSS, so the fix is a smaller file or `image-set()`. Gradients and inline `data:` images are not measured.
+- **Source locations: dev builds, or a built page with source maps.** A dev page gives component names and `file:line`
+  from React's data. A production build with source maps gives the component's definition (`via: prod-sourcemap`, the
+  file and line, not the image's line); production names are minified, so no component name. Without source maps the agent
+  matches those hints by their search clues, `alt`, `testid` and the loader URL.
 - **Bot walls.** A page behind a challenge is recorded as `blocked`, and it is not retried.
 - **Chromium is required** for `scan`. Install it with `npx playwright install chromium`.
 - **Savings are for the pages and viewports scanned.** A usage that does not render on them is not measured.

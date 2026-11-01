@@ -254,7 +254,8 @@ Each node in `nodes`:
 
 | field | meaning |
 | --- | --- |
-| `rung` | `measured-page` for every record the scan writes. The other rungs (`measured-harness`, `ceiling-code`, `not-measured`) are added by the agent. See [Fix it with your agent](/guide/fix-with-your-agent) |
+| `rung` | `measured-page` for a scanned page, `measured-harness` for a harness route (`/__imgtune/...`, or `--harness`). `ceiling-code` and `not-measured` are added by the agent. See [Fix it with your agent](/guide/fix-with-your-agent) |
+| `kind` | `css-background` for a CSS background layer; absent for an `<img>`, `srcset` or `<picture>` element |
 | `notes` | how the numbers were made: where the `sizes` came from, which source was resolved, and any limit (for example a layout chain cut at the depth cap) |
 
 ## Summary JSON

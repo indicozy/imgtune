@@ -35,9 +35,10 @@ the two are joined.
    large catalogue with `--sample-per-pattern`; logins with `--storage-state`). Then
    `npx imgtune scan <built-urls> --out .imgtune/scan` from the project root writes one JSON file per page. The agent
    reads the terminal summary, not the files, which are large.
-2. **Locate (dev server).** `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json` reads the source of
-   the flagged images from the dev page, at one viewport, without reading any image bytes. It writes a copy of the page
-   with each image's `file:line` joined in. Images that do not join are reported with the reason; none is guessed.
+2. **Locate (dev server, or a built page with source maps).** `npx imgtune scan <dev-url> --locate-only --from .imgtune/scan/<page>.json`
+   reads the source of the flagged images at one viewport, without reading any image bytes. On a dev page it reads React's
+   data; on a built page that ships source maps it maps each owner component's definition (`via: prod-sourcemap`). It writes
+   a copy of the page with each image's `file:line` joined in. Images that do not join are reported with the reason; none is guessed.
 3. **Match and fix, in batches.** The agent inventories the image usages (`<Image`, `next/image`, `<img`, `<picture`,
    `NuxtImg`, `srcset`, `image-set(`), reads 10 hints at a time, and confirms each `file:line` holds an image usage. An
    owner call site names the component to fix. A hint with no file gets its search clues, confirmed with a grep. A match it
@@ -93,7 +94,7 @@ Every fix has one rung. It is shown in the ledger and in the report.
 | rung | what it means |
 | --- | --- |
 | `measured-page` | Exact. The usage was measured on the live page at each viewport. This is what `scan` produces. |
-| `measured-harness` | Measured in isolation. A temporary route such as `/__imgtune/<component>` renders each state, the route is scanned, then removed. Storybook works the same way. |
+| `measured-harness` | Measured in isolation. A temporary route `/__imgtune/<component>?state=<name>` renders each state, the route is scanned on dev, then removed. A Storybook URL is scanned with `--harness`. |
 | `ceiling-code` | An upper bound from the resolved classes and the layout constraints (container width, columns, padding). It is never a measured saving. |
 | `not-measured` | No number, with the reason: hidden, behind a login, or not rendered at scan time. |
 
@@ -101,8 +102,8 @@ Every fix has one rung. It is shown in the ledger and in the report.
 
 - **Bytes, before and after:** a built production server (`npm run build`, then `npm start`), or the deployed preview URL.
   Measure both states on the same kind of server, so the numbers compare.
-- **Source and the edit loop:** the dev server. Component names and `file:line` only resolve in dev builds, so the locate
-  step runs there, and the per-batch sizes check runs there too. Dev is seconds per check, not the minutes of a full scan.
+- **Source and the edit loop:** the dev server. Its React data gives component names and `file:line`, so the locate step
+  runs there (a built page with source maps works too, with its definitions only), and the per-batch sizes check runs there too. Dev is seconds per check, not the minutes of a full scan.
 
 ## Rules
 
@@ -137,8 +138,8 @@ The short form. [`reference.md`](https://github.com/indicozy/imgtune/blob/main/s
   `sm:100vw md:50vw lg:400px`), not a CSS value. The agent translates the hint's `sizes` with the project's configured
   `screens`, or uses a plain `<img>` or `<picture>` with the CSS value.
 - **Astro `<Image>`:** set `widths`, `sizes`, `quality` and `format` (singular). `<Picture>` takes `formats` (plural).
-- **CSS backgrounds:** use `image-set()` for 1x and 2x files, or a media query that picks a smaller file on small screens.
-  `sizes` does not apply, and the scan does not measure backgrounds.
+- **CSS backgrounds:** the scan gives the width the layer needs. Use `image-set()` for 1x and 2x files, or a media query that
+  picks a smaller file on small screens. `sizes` does not apply.
 
 For any other framework, the agent uses that framework's documented image component or attributes, and says which it used.
 
