@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ledgerLineOf, parseReportArgs, readLedger, renderReport, type LedgerLine } from "../src/report.js";
+import { ledgerLineOf, parseReportArgs, readLedger, renderReport, tableCell, type LedgerLine } from "../src/report.js";
 import type { CompareReport } from "../src/compare.js";
 
 const line = (over: Partial<LedgerLine> & { id: string; status: LedgerLine["status"] }): LedgerLine => ({
@@ -94,8 +94,32 @@ describe("renderReport", () => {
     // A link or a mention is only text inside a code span: the span holds it, so nothing renders as one.
     expect(rows[0]).toMatch(/`[^`]*\[click\]\(https:\/\/evil\.example\)[^`]*`/);
     expect(rows[0]).toMatch(/`[^`]*@maintainer[^`]*`/);
-    // The pipe in the file name is escaped, so the row keeps its four cells.
-    expect(rows[0]).toContain("\\|");
-    expect(rows[0].split(" | ")).toHaveLength(4);
+    // The pipe in the file name is a look-alike, so the row keeps its four cells.
+    expect(rows[0]).not.toContain("\\|");
+    expect(rows[0].split("|")).toHaveLength(6);
   });
 });
+
+describe("tableCell", () => {
+  const cellsOf = (row: string) => row.split("|").length - 1;
+
+  it("keeps values with pipes, backslash-pipes, backticks, newlines and long text inside one cell", () => {
+    const values = ["a\\|b", "x|y|z", "`tick` ``two``", "line one\nline two\r\nthree", "q".repeat(5000)];
+    for (const v of values) {
+      const row = `| ${tableCell(v)} | ${tableCell("ok")} |`;
+      expect(cellsOf(row)).toBe(3);
+    }
+    expect(tableCell("q".repeat(5000)).length).toBeLessThan(260);
+    expect(tableCell("line one\nline two")).not.toMatch(/\n/);
+  });
+
+  it("applies to every cell of a rendered table row, including the reason and the id", () => {
+    const hostile = line({ id: "h2", status: "failed", file: "a\\|b\n| injected | row |", fix: "`x`", reason: "bad | \\| reason\n\n## heading" });
+    const md = renderReport([hostile], 0, undefined);
+    const rows = md.split("\n").filter((l) => l.startsWith("| `h2`"));
+    expect(rows).toHaveLength(1);
+    expect(cellsOf(rows[0])).toBe(5);
+    expect(md).not.toContain("\n## heading");
+  });
+});
+
