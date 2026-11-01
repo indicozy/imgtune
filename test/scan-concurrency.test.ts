@@ -80,7 +80,8 @@ describe("runScan with pageConcurrency", () => {
     try {
       const urls = [`${base}/slow`, `${base}/p/a`, `${base}/p/b`];
       const progress: string[] = [];
-      // The file count at each progress line: the page that finished first is on disk before the line that reports it.
+      // The file count at each progress line. A page's file is on disk before the line that reports it, but the count may
+      // be ahead of the lines: two pages that finish together can both be on disk before the first line runs.
       const filesAtProgress: number[] = [];
       const results = await runScan(
         urls,
@@ -99,8 +100,11 @@ describe("runScan with pageConcurrency", () => {
       expect(progress).toHaveLength(3);
       expect(progress[0]).toMatch(/^page 1\/3 done/);
       expect(progress[2]).toMatch(/^page 3\/3 done/);
-      // The slow page is the last to finish, so the first progress line finds one file, not three.
-      expect(filesAtProgress).toEqual([1, 2, 3]);
+      // The reported page is on disk at each line (the lines count pages, the disk may hold more), and the slow page is not
+      // among the first line's files: it takes SLOW_MS, so the first line comes before it can be written.
+      filesAtProgress.forEach((files, line) => expect(files).toBeGreaterThanOrEqual(line + 1));
+      expect(filesAtProgress[0]).toBeLessThan(3);
+      expect(filesAtProgress[filesAtProgress.length - 1]).toBe(3);
     } finally {
       await rm(out, { recursive: true, force: true });
     }
