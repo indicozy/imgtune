@@ -1408,6 +1408,11 @@ export interface AnalysisContext {
   allowPrivate: boolean;
   deps: QualityDeps;
   quality: boolean;
+  /**
+   * False in a survey: no local resize estimate (est.) for a plain image or a background layer either, so the numbers are
+   * exact only. Default true.
+   */
+  estimates?: boolean;
   /** Only the images for which this is true get the quality and format search (recheck skips unchanged ones). */
   qualityFor?: (inst: Instance) => boolean;
   aggressive: boolean;
@@ -1594,7 +1599,7 @@ async function measureBackground(
     needed,
     undersized: served.width < UNDERSIZED_RATIO * needed,
   });
-  if (served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
+  if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const key = `${chosen.url}|${needed}`;
     let pending = ctx.resized.get(key);
     if (!pending) {
@@ -1678,7 +1683,7 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
 
   // No w-descriptor srcset: a wider file than needed is estimated by a local resize at its own format (est.).
   instance.kind = "plain";
-  if (served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
+  if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const key = `${img.currentSrc}|${needed}`;
     let pending = ctx.resized.get(key);
     if (!pending) {
@@ -2319,7 +2324,10 @@ export interface ScanOptions {
   pageConcurrency?: number;
   /** The cap on the wait for network idle after scroll, in ms (--idle-timeout). Default NETWORK_IDLE_TIMEOUT_MS; 0 skips the wait. */
   idleTimeoutMs?: number;
-  /** A --survey scan: recorded in the page options, so it is never resumed or compared as a full scan. */
+  /**
+   * A --survey scan: recorded in the page options, so it is never resumed or compared as a full scan, and it makes no
+   * estimate at all (no quality sweep, no local resize of a plain image or a background), so its numbers are exact only.
+   */
   survey?: boolean;
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
@@ -2380,6 +2388,8 @@ async function scanPage(
     viewportConcurrency: number;
     /** The cap on the network-idle wait of each settle (see ScanOptions.idleTimeoutMs). */
     idleTimeoutMs: number;
+    /** False in a survey: no local resize estimate (see AnalysisContext.estimates). */
+    estimates: boolean;
     log: (message: string) => void;
     /** The GPU scorer of this run, when --gpu was given and it started. */
     gpu?: GpuScorer;
@@ -2495,6 +2505,7 @@ async function scanPage(
       allowPrivate,
       deps: run.deps,
       quality: run.quality,
+      estimates: run.estimates,
       qualityFor: run.qualityFor,
       aggressive: run.aggressive,
       resized: new Map(),
@@ -2564,6 +2575,7 @@ async function withBrowser<T>(
       projectRoot: opts.root,
       viewportConcurrency: opts.viewportConcurrency ?? VIEWPORT_CONCURRENCY,
       idleTimeoutMs: opts.idleTimeoutMs ?? NETWORK_IDLE_TIMEOUT_MS,
+      estimates: opts.survey !== true,
       log: opts.log,
       gpu,
     };

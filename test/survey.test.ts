@@ -107,15 +107,25 @@ describe("--survey scans on a local page", () => {
   beforeAll(async () => {
     scratch = await mkdtemp(join(tmpdir(), "imgtune-survey-"));
     const png = await sharp({ create: { width: 320, height: 200, channels: 3, background: "#6a8" } }).png().toBuffer();
+    // A plain image much wider than the 320 px it is drawn at: a local resize estimate applies to it.
+    const wide = await sharp({ create: { width: 1600, height: 1000, channels: 3, background: "#48a" } }).jpeg({ quality: 90 }).toBuffer();
     server = createServer((req, res) => {
       const url = req.url ?? "";
       if (url === "/pic.png") {
         res.writeHead(200, { "content-type": "image/png" });
         return res.end(png);
       }
+      if (url === "/wide.jpg") {
+        res.writeHead(200, { "content-type": "image/jpeg" });
+        return res.end(wide);
+      }
       if (url === URL_PATH) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         return res.end('<!doctype html><html><head><meta charset="utf-8"></head><body><img src="/pic.png" width="320" height="200" alt=""></body></html>');
+      }
+      if (url === "/p/wide") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end('<!doctype html><html><head><meta charset="utf-8"></head><body><img src="/wide.jpg" width="320" height="200" alt=""></body></html>');
       }
       res.writeHead(404);
       res.end();
@@ -148,6 +158,18 @@ describe("--survey scans on a local page", () => {
     expect(page.viewports).toEqual(["iphone-15", "desktop"]);
     expect(page.options).toMatchObject({ survey: true, quality: false, viewports: ["iphone-15", "desktop"], idleTimeoutMs: 3000 });
     expect(page.status).toBe("ok");
+  }, 120_000);
+
+  it("makes no estimate: a survey of an oversized plain image has no est., and the full scan of it does", async () => {
+    const common = { aggressive: false, quality: false, viewports: [desktop], log: () => undefined };
+    const full = await runScan([`${base}/p/wide`], { ...common, outDir: join(scratch, "est-full"), cwd: scratch });
+    const survey = await runScan([`${base}/p/wide`], { ...common, outDir: join(scratch, "est-survey"), cwd: scratch, survey: true });
+    const fullPage = full[0].page;
+    const surveyPage = survey[0].page;
+    expect(fullPage?.exactEstPct).toBeGreaterThan(fullPage?.exactPct ?? 0);
+    expect(surveyPage?.exactEstPct).toBe(surveyPage?.exactPct);
+    expect(Object.values(full[0].perViewport).some((view) => view.estSaved > 0)).toBe(true);
+    expect(Object.values(survey[0].perViewport).every((view) => view.estSaved === 0)).toBe(true);
   }, 120_000);
 
   it("prints no survey label, and records no survey, for a full scan", async () => {
