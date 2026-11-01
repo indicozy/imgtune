@@ -35,7 +35,13 @@ function record(overrides: { renderedCssPx?: number; servedBytes?: number; under
 
 describe("parseRecheckArgs", () => {
   it("reads the scan file and the image ids", () => {
-    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({ files: ["scan.json"], ids: ["a1", "b2"], ignoreRobots: false, noCache: false });
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--ids", "a1, b2,,"])).toEqual({
+      files: ["scan.json"],
+      ids: ["a1", "b2"],
+      ignoreRobots: false,
+      noCache: false,
+      thirdParty: { block: true, allowHosts: [] },
+    });
   });
 
   it("takes several scan files in order, and --viewports as a list of known names", () => {
@@ -133,7 +139,7 @@ describe("the scan file is untrusted", () => {
 
   it("refuses ids that are not of the expected form on the command line", async () => {
     const path = join(dir, "ids.json");
-    await writeFile(path, JSON.stringify({ url: "https://shop.example/", images: [] }));
+    await writeFile(path, JSON.stringify({ url: "https://shop.example/", images: [], options: { thirdParty: "blocked" } }));
     await expect(recheckScan(["--recheck", path, "--ids", "a;rm"], dir, () => {})).rejects.toThrow("not an image id");
   });
 

@@ -9,12 +9,17 @@
   order and each page's JSON is written as it finishes; `--max-pages` and `--max-images` stop new pages and keep those in
   flight. The GPU scorer's CPU fallbacks are counted per page.
 - Scan: `--idle-timeout <ms>` (0 to 600000, default 10000) caps the wait for network idle after scroll; 0 skips it.
-
 - Faster AVIF quality search, same numbers: the search encodes AVIF at effort 2 (`cdn-fast`) and confirms the answer at
   effort 4 from the qualities that decided it (two or three effort-4 probes). A confirmation that fails moves the fast bar by the
   score difference seen at that quality and searches again (twice at most); when none confirms, the search runs at effort 4 as
   before. The reported target and bytes are the effort-4 ones. On the Next.js guard scan the per-image targets and estimated
   bytes are identical to the previous build, and the scan's CPU time fell from about 247 s to 155 s (shared machine).
+- Scans block the requests to other sites that cannot change an image or the layout (scripts, fetch and xhr, websockets,
+  event streams, media, beacons and pings, manifests, iframes, other). Documents, stylesheets, fonts and images are never
+  blocked, from any host. Pages reach `load` and network idle sooner. Flags: `--allow-third-party` turns the blocking off,
+  `--allow-host <h1,h2>` keeps named hosts (for a third-party script that renders images). The page JSON counts the aborted
+  requests (`thirdPartyBlocked`) and records the setting, so `--resume` does not mix settings; a recheck refuses a scan
+  file recorded with the other setting. Scan files from earlier versions were measured with every request allowed.
 - Caller map: a call site whose component is rendered for several callers lists each caller at the first owner level above
   the image that differs between usages (`callers:` in the grouped `hints`, `callers` in the JSON), with its file:line,
   pages and its own sizes formula. The dev owner chain is read at `--locate-only` and kept on each located record

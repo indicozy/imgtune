@@ -13,6 +13,7 @@ import { parseViewports, safeText, scanOnce, scorerNote, type PageResult } from 
 import { settleLimit } from "./concurrency.js";
 import { cleanRecord } from "./locate-join.js";
 import { batchLine, rowLine, type RecheckRow } from "./recheck-rows.js";
+import { parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 
 export interface RecheckArgs {
   /** The scan files to recheck (one page each): repeat --recheck to give more. */
@@ -27,6 +28,8 @@ export interface RecheckArgs {
   viewports?: string[];
   /** --no-cache: the numbers are computed again, and none is kept. */
   noCache?: boolean;
+  /** Third-party requests: blocked by default, as in a scan (--allow-third-party, --allow-host). */
+  thirdParty: ThirdPartyPolicy;
 }
 
 /** Browser contexts (one per viewport loaded) a recheck keeps in flight over all its pages together. */
@@ -51,10 +54,16 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
   let gpu: { device: number } | undefined;
   let viewports: string[] | undefined;
   let noCache = false;
+  let allowThirdParty = false;
+  let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--ignore-robots") {
       ignoreRobots = true;
+      continue;
+    }
+    if (arg === "--allow-third-party") {
+      allowThirdParty = true;
       continue;
     }
     if (arg === "--gpu") {
@@ -65,13 +74,14 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
       noCache = true;
       continue;
     }
-    if (arg === "--recheck" || arg === "--ids" || arg === "--gpu-device" || arg === "--viewports") {
+    if (arg === "--recheck" || arg === "--ids" || arg === "--gpu-device" || arg === "--viewports" || arg === "--allow-host") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
       i++;
       if (arg === "--recheck") files.push(value);
       else if (arg === "--gpu-device") gpu = { device: parseGpuDevice(value) };
       else if (arg === "--viewports") viewports = parseViewports(value);
+      else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
       else {
         ids = value.split(",").map((id) => id.trim()).filter((id) => id !== "");
         if (ids.length === 0) throw new Error(`--ids needs at least one image id (${USAGE})`);
@@ -81,7 +91,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
     }
   }
   if (files.length === 0) throw new Error(USAGE);
-  return { files, ids, ignoreRobots, gpu, viewports, noCache };
+  return { files, ids, ignoreRobots, gpu, viewports, noCache, thirdParty: thirdPartyFromFlags(allowThirdParty, allowHosts) };
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
@@ -317,6 +327,13 @@ async function recheckPage(
   if (previous.robotsIgnored === true && !args.ignoreRobots) {
     throw new Error(`${safeText(file)} was scanned with --ignore-robots; pass --ignore-robots to recheck it too`);
   }
+  // A scan file from before third-party blocking measured the page with every request allowed.
+  const scannedThirdParty = previous.options?.thirdParty ?? "allowed";
+  const rechecked = args.thirdParty.block ? "blocked" : "allowed";
+  if (scannedThirdParty !== rechecked) {
+    const flag = scannedThirdParty === "allowed" ? "--allow-third-party" : "no third-party flag";
+    throw new Error(`${safeText(file)} was scanned with third-party requests ${scannedThirdParty}; pass ${flag} to recheck it too`);
+  }
   const images = usableRecords(previous.images, log);
   const byId = new Map(images.map((record) => [record.id, record]));
   let selected: ImageRecord[];
@@ -352,6 +369,7 @@ async function recheckPage(
     gpu: args.gpu,
     viewportConcurrency: options.viewportConcurrency,
     cache: args.noCache !== true,
+    thirdParty: args.thirdParty,
   });
   const seconds = (Date.now() - started) / 1000;
   if (fresh.status !== "ok") {

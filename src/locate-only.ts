@@ -8,6 +8,7 @@ import { writeFileAtomic } from "./atomic.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { applyLocate, devImagesOf, isFlagged, joinLocate, joinKeyOfImage, joinKeyOfRecord, readMeasuredScan, reasonCounts, type LocateSummary, type MeasuredPage } from "./locate-join.js";
 import { observeLight, rootOf } from "./remote.js";
+import { parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import type { PageResult } from "./remote.js";
 import { unreadSourceNote } from "./source-root.js";
 import { safeText } from "./text.js";
@@ -24,6 +25,8 @@ export interface LocateArgs {
   ignoreRobots: boolean;
   /** --root: the folder the project sources are read from. */
   root?: string;
+  /** Third-party requests: blocked by default, as in a scan (--allow-third-party, --allow-host). */
+  thirdParty: ThirdPartyPolicy;
 }
 
 const USAGE = "usage: imgtune scan <dev-url> --locate-only --from <measured-scan.json> [--viewports <name>] [--locate-out <file>]";
@@ -38,6 +41,8 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
   let out: string | undefined;
   let root: string | undefined;
   let ignoreRobots = false;
+  let allowThirdParty = false;
+  let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--locate-only") continue;
@@ -45,13 +50,18 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
       ignoreRobots = true;
       continue;
     }
-    if (arg === "--from" || arg === "--viewports" || arg === "--locate-out" || arg === "--root") {
+    if (arg === "--allow-third-party") {
+      allowThirdParty = true;
+      continue;
+    }
+    if (arg === "--from" || arg === "--viewports" || arg === "--locate-out" || arg === "--root" || arg === "--allow-host") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
       i++;
       if (arg === "--from") from = value;
       else if (arg === "--locate-out") out = value;
       else if (arg === "--root") root = value;
+      else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
       else {
         if (!KNOWN_VIEWPORTS.includes(value)) throw new Error(`--viewports takes one viewport name for --locate-only, one of ${KNOWN_VIEWPORTS.join(", ")}`);
         viewport = value;
@@ -71,7 +81,7 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
   }
   if (url === undefined) throw new Error(USAGE);
   if (from === undefined) throw new Error(`--locate-only needs --from <measured-scan.json> (${USAGE})`);
-  return { url, from, viewport, out, ignoreRobots, root };
+  return { url, from, viewport, out, ignoreRobots, root, thirdParty: thirdPartyFromFlags(allowThirdParty, allowHosts) };
 }
 
 /** The default output: the measured file's name with `.located.json` in its place. */
@@ -111,6 +121,7 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
     log,
     ignoreRobots: args.ignoreRobots,
     wanted: (img, pageUrl) => flaggedPatterns.has(joinKeyOfImage(img, pageUrl)),
+    thirdParty: args.thirdParty,
   });
   if (light.status !== "ok") {
     return { output: `locate: the dev page is ${light.status}${light.error ? `: ${safeText(light.error)}` : ""}\n`, exitCode: 1 };
