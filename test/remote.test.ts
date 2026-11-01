@@ -1483,7 +1483,7 @@ describe("the fix hints in the PR comment", () => {
     const images = Array.from({ length: 12 }, (_, i) => hintRecord(`img${i}`, { saved: (i + 1) * 1024 }));
     const md = renderMarkdown([pageResult({ images })], false);
     expect(md).toContain("<details>\n<summary>Fix hints for your AI agent</summary>");
-    expect(md).toContain("Top 10 of 12 images with fix hints. Paste into your agent, or run `npx imgtune hints` on the scan file.");
+    expect(md).toContain("Top 10 of 12 images with fix hints. Paste into your agent, or run `npx imgtune hints <scan.json>`.");
     const numbered = md.split("\n").filter((line) => /^\d+\. saves /.test(line));
     expect(numbered).toHaveLength(10);
     expect(numbered[0]).toContain("saves 12 KB/view, +0 KB sharpness");

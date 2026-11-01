@@ -2195,7 +2195,7 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
         "<details>",
         "<summary>Fix hints for your AI agent</summary>",
         "",
-        `Top ${hints.lines.length} of ${hints.total} images with fix hints. Paste into your agent, or run \`npx imgtune hints\` on the scan file.`,
+        `Top ${hints.lines.length} of ${hints.total} images with fix hints. Paste into your agent, or run \`npx imgtune hints <scan.json>\`.`,
         "",
         ...hints.lines,
         "",
