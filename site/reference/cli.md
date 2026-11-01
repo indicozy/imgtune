@@ -14,11 +14,54 @@ ImgTune prints that command and exits with status 2. `image` and `hints` need no
 
 | command | what it does |
 | --- | --- |
+| `run` | the whole flow in one command: survey every URL, full-scan the worst pages, locate them on a dev server (`--dev`), group the fix hints by call site, write a run directory with a manifest, and print a one-screen summary |
+| `summary` | the one-screen summary of a run directory or of scan files (at most 40 lines) |
 | `scan` | measure live pages by URL on a built server (no source needed). Writes one JSON file per page. With `--locate-only`, reads the source of the flagged images from a dev page. With `--recheck`, rechecks fixed images (`--sizes-only` on dev, in seconds) |
 | `hints` | print a batch of the per-image fix hints of one or more scan files (one per page) |
 | `image` | measure image files or URLs without a page: the bytes, the lowest quality per format, and the bytes at a width |
 | `compare` | the per-image before and after of two scans of one page: saved and added-for-sharpness bytes, paired by URL pattern and alt |
 | `report` | a Markdown run report from the agent's ledger, with the compare JSON for the bytes |
+
+## run
+
+```sh
+npx imgtune run <url> [<url> ...] [options]
+npx imgtune run --urls-from <file|sitemap-url> [--sample-per-pattern <N>] [options]
+```
+
+One command for the agent flow. It runs, in order:
+
+1. **survey**: every URL (`scan --survey`: two viewports, exact savings only, no estimate).
+2. **worst pages**: ranked by exact KB per view, then by route pattern. `--deep <N>` (default 5) pages are chosen: the worst
+   page of each worst pattern first, then the worst pages overall. Broken pages are not ranked.
+3. **deep**: a full scan of those pages (six viewports, exact and est.). `--gpu`, `--gpu-device`, `--page-concurrency`,
+   `--idle-timeout`, `--no-cache`, `--root`, `--storage-state` and `--ignore-robots` pass through.
+4. **locate** (with `--dev <origin>`): each deep page at the same path on the dev server (`scan --locate-only`).
+5. **hints**: the fix hints of the deep pages (or of their located copies), grouped by call site, as `hints.json`.
+
+Options: `--out <dir>` (default `.imgtune/run/<timestamp>`), `--qualities <list>` (passed to hints), `--deep <N>`,
+`--dev <origin>`. Run `imgtune run --help` for all of them.
+
+The run directory has a stable layout: `urls.txt`, `survey/`, `deep/`, `located/` (with `--dev`), `hints.json` and
+`run.json`. The manifest names every file, the phase timings, every broken page with its reason and fix, and every command
+the run executed (relative to the working directory), so one step can be re-run by hand.
+
+The printed summary is the same text `imgtune summary <run dir>` prints. It is at most 40 lines: the survey totals, the worst
+patterns, the deep pages (KB per view, exact, exact + est., sharpness), the top 10 call sites by KB per view saved with
+their `file:line` (or `not located` and why), the warnings and the next commands.
+
+Fail fast: when more than half of the survey pages are broken, or none was measured, `run` stops before the deep phase,
+prints the reason and the likely fix, and exits 4 (1 when no page was measured). Exit 0 otherwise.
+
+## summary
+
+```sh
+npx imgtune summary <run dir>
+npx imgtune summary <scan.json> [<scan.json> ...] [--qualities <list>]
+```
+
+Prints the same one-screen summary from a run directory (its `run.json`, `survey/`, `deep/`, `located/`, `hints.json`), or
+from scan files (a folder of scan files works too). It reads no other JSON.
 
 ## scan
 
@@ -44,6 +87,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--markdown <file>` | write a PR-comment Markdown summary: per page, its top groups and the method |
 | `--fail-over <pct>` | exit 3 when a page's exact + est. share is above this percentage (default: never fail) |
+| `--fail-on-broken` | exit 4 when a page is broken: a document error, a failed stylesheet, or no images where the survey had some. Each broken page prints its reason and fix. Broken pages are left out of every total |
 | `--summary-json <file>` | write one JSON file with every page's status and numbers |
 | `--ignore-robots` | scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON) |
 | `--resume` | reuse the complete pages already in `--out` that were scanned with the same options |
@@ -89,8 +133,9 @@ source file and the same URL pattern (the loader URL without its width and quali
 neither matched: the output lists what was looked for. Before you conclude an image is gone, rescan the page as it was
 before your edits and recheck the same ids: if they are found there, your edit removed or changed the image.
 
-Exit status: 0 on success, 3 when a `--fail-over` budget was exceeded, 2 when Chromium is missing, and 1 for other scan
-failures, a failed `--recheck` or `--sizes-only`, and a `--locate-only` that located nothing.
+Exit status: 0 on success, 3 when a `--fail-over` budget was exceeded, 4 when a page is broken and `--fail-on-broken` is set,
+2 when Chromium is missing, and 1 for other scan failures, a failed `--recheck` or `--sizes-only`, and a `--locate-only` that
+located nothing. `run` uses the same codes: 4 when it stops on broken pages, 1 when no page was measured.
 
 ## hints
 

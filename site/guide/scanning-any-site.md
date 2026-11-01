@@ -34,9 +34,27 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 
 The six viewport names are `iphone-se`, `iphone-15`, `pixel-7`, `iphone-15-pro-max`, `desktop` and `desktop-1280`.
 
+## Site-wide: one command
+
+`imgtune run` does the whole site-wide flow in one command: it surveys every URL, full-scans the worst pages (at least one per
+worst route pattern), optionally locates them on a dev server, and groups the fix hints by call site:
+
+```sh
+npx imgtune run --urls-from sitemap.xml --sample-per-pattern 5 --deep 5 --dev http://localhost:3000
+```
+
+It writes a run directory (`.imgtune/run/<timestamp>`, or `--out`) and prints a summary of at most 40 lines: the site totals,
+the worst patterns, the deep pages, the top call sites by saving per view, the warnings and the next commands. The
+directory's `run.json` lists every file and every command, so a single step can be run again by hand. `imgtune summary
+<run dir>` prints the same summary again.
+
+A page that cannot be measured as the app is (its document answered an HTTP error, a linked stylesheet did not load, or a
+full scan finds no images where the survey found some) is `broken`. A broken page has no numbers and counts in no total; its
+reason and the likely fix are printed. When more than half of the survey is broken, `run` stops before the deep phase.
+
 ## Site-wide: survey first
 
-A whole site is faster to read in two passes. First, survey every URL (or a sample of each route pattern):
+A whole site is faster to read in two passes (this is what `run` does for you). First, survey every URL (or a sample of each route pattern):
 
 ```sh
 npx imgtune scan --urls-from sitemap.xml --survey --out .imgtune/survey
