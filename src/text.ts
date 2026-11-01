@@ -37,8 +37,8 @@ const MD_ENTITIES: Record<string, string> = {
  * Plain text for a Markdown cell or list line, for text this module writes itself: control characters removed, then
  * escaped. The colon and the "www." prefix are escaped too, so GitHub does not autolink a URL typed in a page's text.
  */
-export function mdText(text: string): string {
-  return safeText(text).replace(/www\.|[&<>[\]`*_|\\@#~$:]/gi, (match) => (match === "." || match.toLowerCase() === "www." ? "www&#46;" : MD_ENTITIES[match]));
+export function mdText(text: string, limit?: number): string {
+  return safeText(text, limit).replace(/www\.|[&<>[\]`*_|\\@#~$:]/gi, (match) => (match === "." || match.toLowerCase() === "www." ? "www&#46;" : MD_ENTITIES[match]));
 }
 
 /**

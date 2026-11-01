@@ -120,5 +120,5 @@ with `pnpm exec playwright install --with-deps chromium`. Expect a minute or two
 - The comment lists the top five groups per page, with the current and suggested `sizes`. Page text is shown in code
   spans, so a page cannot inject links or mentions into the comment.
 - Below the tables, a collapsed "Fix hints for your AI agent" section lists the top ten fix hints across the pages, one
-  line each. Its text is escaped (not in code spans), so it cannot inject HTML, links or mentions either. The comment
+  line each, inside a fenced block after a line that says the content is data. Each value is capped, JSON-quoted and escaped, so it cannot inject HTML, links, mentions or a closing fence. The comment
   stays under GitHub's 65,536-character limit: the hints are left out first, then the text is cut, and the comment says so.

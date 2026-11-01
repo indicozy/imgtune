@@ -216,6 +216,10 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
 
 /** How many hints the PR comment lists. */
 export const COMMENT_HINTS = 10;
+/** Longest value shown in the comment, before JSON quoting and escaping. */
+const COMMENT_FIELD = 80;
+/** Longest escaped text one field may take (a capped value, quoted and escaped, is far shorter). */
+const COMMENT_ESCAPED_LIMIT = 1000;
 
 /** The hints of a PR comment: the top `limit` across the pages, one line each, and the number of hints in all. */
 export function commentHints(results: PageResult[], limit = COMMENT_HINTS): { total: number; lines: string[] } {
@@ -225,26 +229,37 @@ export function commentHints(results: PageResult[], limit = COMMENT_HINTS): { to
 }
 
 /**
- * One hint as a Markdown line. Every value is page-derived, so each goes through mdText: no HTML, link, mention, heading or
- * emphasis survives. The text is plain, not a code span, because a code span would show the escapes as written.
+ * A page-derived value in the comment: capped at COMMENT_FIELD characters, JSON-quoted the way the CLI text prints it (so
+ * an instruction inside a name stays a quoted string), then Markdown-escaped. Its escapes keep it from closing the fence.
  */
+function quoted(value: string): string {
+  const capped = value.length > COMMENT_FIELD ? `${value.slice(0, COMMENT_FIELD - 3)}...` : value;
+  return mdText(JSON.stringify(capped), COMMENT_ESCAPED_LIMIT);
+}
+
+/** One hint as a line of the comment's fenced block. Every page-derived value goes through `quoted`. */
 function commentLine(hint: Hint): string {
-  const source = hint.file !== undefined ? `${hint.file}:${hint.line ?? 0}${hint.verified === false ? " (unverified)" : ""}` : hint.component[0] ?? hint.selector;
-  const component = hint.file !== undefined && hint.component[0] !== undefined ? ` (${hint.component[0]})` : "";
+  const location =
+    hint.file !== undefined
+      ? `${quoted(`${hint.file}:${hint.line ?? 0}`)}${hint.verified === false ? " (unverified)" : ""}`
+      : quoted(hint.component[0] ?? hint.selector);
+  const component = hint.file !== undefined && hint.component[0] !== undefined ? ` (${quoted(hint.component[0])})` : "";
   const sizes =
     hint.width !== undefined
       ? `width ${hint.width}px`
-      : `sizes ${mdText(hint.sizes.current ?? "none")} -> ${mdText(hint.sizes.proposed ?? "-")}`;
-  const parts = [
+      : `sizes ${quoted(hint.sizes.current ?? "none")} -> ${quoted(hint.sizes.proposed ?? "-")}`;
+  const parts: (string | undefined)[] = [
     `saves ${kb(hint.bytes.saved)}/view, +${kb(hint.bytes.addedForSharpness)} sharpness`,
-    `${mdText(source)}${mdText(component)}`,
-    `page ${mdText(pathOf(hint.page))}`,
+    `${location}${component}`,
+    hint.alt !== undefined ? `alt ${quoted(hint.alt)}` : undefined,
+    `page ${quoted(pathOf(hint.page))}`,
     sizes,
+    hint.quality ? `quality ${hint.quality.current}${hint.quality.target !== undefined ? ` -> ${hint.quality.target}` : ""}` : undefined,
+    hint.format ? `format ${quoted(hint.format.current ?? "?")}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${quoted(hint.format.best)}` : ""}` : undefined,
+    `rung ${hint.rung}`,
+    `id ${quoted(hint.id)}`,
   ];
-  if (hint.quality) parts.push(`quality ${hint.quality.current}${hint.quality.target !== undefined ? ` -> ${hint.quality.target}` : ""}`);
-  if (hint.format) parts.push(`format ${mdText(hint.format.current ?? "?")}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${mdText(hint.format.best)}` : ""}`);
-  parts.push(`rung ${hint.rung}`, `id ${mdText(hint.id)}`);
-  return parts.join("; ");
+  return parts.filter((part): part is string => part !== undefined).join("; ");
 }
 
 /** The host and path of a page URL (no query): what a comment shows of a page. */
