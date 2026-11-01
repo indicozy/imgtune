@@ -1,7 +1,8 @@
-// `imgtune image <file|url|glob> [--width px] [--dpr 1,2] [--formats avif,webp,jpeg]`: measures image files without a page.
-// Each file gets the same bar the scan uses: the SSIMULACRA2 of the file as it is, minus the delta (never under the
-// threshold), and the lowest quality per format that meets it. With --width the file is also measured at the width it
-// is needed at (width x dpr). Files are read, never written, unless --write names a directory for optimised copies.
+// `imgtune image <file|url|glob> [--width px] [--dpr 1,2] [--formats avif,webp,jpeg] [--min-score n]`: measures image
+// files without a page. Without an original the file is its own reference, so each file must meet a bar against itself
+// (SSIMULACRA2 90 by default, visually lossless; --min-score sets another). The lowest quality per format that meets the
+// bar is reported. With --width the file is also measured at the width it is needed at (width x dpr). Files are read,
+// never written, unless --write names a directory for optimised copies.
 
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
@@ -12,7 +13,7 @@ import { makeFetcher, MAX_IMAGE_BYTES } from "./fetch.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import type { RawImage } from "./ssim.js";
-import { decodeRaw, pixelSize, safeText, SCAN_THRESHOLD, SCAN_TOLERANCE } from "./remote.js";
+import { decodeRaw, pixelSize, safeText, SCAN_TOLERANCE } from "./remote.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
 export type ImageFormat = "avif" | "webp" | "jpeg";
@@ -23,6 +24,8 @@ export const MAX_IMAGE_INPUTS = 200;
 const MAX_GLOB_MATCHES = 1000;
 /** Quality the search starts from for every format (the scan's AVIF and WebP start). */
 const START_QUALITY = 90;
+/** The SSIMULACRA2 bar a file must meet against itself, when --min-score is not given: visually lossless. */
+export const DEFAULT_FILE_BAR = 90;
 
 export interface ImageArgs {
   inputs: string[];
@@ -32,11 +35,13 @@ export interface ImageArgs {
   formats: ImageFormat[];
   /** A directory for optimised copies (never overwrites). */
   write?: string;
+  /** The SSIMULACRA2 bar, instead of DEFAULT_FILE_BAR. */
+  minScore?: number;
   format: "text" | "json";
 }
 
 const USAGE =
-  "usage: imgtune image <file|url|glob> [...] [--width <css px>] [--dpr 1,2] [--formats avif,webp,jpeg] [--write <dir>] [--format text|json]";
+  "usage: imgtune image <file|url|glob> [...] [--width <css px>] [--dpr 1,2] [--formats avif,webp,jpeg] [--min-score <n>] [--write <dir>] [--format text|json]";
 
 function positiveNumber(name: string, text: string): number {
   if (!/^\d+(\.\d+)?$/.test(text) || Number(text) <= 0) throw new Error(`${name} needs a number above 0, not ${safeText(text)}`);
@@ -65,6 +70,10 @@ export function parseImageArgs(argv: string[]): ImageArgs {
         if (!ALL_FORMATS.includes(name as ImageFormat)) throw new Error(`--formats is avif, webp or jpeg, not ${safeText(name)}`);
       }
       args.formats = [...new Set(names as ImageFormat[])];
+    } else if (arg === "--min-score") {
+      const score = Number(value);
+      if (!/^\d+(\.\d+)?$/.test(value) || score <= 0 || score > 100) throw new Error(`--min-score needs a number above 0 and at most 100, not ${safeText(value)}`);
+      args.minScore = score;
     } else if (arg === "--write") args.write = value;
     else if (arg === "--format") {
       if (value !== "text" && value !== "json") throw new Error(`--format is text or json, not ${safeText(value)}`);
@@ -216,18 +225,18 @@ export interface FileResult {
   current: { format?: string; width: number; height: number; bytes: number };
   /** Where the width comes from: the user's --width, or the file's own size (no width given). */
   width: { source: "user" | "file"; css?: number };
-  /**
-   * The bar the quality search met. Without an original the file is its own reference, so the bar is the scan's floor
-   * (SCAN_THRESHOLD) measured against the file's own pixels; the scan's per-image bar needs the original.
-   */
-  bar: { ssimulacra2: number; basis: "floor" };
+  /** The SSIMULACRA2 bar each quality met, measured against the file's own pixels: the default, or --min-score. */
+  bar: { ssimulacra2: number; basis: "default" | "user" };
   sizes: SizeResult[];
   error?: string;
 }
 
-/** The lowest quality per format meeting the bar (the floor, against the reference), at a reference of one size. */
-async function formatsAt(reference: RawImage, formats: ImageFormat[], score: Scorer): Promise<Record<ImageFormat, FormatResult>> {
-  const bar = SCAN_THRESHOLD;
+/** The bar of a run: --min-score when given, else the default. */
+const barOf = (minScore: number | undefined): FileResult["bar"] =>
+  minScore === undefined ? { ssimulacra2: DEFAULT_FILE_BAR, basis: "default" } : { ssimulacra2: minScore, basis: "user" };
+
+/** The lowest quality per format meeting the bar, at a reference of one size. */
+async function formatsAt(reference: RawImage, formats: ImageFormat[], score: Scorer, bar: number): Promise<Record<ImageFormat, FormatResult>> {
   const perFormat = {} as Record<ImageFormat, FormatResult>;
   for (const format of ALL_FORMATS) {
     if (!formats.includes(format)) continue;
@@ -276,17 +285,18 @@ async function referenceFor(buffer: Buffer, width: number): Promise<RawImage> {
 export async function measureFile(
   input: ImageInput,
   buffer: Buffer,
-  args: Pick<ImageArgs, "width" | "dprs" | "formats">,
+  args: Pick<ImageArgs, "width" | "dprs" | "formats" | "minScore">,
   score: Scorer,
 ): Promise<FileResult> {
   const info = await pixelSize(buffer);
+  const bar = barOf(args.minScore);
   const base = {
     label: input.label,
     evidence: "file-mode" as const,
     imgtuneVersion: IMGTUNE_VERSION,
     current: { format: info?.format, width: info?.width ?? 0, height: info?.height ?? 0, bytes: buffer.length },
   };
-  const placeholder = { bar: { ssimulacra2: SCAN_THRESHOLD, basis: "floor" as const }, sizes: [] };
+  const placeholder = { bar, sizes: [] };
   if (!info) return { ...base, width: { source: args.width ? "user" : "file", css: args.width }, ...placeholder, error: "not a decodable image" };
   if (info.format === "svg" || info.format === "gif") {
     return { ...base, width: { source: args.width ? "user" : "file", css: args.width }, ...placeholder, error: `${info.format} is not measured (not a raster format the encoders take)` };
@@ -296,7 +306,7 @@ export async function measureFile(
   const sizes: SizeResult[] = [];
   for (const target of targets) {
     const reference = await referenceFor(buffer, target.px);
-    const perFormat = await formatsAt(reference, args.formats, score);
+    const perFormat = await formatsAt(reference, args.formats, score, bar.ssimulacra2);
     const fits = (Object.entries(perFormat) as [ImageFormat, FormatResult][]).filter(([, r]) => r.bytes !== undefined);
     const best = fits.sort((a, b) => (a[1].bytes as number) - (b[1].bytes as number))[0];
     sizes.push({
@@ -309,7 +319,7 @@ export async function measureFile(
   return {
     ...base,
     width: args.width === undefined ? { source: "file" } : { source: "user", css: args.width },
-    bar: { ssimulacra2: SCAN_THRESHOLD, basis: "floor" },
+    bar,
     sizes,
   };
 }
@@ -325,14 +335,18 @@ export function renderFile(result: FileResult): string {
   const head = `${safeText(result.label)}  ${result.current.format ?? "?"} ${result.current.width}x${result.current.height}  ${kb(result.current.bytes)} now`;
   if (result.error) return `${head}\n  ${safeText(result.error)}\n`;
   const lines = [head, `  evidence file-mode; width ${result.width.source === "user" ? `${result.width.css} css px (from --width: the user's)` : "the file's own size (no --width given)"}`];
-  lines.push(`  bar SSIMULACRA2 ${result.bar.ssimulacra2} against the file itself (no original: the scan's floor)`);
+  const barNote = result.bar.basis === "default" ? "default, visually lossless; --min-score sets another" : "from --min-score";
+  lines.push(`  bar SSIMULACRA2 ${result.bar.ssimulacra2} against the file itself (${barNote})`);
   for (const size of result.sizes) {
     const at = size.dpr !== undefined ? `at ${size.px} px (${result.width.css} css x ${size.dpr})` : `at ${size.px} px`;
     const parts = (Object.entries(size.perFormat) as [ImageFormat, FormatResult][]).map(([format, r]) =>
       r.bytes !== undefined ? `${format} q${r.quality} ${kb(r.bytes)}` : `${format} misses the bar`,
     );
     lines.push(`  ${at}: ${parts.join("   ")}`);
-    if (size.best) lines.push(`    best ${size.best.format} ${kb(size.best.bytes)} (${size.best.saving >= 0 ? "-" : "+"}${kb(Math.abs(size.best.saving))})`);
+    if (size.best) {
+      const change = size.best.saving >= 0 ? `saves ${kb(size.best.saving)}` : `adds ${kb(-size.best.saving)}`;
+      lines.push(`    best ${size.best.format} ${kb(size.best.bytes)} (${change})`);
+    }
   }
   return `${lines.join("\n")}\n`;
 }
@@ -397,7 +411,7 @@ export async function imageCommand(argv: string[], cwd: string, userAgent = `img
         imgtuneVersion: IMGTUNE_VERSION,
         current: { width: 0, height: 0, bytes: 0 },
         width: { source: args.width ? "user" : "file", css: args.width },
-        bar: { ssimulacra2: SCAN_THRESHOLD, basis: "floor" },
+        bar: barOf(args.minScore),
         sizes: [],
         error: (err as Error).message,
       });

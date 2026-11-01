@@ -41,6 +41,11 @@ const OPTION_HELP = {
     "--storage-state <file>",
     "a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it",
   ],
+  recheck: [
+    "--recheck <scan.json>",
+    "rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after",
+  ],
+  ids: ["--ids <a,b,c>", "with --recheck: only these image ids (from the scan JSON's images[].id)"],
 } as const;
 
 type OptionKey = keyof typeof OPTION_HELP;
@@ -78,6 +83,8 @@ const SCAN_HELP = commandHelp(
     "urlsFrom",
     "samplePerPattern",
     "storageState",
+    "recheck",
+    "ids",
   ],
 );
 
@@ -99,14 +106,16 @@ Options:
 const IMAGE_HELP = `Usage: imgtune image <file|url|glob> [<file|url|glob> ...] [options]
 
 Measures image files without a page: the bytes now, the lowest quality per format (avif, webp, jpeg) that keeps the file's
-SSIMULACRA2 bar, and, with --width, the bytes at the width the image is needed at (width x dpr). Files are read, never
-written, unless --write names a folder for optimised copies (existing names are never overwritten).
+SSIMULACRA2 bar, and, with --width, the bytes at the width the image is needed at (width x dpr). The bar is measured
+against the file itself: 90 (visually lossless) unless --min-score sets another. Files are read, never written, unless
+--write names a folder for optimised copies (existing names are never overwritten).
 Evidence is "file-mode". Globs: ** walks folders (node_modules and dot folders are skipped).
 
 Options:
   --width <css px>      the CSS width the image is shown at (the width is then the user's, not the file's)
   --dpr <list>          device pixel ratios for --width (default 1,2)
   --formats <list>      avif, webp, jpeg (default all three)
+  --min-score <n>       the SSIMULACRA2 bar, above 0 and at most 100 (default 90)
   --write <dir>         write optimised copies (best format, at the largest needed width) into this folder
   --format <text|json>  text (default) or JSON
   -h, --help            show this help

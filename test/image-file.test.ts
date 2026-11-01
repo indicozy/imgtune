@@ -21,11 +21,22 @@ describe("parseImageArgs", () => {
     });
   });
 
+  it("reads --min-score and leaves the bar to the default when it is absent", () => {
+    expect(parseImageArgs(["a.jpg"]).minScore).toBeUndefined();
+    expect(parseImageArgs(["a.jpg", "--min-score", "85.5"]).minScore).toBe(85.5);
+  });
+
   it("refuses no input, a bad width, an unknown format and an unknown option", () => {
     expect(() => parseImageArgs(["--width", "400"])).toThrow(/usage: imgtune image/);
     expect(() => parseImageArgs(["a.jpg", "--width", "0"])).toThrow(/above 0/);
     expect(() => parseImageArgs(["a.jpg", "--formats", "gif"])).toThrow(/avif, webp or jpeg/);
     expect(() => parseImageArgs(["a.jpg", "--depth", "2"])).toThrow(/Unknown option/);
+  });
+
+  it("refuses a --min-score outside above 0 and at most 100", () => {
+    expect(() => parseImageArgs(["a.jpg", "--min-score", "0"])).toThrow(/--min-score needs a number above 0 and at most 100/);
+    expect(() => parseImageArgs(["a.jpg", "--min-score", "101"])).toThrow(/at most 100/);
+    expect(() => parseImageArgs(["a.jpg", "--min-score", "high"])).toThrow(/not high/);
   });
 });
 
@@ -62,11 +73,29 @@ describe("renderFile", () => {
       imgtuneVersion: "0.1.0",
       current: { format: "svg", width: 0, height: 0, bytes: 2048 },
       width: { source: "file" },
-      bar: { ssimulacra2: 70, basis: "floor" },
+      bar: { ssimulacra2: 90, basis: "default" },
       sizes: [],
       error: "svg is not measured",
     } as FileResult;
     expect(renderFile(result)).toBe("logo.svg  svg 0x0  2 KB now\n  svg is not measured\n");
+  });
+
+  it("prints the bar the file had to meet, and where it came from", () => {
+    const base: FileResult = {
+      label: "hero.jpg",
+      evidence: "file-mode",
+      imgtuneVersion: "0.1.0",
+      current: { format: "jpeg", width: 320, height: 200, bytes: 4096 },
+      width: { source: "file" },
+      bar: { ssimulacra2: 90, basis: "default" },
+      sizes: [],
+    };
+    expect(renderFile(base)).toContain(
+      "bar SSIMULACRA2 90 against the file itself (default, visually lossless; --min-score sets another)",
+    );
+    expect(renderFile({ ...base, bar: { ssimulacra2: 60, basis: "user" } })).toContain(
+      "bar SSIMULACRA2 60 against the file itself (from --min-score)",
+    );
   });
 });
 
@@ -90,9 +119,19 @@ describe("imageCommand (real encodes on generated images)", () => {
     expect(body.evidence).toBe("file-mode");
     const [file] = body.files;
     expect(file.width).toEqual({ source: "file" });
-    expect(file.bar.ssimulacra2).toBeGreaterThanOrEqual(70);
+    expect(file.bar).toEqual({ ssimulacra2: 90, basis: "default" });
     expect(file.sizes).toHaveLength(1);
-    expect(file.sizes[0].perFormat.webp?.quality).toBeGreaterThan(0);
+    // The noisy JPEG fixture is held to 90 against itself: webp either meets that bar at some quality or misses it.
+    const webp = file.sizes[0].perFormat.webp;
+    expect(webp?.missed === true || (webp?.quality ?? 0) > 0).toBe(true);
+  }, 120_000);
+
+  it("--min-score sets the bar that every format must meet, and the output prints it", async () => {
+    const { output } = await imageCommand(["hero.jpg", "--min-score", "60", "--formats", "webp", "--format", "json"], dir);
+    const [file] = (JSON.parse(output) as { files: FileResult[] }).files;
+    expect(file.bar).toEqual({ ssimulacra2: 60, basis: "user" });
+    const text = await imageCommand(["hero.jpg", "--min-score", "60", "--formats", "webp"], dir);
+    expect(text.output).toContain("bar SSIMULACRA2 60 against the file itself (from --min-score)");
   }, 120_000);
 
   it("with --width measures the needed width at each dpr and labels the width as the user's", async () => {
@@ -106,15 +145,15 @@ describe("imageCommand (real encodes on generated images)", () => {
 
   it("never overwrites: a second --write of the same copy is refused for the existing file", async () => {
     const out = join(dir, "copies");
-    const first = await imageCommand(["hero.jpg", "--formats", "webp", "--write", out], dir);
+    const first = await imageCommand(["hero.jpg", "--formats", "webp", "--min-score", "70", "--write", out], dir);
     expect(first.output).toContain("-> copies/hero.webp");
-    const second = await imageCommand(["hero.jpg", "--formats", "webp", "--write", out], dir);
+    const second = await imageCommand(["hero.jpg", "--formats", "webp", "--min-score", "70", "--write", out], dir);
     expect(second.output).toContain("hero.webp: not written (the file exists)");
     expect(await readdir(out)).toEqual(["hero.webp"]);
   }, 120_000);
 
   it("refuses to write a copy into the folder of the original", async () => {
-    const { output } = await imageCommand(["hero.jpg", "--formats", "webp", "--write", "."], dir);
+    const { output } = await imageCommand(["hero.jpg", "--formats", "webp", "--min-score", "70", "--write", "."], dir);
     expect(output).toContain("not written (the copy folder is the file's own folder)");
   }, 120_000);
 
