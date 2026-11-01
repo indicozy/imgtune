@@ -13,6 +13,7 @@ The numbers are per page view, and the savings are shares of the image bytes, as
 | `scannedAt` | ISO time of the scan |
 | `imgtuneVersion` | the tool version that wrote the file |
 | `metric` | `ssimulacra2` |
+| `scorer` | `{ name: "cpu" \| "gpu", device, deviceName, cpuFallbacks }`: the scorer that made the numbers. `cpuFallbacks` counts the scores the CPU took after the GPU failed during this page, and is absent when there were none. Scans from before `--gpu` have no field: they were scored on the CPU |
 | `delta` | the delta of the relative rule (2 in a default scan) |
 | `aggressiveDelta` | 4, only with `--aggressive` |
 | `viewports` | the viewport names measured |
@@ -239,6 +240,6 @@ Each node in `nodes`:
 
 ## Summary JSON
 
-`--summary-json` holds `imgtuneVersion` and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
+`--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
 `error`, `finalUrl`, `loadTimedOut` and `page` (the page numbers above). `--markdown` writes the same numbers as a Markdown
 table, with each page's top groups and the method. The CI action posts that Markdown as its comment.

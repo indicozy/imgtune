@@ -153,6 +153,19 @@ npx imgtune image "public/**/*.{jpg,jpeg,png}" --write .imgtune/copies --min-sco
   measured at its own size, which is a different question.
 - Replacing the originals is a decision for the user. Show the table of before and after bytes first.
 
+## GPU scoring (`--gpu`)
+
+Use it only when the user asks. It is opt-in and it speeds up only the SSIMULACRA2 scoring.
+
+- The program is `imgtune-ssimu2-gpu`, built from `native/ssimulacra2-gpu/` in the imgtune repo against libvship (Vship,
+  not bundled). Install it on `PATH` or set `IMGTUNE_GPU_SCORER`. Check it with `imgtune-ssimu2-gpu --check --device 0`
+  (prints the device name and the self-test scores).
+- Ask which GPU to use and pass its `nvidia-smi` index with `--gpu-device`. Without it, index 0 is used.
+- Output begins `scored on GPU; may differ slightly from CPU`. Each page's JSON has `scorer`. Any `--gpu` warning on stderr
+  means the run fell back to the CPU for some or all scores: report that.
+- A `scan --recheck` whose scorer differs from the scan's prints a warning. Do not compare those numbers as a before and after.
+- The measured gain is in scoring only: a timed nextjs.org scan went from 110 s to 89 s, where scoring was 19 s of the 110 s. Pages with little scoring gain little.
+
 ## Verify checklist
 
 - [ ] `scan --recheck` exits 0 for every fixed id (or each failure is recorded and reverted).

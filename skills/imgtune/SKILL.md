@@ -74,6 +74,10 @@ Every flag below is checked against `--help`. Use only these.
 - `--storage-state <file>`: a Playwright storage state for a logged-in session. It holds session cookies. Never commit it.
 - `--ignore-robots`: scan a page that `robots.txt` disallows. Owned or authorised sites only. A warning prints, and the
   JSON records `robotsIgnored: true` with the rule.
+- `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks.** They need the `imgtune-ssimu2-gpu` program
+  (`reference.md`), use that GPU's memory and may compete with other GPU work. Ask which GPU to use (`nvidia-smi` index).
+  Only scoring moves: a timed nextjs.org scan went from 110 s to 89 s. GPU scores can differ slightly from CPU: compare
+  before and after scans only when both used the same scorer (`scorer` in the JSON).
 - `--resume`: reuse the complete pages in `--out` that were scanned with the same options.
 - `--max-pages <N>`: stop after N pages (scanned or resumed). Run again with `--resume` to continue.
 - `--max-images <N>`: stop after the page that brings the images counted to N. Checked between pages.

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `--gpu` and `--gpu-device <n>` (`scan`, `scan --recheck`, `image`): SSIMULACRA2 scoring on an NVIDIA GPU, opt-in. It runs
+  through `imgtune-ssimu2-gpu`, an external program built from `native/ssimulacra2-gpu/` against libvship (Vship). A missing
+  or failing program prints a warning and the run scores on the CPU. Encoding stays on the CPU. On nextjs.org scoring took
+  19 s on the CPU and 1 s on the GPU (a timed scan: 110 s to 89 s on a loaded machine). The quality targets and per-image
+  records of the nextjs.org scan were identical; scores differ by up to 1.2 points on its re-encode pairs.
+- Scan JSON records the scorer: `scorer` on each page and on the summary, and in `resume` options. `scan --recheck` warns when
+  its scorer differs from the scan's.
 - Locator check: a resolved `file:line` is read from the project (local pages only) and must render an image. A call
   site that only uses the component which renders the image is `kind: owner`, `verified: false`, and hints say which
   component to search. `kind` is `image`, `owner`, `unread` or `unchecked`. Scan from the project root.

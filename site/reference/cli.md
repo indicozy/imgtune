@@ -46,6 +46,8 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--storage-state <file>` | a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it |
 | `--recheck <scan.json>` | rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after |
 | `--ids <a,b,c>` | with `--recheck`: only these image ids (from the scan JSON's `images[].id`) |
+| `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in). Needs the `imgtune-ssimu2-gpu` program; without it, a warning and the CPU. See [GPU scoring](#gpu-scoring-gpu) |
+| `--gpu-device <n>` | the GPU to score on, by its `nvidia-smi` index (implies `--gpu`; default 0) |
 | `-h, --help` | show this help |
 
 `--recheck` rescans the page at the URL the scan file recorded, so that server must be running (the dev server, for source
@@ -114,9 +116,34 @@ and dot folders are skipped). See [Repo images and file mode](/guide/repo-images
 | `--min-score <n>` | the SSIMULACRA2 bar, above 0 and at most 100 (default 90) |
 | `--write <dir>` | write optimised copies (best format, at the largest needed width) into this folder |
 | `--format <text\|json>` | `text` (default) or `json` |
+| `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in; see [GPU scoring](#gpu-scoring-gpu)) |
+| `--gpu-device <n>` | the GPU to score on, by its `nvidia-smi` index (implies `--gpu`; default 0) |
 | `-h, --help` | show this help |
 
 Exit status: 0 when every file was measured, 1 when one failed.
+
+## GPU scoring (`--gpu`)
+
+Opt-in, for `scan`, `scan --recheck` and `image`. Only SSIMULACRA2 scoring moves to the GPU. Encoding stays on the CPU.
+
+- **The program.** `imgtune-ssimu2-gpu` is built from `native/ssimulacra2-gpu/imgtune-ssimu2-gpu.cpp` against libvship
+  from [Vship](https://codeberg.org/Line-fr/Vship), which is not bundled. Put the binary on `PATH`, or set
+  `IMGTUNE_GPU_SCORER` to its path. Check a device by hand with
+  `CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 imgtune-ssimu2-gpu --check --device 0`.
+- **The device.** `--gpu-device <n>` takes the `nvidia-smi` index. Without it, device 0 is used. Choose the device
+  deliberately: the GPU may be busy with other work.
+- **Fallback.** A missing program, or one that fails its self-test, prints `--gpu: ...` and the run scores on the CPU. A
+  failure during the run prints the same warning, and the scores from then on are the CPU's. Nothing hard-fails.
+- **What it says.** The output starts with `scored on GPU; may differ slightly from CPU (device <n>: <name>)`. Each page
+  of the scan JSON records its `scorer`, and the summary JSON records the run's. `scan --recheck` warns when its scorer
+  differs from the scan's.
+- **How much it helps.** Scoring is the only stage it speeds up. On nextjs.org (RTX 4060, 6 viewports) scoring fell from
+  19 s to 1 s, and a timed scan from 110 s to 89 s on a loaded machine (1.14x to 1.24x over three pairs). Encoding, page
+  loads and settling are unchanged, so a page with little scoring gains little.
+- **How much it changes.** On the nextjs.org re-encode pairs the GPU score is within 1.2 points of the CPU score (mean
+  +0.4). The quality targets and the per-image records of the nextjs.org scan were identical. A score near the bar can
+  still flip a target: `image` chose a different JPEG quality for one test image. Compare before and after scans only
+  when both used the same scorer.
 
 ## Global
 
