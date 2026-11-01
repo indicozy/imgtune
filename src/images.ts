@@ -14,6 +14,7 @@ import {
   type SizesResult,
 } from "./layout.js";
 import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind, type LocatorVia } from "./locate.js";
+import { undersizedProposal, type ProposalPoint } from "./candidates.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
@@ -269,6 +270,13 @@ function tunableOf(member: Instance, pageUrl: string, loader: string): { width: 
 }
 
 /** The sizes value of one element, per media branch, from its measured points and their layout chains. */
+/** The measured viewports of a group as the proposal check reads them. */
+function measuredPoints(members: Instance[]): ProposalPoint[] {
+  return members
+    .filter((m) => m.renderedWidth >= 1)
+    .map((m) => ({ viewport: m.viewport.name, viewportWidth: m.viewport.width, dpr: m.viewport.dpr, renderedWidth: m.renderedWidth, srcset: m.img.srcset }));
+}
+
 function sizesOf(measured: { viewportWidth: number; renderedWidth: number; chain?: LayoutNode[] }[]): SizesResult | undefined {
   const points: FormulaPoint[] = measured.map((m) => ({
     viewportWidth: m.viewportWidth,
@@ -375,11 +383,21 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const saved = members.reduce((sum, m) => sum + m.exact + m.est, 0) / viewportCount;
     const savedSizes = members.reduce((sum, m) => sum + m.exact, 0) / viewportCount;
     const addedForSharpness = members.reduce((sum, m) => sum + m.growth, 0) / viewportCount;
+    // The proposal is checked at every measured viewport. One undersized there is not a saving: no sizes value, and its
+    // bytes are left out (the quality part stays).
+    const left = sizes === undefined ? undefined : undersizedProposal(sizes.value, measuredPoints(members), (srcset) => parseSrcset(srcset, pageUrl));
+    const keepSizes = sizes !== undefined && left === undefined;
+    const savedEff = keepSizes ? saved : saved - savedSizes;
+    const savedSizesEff = keepSizes ? savedSizes : 0;
     const served = member.format;
     const best = served === "jpeg" || served === "png" ? (saved > 0 ? "avif" : served) : served;
 
-    const fix: ImageFix = { bytes: { saved, addedForSharpness, sizes: savedSizes, quality: saved - savedSizes } };
-    if (sizes) {
+    const fix: ImageFix = { bytes: { saved: savedEff, addedForSharpness, sizes: savedSizesEff, quality: savedEff - savedSizesEff } };
+    if (sizes && left !== undefined) {
+      fix.noSaving = `sizes proposal left out: ${left}`;
+      notes.push(`sizes proposal left out: ${left}`);
+    }
+    if (keepSizes) {
       fix.sizes = { value: sizes.value, basis: sizes.basis, rung, branches: sizes.branches };
       const sized = sizes.branches.map((b) => b.basis);
       const formulas = sized.filter((b) => b === "layout-formula").length;

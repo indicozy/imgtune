@@ -92,8 +92,6 @@ export const DEFAULT_OUT = ".imgtune/scan";
 export const LOAD_EVENT_CAP_MS = 30_000;
 /** After load, a page that navigates (a reload, a script's location change) is observed again, at most this many times. */
 export const MAX_POST_LOAD_NAVIGATIONS = 3;
-/** A srcset candidate that is this far below the need (and below the largest) is an undersized file. */
-const UNDERSIZED_RATIO = 0.9;
 /** Viewports of one page loaded at the same time (each in its own browser context). */
 export const VIEWPORT_CONCURRENCY = 3;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
@@ -193,21 +191,8 @@ function decidingRule(robotsTxt: string, target: string): RobotsRule | undefined
 // ---------------------------------------------------------------------------------------------------------------------
 
 
-/** Device pixels the image needs: rendered CSS width x dpr, capped at the largest candidate. */
-export function neededWidth(renderedWidth: number, dpr: number, largest: number): number {
-  return Math.min(Math.ceil(renderedWidth * dpr), largest);
-}
-
-/** The smallest candidate at or above `needed`; the largest when none reaches it. Candidates must not be empty. */
-export function rightCandidate(candidates: Candidate[], needed: number): Candidate {
-  const sorted = [...candidates].sort((a, b) => a.width - b.width);
-  return sorted.find((c) => c.width >= needed) ?? sorted[sorted.length - 1];
-}
-
-/** The served file is undersized: its pixels are below 0.9 x need, and a larger candidate exists. */
-export function isUndersized(servedWidth: number, needed: number, largest: number): boolean {
-  return servedWidth < UNDERSIZED_RATIO * needed && servedWidth < largest;
-}
+import { UNDERSIZED_RATIO, isUndersized, neededWidth, rightCandidate, undersizedProposal } from "./candidates.js";
+export { isUndersized, neededWidth, rightCandidate } from "./candidates.js";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // References and the current quality of a URL
@@ -2031,18 +2016,28 @@ export function groupReports(instances: Instance[], viewportCount: number): Grou
   }
   const reports: GroupReport[] = [];
   for (const [key, members] of byKey) {
-    const perViewport = new Map<string, number>();
-    for (const inst of members) {
-      const name = inst.viewport.name;
-      perViewport.set(name, (perViewport.get(name) ?? 0) + inst.exact + inst.est);
-    }
-    const savedBytes = [...perViewport.values()].reduce((sum, bytes) => sum + bytes, 0) / viewportCount;
-    if (savedBytes <= 0) continue;
     const sizes = members[0].img.sizes;
     const points: SizePoint[] = members
       .filter((m) => m.renderedWidth >= 1)
       .map((m) => ({ viewportWidth: m.viewport.width, renderedWidth: m.renderedWidth, mobile: m.viewport.mobile }));
-    const suggestedSizes = deriveSizes(points);
+    // A proposal that leaves any measured viewport undersized is not a saving: it is dropped, with its exact bytes.
+    const proposed = deriveSizes(points);
+    const undersized =
+      proposed === undefined
+        ? undefined
+        : undersizedProposal(
+            proposed,
+            members.map((m) => ({ viewport: m.viewport.name, viewportWidth: m.viewport.width, dpr: m.viewport.dpr, renderedWidth: m.renderedWidth, srcset: m.img.srcset })),
+            (srcset) => parseSrcset(srcset, "http://imgtune.invalid/"),
+          );
+    const suggestedSizes = undersized === undefined ? proposed : undefined;
+    const perViewport = new Map<string, number>();
+    for (const inst of members) {
+      const name = inst.viewport.name;
+      perViewport.set(name, (perViewport.get(name) ?? 0) + (suggestedSizes === undefined ? 0 : inst.exact) + inst.est);
+    }
+    const savedBytes = [...perViewport.values()].reduce((sum, bytes) => sum + bytes, 0) / viewportCount;
+    if (savedBytes <= 0) continue;
     const targets = members.flatMap((m) => (m.qualityInfo?.target !== undefined ? [m.qualityInfo.target] : []));
     const samples = [...new Set(members.map((m) => m.url))].slice(0, 2);
     const loader = modeOf(members.map((m) => m.loader));
