@@ -582,7 +582,7 @@ describe("callerMapOf", () => {
 
   it("lists each caller at the first level above the image that differs between usages", () => {
     const grid = { file: "src/plp/Grid.tsx", line: 88, component: "Grid" };
-    const carousel = { file: "src/home/Carousel.tsx", line: 20, component: "Carousel" };
+    const carousel = { file: "src/landing/Carousel.tsx", line: 20, component: "Carousel" };
     const groups = groupHints([
       usage("a", plp, [grid, { file: "src/pages/Plp.tsx", line: 12, component: "Plp" }]),
       usage("b", home, [carousel, { file: "src/pages/Home.tsx", line: 9, component: "Home" }]),
@@ -590,7 +590,7 @@ describe("callerMapOf", () => {
     expect(groups).toHaveLength(1);
     const map = callerMapOf(groups[0]);
     expect(map?.level).toBe(1);
-    expect(map?.callers.map((c) => `${c.file}:${c.line}`)).toEqual(["src/home/Carousel.tsx:20", "src/plp/Grid.tsx:88"]);
+    expect(map?.callers.map((c) => `${c.file}:${c.line}`)).toEqual(["src/landing/Carousel.tsx:20", "src/plp/Grid.tsx:88"]);
     expect(map?.callers.map((c) => c.pages)).toEqual([[home], [plp]]);
     expect(map?.callers.map((c) => c.count)).toEqual([1, 1]);
   });
@@ -619,11 +619,11 @@ describe("callerMapOf", () => {
   it("gives each caller its own sizes from its measured widths, and null when it was not measured", () => {
     const groups = groupHints([
       usage("a", plp, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }], [{ width: 390, rendered: 175 }, { width: 1440, rendered: 668 }]),
-      usage("b", home, [{ file: "src/home/Carousel.tsx", line: 20, component: "Carousel" }]),
+      usage("b", home, [{ file: "src/landing/Carousel.tsx", line: 20, component: "Carousel" }]),
     ]);
     const map = callerMapOf(groups[0]);
     const grid = map?.callers.find((c) => c.file === "src/plp/Grid.tsx");
-    const carousel = map?.callers.find((c) => c.file === "src/home/Carousel.tsx");
+    const carousel = map?.callers.find((c) => c.file === "src/landing/Carousel.tsx");
     expect(grid?.sizes).toEqual(expect.any(String));
     expect(carousel?.sizes).toBeNull();
   });
@@ -640,7 +640,7 @@ describe("callerMapOf", () => {
   it("prints the callers under the call site in the grouped text, and in the JSON", async () => {
     const groups = groupHints([
       usage("a", plp, [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }]),
-      usage("b", home, [{ file: "src/home/Carousel.tsx", line: 20, component: "Carousel" }]),
+      usage("b", home, [{ file: "src/landing/Carousel.tsx", line: 20, component: "Carousel" }]),
     ]);
     const lines = renderGroup(groups[0], 1);
     expect(lines.join("\n")).toContain("   callers: 2 caller(s) above the image (owner level 1, the first that differs between usages)");
@@ -654,9 +654,9 @@ describe("callerMapOf", () => {
       return writeFile(join(dir, name), JSON.stringify({ ...page([rec]), url }));
     };
     await scanOf("plp.json", plp, "a", [{ file: "src/plp/Grid.tsx", line: 88, component: "Grid" }]);
-    await scanOf("home.json", home, "b", [{ file: "src/home/Carousel.tsx", line: 20, component: "Carousel" }]);
+    await scanOf("home.json", home, "b", [{ file: "src/landing/Carousel.tsx", line: 20, component: "Carousel" }]);
     const { output } = await hintsCommand([join(dir, "plp.json"), join(dir, "home.json"), "--format", "json"], dir);
     const body = JSON.parse(output);
-    expect(body.callSites[0].callers.callers.map((c: { file: string }) => c.file)).toEqual(["src/home/Carousel.tsx", "src/plp/Grid.tsx"]);
+    expect(body.callSites[0].callers.callers.map((c: { file: string }) => c.file)).toEqual(["src/landing/Carousel.tsx", "src/plp/Grid.tsx"]);
   });
 });
