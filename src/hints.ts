@@ -4,7 +4,8 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { hasFix } from "./images.js";
-import { safeText, type PageResult } from "./remote.js";
+import { mdText, safeText } from "./text.js";
+import type { PageResult } from "./remote.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
@@ -211,4 +212,47 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
   }
   return { output: renderHints(selected, filtered.length, args.offset, args.page), exitCode: 0 };
+}
+
+/** How many hints the PR comment lists. */
+export const COMMENT_HINTS = 10;
+
+/** The hints of a PR comment: the top `limit` across the pages, one line each, and the number of hints in all. */
+export function commentHints(results: PageResult[], limit = COMMENT_HINTS): { total: number; lines: string[] } {
+  const all = results.filter((r) => r.status === "ok").flatMap((r) => hintsOf(r));
+  const top = selectHints(all, { limit, offset: 0 });
+  return { total: all.length, lines: top.map((hint, i) => `${i + 1}. ${commentLine(hint)}`) };
+}
+
+/**
+ * One hint as a Markdown line. Every value is page-derived, so each goes through mdText: no HTML, link, mention, heading or
+ * emphasis survives. The text is plain, not a code span, because a code span would show the escapes as written.
+ */
+function commentLine(hint: Hint): string {
+  const source = hint.file !== undefined ? `${hint.file}:${hint.line ?? 0}${hint.verified === false ? " (unverified)" : ""}` : hint.component[0] ?? hint.selector;
+  const component = hint.file !== undefined && hint.component[0] !== undefined ? ` (${hint.component[0]})` : "";
+  const sizes =
+    hint.width !== undefined
+      ? `width ${hint.width}px`
+      : `sizes ${mdText(hint.sizes.current ?? "none")} -> ${mdText(hint.sizes.proposed ?? "-")}`;
+  const parts = [
+    `saves ${kb(hint.bytes.saved)}/view, +${kb(hint.bytes.addedForSharpness)} sharpness`,
+    `${mdText(source)}${mdText(component)}`,
+    `page ${mdText(pathOf(hint.page))}`,
+    sizes,
+  ];
+  if (hint.quality) parts.push(`quality ${hint.quality.current}${hint.quality.target !== undefined ? ` -> ${hint.quality.target}` : ""}`);
+  if (hint.format) parts.push(`format ${mdText(hint.format.current ?? "?")}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${mdText(hint.format.best)}` : ""}`);
+  parts.push(`rung ${hint.rung}`, `id ${mdText(hint.id)}`);
+  return parts.join("; ");
+}
+
+/** The host and path of a page URL (no query): what a comment shows of a page. */
+function pathOf(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}`;
+  } catch {
+    return url;
+  }
 }

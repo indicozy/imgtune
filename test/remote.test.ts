@@ -8,6 +8,7 @@ import sharp from "sharp";
 import {
   analysePage,
   applyQuality,
+  COMMENT_LIMIT,
   currentQuality,
   decodeRaw,
   estimateQuality,
@@ -58,6 +59,7 @@ import {
   type ViewportObservation,
 } from "../src/remote.js";
 import { parseSrcset } from "../src/srcset-parse.js";
+import type { ImageRecord } from "../src/images.js";
 import type { encode } from "../src/encode.js";
 import { ssim, type RawImage } from "../src/ssim.js";
 import type { Viewport } from "../src/types.js";
@@ -1447,5 +1449,83 @@ describe("scan of pages that navigate or load slowly", () => {
   it("summary keeps the final URL of a redirected page", () => {
     const summary = summaryOf([pageResult({ status: "redirected", finalUrl: "https://other.example/", error: "redirected to https://other.example/", page: undefined })]);
     expect(summary.pages[0]).toMatchObject({ status: "redirected", finalUrl: "https://other.example/" });
+  });
+});
+
+/** An image record with a fix that saves `saved` bytes per view, for the comment's hints section. */
+function hintRecord(id: string, over: { saved?: number; file?: string; component?: string; page?: string } = {}): ImageRecord {
+  return {
+    id,
+    page: over.page ?? "https://shop.example/bags",
+    locator: {
+      component: [over.component ?? "ProductCard"],
+      file: over.file ?? "src/ProductCard.tsx",
+      line: 7,
+      verified: true,
+      selector: "main > ul > li > img",
+      classes: "",
+      loader: "next-default",
+    },
+    tunable: { width: true, quality: true },
+    current: { sizes: "33vw", srcsetCandidates: [], quality: 90, format: "webp", naturalWidth: 1080 },
+    perViewport: [],
+    fix: {
+      sizes: { value: "calc(50vw - 20px)", basis: "layout-formula", rung: "measured-page", branches: [] },
+      format: "avif",
+      bytes: { saved: over.saved ?? 30 * 1024, addedForSharpness: 0 },
+    },
+    evidence: { rung: "measured-page", notes: [] },
+  } as unknown as ImageRecord;
+}
+
+describe("the fix hints in the PR comment", () => {
+  it("adds a collapsed section with the top ten hints across the pages, and a line on how to use them", () => {
+    const images = Array.from({ length: 12 }, (_, i) => hintRecord(`img${i}`, { saved: (i + 1) * 1024 }));
+    const md = renderMarkdown([pageResult({ images })], false);
+    expect(md).toContain("<details>\n<summary>Fix hints for your AI agent</summary>");
+    expect(md).toContain("Top 10 of 12 images with fix hints. Paste into your agent, or run `npx imgtune hints` on the scan file.");
+    const numbered = md.split("\n").filter((line) => /^\d+\. saves /.test(line));
+    expect(numbered).toHaveLength(10);
+    expect(numbered[0]).toContain("saves 12 KB/view, +0 KB sharpness");
+    expect(numbered[0]).toContain("src/ProductCard.tsx&#58;7 (ProductCard)");
+    expect(numbered[0]).toContain("sizes 33vw -> calc(50vw - 20px)");
+    expect(md).toContain("</details>");
+  });
+
+  it("writes no section when no image has a fix", () => {
+    expect(renderMarkdown([pageResult()], false)).not.toContain("<details>");
+  });
+
+  it("escapes hostile names, paths and URLs so they cannot inject HTML, links or mentions", () => {
+    const hostile = hintRecord("evil", {
+      file: "src/<img src=x onerror=alert(1)>[click](https://evil.example).tsx",
+      component: "[x](https://evil.example)<script> www.evil.example",
+      page: "https://shop.example/@maintainer/`code`|pipe",
+    });
+    const md = renderMarkdown([pageResult({ images: [hostile] })], false);
+    const hintLines = md.split("\n").filter((line) => /^\d+\. /.test(line));
+    expect(hintLines).toHaveLength(1);
+    const line = hintLines[0];
+    expect(line).not.toMatch(/<|\]\(|@|\||https?:|www\./);
+    expect(line).toContain("&lt;img src=x onerror=alert(1)&gt;&#91;click&#93;(https&#58;//evil.example).tsx");
+    expect(line).toContain("www&#46;evil.example");
+    expect(line).toContain("&#64;maintainer");
+  });
+
+  it("keeps the comment under GitHub's limit: the hints go first, then the text is cut and says so", () => {
+    const pagesOf = (n: number) =>
+      Array.from({ length: n }, (_, i) => pageResult({ url: `https://shop.example/p/${i}`, images: [hintRecord(`i${i}`)] }));
+    const big = renderMarkdown(pagesOf(1500), false);
+    expect(big.length).toBeLessThanOrEqual(COMMENT_LIMIT);
+    expect(big).toContain("Comment truncated to fit GitHub's 65,536-character limit");
+
+    let leftOut: string | undefined;
+    for (let n = 400; n < 1500 && leftOut === undefined; n++) {
+      const md = renderMarkdown(pagesOf(n), false);
+      if (md.includes("Fix hints left out")) leftOut = md;
+    }
+    expect(leftOut).toBeDefined();
+    expect(leftOut).not.toContain("<details>");
+    expect(leftOut!.length).toBeLessThanOrEqual(COMMENT_LIMIT);
   });
 });

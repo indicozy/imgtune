@@ -5,6 +5,9 @@ import type { Browser, BrowserContextOptions, Page, Response as BrowserResponse 
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
+import { mdCode, mdText, safeText } from "./text.js";
+import { commentHints } from "./hints.js";
+export { mdCode, mdText, safeText };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -2049,17 +2052,6 @@ export async function scanOnce(pageUrl: string, opts: ScanOptions): Promise<Page
 // Terminal summary
 // ---------------------------------------------------------------------------------------------------------------------
 
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
-const TEXT_LIMIT = 200;
-
-/**
- * Page-derived text as it may be printed: C0 and C1 control characters removed (no escape sequences reach the
- * terminal), and at most TEXT_LIMIT characters, the last three of them "...". JSON output is not passed through here.
- */
-export function safeText(text: string, limit = TEXT_LIMIT): string {
-  const clean = text.replace(CONTROL_CHARS, "");
-  return clean.length > limit ? `${clean.slice(0, limit - 3)}...` : clean;
-}
 
 const pct = (value: number): string => `${value.toFixed(1)}%`;
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
@@ -2120,38 +2112,7 @@ export function renderScan(results: PageResult[], aggressive: boolean, hintsFile
 // CI outputs: a Markdown summary for a PR comment, one summary JSON, and the --fail-over exit code
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Markdown-significant characters of plain text, replaced by HTML entities so they cannot format, link or mention. */
-const MD_ENTITIES: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  "[": "&#91;",
-  "]": "&#93;",
-  "`": "&#96;",
-  "*": "&#42;",
-  _: "&#95;",
-  "|": "&#124;",
-  "\\": "&#92;",
-  "@": "&#64;",
-  "#": "&#35;",
-  "~": "&#126;",
-  "$": "&#36;",
-};
 
-/** Plain text for a Markdown cell, for text this module writes itself: control characters removed, then escaped. */
-export function mdText(text: string): string {
-  return safeText(text).replace(/[&<>[\]`*_|\\@#~$]/g, (ch) => MD_ENTITIES[ch]);
-}
-
-/**
- * Page-derived text as an inline code span. A code span does not autolink, mention, link or format its content, so
- * this is what every page-derived field uses. Inside: backticks become an apostrophe-like modifier, `<` becomes a
- * single-angle quote (no HTML comment can open), and pipes are escaped so the table cell does not split.
- */
-export function mdCode(text: string): string {
-  const clean = safeText(text).replace(/`/g, "ʼ").replace(/</g, "‹").replace(/\|/g, "\\|");
-  return `\`${clean === "" ? "-" : clean}\``;
-}
 
 const kbNumber = (bytes: number): string => (bytes / 1024).toFixed(0);
 const SUMMARY_GROUPS = 5;
@@ -2170,8 +2131,33 @@ function pageLabel(url: string): string {
   }
 }
 
-/** The PR-comment Markdown: one row per page, then each page's top groups. Contains no HTML comment and no mention. */
+/** GitHub's limit for a comment body. The action adds a marker line, so the body is kept under COMMENT_BUDGET. */
+export const COMMENT_LIMIT = 65536;
+const COMMENT_BUDGET = 60000;
+const HINTS_LEFT_OUT = "Fix hints left out: the comment passed GitHub's 65,536-character limit. Run `npx imgtune hints` on the scan file.";
+const COMMENT_TRUNCATED = "Comment truncated to fit GitHub's 65,536-character limit. The full numbers are in the --summary-json file.";
+
+/**
+ * The PR-comment Markdown: one row per page, each page's top groups, then a collapsed list of the top fix hints for an AI
+ * agent. Contains no HTML comment and no mention. Over COMMENT_BUDGET the hints are left out; over it still, the text is cut
+ * at a line and says so.
+ */
 export function renderMarkdown(results: PageResult[], aggressive: boolean): string {
+  const full = markdownBody(results, aggressive, true);
+  if (full.length <= COMMENT_BUDGET) return full;
+  const lean = markdownBody(results, aggressive, false);
+  if (lean.length + HINTS_LEFT_OUT.length + 2 <= COMMENT_BUDGET) return `${lean}\n\n${HINTS_LEFT_OUT}`;
+  const kept: string[] = [];
+  let size = 0;
+  for (const line of lean.split("\n")) {
+    if (size + line.length + 1 > COMMENT_BUDGET - COMMENT_TRUNCATED.length - 2) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  return `${kept.join("\n")}\n\n${COMMENT_TRUNCATED}`;
+}
+
+function markdownBody(results: PageResult[], aggressive: boolean, withHints: boolean): string {
   const width = aggressive ? 7 : 6;
   const head = ["page", "status", "image KB/view", "exact", "exact + est.", "sharpness"];
   if (aggressive) head.push(`exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}`);
@@ -2199,6 +2185,22 @@ export function renderMarkdown(results: PageResult[], aggressive: boolean): stri
       const loader = g.loader ? mdCode(g.loader) : "-";
       const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdCode(h)).join("; ");
       lines.push(mdRow([current, suggested, kbNumber(g.savedBytes), loader, hint || "-"], 5));
+    }
+  }
+  if (withHints) {
+    const hints = commentHints(results);
+    if (hints.lines.length > 0) {
+      lines.push(
+        "",
+        "<details>",
+        "<summary>Fix hints for your AI agent</summary>",
+        "",
+        `Top ${hints.lines.length} of ${hints.total} images with fix hints. Paste into your agent, or run \`npx imgtune hints\` on the scan file.`,
+        "",
+        ...hints.lines,
+        "",
+        "</details>",
+      );
     }
   }
   const viewports = [...new Set(results.filter((r) => r.status === "ok").flatMap((r) => r.viewports))];

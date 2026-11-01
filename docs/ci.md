@@ -119,3 +119,6 @@ with `pnpm exec playwright install --with-deps chromium`. Expect a minute or two
 - `dist/` is not committed. The action builds it, so the repository needs no build output.
 - The comment lists the top five groups per page, with the current and suggested `sizes`. Page text is shown in code
   spans, so a page cannot inject links or mentions into the comment.
+- Below the tables, a collapsed "Fix hints for your AI agent" section lists the top ten fix hints across the pages, one
+  line each. Its text is escaped (not in code spans), so it cannot inject HTML, links or mentions either. The comment
+  stays under GitHub's 65,536-character limit: the hints are left out first, then the text is cut, and the comment says so.
