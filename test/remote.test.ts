@@ -1006,12 +1006,12 @@ describe("makeFetcher over a local server", () => {
     expect(peak).toBe(2);
   });
 
-  it("resolves a non-2xx answer to undefined without retrying it", async () => {
+  it("resolves a non-2xx answer to undefined, and a later call asks again", async () => {
     hits.length = 0;
     const fetcher = makeFetcher({ userAgent: "ua" });
     expect(await fetcher.get(`${base}/missing`, { allowPrivate: true })).toBeUndefined();
     expect(await fetcher.get(`${base}/missing`, { allowPrivate: true })).toBeUndefined();
-    expect(hits.filter((h) => h === "/missing")).toHaveLength(1);
+    expect(hits.filter((h) => h === "/missing")).toHaveLength(2);
   });
 
   it("sends the given user agent", async () => {

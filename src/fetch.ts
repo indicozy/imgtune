@@ -29,7 +29,9 @@ export interface Fetcher {
   /**
    * The body, or undefined when the URL is not http(s), reaches a blocked address (unless allowed), fails, answers
    * non-2xx, redirects more than MAX_REDIRECTS times, takes longer than EXTRA_FETCH_TIMEOUT_MS, or is larger than its
-   * limit. Each (URL, options) is fetched once.
+   * limit. Each (URL, options) is fetched once for the run: callers that ask while it is in flight share the answer.
+   * An undefined answer, or a body with Cache-Control: no-store, is not kept once those callers have it, so a later
+   * page asks again.
    */
   get(url: string, opts?: FetchOptions): Promise<Buffer | undefined>;
   /**
@@ -37,6 +39,17 @@ export interface Fetcher {
    * the caller decides, and the browser guard blocks.
    */
   hostIsBlocked(url: string, allowPrivate: boolean): Promise<boolean>;
+}
+
+/** True when a Cache-Control value carries the no-store directive. */
+export function hasNoStore(cacheControl: string | undefined): boolean {
+  return (cacheControl ?? "").split(",").some((directive) => directive.trim().toLowerCase() === "no-store");
+}
+
+/** A fetched body, and whether its response forbids keeping it (no-store). */
+interface Fetched {
+  body: Buffer;
+  noStore: boolean;
 }
 
 /** The body up to `maxBytes`; undefined when it is larger (checked on Content-Length and while streaming). */
@@ -83,6 +96,7 @@ function requestOnce(
 
 export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; connectAddress?: (address: string) => string }): Fetcher {
   const resolver = opts.resolver ?? systemResolver;
+  /** Answers of this run by request key, in flight or settled; an answer that must not be kept is dropped once settled. */
   const memo = new Map<string, Promise<Buffer | undefined>>();
   let running = 0;
   const waiting: (() => void)[] = [];
@@ -100,7 +114,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
   };
 
   /** Each hop is checked at connect time (guardedLookup); redirects are followed here, not by the client. */
-  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean, sameSiteAs?: string): Promise<Buffer | undefined> => {
+  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean, sameSiteAs?: string): Promise<Fetched | undefined> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRA_FETCH_TIMEOUT_MS);
     try {
@@ -132,7 +146,8 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
           res.resume();
           return undefined;
         }
-        return await readCapped(res, maxBytes);
+        const body = await readCapped(res, maxBytes);
+        return body === undefined ? undefined : { body, noStore: hasNoStore(res.headers["cache-control"]) };
       }
     } finally {
       clearTimeout(timer);
@@ -161,15 +176,23 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
     get(url, fetchOpts = {}) {
       const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
       const allowPrivate = fetchOpts.allowPrivate ?? false;
-      const key = `${maxBytes}|${allowPrivate}|${fetchOpts.sameSiteAs ?? ""}|${url}`;
-      let pending = memo.get(key);
-      if (!pending) {
-        count("fetch requests");
-        pending = measure("fetch: network", () => withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs))).catch(() => undefined);
-        memo.set(key, pending);
-      } else {
+      // The request headers are part of the key: a response can depend on them (the user agent and Accept are fixed per run).
+      const key = JSON.stringify([url, maxBytes, allowPrivate, fetchOpts.sameSiteAs ?? "", opts.userAgent, IMAGE_ACCEPT]);
+      const known = memo.get(key);
+      if (known) {
         count("fetch memo hits");
+        return known;
       }
+      count("fetch requests");
+      const fetched = measure("fetch: network", () => withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs))).catch(() => undefined);
+      const pending: Promise<Buffer | undefined> = fetched.then((answer) => {
+        // Settled: a failure or a no-store body is not kept for the next page (its callers above already have it).
+        if (answer === undefined || answer.noStore) {
+          if (memo.get(key) === pending) memo.delete(key);
+        }
+        return answer?.body;
+      });
+      memo.set(key, pending);
       return pending;
     },
     /**

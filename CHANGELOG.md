@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Scan: the extra fetches (originals, srcset candidates, source maps, robots) are shared across the whole run as before, but a
+  failed fetch, or a body with `Cache-Control: no-store`, is no longer kept for later pages: a later page asks again. No
+  response of the 8-URL nextjs.org run changed.
 - Scan: a lossy image over 2 MP (MATCH_MAX_PIXELS) keeps its resize estimate. Its quality match runs at the fast AVIF effort
   with at most 5 probes and no effort-4 confirmation, so the estimate is approximate: its record says `estimate: "approx"`
   and the scan summary, the Markdown report and `imgtune summary` show it with ≈. On nextjs.org/conf the exact + est. share
