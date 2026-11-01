@@ -20,6 +20,9 @@ export interface SizesArgs {
   ignoreRobots: boolean;
 }
 
+/** The longest output line the sizes-only check prints; a longer one is cut, with "...". */
+const OUTPUT_LINE_LIMIT = 1000;
+
 const USAGE = "usage: imgtune scan --recheck <scan.json> --sizes-only [--ids a,b,c] [--url <dev page>] [--ignore-robots]";
 
 /** The arguments of `scan --recheck --sizes-only`. Throws with the message the CLI prints. */
@@ -119,6 +122,9 @@ export interface ChoiceVerdict {
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 
+/** A page-derived value as a quoted, cleaned, capped string (JSON escapes control characters but not bidi or C1 ones). */
+const quoted = (text: string | undefined, fallback: string): string => JSON.stringify(safeText(text ?? fallback));
+
 /**
  * The check of one choice. The candidate is computed from the dev page's sizes, the viewport width and the DPR (the
  * browser's own rule, not the layout); it must be the file the browser loaded. Undersize is judged against the measured
@@ -151,7 +157,7 @@ export function judgeChoice(input: ChoiceInput): ChoiceVerdict {
   let landed: boolean | undefined;
   if (input.proposed !== undefined) {
     landed = input.sizes === input.proposed;
-    if (!landed) fails.push(`the edit is not on the dev page: sizes ${JSON.stringify(input.sizes ?? "none")}, the hint is ${JSON.stringify(input.proposed)}`);
+    if (!landed) fails.push(`the edit is not on the dev page: sizes ${quoted(input.sizes, "none")}, the hint is ${quoted(input.proposed, "-")}`);
     const slotProposed = sizesSlotAt(input.proposed, input.viewportWidth);
     if (slotProposed !== undefined) targetWidth = rightCandidate(candidates, Math.ceil(slotProposed * input.dpr)).width;
   }
@@ -257,8 +263,8 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
   const layoutViews = new Map<string, { dev: number; measured: number }>();
   for (const record of selected) {
     const proposed = record.fix.sizes?.value;
-    const now = JSON.stringify(safeText(record.current.sizes ?? "none"));
-    const lines: string[] = [`${record.id}  ${whereOf(record)}  ${pathOf(record.page)}  sizes ${now} -> hint ${JSON.stringify(safeText(proposed ?? "-"))}`];
+    const now = quoted(record.current.sizes, "none");
+    const lines: string[] = [`${record.id}  ${whereOf(record)}  ${pathOf(record.page)}  sizes ${now} -> hint ${quoted(proposed, "-")}`];
     const failed: string[] = [];
     let gone = false;
     let unverified = false;
@@ -311,7 +317,7 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
               ? `n/a: ${verdict.note}`
               : "pass";
       lines.push(
-        `  ${name}dpr ${dpr}  sizes ${JSON.stringify(safeText(dev.sizes ?? "none"))}  rendered ${p.renderedCssPx} px measured, ${dev.renderedCssPx} px dev  needed ${verdict.needed} px  ${chosen}  undersized ${yesNo(verdict.undersized)}  ${bytes} (was ${kb(p.servedBytes)})  ${targetText}  ${result}`,
+        `  ${name}dpr ${dpr}  sizes ${quoted(dev.sizes, "none")}  rendered ${p.renderedCssPx} px measured, ${dev.renderedCssPx} px dev  needed ${verdict.needed} px  ${chosen}  undersized ${yesNo(verdict.undersized)}  ${bytes} (was ${kb(p.servedBytes)})  ${targetText}  ${result}`,
       );
       for (const fail of verdict.fails) failed.push(`${record.id}: ${p.viewport}: ${fail}`);
     }
@@ -342,5 +348,6 @@ export async function sizesRecheck(argv: string[], cwd: string, log: (message: s
   } else {
     out.push("ok: every chosen file is sharp and no bigger than the hint needs");
   }
-  return { output: `${out.join("\n")}\n`, exitCode: failures.length === 0 && unverifiedCount === 0 ? 0 : 1 };
+  // Every assembled line is cleaned as a whole too (a line can carry text from several sources).
+  return { output: `${out.map((line) => safeText(line, OUTPUT_LINE_LIMIT)).join("\n")}\n`, exitCode: failures.length === 0 && unverifiedCount === 0 ? 0 : 1 };
 }

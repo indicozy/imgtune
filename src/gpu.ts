@@ -56,8 +56,8 @@ export function gpuProgramIndex(device: number, base: NodeJS.ProcessEnv = proces
  * is CUDA's (fastest first) unless CUDA_DEVICE_ORDER says otherwise, so the name is the thing to check.
  */
 export function openedDeviceLine(device: number, name: string, base: NodeJS.ProcessEnv = process.env): string {
-  const order = base.CUDA_DEVICE_ORDER ?? "FASTEST_FIRST (CUDA's default)";
-  const visible = base.CUDA_VISIBLE_DEVICES !== undefined ? `CUDA_VISIBLE_DEVICES=${base.CUDA_VISIBLE_DEVICES}` : `CUDA_VISIBLE_DEVICES=${device} (set by imgtune)`;
+  const order = plain(base.CUDA_DEVICE_ORDER ?? "FASTEST_FIRST (CUDA's default)");
+  const visible = base.CUDA_VISIBLE_DEVICES !== undefined ? `CUDA_VISIBLE_DEVICES=${plain(base.CUDA_VISIBLE_DEVICES)}` : `CUDA_VISIBLE_DEVICES=${device} (set by imgtune)`;
   return `--gpu: opened ${name}, device index ${device} (CUDA_DEVICE_ORDER: ${order}; ${visible})`;
 }
 

@@ -2,7 +2,9 @@
 // (safeText), and the escapes that stop page-derived text from formatting, linking or mentioning (mdText, mdCode).
 // Page text is untrusted: every path that prints it goes through one of these.
 
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+// C0 and C1 controls, bidi embeddings, overrides and isolates, zero-width marks and the BOM: none of them may reach a reader
+// of page-derived text (a bidi override reorders what follows it on screen).
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 const TEXT_LIMIT = 200;
 
 /**

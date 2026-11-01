@@ -1,3 +1,4 @@
+import { safeText } from "../src/text.js";
 import { describe, expect, it } from "vitest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -424,5 +425,29 @@ describe("the locate block of a scan file (untrusted)", () => {
   it("prints no located line for a block that is not usable", () => {
     const result = { url: PAGE, locate: { ...good, viewport: "<b>" } } as unknown as PageResult;
     expect(locateNoteOf(result, [])).toBeUndefined();
+  });
+});
+
+describe("page-derived text in the sizes verdict", () => {
+  const base = {
+    dpr: 2,
+    viewportWidth: 390,
+    rendered: 200,
+    srcset: "http://127.0.0.1:3300/img/p1-320.jpg 320w, http://127.0.0.1:3300/img/p1-640.jpg 640w",
+    pageUrl: "http://127.0.0.1:3300/list.html",
+    chosenUrl: "http://127.0.0.1:3300/img/p1-640.jpg",
+    proposed: "200px",
+  };
+  const hostile = ["\u009b31m", "‮evil", "x".repeat(10_000)];
+
+  it.each(hostile)("keeps page-read sizes out of the verdict as raw text: %s", (sizes) => {
+    const v = judgeChoice({ ...base, sizes });
+    const text = v.fails.join("\n");
+    expect(text).not.toMatch(/[\u0080-\u009f‪-‮⁦-⁩]/);
+    expect(text.length).toBeLessThan(600);
+  });
+
+  it("cleans bidi overrides and C1 controls from any text", () => {
+    expect(safeText("a‮b\u009b31mc⁧d")).toBe("ab31mcd");
   });
 });
