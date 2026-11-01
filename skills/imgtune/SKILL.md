@@ -180,8 +180,10 @@ The short form is below. `reference.md` has the details, and what to check when 
   choice (a separate note). `fill` needs a sized parent, and `sizes` still applies.
 - **Plain `<img>` and `<picture>`**: use `srcset` with width descriptors and the hint's `sizes`. Keep `width` and
   `height` so the space is reserved. Use `<source type="image/avif">` for formats.
-- **Nuxt `<NuxtImg>`**: set `sizes`, `quality` and `format`. Check the module's provider settings for allowed values.
-- **Astro `<Image>`**: set `widths`, `sizes`, `quality` and `formats`.
+- **Nuxt `<NuxtImg>`**: set `quality` and `format`. Its `sizes` prop is Nuxt Image's breakpoint syntax (for example
+  `sm:100vw md:50vw lg:400px`), not a CSS value: translate the hint's `sizes` into that form with the project's configured
+  `screens`, or use a plain `<img>` or `<picture>` with the CSS value. Check the module's provider settings for allowed values.
+- **Astro `<Image>`**: set `widths`, `sizes`, `quality` and `format` (singular). `<Picture>` takes `formats` (plural).
 - **CSS backgrounds**: use `image-set()` for 1x and 2x files, or a media query to pick a smaller file on small screens.
   `sizes` does not apply.
 

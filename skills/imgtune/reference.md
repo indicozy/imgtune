@@ -62,13 +62,17 @@ Write this when stopping early. Keep it short enough to read first in the next s
 
 - Props: `sizes`, `quality`, `format`, `densities`. The provider (for example `ipx` or a CDN) decides which values are
   allowed. Check the module's configuration before setting a quality the provider may not accept.
+- `sizes` on `<NuxtImg>` is Nuxt Image's breakpoint syntax, not a CSS `sizes` string. For example
+  `sm:100vw md:50vw lg:400px`, where each breakpoint name is one of the project's configured `screens`. The hint gives a
+  CSS value (`calc(50vw - 20px)`), so translate it into breakpoint form with the project's `screens`. If that cannot be
+  done faithfully, use a plain `<img>` or `<picture>` with the CSS `sizes` value instead, and say so in the report.
 - For a locally served image, `ipx` resizes on request. Its widths follow the image module's `screens` settings.
 
 ### Astro `<Image>`
 
-- Props: `widths` (the widths to generate), `sizes`, `quality`, `formats`.
+- Props: `widths` (the widths to generate), `sizes`, `quality`, `format` (singular, one output format).
 - The hint's `sizes` goes in `sizes`, and the `widths` list should include the widths the browser can pick.
-- `<Picture>` takes the same props for several formats.
+- `<Picture>` takes `formats` (plural) for several output formats, and the same `widths`, `sizes` and `quality` props.
 
 ### CSS backgrounds
 
