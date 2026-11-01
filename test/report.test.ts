@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ledgerLineOf, parseReportArgs, readLedger, renderReport, tableCell, type LedgerLine } from "../src/report.js";
 import type { CompareReport } from "../src/compare.js";
+import { mergeCompares } from "../src/report.js";
 
 const line = (over: Partial<LedgerLine> & { id: string; status: LedgerLine["status"] }): LedgerLine => ({
   file: "src/Card.tsx:42",
@@ -31,8 +32,9 @@ const compare: CompareReport = {
 
 describe("parseReportArgs", () => {
   it("defaults the ledger, and reads the compare file and the output", () => {
-    expect(parseReportArgs([])).toEqual({ ledger: ".imgtune/ledger.jsonl" });
-    expect(parseReportArgs(["--compare", "c.json", "--out", "r.md"])).toEqual({ ledger: ".imgtune/ledger.jsonl", compare: "c.json", out: "r.md" });
+    expect(parseReportArgs([])).toEqual({ ledger: ".imgtune/ledger.jsonl", compares: [] });
+    expect(parseReportArgs(["--compare", "c.json", "--out", "r.md"])).toEqual({ ledger: ".imgtune/ledger.jsonl", compares: ["c.json"], out: "r.md" });
+    expect(parseReportArgs(["--compare", "a.json", "--compare", "b.json"]).compares).toEqual(["a.json", "b.json"]);
     expect(() => parseReportArgs(["--gpu"])).toThrow(/Unknown option/);
     expect(() => parseReportArgs(["--out"])).toThrow(/needs a value/);
   });
@@ -128,3 +130,13 @@ describe("tableCell", () => {
   });
 });
 
+describe("several compare files", () => {
+  it("sums the paired and page numbers of every page into one section", () => {
+    const merged = mergeCompares([compare, compare]);
+    expect(merged.paired.images).toBe(compare.paired.images * 2);
+    expect(merged.paired.saved).toBe(compare.paired.saved * 2);
+    expect(merged.pageTotal.before).toBe(compare.pageTotal.before * 2);
+    expect(merged.views).toEqual(compare.views);
+    expect(mergeCompares([compare])).toBe(compare);
+  });
+});

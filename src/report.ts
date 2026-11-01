@@ -22,18 +22,19 @@ export interface LedgerLine {
 
 export interface ReportArgs {
   ledger: string;
-  compare?: string;
+  /** Compare files, one per page (`--compare` may repeat). Their numbers are summed into one Bytes section. */
+  compares: string[];
   out?: string;
 }
 
-const USAGE = "usage: imgtune report [--ledger <file>] [--compare <compare.json>] [--out <file>]";
+const USAGE = "usage: imgtune report [--ledger <file>] [--compare <compare.json> ...] [--out <file>]";
 const DEFAULT_LEDGER = ".imgtune/ledger.jsonl";
 const MAX_LEDGER_BYTES = 8 * 1024 * 1024;
 const MAX_COMPARE_BYTES = 64 * 1024 * 1024;
 
 /** The arguments after `report`. Throws with the message the CLI prints. */
 export function parseReportArgs(argv: string[]): ReportArgs {
-  const args: ReportArgs = { ledger: DEFAULT_LEDGER };
+  const args: ReportArgs = { ledger: DEFAULT_LEDGER, compares: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg !== "--ledger" && arg !== "--compare" && arg !== "--out") throw new Error(`Unknown option ${safeText(arg)} (${USAGE})`);
@@ -41,7 +42,7 @@ export function parseReportArgs(argv: string[]): ReportArgs {
     if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
     i++;
     if (arg === "--ledger") args.ledger = value;
-    else if (arg === "--compare") args.compare = value;
+    else if (arg === "--compare") args.compares.push(value);
     else args.out = value;
   }
   return args;
@@ -203,11 +204,58 @@ export function renderReport(lines: LedgerLine[], dropped: number, compare: Comp
   return `${out.join("\n")}\n`;
 }
 
+/**
+ * Several compare files (one per page) as one: the paired, page, excluded and drift numbers are summed, and the image lists
+ * are joined. The saving and sharpness totals then cover every page the files cover.
+ */
+export function mergeCompares(list: CompareReport[]): CompareReport {
+  if (list.length === 1) return list[0];
+  const sum = (pick: (r: CompareReport) => number) => list.reduce((total, r) => total + pick(r), 0);
+  const views = [...new Set(list.flatMap((r) => r.views))];
+  return {
+    before: list.map((r) => r.before).join(", "),
+    after: list.map((r) => r.after).join(", "),
+    views,
+    paired: {
+      images: sum((r) => r.paired.images),
+      beforeBytes: sum((r) => r.paired.beforeBytes),
+      afterBytes: sum((r) => r.paired.afterBytes),
+      saved: sum((r) => r.paired.saved),
+      addedForSharpness: sum((r) => r.paired.addedForSharpness),
+      grewWithoutSharpness: {
+        images: sum((r) => r.paired.grewWithoutSharpness.images),
+        bytes: sum((r) => r.paired.grewWithoutSharpness.bytes),
+      },
+    },
+    excluded: {
+      layoutChanged: {
+        images: sum((r) => r.excluded.layoutChanged.images),
+        beforeBytes: sum((r) => r.excluded.layoutChanged.beforeBytes),
+        afterBytes: sum((r) => r.excluded.layoutChanged.afterBytes),
+        list: list.flatMap((r) => r.excluded.layoutChanged.list),
+      },
+      serverVariance: {
+        images: sum((r) => r.excluded.serverVariance.images),
+        views: sum((r) => r.excluded.serverVariance.views),
+        bytes: sum((r) => r.excluded.serverVariance.bytes),
+      },
+      notLoaded: { views: sum((r) => r.excluded.notLoaded.views) },
+    },
+    pageTotal: { before: sum((r) => r.pageTotal.before), after: sum((r) => r.pageTotal.after) },
+    appeared: list.flatMap((r) => r.appeared),
+    disappeared: list.flatMap((r) => r.disappeared),
+    changes: list.flatMap((r) => r.changes).sort((x, y) => y.saved - x.saved || x.afterId.localeCompare(y.afterId)),
+    dropped: { before: sum((r) => r.dropped.before), after: sum((r) => r.dropped.after) },
+  };
+}
+
 /** `imgtune report ...`: reads the ledger (and the compare file), returns the Markdown; with --out it also writes it. */
 export async function reportCommand(argv: string[], cwd: string): Promise<{ output: string; exitCode: number }> {
   const args = parseReportArgs(argv);
   const { lines, dropped } = await readLedger(args.ledger, cwd);
-  const compare = args.compare !== undefined ? await readCompare(args.compare, cwd) : undefined;
+  const read = [];
+  for (const file of args.compares) read.push(await readCompare(file, cwd));
+  const compare = read.length > 0 ? mergeCompares(read) : undefined;
   const markdown = renderReport(lines, dropped, compare);
   if (args.out !== undefined) await writeFile(resolve(cwd, args.out), markdown, "utf8");
   return { output: args.out !== undefined ? `wrote ${safeText(args.out)}\n` : markdown, exitCode: 0 };
