@@ -127,10 +127,11 @@ const SCAN_HELP = commandHelp(
   ],
 );
 
-const HINTS_HELP = `Usage: imgtune hints <scan.json> [options]
+const HINTS_HELP = `Usage: imgtune hints <scan.json> [<scan.json> ...] [options]
 
-Prints a compact batch of the per-image fix hints of one scanned page, sorted by the bytes a fix saves. Each hint names
-the image, its component and file:line when they resolved, the sizes and quality to use, and the two byte numbers.
+Prints a compact batch of the per-image fix hints of one or more scanned pages, sorted by the bytes a fix saves. Each hint
+names the image, its component and file:line when they resolved, the sizes and quality to use, and the two byte numbers.
+Hints of the same call site are grouped across pages; --flat lists each image instead.
 
 Options:
   --page <text>       only pages whose URL contains the text
@@ -138,6 +139,9 @@ Options:
   --limit <N>         hints to print (default 10)
   --offset <N>        skip the first N hints (for the next batch)
   --min-kb <N>        only hints that save at least N KB per view
+  --top <N>           the N call sites that save the most per view, one line each (no batch, no offset)
+  --flat              one hint per image, not grouped by call site
+  --qualities <list>  the quality values the framework allows, e.g. 75,85,100 (targets are snapped up to one of them)
   --format <text|json>  text (default) or JSON
   -h, --help          show this help
 `;
