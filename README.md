@@ -124,10 +124,18 @@ the browser resolved, not from a guess.
 | `imgtune hints <scan.json>` | prints a batch of fix hints: `--limit` (default 10), `--offset`, `--page`, `--component`, `--min-kb`, `--format json` |
 | `imgtune scan --recheck <scan.json> [--ids a,b,c]` | rescans only the named images at the viewports where they rendered; prints before and after; exits 1 on a failed check |
 | `imgtune image <file\|url\|glob>` | measures image files without a page: bytes now, the lowest quality per format that meets the bar, and at a `--width` the bytes at each needed width; `--min-score` sets the bar (default 90), `--write <dir>` writes optimised copies |
+| `imgtune compare <before.json> <after.json>` | compares two scans of one page image by image: the bytes saved and the sharpness bytes added, as two numbers; drift (a changed layout, server variance, a view not loaded) is excluded and its totals printed; `--format json`, `--limit` |
+| `imgtune report` | a Markdown run report from the agent's ledger (`.imgtune/ledger.jsonl`); `--compare <file>` adds the bytes from `imgtune compare --format json`; `--out <file>` writes it |
 
 The scan options that matter most: `--viewports <names>` (a subset of the six), `--markdown <file>` (the PR comment),
 `--summary-json <file>` (one JSON of every page's numbers), `--fail-over <pct>` (exit 3 above a budget),
 `--storage-state <file>` (a logged-in session), and `--ignore-robots` (see Security). `npx imgtune scan --help` lists them all.
+
+Two flows for a large app. One measures on a built server and then checks the edits on a dev server:
+`scan <built-url>`, then `scan <dev-url> --locate-only --from <scan.json>` (reads the React source of the flagged images),
+then `scan --recheck <located.json> --sizes-only --ids a,b` (judges the sizes choice on dev, no bytes), then `scan` on the
+built server again. The other runs the score on an NVIDIA GPU: `--gpu --gpu-device <n>` (the `nvidia-smi` index). The GPU
+program, `imgtune-ssimu2-gpu`, is not bundled; see the GPU section of the reference.
 
 ## GitHub Action
 
