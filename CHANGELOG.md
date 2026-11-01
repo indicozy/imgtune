@@ -5,7 +5,16 @@
 - Fix: a score the CPU made (a GPU scorer's fallback, or a pair too small for the GPU) is no longer stored under the GPU's
   cache key. The cache version moves to 2, so entries written before are not read.
 - `imgtune compare <before.json> <after.json>`: the per-image before and after of two scans of one page, paired by URL
-  pattern and alt. Saved and added-for-sharpness bytes are two numbers; unpaired images are listed, not counted.
+  pattern and alt, and by rendered width where one key has several elements. Saved and added-for-sharpness bytes are two
+  numbers; unpaired images are listed, not counted. Drift is excluded and its totals printed: an image whose rendered
+  width changed (layout changed), the same file served with different bytes (server variance), and a view one scan did
+  not load. Two scans of one build compare to 0 KB saved.
+- Faster scans, same numbers: the quality samples of a scan are estimated two at a time (each encode already uses four
+  threads), and a served file under 2 KB is not swept (`quality.sweep: "skipped-small"` in the JSON). On the nextjs.org
+  guard the JSON is identical to the previous build. Cold CPU scan about 18% faster (median 57.5 s over four runs before,
+  46.9 s over five after).
+- `imgtune scan --recheck` with several pages starts one browser for all of them (it started one per page).
+- `imgtune hints --help` lists `--top`, `--flat` and `--qualities`, and accepts several scan files.
 - Shared and varied call sites get a fitted `sizes`: a linear `vw + px` per band of viewports where the measurements allow,
   a ceiling constant elsewhere, never below a measured width at any measured viewport. When pages need different widths,
   the call site says `shared component: pass sizes per caller` and each page gets its own formula. `hints` takes several

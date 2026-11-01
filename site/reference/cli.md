@@ -130,10 +130,12 @@ object with `page`, `groups`, `images`, `offset`, `limit` and `callSites` (each 
 npx imgtune compare <before.json> <after.json> [--format text|json] [--limit N]
 ```
 
-Pairs the images of two scans of one page by their srcset URL pattern and alt, in document order. Prints the paired
-images' bytes per view before and after, the saved bytes and the bytes added for sharpness (two numbers, never netted), a
-warning for growth on images that were not undersized, the page total (labelled as including data drift), and the images
-in one scan only (listed, not counted). `--format json` gives every change.
+Pairs the images of two scans of one page by their srcset URL pattern and alt; where one key has several elements, by their
+rendered widths, then in document order. Prints the paired images' bytes per view before and after, the saved bytes and
+the bytes added for sharpness (two numbers, never netted), a warning for growth on images that were not undersized, the
+drift that is excluded and not claimed (an image whose rendered width changed, the same file served with different bytes,
+a view one scan did not load), the page total (labelled as including data drift), and the images in one scan only (listed,
+not counted). Two scans of one build compare to 0 KB saved. `--format json` gives every change and the `excluded` totals.
 
 ## report
 

@@ -88,7 +88,7 @@ One entry per viewport name. Each has:
 | `estAggressiveSaved` | only with `--aggressive` |
 | `sharpnessGrowth` | sharpness growth in bytes for this image |
 | `group` | the key of the group the image belongs to |
-| `quality` | `current`, `qualityAssumed`, `target`, `format` and `sampled`, when a quality estimate was made |
+| `quality` | `current`, `qualityAssumed`, `target`, `format` and `sampled`, when a quality estimate was made; `sweep: "skipped-small"` when the served file was under 2 KB and was not swept (it gets its group's ratio, if any) |
 | `qualityNA` | true when the quality could not be scored |
 | `loader` | the loader the URL came from, such as `next-default` or `generic` |
 | `duplicateOf` | the index of the element measured instead, when this element repeats its URL. Its savings are zero |
