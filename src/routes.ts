@@ -5,9 +5,9 @@
 // slug, an id) or when its siblings are many single pages, and a `.html` leaf with many siblings is a listing or product
 // family (`*.html`). A --route-map overrides the grouping for the URLs it matches. Pure functions: no browser, no files.
 
-/** A locale segment: `en`, `ae-en`, `sa_AR`. Two of them in the set are needed before any is stripped (see groupRoutes). */
 import { stripControls } from "./text.js";
 
+/** A locale segment: `en`, `ae-en`, `sa_AR`. Two of them in the set are needed before any is stripped (see groupRoutes). */
 const LOCALE = /^[a-z]{2}(?:[-_][a-z]{2})?$/i;
 /** The second segment of a locale-prefixed page that names its device variant, stripped into a dimension. */
 const VARIANTS: ReadonlySet<string> = new Set(["desktop", "mobile"]);
