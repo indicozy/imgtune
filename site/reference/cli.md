@@ -60,7 +60,7 @@ to read" list built from the run.
 ## audit
 
 ```sh
-npx imgtune audit --app <dir> --prod <origin> [--dev <origin>] [options]
+npx imgtune audit --app <dir> --prod <origin> [--dev <origin>] [--urls-from <file|sitemap-url>] [--max-locales N] [options]
 ```
 
 The deep mode for your own Next.js app. It needs the app's source and the production build served (see below). It runs, in order:
@@ -73,9 +73,16 @@ The deep mode for your own Next.js app. It needs the app's source and the produc
 2. **preflight**: the home page of `--prod` is loaded. If its stylesheets do not load, the audit stops (exit 4) and prints the
    likely cause: the CSS comes from a CDN host this machine cannot reach. Build and start the app with the CDN variable
    empty for both `next build` and `next start`.
-3. **urls**: `--urls-from` as given; otherwise `<prod>/sitemap.xml`; otherwise the links of the home page, two levels deep, at
-   most 500 pages (a plain fetch, no browser). The app's static routes are always added. A URL takes the route file of its
-   most specific matching route; a URL that no route matches takes its type from the check's grouping.
+3. **urls**: the site is crawled from its home page and from the app's seeds, two links deep, at most 500 pages (a plain
+   fetch, no browser). The seeds are the app's static routes, and each route under a dynamic first segment (`/[store]/about-us`)
+   once for each of that segment's values. The values come from the home page: the segment its `/` redirects to comes first,
+   then the other first segments of its links and its `hreflang` alternates, most frequent first. `--max-locales N` caps them
+   (3 by default). The crawl takes the groups of first segments in turn, so one locale cannot use up the page budget. A
+   link or a redirect is followed only on the exact origin of `--prod` (a redirect to a sibling subdomain is refused). The
+   sitemap of `--prod` adds its URLs (at most 5000). When `--prod` is local and the sitemap or an alternate names another host,
+   those URLs are read on `--prod` instead (path and query kept), and the audit says how many; the other host is never fetched.
+   `--urls-from` replaces all of this: the list is the URL set, with no seeds added. Each URL takes the route file of its most
+   specific matching route (the route file is shown per type in the report).
 4. **survey** and **deep**: as `check`, with the same options (the heaviest page of each route type, `--deep`, `--sample-per-pattern`).
 5. **locate** (with `--dev`): each deep page is located at the same path on the dev server, with `--app` as the source root.
    The fixes are then grouped by file:line (the call site).
@@ -88,7 +95,10 @@ and pass that copy as `--app`.
 
 ## Route types
 
-A route type is the template a page is an instance of. The grouping reads the whole URL set (`src/routes.ts`):
+A route type is the template a page is an instance of. The grouping reads the whole URL set (`src/routes.ts`). In an audit,
+the first segment of a URL that the app takes as a dynamic segment (`[store]`) is a dimension, whatever its shape, and so is
+a `desktop` or `mobile` variant after it; `--route-map` patterns then match the path after those segments. The report's route
+type table names the route file(s) each type renders from.
 
 - The locale (`en`, `ae-en`, `sa_AR`) is the first segment when the set has at least two such first segments. It is a
   dimension, not part of the type, so one template is one type across locales. A locale followed by `desktop` or `mobile`

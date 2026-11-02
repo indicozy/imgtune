@@ -12,6 +12,7 @@ import {
   MAX_CHILD_SITEMAPS,
   parseSitemapText,
   parseUrlList,
+  readSitemap,
   sampleByPattern,
   sitemapMayBeFetched,
   urlsFromSource,
@@ -255,7 +256,7 @@ describe("urlsFromSource", () => {
 
   it("reads a text list", async () => {
     const result = await urlsFromSource("pages.txt", dir);
-    expect(result).toEqual({ urls: ["https://shop.example/ae-en/a", "https://shop.example/ae-en/b"], source: "list", dropped: 0 });
+    expect(result).toEqual({ urls: ["https://shop.example/ae-en/a", "https://shop.example/ae-en/b"], source: "list", dropped: 0, rewritten: 0 });
   });
 
   it("reads a local sitemap file and counts the URLs of another domain it dropped", async () => {
@@ -288,5 +289,29 @@ describe("sampleByPattern", () => {
   it("with N = 1 takes the first URL of each route type", () => {
     const { urls } = sampleByPattern(["https://shop.example/p/a-1", "https://shop.example/p/b-2"], 1);
     expect(urls).toEqual(["https://shop.example/p/a-1"]);
+  });
+});
+
+describe("readSitemap with rewriteOriginTo (a local site's sitemap that lists its production host)", () => {
+  const LOCAL = "http://localhost:3320";
+
+  it("moves the URLs and child sitemaps of another host onto the local origin, keeping path and query, and never fetches that host", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      [`${LOCAL}/sitemap.xml`]: sitemapIndex("https://shop.example/sitemap/sitemap-1.xml"),
+      [`${LOCAL}/sitemap/sitemap-1.xml`]: urlset("https://shop.example/ae-en/a?x=1", `${LOCAL}/ae-en/b`),
+    });
+    const read = await readSitemap(`${LOCAL}/sitemap.xml`, fetchImpl, LOCAL);
+    expect(read.urls).toEqual([`${LOCAL}/ae-en/a?x=1`, `${LOCAL}/ae-en/b`]);
+    expect(read.rewritten).toBe(1);
+    expect(calls.some((url) => url.includes("shop.example"))).toBe(false);
+  });
+
+  it("without a rewrite, URLs on another domain are dropped, as a local sitemap always was", async () => {
+    const { fetchImpl } = stubFetch({
+      [`${LOCAL}/sitemap.xml`]: urlset("https://shop.example/ae-en/a", `${LOCAL}/ae-en/b`),
+    });
+    const read = await readSitemap(`${LOCAL}/sitemap.xml`, fetchImpl);
+    expect(read.urls).toEqual([`${LOCAL}/ae-en/b`]);
+    expect(read.rewritten).toBe(0);
   });
 });

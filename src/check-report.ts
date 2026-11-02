@@ -51,6 +51,8 @@ export interface CheckReportInput {
   stop?: { reason: string; fix: string };
   /** Where the allowed qualities came from, when they were not given (audit: next.config.js, or the Next default). */
   qualitiesNote?: string;
+  /** The route files each route type renders from (audit only): a route-file column in the route type table. */
+  routeFiles?: Map<string, string[]>;
 }
 
 interface PageTotals {
@@ -338,13 +340,17 @@ export function buildCheckReport(input: CheckReportInput): string {
     const ordered = [...rows.entries()].sort(
       (a, b) => total(b[1].pages.map((p) => (p.page?.meanImageBytes ?? 0) / 1024)) - total(a[1].pages.map((p) => (p.page?.meanImageBytes ?? 0) / 1024)) || a[0].localeCompare(b[0]),
     );
-    out("| Route type | Pages | Mean KB/view | Exact % | Heaviest page | Deep |", "|---|---:|---:|---:|---|---|");
+    const files = input.routeFiles;
+    out(
+      files ? "| Route type | Route file | Pages | Mean KB/view | Exact % | Heaviest page | Deep |" : "| Route type | Pages | Mean KB/view | Exact % | Heaviest page | Deep |",
+      files ? "|---|---|---:|---:|---:|---|---|" : "|---|---:|---:|---:|---|---|",
+    );
     for (const [type, row] of ordered) {
       const numbered = row.pages.filter((p) => p.page !== undefined);
       const heaviest = [...numbered].sort((a, b) => (b.page?.meanImageBytes ?? 0) - (a.page?.meanImageBytes ?? 0) || a.url.localeCompare(b.url))[0];
       const deepCell = deepPicks.has(type) ? "yes" : leftOut.get(type) === "no-images" ? "no images" : leftOut.has(type) ? "left out (--deep)" : "-";
       out(
-        `| ${mdCode(type)} | ${row.pages.length} | ${numbered.length > 0 ? kb(mean(numbered.map((p) => (p.page?.meanImageBytes ?? 0) / 1024))) : "-"} | ${numbered.length > 0 ? pct(mean(numbered.map((p) => p.page?.exactPct ?? 0))) : "-"} | ${heaviest?.page ? `${mdCode(pathOf(heaviest.url))} ${kb(heaviest.page.meanImageBytes / 1024)}` : "-"} | ${deepCell} |`,
+        `| ${mdCode(type)} | ${files ? `${(files.get(type) ?? []).map((f) => mdCode(f)).join(", ") || "-"} | ` : ""}${row.pages.length} | ${numbered.length > 0 ? kb(mean(numbered.map((p) => (p.page?.meanImageBytes ?? 0) / 1024))) : "-"} | ${numbered.length > 0 ? pct(mean(numbered.map((p) => p.page?.exactPct ?? 0))) : "-"} | ${heaviest?.page ? `${mdCode(pathOf(heaviest.url))} ${kb(heaviest.page.meanImageBytes / 1024)}` : "-"} | ${deepCell} |`,
       );
     }
     out("");
@@ -375,7 +381,7 @@ export function buildCheckReport(input: CheckReportInput): string {
     `- The deep pages measure ${input.options.deepViewports.map(mdText).join(", ")} with the quality estimate. ${APPROX_MARK.trim()} marks an approximate estimate (a file above the matching size limit).`,
     `- Savings are per page view and never netted: the sharpness bytes of undersized images are a separate number.`,
     input.title === "imgtune audit"
-      ? `- Route types are the app's route files: each URL takes the file of its most specific route (a URL no route matches takes the check's grouping). Only the heaviest page of each type is deep-scanned; ${input.selection.leftOut.length} type(s) were not (see the table).`
+      ? `- Route types group URLs by template (locale and device variant stripped), as check does; the route file column names the file(s) each type renders from. Only the heaviest page of each type is deep-scanned; ${input.selection.leftOut.length} type(s) were not (see the table).`
       : `- Route types group URLs by template (locale and device variant stripped). Only the heaviest page of each type is deep-scanned; ${input.selection.leftOut.length} type(s) were not (see the table).`,
     input.options.qualities !== undefined
       ? `- Quality targets are snapped up to the allowed qualities ${input.options.qualities.join(", ")}; a snapped target's quality saving is void and counts as 0.${input.qualitiesNote !== undefined ? ` (${mdText(input.qualitiesNote)})` : ""}`

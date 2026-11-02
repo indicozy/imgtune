@@ -2,8 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
 import { sourceFilesOf } from "../src/audit.js";
-import { appRouteGrouping, matchRoute, routesFromFiles, staticRouteUrls } from "../src/app-routes.js";
-import { groupRoutes } from "../src/routes.js";
+import { learnedValues, matchRoute, routeFileOf, routesFromFiles, seedUrlsOf, staticRouteUrls } from "../src/app-routes.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/audit-app", import.meta.url));
 const ORIGIN = "https://shop.example";
@@ -14,7 +13,20 @@ describe("routesFromFiles on the fixture app", () => {
     expect(files).toContain("app/page.tsx");
     expect(files).toContain("app/api/hello/route.ts");
     const patterns = routesFromFiles(files).map((r) => r.pattern);
-    expect([...patterns].sort()).toEqual(["/", "/about", "/blog/*", "/cart", "/docs/**", "/posts/*", "/product/*", "/shop/**"]);
+    expect([...patterns].sort()).toEqual([
+      "/",
+      "/*",
+      "/*/**",
+      "/*/about-us",
+      "/about",
+      "/blog/*",
+      "/cart",
+      "/docs/**",
+      "/posts/*",
+      "/product/*",
+      "/sentry-example-page",
+      "/shop/**?",
+    ]);
   });
 
   it("names each route by its file, with groups dropped and the file path kept as written", async () => {
@@ -41,6 +53,7 @@ describe("routesFromFiles on the fixture app", () => {
   it("gives a folder without a page nothing, and a root catch-all the pattern /**", () => {
     expect(routesFromFiles(["app/feed/page.tsx", "app/feed/layout.tsx"]).map((r) => r.pattern)).toEqual(["/feed"]);
     expect(routesFromFiles(["app/[...all]/page.tsx"]).map((r) => r.pattern)).toEqual(["/**"]);
+    expect(routesFromFiles(["app/[[...all]]/page.tsx"]).map((r) => r.pattern)).toEqual(["/**?"]);
   });
 });
 
@@ -52,38 +65,66 @@ describe("matchRoute", () => {
     expect(matchRoute(`${ORIGIN}/anything/else`, set)?.pattern).toBe("/**");
   });
 
-  it("matches the optional catch-all with zero segments, and a decoded path", async () => {
+  it("matches an optional catch-all with zero segments, a required one only with one or more, and a decoded path", async () => {
     const set = routesFromFiles(await sourceFilesOf(FIXTURE));
-    expect(matchRoute(`${ORIGIN}/shop`, set)?.pattern).toBe("/shop/**");
-    expect(matchRoute(`${ORIGIN}/docs`, set)?.pattern).toBe("/docs/**");
+    expect(matchRoute(`${ORIGIN}/shop`, set)?.pattern).toBe("/shop/**?");
+    expect(matchRoute(`${ORIGIN}/docs`, set)?.pattern).toBe("/*");
     expect(matchRoute(`${ORIGIN}/docs/a/b/c`, set)?.pattern).toBe("/docs/**");
+    expect(matchRoute(`${ORIGIN}/ae-en/a/b`, set)?.pattern).toBe("/*/**");
+    expect(matchRoute(`${ORIGIN}/ae-en`, set)?.pattern).toBe("/*");
     expect(matchRoute(`${ORIGIN}/blog/caf%C3%A9`, set)?.pattern).toBe("/blog/*");
   });
 
   it("matches the home page only at the root, and returns nothing for a path no route covers", async () => {
     const set = routesFromFiles(await sourceFilesOf(FIXTURE));
     expect(matchRoute(`${ORIGIN}/`, set)?.pattern).toBe("/");
-    expect(matchRoute(`${ORIGIN}/nope/x`, set)).toBeUndefined();
+    expect(matchRoute(`${ORIGIN}/nope/x`, routesFromFiles(["app/page.tsx", "app/blog/[slug]/page.tsx"]))).toBeUndefined();
     expect(matchRoute("not a url", set)).toBeUndefined();
   });
 });
 
-describe("appRouteGrouping and staticRouteUrls", () => {
-  it("types each URL by its route file, and a URL no route matches by the fallback grouping", async () => {
+describe("routeFileOf, the seeds and the learned values", () => {
+  it("names the route file of a URL, and none for a URL no route covers", async () => {
     const routes = routesFromFiles(await sourceFilesOf(FIXTURE));
-    const urls = [`${ORIGIN}/blog/a`, `${ORIGIN}/blog/b`, `${ORIGIN}/cart`, `${ORIGIN}/unknown/a`, `${ORIGIN}/unknown/b`];
-    const fallback = groupRoutes(urls);
-    const grouping = appRouteGrouping(urls, routes, fallback);
-    expect(grouping.typeOf(`${ORIGIN}/blog/a`)).toBe("app/blog/[slug]/page.tsx");
-    expect(grouping.types.find((t) => t.type === "app/blog/[slug]/page.tsx")?.urls).toHaveLength(2);
-    expect(grouping.typeOf(`${ORIGIN}/cart`)).toBe("app/(shop)/cart/page.tsx");
-    expect(grouping.typeOf(`${ORIGIN}/unknown/a`)).toBe(fallback.typeOf(`${ORIGIN}/unknown/a`));
-    expect(grouping.types.reduce((n, t) => n + t.urls.length, 0)).toBe(urls.length);
+    expect(routeFileOf(`${ORIGIN}/blog/a`, routes)).toBe("app/blog/[slug]/page.tsx");
+    expect(routeFileOf(`${ORIGIN}/cart`, routes)).toBe("app/(shop)/cart/page.tsx");
+    expect(routeFileOf(`${ORIGIN}/ae-en/about-us`, routes)).toBe("app/[store]/about-us/page.tsx");
+    expect(routeFileOf(`${ORIGIN}/unknown/a/b/c`, routes)).toBe("app/[store]/[...plpPath]/page.tsx");
+    expect(routeFileOf(`${ORIGIN}/nope`, routes)).toBe("app/[store]/page.tsx");
   });
 
-  it("adds the static routes of the app as URLs of the origin", async () => {
+  it("seeds the static routes of the app as URLs of the origin, and not the catch-alls", async () => {
     const urls = staticRouteUrls(ORIGIN, routesFromFiles(await sourceFilesOf(FIXTURE)));
-    expect(urls).toEqual(expect.arrayContaining([`${ORIGIN}/`, `${ORIGIN}/about`, `${ORIGIN}/cart`]));
-    expect(urls.some((u) => u.includes("blog") || u.includes("docs"))).toBe(false);
+    expect(urls).toEqual(expect.arrayContaining([`${ORIGIN}/`, `${ORIGIN}/about`, `${ORIGIN}/cart`, `${ORIGIN}/sentry-example-page`]));
+    expect(urls.some((u) => u.includes("blog") || u.includes("docs") || u.includes("*"))).toBe(false);
+  });
+
+  it("expands a static route under a dynamic first segment once for each learned value, and not a route with a later dynamic segment", async () => {
+    const routes = routesFromFiles(await sourceFilesOf(FIXTURE));
+    const seeds = seedUrlsOf(ORIGIN, routes, ["ae-en", "el-seed"]);
+    expect(seeds).toEqual(expect.arrayContaining([`${ORIGIN}/ae-en/about-us`, `${ORIGIN}/el-seed/about-us`, `${ORIGIN}/ae-en`, `${ORIGIN}/el-seed`]));
+    expect(seeds.some((u) => u.includes("**") || u.includes("*"))).toBe(false);
+    expect(seeds.filter((u) => u.includes("/ae-en/"))).toEqual([`${ORIGIN}/ae-en/about-us`]);
+  });
+
+  it("learns the first value from where the home page redirects, then the other segments by frequency", () => {
+    const routes = routesFromFiles(["app/[store]/page.tsx", "app/[store]/about-us/page.tsx", "app/about/page.tsx"]);
+    const seen = [
+      `${ORIGIN}/ae-en?utm_source=x`,
+      `${ORIGIN}/el-seed`,
+      `${ORIGIN}/el-seed/a`,
+      `${ORIGIN}/about`,
+      `${ORIGIN}/sa-ar/a`,
+      `${ORIGIN}/robots.txt`,
+      `${ORIGIN}/api/x`,
+    ];
+    expect(learnedValues(seen, routes, 3)).toEqual(["ae-en", "el-seed", "sa-ar"]);
+    expect(learnedValues(seen, routes, 1)).toEqual(["ae-en"]);
+  });
+
+  it("learns no first value when the home page does not redirect (its own final URL is the origin)", () => {
+    const routes = routesFromFiles(["app/[store]/page.tsx"]);
+    expect(learnedValues([`${ORIGIN}/`, `${ORIGIN}/sa-ar/x`], routes, 3)).toEqual(["sa-ar"]);
+    expect(learnedValues([], routes, 3)).toEqual([]);
   });
 });

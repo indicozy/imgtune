@@ -374,6 +374,8 @@ export interface FinishInput {
   qualitiesNote?: string;
   /** The dev origin of an audit (--dev). */
   dev?: string;
+  /** The route files of each route type (audit): the report's route-file column. */
+  routeFiles?: Map<string, string[]>;
 }
 
 /** Writes report.md and run.json for a check or an audit, and returns the terminal text and the exit code. */
@@ -409,6 +411,7 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
       samplePerPattern: input.sample,
     },
     qualitiesNote: input.qualitiesNote,
+    routeFiles: input.routeFiles,
     ...(stop.stop ? { stop: { reason: stop.reason ?? "", fix: stop.fix ?? "" } } : {}),
   });
   await writeFileAtomic(join(outRoot, "report.md"), report, { root: outRoot });

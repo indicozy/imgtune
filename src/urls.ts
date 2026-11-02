@@ -158,22 +158,56 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
 }
 
 /**
+ * A rewrite of the sitemap's URLs onto another origin (see readSitemap): the origin, and how many page URLs it changed.
+ */
+interface OriginRewrite {
+  origin: string;
+  rewritten: number;
+}
+
+/** The URL of `loc` on the rewrite's origin (its path and query kept), when `loc` is on another origin; else `loc`. */
+function rewriteLoc(loc: string, rewrite: OriginRewrite | undefined): string {
+  if (rewrite === undefined) return loc;
+  try {
+    const url = new URL(loc);
+    if (url.origin === rewrite.origin || (url.protocol !== "http:" && url.protocol !== "https:")) return loc;
+    return `${rewrite.origin}${url.pathname}${url.search}`;
+  } catch {
+    return loc;
+  }
+}
+
+/**
  * The page URLs of a sitemap (and of its child sitemaps). A `<sitemapindex>` is followed into its children, at most
  * MAX_INDEX_DEPTH levels and MAX_CHILD_SITEMAPS children in all, each on the top sitemap's registrable domain. A page URL
  * is kept only when it is http(s) on that domain too. A top-level failure throws; a child that is refused, fails or does
- * not parse contributes nothing.
+ * not parse contributes nothing. With a rewrite, the locs on another origin are first moved onto the rewrite's origin.
  */
-async function collectUrls(top: SitemapText, topUrl: string, fetchImpl: typeof fetch | undefined, guarded: Fetcher | undefined): Promise<string[]> {
+async function collectUrls(
+  top: SitemapText,
+  topUrl: string,
+  fetchImpl: typeof fetch | undefined,
+  guarded: Fetcher | undefined,
+  rewrite?: OriginRewrite,
+): Promise<string[]> {
   const pages: string[] = [];
   let remainingChildren = MAX_CHILD_SITEMAPS;
   const keepPage = (loc: string) => sitemapMayBeFetched(loc, topUrl) && pages.length < MAX_SITEMAP_URLS;
   const visit = async (doc: SitemapText, depth: number): Promise<void> => {
     if (doc.kind === "urlset") {
-      for (const loc of doc.locs) if (keepPage(loc)) pages.push(loc);
+      for (const loc of doc.locs) {
+        const page = rewriteLoc(loc, rewrite);
+        if (!keepPage(page)) continue;
+        if (page !== loc && rewrite !== undefined) rewrite.rewritten++;
+        pages.push(page);
+      }
       return;
     }
     if (depth >= MAX_INDEX_DEPTH) return;
-    const children = doc.locs.filter((loc) => sitemapMayBeFetched(loc, topUrl)).slice(0, remainingChildren);
+    const children = doc.locs
+      .map((loc) => rewriteLoc(loc, rewrite))
+      .filter((loc) => sitemapMayBeFetched(loc, topUrl))
+      .slice(0, remainingChildren);
     remainingChildren -= children.length;
     const childDocs = await mapWithConcurrency(children, CHILD_CONCURRENCY, async (child) => {
       try {
@@ -189,16 +223,34 @@ async function collectUrls(top: SitemapText, topUrl: string, fetchImpl: typeof f
   return [...new Set(pages)];
 }
 
+/** What a remote sitemap read gave: its page URLs, and how many of them were moved onto another origin. */
+export interface SitemapRead {
+  urls: string[];
+  rewritten: number;
+}
+
+/**
+ * The page URLs of a remote sitemap, and the count of those moved. Throws when the top sitemap cannot be read or is not a
+ * sitemap. `rewriteOriginTo` (audit, when the site is local): a URL or child sitemap on another origin is moved onto that
+ * origin (path and query kept), so the other host is never fetched. `fetchImpl` is a test seam; without it the sitemap is
+ * read through the checked fetcher.
+ */
+export async function readSitemap(sitemapUrl: string, fetchImpl?: typeof fetch, rewriteOriginTo?: string): Promise<SitemapRead> {
+  const guarded = fetchImpl === undefined ? makeFetcher({ userAgent: `imgtune/${IMGTUNE_VERSION}` }) : undefined;
+  const topXml = await fetchXml(sitemapUrl, sitemapUrl, fetchImpl, guarded);
+  const top = topXml === undefined ? undefined : parseSitemapText(topXml);
+  if (!top) throw new Error(`${sitemapUrl} is not an XML sitemap`);
+  const rewrite = rewriteOriginTo === undefined ? undefined : { origin: new URL(rewriteOriginTo).origin, rewritten: 0 };
+  const urls = await collectUrls(top, sitemapUrl, fetchImpl, guarded, rewrite);
+  return { urls, rewritten: rewrite?.rewritten ?? 0 };
+}
+
 /**
  * The page URLs of a remote sitemap. Throws when the top sitemap cannot be read or is not a sitemap. `fetchImpl` is a
  * test seam; without it the sitemap is read through the checked fetcher.
  */
 export async function fetchSitemapUrls(sitemapUrl: string, fetchImpl?: typeof fetch): Promise<string[]> {
-  const guarded = fetchImpl === undefined ? makeFetcher({ userAgent: `imgtune/${IMGTUNE_VERSION}` }) : undefined;
-  const topXml = await fetchXml(sitemapUrl, sitemapUrl, fetchImpl, guarded);
-  const top = topXml === undefined ? undefined : parseSitemapText(topXml);
-  if (!top) throw new Error(`${sitemapUrl} is not an XML sitemap`);
-  return collectUrls(top, sitemapUrl, fetchImpl, guarded);
+  return (await readSitemap(sitemapUrl, fetchImpl)).urls;
 }
 
 /**
@@ -227,16 +279,23 @@ export interface UrlSourceResult {
   source: "list" | "local-sitemap" | "remote-sitemap";
   /** Sitemap URLs dropped for being on another registrable domain (local sitemap files). */
   dropped: number;
+  /** Sitemap URLs moved onto the rewrite origin (remote sitemaps read with rewriteOriginTo). */
+  rewritten: number;
+}
+
+export interface UrlSourceOptions {
+  /** A remote sitemap's URLs on another origin are moved onto this origin (see readSitemap). */
+  rewriteOriginTo?: string;
 }
 
 /**
  * The page URLs named by a `--urls-from` argument: an http(s) sitemap URL (fetched under the limits), a local file that
  * is a sitemap (read under the size cap), or any other local file, read as a text list.
  */
-export async function urlsFromSource(arg: string, cwd: string): Promise<UrlSourceResult> {
+export async function urlsFromSource(arg: string, cwd: string, opts: UrlSourceOptions = {}): Promise<UrlSourceResult> {
   if (/^https?:\/\//i.test(arg)) {
-    const urls = await fetchSitemapUrls(arg);
-    return { urls, source: "remote-sitemap", dropped: 0 };
+    const read = await readSitemap(arg, undefined, opts.rewriteOriginTo);
+    return { urls: read.urls, source: "remote-sitemap", dropped: 0, rewritten: read.rewritten };
   }
   const path = resolve(cwd, arg);
   const info = await stat(path);
@@ -245,10 +304,10 @@ export async function urlsFromSource(arg: string, cwd: string): Promise<UrlSourc
   const text = await readFile(path, "utf8");
   if (isSitemapText(text)) {
     const { urls, dropped } = await urlsFromLocalSitemap(text);
-    return { urls, source: "local-sitemap", dropped };
+    return { urls, source: "local-sitemap", dropped, rewritten: 0 };
   }
   if (info.size > MAX_LIST_BYTES) throw new Error(`${arg} is larger than ${MAX_LIST_BYTES / (1024 * 1024)} MB`);
-  return { urls: parseUrlList(text), source: "list", dropped: 0 };
+  return { urls: parseUrlList(text), source: "list", dropped: 0, rewritten: 0 };
 }
 
 /**
