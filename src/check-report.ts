@@ -5,8 +5,8 @@ import { hintsOf, type Hint } from "./hints.js";
 import { hasFix, type ImageRecord } from "./images.js";
 import { APPROX_MARK, siteNumbers, type PageResult } from "./remote.js";
 import type { RouteGrouping } from "./routes.js";
-import type { DeepSelection, LeftOutType } from "./deep.js";
-import { mdCode, mdText } from "./text.js";
+import type { DeepRetry, DeepSelection, LeftOutType } from "./deep.js";
+import { errorLine, mdCode, mdText } from "./text.js";
 
 /** How many fixes, heavy pages, sharpness images and survey route types the report lists in full. */
 export const REPORT_FIXES = 15;
@@ -27,6 +27,8 @@ export interface CheckReportInput {
   deep: PageResult[];
   routes: RouteGrouping;
   selection: DeepSelection;
+  /** The deep pages that failed to load, each with the page scanned in its place (one retry). */
+  retries?: DeepRetry[];
   /** The list's URL count, before sampling, and the URLs surveyed. */
   urls: { listed: number; surveyed: number };
   /** Seconds per phase: survey and deep (0 when not run). The report's own time is printed by the command, not here. */
@@ -227,8 +229,10 @@ export function buildCheckReport(input: CheckReportInput): string {
   // 1. Header.
   out(`# ${mdText(input.title ?? "imgtune check")}: ${mdCode(input.site)}`, "");
   out(`${input.date} · imgtune ${mdText(input.version)} · ${input.urls.listed} URL(s) listed, ${input.urls.surveyed} surveyed, ${input.routes.types.length} route type(s), ${input.selection.picks.length} deep page(s)`);
+  const retried = input.retries?.length ?? 0;
+  const notMeasured = (pages: PageResult[]) => pages.length - measured(pages).length - count(pages, "broken") - count(pages, "failed");
   out(
-    `survey ${input.urls.surveyed} page(s): ${survey.length} ok, ${count(input.survey, "broken")} broken, ${input.survey.length - survey.length - count(input.survey, "broken")} not measured · deep ${input.deep.length} page(s): ${deepOk.length} ok`,
+    `survey ${input.urls.surveyed} page(s): ${survey.length} ok, ${count(input.survey, "broken")} broken, ${count(input.survey, "failed")} failed, ${notMeasured(input.survey)} not measured · deep ${input.deep.length} page(s)${retried > 0 ? ` (${retried} retried)` : ""}: ${deepOk.length} ok, ${count(input.deep, "failed")} failed, ${notMeasured(input.deep)} not measured`,
   );
   out(`time: survey ${input.timings.survey.toFixed(1)} s, deep ${input.timings.deep.toFixed(1)} s, total ${(input.timings.survey + input.timings.deep).toFixed(1)} s`, "");
 
@@ -341,15 +345,18 @@ export function buildCheckReport(input: CheckReportInput): string {
   const problems = (label: string, pages: PageResult[]): string[] => {
     const bad = pages.filter((p) => p.status !== "ok");
     const loading = pages.filter((p) => (p.notLoaded ?? 0) > 0);
-    const rows = [`${label}: ${bad.length} of ${pages.length} page(s) not measured; ${loading.length} page(s) with images still loading at settle (${total(loading.map((p) => p.notLoaded ?? 0))} image(s))`];
+    const failed = count(pages, "failed");
+    const rows = [`${label}: ${bad.length} of ${pages.length} page(s) not measured, ${failed} failed; ${loading.length} page(s) with images still loading at settle (${total(loading.map((p) => p.notLoaded ?? 0))} image(s))`];
     for (const page of bad.slice(0, REPORT_PAGES)) {
-      const reason = page.status === "broken" ? page.broken?.reason ?? "broken" : page.error ?? page.status;
-      rows.push(`  - ${mdCode(pathOf(page.url))}: ${page.status}, ${mdText(reason, 200)}`);
+      // The first line of the error only: a browser error's call log is not a report line (see errorLine).
+      const detail = page.status === "broken" ? page.broken?.reason ?? "" : page.error !== undefined ? errorLine(page.error) : "";
+      rows.push(`  - ${mdCode(pathOf(page.url))}: ${page.status}, ${mdText(detail !== "" ? detail : page.status, 200)}`);
     }
     if (bad.length > REPORT_PAGES) rows.push(`  - and ${bad.length - REPORT_PAGES} more`);
     return rows;
   };
-  out(...problems("Survey", input.survey), ...problems("Deep", input.deep), "");
+  const retryRows = (input.retries ?? []).map((retry) => `  - retried: ${mdCode(pathOf(retry.failed))} failed, so ${mdCode(pathOf(retry.replacement))} (the next-heaviest page of ${mdCode(retry.type)}) was deep-scanned in its place`);
+  out(...problems("Survey", input.survey), ...problems("Deep", input.deep), ...retryRows, "");
 
   // 8. How to read.
   out("## How to read", "");

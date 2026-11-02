@@ -2,6 +2,7 @@
 // not-measured section, from fixture pages. No browser.
 import { describe, expect, it } from "vitest";
 import { buildCheckReport, fixGroupsOf, type CheckReportInput } from "../src/check-report.js";
+import { errorLine, stripControls } from "../src/text.js";
 import { selectDeepPages } from "../src/deep.js";
 import { groupRoutes } from "../src/routes.js";
 import type { ImageRecord } from "../src/images.js";
@@ -170,7 +171,7 @@ describe("buildCheckReport", () => {
   it("names the broken survey pages with their reason, and the images still loading", () => {
     const section = report.split("## Broken, not measured, and images still loading")[1].split("## How to read")[0];
     expect(section).toContain("`/ae-en/about-us`: broken, the document answered 500");
-    expect(section).toMatch(/Deep: 0 of 3 page\(s\) not measured; 1 page\(s\) with images still loading at settle \(2 image\(s\)\)/);
+    expect(section).toMatch(/Deep: 0 of 3 page\(s\) not measured, 0 failed; 1 page\(s\) with images still loading at settle \(2 image\(s\)\)/);
   });
 
   it("explains how to read the numbers, from the run", () => {
@@ -196,5 +197,64 @@ describe("buildCheckReport", () => {
   it("writes page-derived text as code, so a Markdown character in a URL stays text", () => {
     const hostile = buildCheckReport({ ...input, site: "https://shop.example/`x`|y" });
     expect(hostile.split("\n")[0]).toBe("# imgtune check: `https://shop.example/ʼxʼ\\|y`");
+  });
+});
+
+/** The error Playwright gives when a page does not load in time: a first line, then a call log with ANSI colour codes. */
+const PLAYWRIGHT_TIMEOUT =
+  'page.goto: net::ERR_TIMED_OUT at https://nextjs.org/showcase\nCall log:\n\u001b[2m  - navigating to "https://nextjs.org/showcase", waiting until "domcontentloaded"\u001b[22m\n';
+
+describe("errorLine and stripControls (the first line of a browser error)", () => {
+  it("keeps the first line of a Playwright error and drops the call log and its colour codes", () => {
+    expect(errorLine(PLAYWRIGHT_TIMEOUT)).toBe("page.goto: net::ERR_TIMED_OUT at https://nextjs.org/showcase");
+  });
+
+  it("skips blank lines before the first text line, and keeps no escape sequence", () => {
+    expect(errorLine("\n\n  boom  \nmore")).toBe("boom");
+    expect(errorLine("a\u001b[31m b\u001b[0m")).toBe("a b");
+  });
+
+  it("removes a whole ANSI sequence, parameters included, from page text", () => {
+    expect(stripControls("x\u001b[2Jy\u001b[22m z")).toBe("xy z");
+  });
+});
+
+describe("failed pages and retries in the report", () => {
+  const survey: PageResult[] = [okPage(`${SHOP}/cart`, 300, 20), okPage(`${SHOP}/faqs`, 120, 12), otherPage(`${SHOP}/showcase`, "failed", { error: PLAYWRIGHT_TIMEOUT })];
+  const routes = groupRoutes(survey.map((p) => p.url));
+  const deep: PageResult[] = [deepOf(`${SHOP}/cart`, 300, 20, [imageOf("c1", 40 * 1024, 0, { pattern: "/_next/image?url=/cart.jpg" })])];
+  const base: CheckReportInput = {
+    site: SHOP,
+    date: "2026-11-03",
+    version: "0.1.0",
+    survey,
+    deep,
+    routes,
+    selection: selectDeepPages(survey, routes, 10),
+    urls: { listed: 3, surveyed: 3 },
+    timings: { survey: 1, deep: 1 },
+    options: { surveyViewports: ["desktop"], deepViewports: ["desktop"], thirdParty: "allowed", quality: true },
+  };
+
+  it("counts the failed pages in the survey header, and lists the first line of the error only", () => {
+    const report = buildCheckReport(base);
+    expect(report).toContain("survey 3 page(s): 2 ok, 0 broken, 1 failed, 0 not measured");
+    const section = report.split("## Broken, not measured, and images still loading")[1].split("## How to read")[0];
+    expect(section).toMatch(/^  - `\/showcase`: failed, page\.goto&#58; net&#58;&#58;ERR&#95;TIMED&#95;OUT at https&#58;\/\/nextjs\.org\/showcase$/m);
+    expect(section).not.toContain("Call log");
+    expect(section).not.toContain("&#91;");
+    expect(report).not.toContain("\u001b");
+  });
+
+  it("names a deep page that failed in the deep line, and the retry that was made in its place", () => {
+    const failedDeep = [...deep, otherPage(`${SHOP}/showcase`, "failed", { error: PLAYWRIGHT_TIMEOUT }), okPage(`${SHOP}/faqs`, 120, 12)];
+    const report = buildCheckReport({
+      ...base,
+      deep: failedDeep,
+      retries: [{ type: "/showcase", failed: `${SHOP}/showcase`, replacement: `${SHOP}/faqs` }],
+    });
+    expect(report).toMatch(/deep 3 page\(s\) \(1 retried\): 2 ok, 1 failed, 0 not measured/);
+    expect(report).toMatch(/Deep: 1 of 3 page\(s\) not measured, 1 failed;/);
+    expect(report).toContain("- retried: `/showcase` failed, so `/faqs` (the next-heaviest page of `/showcase`) was deep-scanned in its place");
   });
 });

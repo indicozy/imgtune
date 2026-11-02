@@ -179,6 +179,8 @@ interface PhaseRecord {
   pages?: number;
   ok?: number;
   broken?: number;
+  /** Pages whose browser load failed (status "failed"): counted, so a phase's pages add up. */
+  failed?: number;
   exitCode?: number;
 }
 
@@ -219,6 +221,8 @@ export interface RunManifest {
   site?: string;
   report?: string;
   broken: { url: string; phase: string; kind: string; reason: string; fix: string }[];
+  /** `check` runs only: the deep pages that failed, and the page scanned in place of each (one retry). */
+  deepRetries?: { type: string; failed: string; replacement: string }[];
   stop: { phase: "survey"; reason: string; fix: string } | null;
   warnings: string[];
   exitCode: number;
@@ -436,6 +440,7 @@ function phaseOf(name: "survey" | "deep", startedAt: number, pages: PageResult[]
     pages: pages.length,
     ok: pages.filter((p) => p.status === "ok").length,
     broken: pages.filter((p) => p.status === "broken").length,
+    failed: pages.filter((p) => p.status === "failed").length,
   };
 }
 

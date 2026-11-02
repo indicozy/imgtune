@@ -5,14 +5,27 @@
 // C0 and C1 controls, bidi embeddings, overrides and isolates, zero-width marks and the BOM: none of them may reach a reader
 // of page-derived text (a bidi override reorders what follows it on screen).
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+/** An ANSI escape sequence (a colour or cursor code): ESC, the parameter bytes, the final byte. Removed whole, not just ESC. */
+const ANSI_SEQUENCE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const TEXT_LIMIT = 200;
 
 /**
- * Page-derived text as it may be printed: C0 and C1 control characters removed (no escape sequences reach the
- * terminal), and at most TEXT_LIMIT characters, the last three of them "...". JSON output is not passed through here.
+ * Page-derived text as it may be printed: ANSI escape sequences and C0 and C1 control characters removed (no escape
+ * sequence reaches the terminal, and none leaves its parameters behind), and at most TEXT_LIMIT characters, the last
+ * three of them "...". JSON output is not passed through here.
  */
 export function stripControls(text: string): string {
-  return text.replace(CONTROL_CHARS, "");
+  return text.replace(ANSI_SEQUENCE, "").replace(CONTROL_CHARS, "");
+}
+
+/**
+ * The first non-empty line of an error message, as it may be printed in a report or a terminal line. A browser error
+ * carries more: Playwright adds a "Call log:" block of lines with ANSI colour codes, which a one-line report cannot hold.
+ * The full message stays in the page's JSON.
+ */
+export function errorLine(text: string, limit = TEXT_LIMIT): string {
+  const first = text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "";
+  return safeText(first.trim(), limit);
 }
 
 export function safeText(text: string, limit = TEXT_LIMIT): string {

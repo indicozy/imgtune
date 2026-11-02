@@ -40,12 +40,14 @@ The production check. It needs a browser and the URLs, and no source, dev server
    when there is none. No third-party request is blocked unless `--block-third-party` is given.
 2. **deep**: the heaviest page of each route type (see "Route types"), full-scanned on six viewports with the quality
    estimate, heaviest types first, up to `--deep <N>` (default 20). The types the cap leaves out are named in the report.
+   A deep page the browser could not load is retried once: the next-heaviest measured page of its route type is scanned in
+   its place, and the report names both. The failed page still counts as failed.
    `--gpu`, `--gpu-device`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--ignore-robots`,
    `--storage-state`, `--block-third-party` and `--allow-host` apply here.
 3. **report**: `report.md`, built from the two phases.
 
 The check directory (`--out`, default `.imgtune/check/<timestamp>`) holds `survey/`, `deep/`, `urls.txt`, `run.json` (the
-manifest: `imgtune summary` reads it) and `report.md`. The report has these sections, in order: the header (the site, the
+manifest: `imgtune summary` reads it, and each phase counts its ok, broken and failed pages) and `report.md`. The report has these sections, in order: the header (the site, the
 counts, the time per phase); the summary numbers (survey and deep, with the estimate marked ≈ and the sharpness as its own
 number, never netted); the ranked fixes (merged across the deep pages, with the sizes and quality change, the saving per
 view and the pages); the heavy pages whose saving is under 2%; the images that would get bigger for sharpness; a row per
@@ -95,6 +97,10 @@ A route type is the template a page is an instance of. The grouping reads the wh
   item slug (digits with a hyphen, or three hyphens), a `.html` leaf whose parent has at least four `.html` leaves (`*.html`,
   a listing family), or a single-page child of a parent that has at least four children, most of them single pages.
   Otherwise it is a route word and stays.
+- A version segment right after the first segment (`15`, `v15`, `v2.3`, `15.x`) is a dimension, like the locale. It is stripped
+  only when the same first segment also has unversioned pages with something under them, so `/docs/15/app/x` and
+  `/docs/app/x` are one type. A version with nothing under it (`/docs/15`) is not stripped, and `latest` is not a version:
+  a site that versions its docs as `latest` keeps those pages as their own types.
 - Query strings keep their parameter names and lose their values (`/search?q=*`); tracking parameters (`utm_*`, `fbclid`,
   `gclid`, `msclkid`) are dropped.
 - `--route-map <file>` names the URLs that match a pattern. A file has lines of `pattern => type` (`#` comments) or a JSON

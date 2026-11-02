@@ -153,7 +153,7 @@ describe("imgtune run on a local site", () => {
     expect(output).toBe(again.output);
     expect(output.trimEnd().split("\n").length).toBeLessThanOrEqual(MAX_SUMMARY_LINES);
     expect(output).toMatch(/^imgtune run: 4 URL\(s\)/m);
-    expect(output).toMatch(/survey: 4 page\(s\), 3 ok, 1 broken, 0 not measured/);
+    expect(output).toMatch(/survey: 4 page\(s\), 3 ok, 1 broken, 0 failed, 0 not measured/);
     expect(output).toMatch(/^warnings:$/m);
     expect(output).toMatch(/1 linked stylesheet\(s\) from "127\.0\.0\.1:\d+" did not load/);
     expect(output).not.toMatch(/after the fix/);
