@@ -23,6 +23,17 @@ export interface FetchOptions {
   allowPrivate?: boolean;
   /** Every hop, redirects included, must stay on the registrable domain of this URL; a hop off it is refused. */
   sameSiteAs?: string;
+  /**
+   * Every hop, redirects included, must stay on exactly this origin (scheme, host and port). A hop off it is refused.
+   * The crawl uses it: a redirect to a sibling subdomain is not followed.
+   */
+  sameOriginAs?: string;
+}
+
+/** The body of an answer, and the URL it was finally read from (after the redirects that were followed). */
+export interface PageAnswer {
+  body: Buffer;
+  finalUrl: string;
 }
 
 export interface Fetcher {
@@ -34,6 +45,8 @@ export interface Fetcher {
    * page asks again.
    */
   get(url: string, opts?: FetchOptions): Promise<Buffer | undefined>;
+  /** As get, and with the URL the body was finally read from (the last hop of the redirects). */
+  getPage(url: string, opts?: FetchOptions): Promise<PageAnswer | undefined>;
   /**
    * Whether the host of `url` has an address refused for this target (see refusedAddress). A resolver failure rejects:
    * the caller decides, and the browser guard blocks.
@@ -46,9 +59,10 @@ export function hasNoStore(cacheControl: string | undefined): boolean {
   return (cacheControl ?? "").split(",").some((directive) => directive.trim().toLowerCase() === "no-store");
 }
 
-/** A fetched body, and whether its response forbids keeping it (no-store). */
+/** A fetched body, the URL it was read from, and whether its response forbids keeping it (no-store). */
 interface Fetched {
   body: Buffer;
+  finalUrl: string;
   noStore: boolean;
 }
 
@@ -97,7 +111,7 @@ function requestOnce(
 export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; connectAddress?: (address: string) => string }): Fetcher {
   const resolver = opts.resolver ?? systemResolver;
   /** Answers of this run by request key, in flight or settled; an answer that must not be kept is dropped once settled. */
-  const memo = new Map<string, Promise<Buffer | undefined>>();
+  const memo = new Map<string, Promise<Fetched | undefined>>();
   let running = 0;
   const waiting: (() => void)[] = [];
   // A finishing fetch hands its slot to the next waiter, so no more than the limit run at once.
@@ -114,7 +128,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
   };
 
   /** Each hop is checked at connect time (guardedLookup); redirects are followed here, not by the client. */
-  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean, sameSiteAs?: string): Promise<Fetched | undefined> => {
+  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean, sameSiteAs?: string, sameOriginAs?: string): Promise<Fetched | undefined> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRA_FETCH_TIMEOUT_MS);
     try {
@@ -123,6 +137,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
         const url = new URL(current);
         if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
         if (sameSiteAs !== undefined && !sameSite(url.href, sameSiteAs)) return undefined;
+        if (sameOriginAs !== undefined && url.origin !== new URL(sameOriginAs).origin) return undefined;
         // An IP literal never reaches the lookup, so it is checked here as well.
         const bare = url.hostname.replace(/^\[|\]$/g, "");
         if (isIP(bare) !== 0 && refusedAddress(bare, allowPrivate)) return undefined;
@@ -147,7 +162,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
           return undefined;
         }
         const body = await readCapped(res, maxBytes);
-        return body === undefined ? undefined : { body, noStore: hasNoStore(res.headers["cache-control"]) };
+        return body === undefined ? undefined : { body, finalUrl: current, noStore: hasNoStore(res.headers["cache-control"]) };
       }
     } finally {
       clearTimeout(timer);
@@ -172,28 +187,38 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
     return pending;
   };
 
+  /** The answer of one request: memoized for the run (see Fetcher.get), undefined when it failed. */
+  const fetchOnce = (url: string, fetchOpts: FetchOptions): Promise<Fetched | undefined> => {
+    const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
+    const allowPrivate = fetchOpts.allowPrivate ?? false;
+    // The request headers are part of the key: a response can depend on them (the user agent and Accept are fixed per run).
+    const key = JSON.stringify([url, maxBytes, allowPrivate, fetchOpts.sameSiteAs ?? "", fetchOpts.sameOriginAs ?? "", opts.userAgent, IMAGE_ACCEPT]);
+    const known = memo.get(key);
+    if (known) {
+      count("fetch memo hits");
+      return known;
+    }
+    count("fetch requests");
+    const fetched = measure("fetch: network", () =>
+      withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs, fetchOpts.sameOriginAs)),
+    ).catch(() => undefined);
+    const pending: Promise<Fetched | undefined> = fetched.then((answer) => {
+      // Settled: a failure or a no-store body is not kept for the next page (its callers above already have it).
+      if (answer === undefined || answer.noStore) {
+        if (memo.get(key) === pending) memo.delete(key);
+      }
+      return answer;
+    });
+    memo.set(key, pending);
+    return pending;
+  };
+
   return {
     get(url, fetchOpts = {}) {
-      const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
-      const allowPrivate = fetchOpts.allowPrivate ?? false;
-      // The request headers are part of the key: a response can depend on them (the user agent and Accept are fixed per run).
-      const key = JSON.stringify([url, maxBytes, allowPrivate, fetchOpts.sameSiteAs ?? "", opts.userAgent, IMAGE_ACCEPT]);
-      const known = memo.get(key);
-      if (known) {
-        count("fetch memo hits");
-        return known;
-      }
-      count("fetch requests");
-      const fetched = measure("fetch: network", () => withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs))).catch(() => undefined);
-      const pending: Promise<Buffer | undefined> = fetched.then((answer) => {
-        // Settled: a failure or a no-store body is not kept for the next page (its callers above already have it).
-        if (answer === undefined || answer.noStore) {
-          if (memo.get(key) === pending) memo.delete(key);
-        }
-        return answer?.body;
-      });
-      memo.set(key, pending);
-      return pending;
+      return fetchOnce(url, fetchOpts).then((answer) => answer?.body);
+    },
+    getPage(url, fetchOpts = {}) {
+      return fetchOnce(url, fetchOpts).then((answer) => (answer === undefined ? undefined : { body: answer.body, finalUrl: answer.finalUrl }));
     },
     /**
      * Whether the host of `url` has an address that is refused for this target (see refusedAddress). A resolver failure
