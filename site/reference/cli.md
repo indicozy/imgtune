@@ -14,13 +14,93 @@ ImgTune prints that command and exits with status 2. `image` and `hints` need no
 
 | command | what it does |
 | --- | --- |
-| `run` | the whole flow in one command: survey every URL, full-scan the worst pages, locate them on a dev server (`--dev`), group the fix hints by call site, write a run directory with a manifest, and print a one-screen summary |
+| `check` | the production check, in a browser only: survey the URLs of a site (or a list), full-scan the heaviest page of each route type, and write `report.md` and a run directory. No source needed |
+| `run` | the whole flow in one command: survey every URL, full-scan the heaviest page of each route type, locate them on a dev server (`--dev`), group the fix hints by call site, write a run directory with a manifest, and print a one-screen summary |
 | `summary` | the one-screen summary of a run directory or of scan files (at most 40 lines) |
 | `scan` | measure live pages by URL on a built server (no source needed). Writes one JSON file per page. With `--locate-only`, reads the source of the flagged images from a dev page. With `--recheck`, rechecks fixed images (`--sizes-only` on dev, in seconds) |
 | `hints` | print a batch of the per-image fix hints of one or more scan files (one per page) |
 | `image` | measure image files or URLs without a page: the bytes, the lowest quality per format, and the bytes at a width |
 | `compare` | the per-image before and after of two scans of one page: saved and added-for-sharpness bytes, paired by URL pattern and alt |
 | `report` | a Markdown run report from the agent's ledger, with the compare JSON for the bytes |
+
+## check
+
+```sh
+npx imgtune check <origin | sitemap-url | page-url> [options]
+npx imgtune check --urls-from <file|sitemap-url> [options]
+```
+
+The production check. It needs a browser and the URLs, and no source, dev server or config. It runs, in order:
+
+1. **survey**: every URL of the list, or at most `--sample-per-pattern N` per route type (default 3). Two viewports, exact savings
+   only, no estimate, at most 4 pages at once. A bare origin reads its `/sitemap.xml`, and falls back to the home page
+   when there is none. No third-party request is blocked unless `--block-third-party` is given.
+2. **deep**: the heaviest page of each route type (see "Route types"), full-scanned on six viewports with the quality
+   estimate, heaviest types first, up to `--deep <N>` (default 20). The types the cap leaves out are named in the report.
+   `--gpu`, `--gpu-device`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--ignore-robots`,
+   `--storage-state`, `--block-third-party` and `--allow-host` apply here.
+3. **report**: `report.md`, built from the two phases.
+
+The check directory (`--out`, default `.imgtune/check/<timestamp>`) holds `survey/`, `deep/`, `urls.txt`, `run.json` (the
+manifest: `imgtune summary` reads it) and `report.md`. The report has these sections, in order: the header (the site, the
+counts, the time per phase); the summary numbers (survey and deep, with the estimate marked ≈ and the sharpness as its own
+number, never netted); the ranked fixes (merged across the deep pages, with the sizes and quality change, the saving per
+view and the pages); the heavy pages whose saving is under 2%; the images that would get bigger for sharpness; a row per
+route type from the survey; the pages that were broken or not measured, and the images still loading at settle; and a "how
+to read" list built from the run.
+
+`--qualities <list>` snaps each quality target up to an allowed value, and a snapped target's quality saving counts as 0.
+`check` does not change the scan's numbers: the survey and deep pages are the same scans `scan` writes.
+
+## audit
+
+```sh
+npx imgtune audit --app <dir> --prod <origin> [--dev <origin>] [options]
+```
+
+The deep mode for your own Next.js app. It needs the app's source and the production build served (see below). It runs, in order:
+
+1. **source**: the route files under `app/`, `src/app/`, `pages/` and `src/pages/`. `[param]` is `*`, `[...x]` and `[[...x]]` are
+   `**`; route groups `(name)` are dropped; parallel slots `@slot`, intercepting routes `(.)name` and private folders `_name`
+   are not routes; `route.ts` handlers, `api/`, `_app`, `_document`, `_error`, `404` and `500` are not pages. The allowed
+   qualities are read from `next.config.{js,mjs,ts}` (`images.qualities`, a static read: the config is not run). When there
+   is no list, Next 16's default `[75]` is assumed and the report says so. `--qualities` overrides.
+2. **preflight**: the home page of `--prod` is loaded. If its stylesheets do not load, the audit stops (exit 4) and prints the
+   likely cause: the CSS comes from a CDN host this machine cannot reach. Build and start the app with the CDN variable
+   empty for both `next build` and `next start`.
+3. **urls**: `--urls-from` as given; otherwise `<prod>/sitemap.xml`; otherwise the links of the home page, two levels deep, at
+   most 500 pages (a plain fetch, no browser). The app's static routes are always added. A URL takes the route file of its
+   most specific matching route; a URL that no route matches takes its type from the check's grouping.
+4. **survey** and **deep**: as `check`, with the same options (the heaviest page of each route type, `--deep`, `--sample-per-pattern`).
+5. **locate** (with `--dev`): each deep page is located at the same path on the dev server, with `--app` as the source root.
+   The fixes are then grouped by file:line (the call site).
+6. **report**: `report.md`, the same sections as `check`, with the file:line of every located fix and the route file of every
+   route type. The directory is `.imgtune/audit/<timestamp>` unless `--out` is given.
+
+Build and serve the app first. For Next.js: `NEXT_PUBLIC_CDN_URL= npx next build && NEXT_PUBLIC_CDN_URL= npx next start`. If the
+prod server serves the same `.next` folder that `next dev` writes, run the dev server from a copy of the app without `.next`
+and pass that copy as `--app`.
+
+## Route types
+
+A route type is the template a page is an instance of. The grouping reads the whole URL set (`src/routes.ts`):
+
+- The locale (`en`, `ae-en`, `sa_AR`) is the first segment when the set has at least two such first segments. It is a
+  dimension, not part of the type, so one template is one type across locales. A locale followed by `desktop` or `mobile`
+  strips that variant too (another dimension).
+- Each segment of the path is a variable (collapsed to `*`) when it is an id (digits, a UUID, a long hash), a product or
+  item slug (digits with a hyphen, or three hyphens), a `.html` leaf whose parent has at least four `.html` leaves (`*.html`,
+  a listing family), or a single-page child of a parent that has at least four children, most of them single pages.
+  Otherwise it is a route word and stays.
+- Query strings keep their parameter names and lose their values (`/search?q=*`); tracking parameters (`utm_*`, `fbclid`,
+  `gclid`, `msclkid`) are dropped.
+- `--route-map <file>` names the URLs that match a pattern. A file has lines of `pattern => type` (`#` comments) or a JSON
+  object of pattern to type. A pattern is a path: `*` is one segment, `*.html` one segment ending in `.html`, `**` the rest
+  (last only), and `?name=*` requires the query parameter. The first matching rule wins, and the matched URLs take its type.
+
+A store with products, listings and locales groups by its templates: products are one type (`/*`), listing families are
+`/*.html`, `/sunglasses/*.html` and so on. A CMS page or a root page with no siblings of its shape stays its own type, so a
+site with many such pages has many types: a route map merges them. The survey prints the number of types it found.
 
 ## run
 
@@ -32,22 +112,27 @@ npx imgtune run --urls-from <file|sitemap-url> [--sample-per-pattern <N>] [optio
 One command for the agent flow. It runs, in order:
 
 1. **survey**: every URL (`scan --survey`: two viewports, exact savings only, no estimate).
-2. **worst pages**: ranked by exact KB per view, then by route pattern. `--deep <N>` (default 5) pages are chosen: the worst
-   page of each worst pattern first, then the worst pages overall. Broken pages are not ranked.
+2. **heaviest pages**: one per route type, ranked by image KB per view (exact KB only as the tie-break), route types
+   ordered by their total KB per view. `--deep <N>` (default 20) types are chosen; the summary names the types left out.
+   Broken pages are not ranked.
 3. **deep**: a full scan of those pages (six viewports, exact and est.). `--gpu`, `--gpu-device`, `--page-concurrency`,
-   `--idle-timeout`, `--no-cache`, `--root`, `--storage-state` and `--ignore-robots` pass through.
+   `--idle-timeout`, `--no-cache`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party` and `--allow-host`
+   pass through.
 4. **locate** (with `--dev <origin>`): each deep page at the same path on the dev server (`scan --locate-only`).
 5. **hints**: the fix hints of the deep pages (or of their located copies), grouped by call site, as `hints.json`.
 
 Options: `--out <dir>` (default `.imgtune/run/<timestamp>`), `--qualities <list>` (passed to hints), `--deep <N>`,
-`--dev <origin>`. Run `imgtune run --help` for all of them.
+`--dev <origin>`, `--route-map <file>`. Run `imgtune run --help` for all of them.
+
+`check` and `run` share the survey, the route types and the deep selection. `run` is kept because it does what `check` does
+not: it locates the deep pages on a dev server (`--dev`), groups the fix hints by call site, and writes `hints.json`.
 
 The run directory has a stable layout: `urls.txt`, `survey/`, `deep/`, `located/` (with `--dev`), `hints.json` and
 `run.json`. The manifest names every file, the phase timings, every broken page with its reason and fix, and every command
 the run executed (relative to the working directory), so one step can be re-run by hand.
 
 The printed summary is the same text `imgtune summary <run dir>` prints. It is at most 40 lines: the survey totals, the worst
-patterns, the deep pages (KB per view, exact, exact + est., sharpness), the top 10 call sites by KB per view saved with
+route types, the deep pages (KB per view, exact, exact + est., sharpness), the top 10 call sites by KB per view saved with
 their `file:line` (or `not located` and why), the warnings and the next commands.
 
 Fail fast: when more than half of the survey pages are broken, or none was measured, `run` stops before the deep phase,
@@ -96,10 +181,10 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--no-cache` | do not read or write `.imgtune/cache`. The cache keeps the local encode sizes and scores, so a rescan or a second run reuses them; the numbers are the same either way |
 | `--max-images <N>` | stop after the page that brings the images counted to N (checked between pages) |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file (one per line, `#` comments), a local `sitemap.xml`, or a remote sitemap (same domain only) |
-| `--sample-per-pattern <N>` | with `--urls-from`: at most N URLs per route pattern (`/p/*`, `/c/*`), spread over the pattern |
+| `--sample-per-pattern <N>` | with `--urls-from`: at most N URLs per route type (see "Route types"), spread over the type |
 | `--storage-state <file>` | a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it |
-| `--allow-third-party` | keep the requests to other sites that the scan blocks by default (scripts, fetch and xhr, iframes, media, websockets, beacons, manifests). Blocking is on by default: it makes pages reach `load` and network idle sooner, and images, stylesheets and fonts are never blocked. If a third-party script injects images, the scan shows fewer images than the page has: use this flag or `--allow-host` for it. The setting is recorded per page, so `--resume` does not mix the two. `--recheck`, `--locate-only` and `--sizes-only` take the same two flags, and a recheck refuses a scan file recorded with the other setting |
-| `--allow-host <h1,h2>` | with blocking on: keep the requests to these exact host names (for example an image carousel's script). Not allowed with `--allow-third-party` |
+| `--block-third-party` | abort the requests to other sites (scripts, fetch and xhr, iframes, media, websockets, beacons, manifests). Off by default: every request loads. Images, stylesheets and fonts are never blocked. Blocking makes pages reach `load` and network idle sooner, but it can drop images a page loads through its own API on another host, so use it on public sites only when page loads are slow. `--allow-third-party` (the old flag) is accepted as a no-op with a deprecation note |
+| `--allow-host <h1,h2>` | with `--block-third-party`: keep the requests to these exact host names (for example an image carousel's script). Refused without `--block-third-party` |
 | `--recheck <scan.json>` | rescan only the images of an earlier scan that have a fix hint, at the viewports where they rendered, and print before and after. Repeat it for several pages: at most three browser contexts run at once over all of them |
 | `--ids <a,b,c>` | with `--recheck`: only these image ids (from the scan JSON's `images[].id`; with several pages, each id is looked up in every page) |
 | `--viewports <names>` | with `--recheck`: measure these viewports instead of the ones where the images rendered |

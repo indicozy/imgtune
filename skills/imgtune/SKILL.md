@@ -21,15 +21,31 @@ does not own or run, unless they say they are authorised.
 3. Pick the servers: a built server (or preview) for the bytes, dev (`npm run dev`) for the source. Ignore `.imgtune/`.
 4. Next.js: the asset-prefix env (`NEXT_PUBLIC_CDN_URL`) must be the same for `next build` and `next start`.
 
+## Two ways to measure
+
+- **check** (`npx imgtune check <origin | sitemap-url | page-url>`): the production check for any live site. Browser only, no
+  source, no dev server. It surveys the URLs (at most 3 per route type unless `--sample-per-pattern N`), full-scans the
+  heaviest page of each route type, and writes `report.md`. Use it to see where the image weight is.
+- **audit** (`npx imgtune audit --app <dir> --prod <origin> [--dev <origin>]`): the deep mode for your own Next.js app. It reads
+  the route files and `images.qualities` from `next.config`, measures `--prod`, and with `--dev` locates the deep pages' images
+  in the source. Build and serve the app first: `NEXT_PUBLIC_CDN_URL= npx next build && NEXT_PUBLIC_CDN_URL= npx next start`
+  (the CDN variable empty for both, or the CSS from an unreachable host leaves the pages unstyled; audit's preflight stops
+  on that). If the prod server serves the same `.next` folder that `next dev` writes, run the dev server from a copy of the
+  app without `.next`, and pass that copy as `--app`.
+
+Route types group the URLs by template: the locale (`ae-en`, `sa_AR`) and the device variant (`desktop`, `mobile`) are
+stripped, and product slugs and listing families collapse to `*`. `--route-map <file>` overrides the grouping
+(`pattern => type` lines, or JSON). The survey prints the types it found.
+
 ## The flow: one command
 
-1. **Run.** From the project root, one command does the survey, the full scan of the worst pages, the locate on dev
-   (with `--dev`), and the hints grouped by call site:
+1. **Run.** From the project root, one command does the survey, the full scan of the heaviest page of each route type, the
+   locate on dev (with `--dev`), and the hints grouped by call site:
    `npx imgtune run --urls-from sitemap.xml --sample-per-pattern 5 --dev http://localhost:3000`
    The URLs are the built server's (the bytes); `--dev` is the dev server (the source). `--urls-from` takes a list, a local
    sitemap or a remote sitemap.
    Without `--dev`, the locate step is skipped: run `imgtune scan <dev-url> --locate-only --from <deep file>` yourself.
-2. **Read the summary.** `run` prints it at the end (at most 40 lines): site totals, the worst patterns, the deep pages,
+2. **Read the summary.** `run` prints it at the end (at most 40 lines): site totals, the worst route types, the deep pages,
    the top 10 call sites by KB per view saved (`file:line`, or `not located` and why), the warnings, and the next
    commands. No JSON reading is needed for the next decision. Print it again any time with
    `npx imgtune summary .imgtune/run/<timestamp>`.
@@ -83,17 +99,35 @@ Use these when `run` does not fit (one page, a logged-in page, a step to re-run 
 6. **Report.** `npx imgtune report --compare <page>.json ...` (one compare per page, summed).
 
 For a whole site by hand, survey first: `npx imgtune scan --urls-from sitemap.xml --survey --out .imgtune/survey` (two
-viewports, exact savings only, no estimate), rank the worst patterns, then full-scan only those pages. `compare` refuses to
+viewports, exact savings only, no estimate), rank the route types, then full-scan only the heaviest page of each. `compare` refuses to
 pair a survey with a full scan.
 
 ## Commands
 
 Every flag below is checked against `--help`; use only these.
 
+**check**: `npx imgtune check <origin | sitemap-url | page-url> | --urls-from <file|sitemap-url> [options]`
+
+- Browser only: survey the URLs (at most `--sample-per-pattern N` per route type, default 3), then full-scan the heaviest
+  page of each route type (`--deep`, default 20). Writes `survey/`, `deep/`, `urls.txt`, `run.json` and `report.md` to `--out`.
+
+**audit**: `npx imgtune audit --app <dir> --prod <origin> [--dev <origin>] [options]` (your own Next.js app, see "Two ways to measure")
+
+- `--app` is the app root (the folder with `app/` or `pages/`, and `next.config`); `--prod` the origin measured; `--dev` the dev
+  server the deep pages are located on, with `--app` as the source root. `--qualities` overrides `next.config`'s list.
+- The check flags apply (`--sample-per-pattern`, `--deep`, `--urls-from`, `--route-map`, `--out`, `--no-cache`, and the rest).
+  The report has file:line on every located fix, and the route file of every route type.
+- `--deep <N>`, `--route-map <file>`, `--out <dir>`, `--qualities <list>`, `--page-concurrency <N>`, `--idle-timeout <ms>`,
+  `--no-cache`, `--ignore-robots`, `--storage-state <file>`, `--block-third-party`, `--allow-host <h1,h2>`.
+- `--gpu`, `--gpu-device <n>`: **do not pass these unless the user asks** (the deep scan only; see `reference.md`).
+
 **run**: `npx imgtune run <url> [<url> ...] | --urls-from <file|sitemap-url> [options]`
 
-- `--urls-from <file|sitemap-url>` with `--sample-per-pattern <N>`: the URL list, at most N per route pattern.
-- `--deep <N>` (default 5): pages to full-scan. The worst page of each worst pattern first, then the worst overall.
+- `--urls-from <file|sitemap-url>` with `--sample-per-pattern <N>`: the URL list, at most N per route type.
+- `--deep <N>` (default 20): route types to full-scan, one page each (the heaviest page of the type). The heaviest types
+  first; the summary says which types the cap left out.
+- `--route-map <file>`: route rules (`pattern => type`, or JSON); see "Two ways to measure".
+- `--block-third-party`, `--allow-host <h1,h2>`: see the scan flags below.
 - `--dev <origin>`: locate the deep pages at the same paths on this dev server (a running dev server).
 - `--out <dir>` (default `.imgtune/run/<timestamp>`), `--qualities <list>` (passed to hints).
 - `--gpu`, `--gpu-device <n>`: **do not pass these unless the user asks** (for the deep scan only; see `reference.md`).
@@ -106,13 +140,14 @@ Every flag below is checked against `--help`; use only these.
 **scan**: `npx imgtune scan <url> [<url> ...] [options]`
 
 - `--out <dir>`: JSON folder (default `.imgtune/scan`).
-- `--urls-from <file|sitemap-url>` and `--sample-per-pattern <N>`: a URL list or sitemap, at most N URLs per route pattern.
+- `--urls-from <file|sitemap-url>` and `--sample-per-pattern <N>`: a URL list or sitemap, at most N URLs per route type.
 - `--storage-state <file>`: a Playwright storage state for a logged-in session (it holds cookies: never commit it).
 - `--ignore-robots`: scan a page `robots.txt` disallows (owned or authorised sites only).
-- Third-party requests are blocked by default (scripts, fetch and xhr, iframes, media, websockets, beacons; images, styles
-  and fonts are never blocked), which makes pages settle sooner. Use `--allow-host <h1,h2>` to keep a host, or
-  `--allow-third-party` to turn blocking off, when a third-party script injects images: otherwise the scan shows fewer
-  images than the page has. The setting is recorded in each page's JSON.
+- Third-party requests are allowed by default. `--block-third-party` aborts scripts, fetch and xhr, iframes, media,
+  websockets and beacons from other sites (images, styles and fonts are never blocked), which makes pages settle sooner.
+  Blocking can drop images a page loads through its own API on another host, so use it on public sites only when page
+  loads are slow. With it, `--allow-host <h1,h2>` keeps the requests to named hosts (a carousel's script). The setting is
+  recorded in each page's JSON. `--allow-third-party` is a deprecated no-op (it prints a note).
 - `--gpu` and `--gpu-device <n>`: **do not pass these unless the user asks** (they need `imgtune-ssimu2-gpu`, see
   `reference.md`). CUDA numbers GPUs fastest first unless `CUDA_DEVICE_ORDER=PCI_BUS_ID`; check the printed `opened <name>`.
   Compare scans only when both used the same scorer (`scorer` in the JSON).

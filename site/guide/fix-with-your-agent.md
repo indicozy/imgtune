@@ -28,7 +28,7 @@ The skill is also on [GitHub](https://github.com/indicozy/imgtune/tree/main/skil
 
 ## Start with one command
 
-`imgtune run` does the survey, the worst pages, the deep scan, the locate on dev and the hints by call site, and prints a
+`imgtune run` does the survey, the heaviest page of each route type, the deep scan, the locate on dev and the hints by call site, and prints a
 summary of at most 40 lines that says what to fix next:
 
 ```sh

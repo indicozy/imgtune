@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Third-party requests are allowed by default. `--block-third-party` turns the blocking on (scans, rechecks, locate-only,
+  sizes-only, `run` and `check`). Blocking can drop images that a page loads through its own API on another host: on a
+  local store build, 0 images were recorded with blocking and 50 without it. `--allow-host <h1,h2>` now needs
+  `--block-third-party`. `--allow-third-party` is accepted for one release as a no-op with a deprecation note. The
+  recorded setting is `allowed` by default, so a scan from before this change (recorded as `blocked`, or with no record)
+  does not match on `--resume` or `recheck` where the setting differs.
+- Route types (`src/routes.ts`): the URLs of a site group into the templates they are instances of. A leading locale or store
+  segment (`ae-en`, `sa_AR`) and a `desktop` or `mobile` variant are dimensions, not part of the type. Product slugs, ids
+  and listing families collapse to `*`, and query strings keep their parameter names (`/search?q=*`). Used by the survey
+  sampler (`--sample-per-pattern`), `run` and `check`. `--route-map <file>` names the URLs that match a pattern (`pattern =>
+  type`, or JSON). A store set of 299 URLs gave 289 patterns with the old grouping; the new grouping is not yet measured on it.
+- Deep selection (`src/deep.ts`): the heaviest page of each route type that has images, by image KB per view (exact KB as the
+  tie-break), with the types ordered by their total KB per view. `--deep <N>` defaults to 20 (was 5). The types the cap leaves
+  out, and the types with no images, are named in the output.
+- `imgtune check <origin | sitemap-url | page-url> | --urls-from <file|sitemap>`: the production check, in a browser only.
+  It surveys at most `--sample-per-pattern N` URLs per route type (default 3), full-scans the heaviest page of each type, and writes
+  `report.md` (header, summary numbers with sharpness as its own number, ranked fixes merged across the deep pages, heavy
+  pages with little to save, sharpness images, a route-type table, what was not measured, and how to read the numbers),
+  `run.json` (the manifest: `imgtune summary` reads it), `survey/`, `deep/` and `urls.txt`. It passes through `--gpu`,
+  `--gpu-device`, `--page-concurrency`, `--qualities`, `--block-third-party`, `--allow-host`, `--idle-timeout`, `--no-cache`,
+  `--ignore-robots` and `--storage-state`. `run` is kept: it also locates on a dev server (`--dev`) and writes the hints.
+- `imgtune audit --app <dir> --prod <origin> [--dev <origin>]`: the deep mode for your own Next.js app. It reads the route
+  files (`app/`, `src/app/`, `pages/`, `src/pages/`) into route patterns, and `images.qualities` from `next.config.{js,mjs,ts}`
+  (a static read; Next's `[75]` is assumed and reported when the list is missing). It surveys `--prod` and full-scans the
+  heaviest page of each route type, as `check` does. With `--dev` it locates those pages' images in the sources, and its
+  `report.md` has the file:line of every located fix and the route file of every route type. A preflight stops the audit
+  when the production home's stylesheets do not load (a CDN host the machine cannot reach: set the CDN variable empty for
+  both `next build` and `next start`). URLs come from `--urls-from`, else the `--prod` sitemap, else a same-origin crawl of
+  the home page two links deep (at most 500 pages, plain HTTP, no browser). The crawl and the audit are not yet measured on a real site.
+- Third-party requests (scan, recheck, locate-only, sizes-only, `run`, `check`, `audit`) are allowed by default. Scan files
+  that predate the setting carry no record and are read as allowed, as they were measured with every request allowed.
 - Scan: the extra fetches (originals, srcset candidates, source maps, robots) are shared across the whole run as before, but a
   failed fetch, or a body with `Cache-Control: no-store`, is no longer kept for later pages: a later page asks again. No
   response of the 8-URL nextjs.org run changed.
@@ -13,7 +44,7 @@
   complete only once its analysis is written. `--resume` after an interruption measures no staged page again and runs
   only the analysis; the stage folder is removed when the run finishes.
 - `imgtune run <url...> | --urls-from <file|sitemap>` is the whole agent flow in one command: survey every URL, rank the pages
-  by exact KB per view and route pattern, full-scan the worst (`--deep <N>`, default 5, at least one per worst pattern), locate
+  by image KB per view per route type, full-scan the heaviest page of each type (`--deep <N>`, default 20), locate
   them on a dev server (`--dev <origin>`), and group the fix hints by call site (`--qualities`). It writes a run directory
   (`survey/`, `deep/`, `located/`, `hints.json`, and `run.json`, a manifest that lists every file and every command it ran) and
   prints a summary of at most 40 lines. The scan passthroughs are `--gpu`, `--gpu-device`, `--page-concurrency`,
@@ -35,12 +66,12 @@
   score difference seen at that quality and searches again (twice at most); when none confirms, the search runs at effort 4 as
   before. The reported target and bytes are the effort-4 ones. On the Next.js guard scan the per-image targets and estimated
   bytes are identical to the previous build, and the scan's CPU time fell from about 247 s to 155 s (shared machine).
-- Scans block the requests to other sites that cannot change an image or the layout (scripts, fetch and xhr, websockets,
-  event streams, media, beacons and pings, manifests, iframes, other). Documents, stylesheets, fonts and images are never
-  blocked, from any host. Pages reach `load` and network idle sooner. Flags: `--allow-third-party` turns the blocking off,
-  `--allow-host <h1,h2>` keeps named hosts (for a third-party script that renders images). The page JSON counts the aborted
-  requests (`thirdPartyBlocked`) and records the setting, so `--resume` does not mix settings; a recheck refuses a scan
-  file recorded with the other setting. Scan files from earlier versions were measured with every request allowed.
+- Scans can block the requests to other sites that cannot change an image or the layout (scripts, fetch and xhr,
+  websockets, event streams, media, beacons and pings, manifests, iframes, other), with `--block-third-party`. Documents,
+  stylesheets, fonts and images are never blocked, from any host. Blocking makes pages reach `load` and network idle sooner.
+  `--allow-host <h1,h2>` keeps named hosts while blocking (for a third-party script that renders images). The page JSON
+  counts the aborted requests (`thirdPartyBlocked`) and records the setting, so `--resume` does not mix settings; a recheck
+  refuses a scan file recorded with the other setting.
 - Scan: `--shared-loads` (opt-in) loads each viewport class (mobile, desktop) once and resizes the open page for the other
   viewports of the class. It saves CPU but costs wall time (survey: 98.7 s shared against 69.1 s fresh), so the default loads
   each viewport fresh, as before. The mode is recorded in each page's options (`loads`): `--resume` rescans pages of the other

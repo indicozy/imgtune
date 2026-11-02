@@ -99,9 +99,11 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Besides the page itself, scan fetches the page's own srcset candidates and, for quality estimates, the original of a
   sampled image (derived from the loader URL), each at most once per scan. It never requests new transformations from
   the CDN.
-- Large sites: `--urls-from` reads a URL list or a sitemap, `--sample-per-pattern` samples each route pattern, and
+- Large sites: `--urls-from` reads a URL list or a sitemap, `--sample-per-pattern` samples each route type, and
   `--resume`, `--max-pages` and `--max-images` split a long run into parts. `--survey` is a fast pass over every URL
-  (two viewports, exact savings only, labelled as such); full-scan the worst pages after it.
+  (two viewports, exact savings only, labelled as such); full-scan the heaviest page of each route type after it.
+- Production check: `imgtune check <site or sitemap>` surveys a live site in a browser, full-scans the heaviest page of
+  each route type, and writes a Markdown report (no source needed).
 
 ## The evidence ladder
 

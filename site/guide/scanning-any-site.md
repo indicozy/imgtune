@@ -26,7 +26,7 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 | `--aggressive` | also report a delta 4 column, beside the main numbers. It is never used for the headline |
 | `--fail-over <pct>` | exit with status 3 when a page's exact + est. share is above this percentage (default: never fail) |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file, a local `sitemap.xml`, or a remote sitemap of the same domain |
-| `--sample-per-pattern <N>` | with `--urls-from`, at most N URLs per route pattern (`/p/*`, `/c/*`), spread over the pattern |
+| `--sample-per-pattern <N>` | with `--urls-from`, at most N URLs per route type (`/p/*`, `/c/*`: see the CLI reference), spread over the type |
 | `--storage-state <file>` | a Playwright storage state, for a logged-in session in every browser context |
 | `--ignore-robots` | scan a page that robots.txt disallows. A warning is printed, and the JSON records it |
 | `--resume` | reuse the complete pages already in `--out` that were scanned with the same options |
@@ -35,17 +35,31 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 
 The six viewport names are `iphone-se`, `iphone-15`, `pixel-7`, `iphone-15-pro-max`, `desktop` and `desktop-1280`.
 
+## Site-wide: check (production, no source)
+
+`imgtune check` measures a live site from its URLs alone, in a browser. It surveys the URLs of the site's sitemap (or a
+list, or one page), full-scans the heaviest page of each route type, and writes a Markdown report:
+
+```sh
+npx imgtune check https://example.com/sitemap.xml --sample-per-pattern 3
+```
+
+The report (`report.md`, in the check directory) gives the summary numbers, the fixes ranked across the deep pages, the
+heavy pages with little to save, the images that would get bigger for sharpness, a table of the route types, and what
+could not be measured. The survey and the deep pages are the same scans `scan` makes. `--block-third-party` is off by
+default; see the CLI reference before turning it on.
+
 ## Site-wide: one command
 
-`imgtune run` does the whole site-wide flow in one command: it surveys every URL, full-scans the worst pages (at least one per
-worst route pattern), optionally locates them on a dev server, and groups the fix hints by call site:
+`imgtune run` does the whole site-wide flow in one command: it surveys every URL, full-scans the heaviest page of each route
+type (up to `--deep`, default 20), optionally locates them on a dev server, and groups the fix hints by call site:
 
 ```sh
 npx imgtune run --urls-from sitemap.xml --sample-per-pattern 5 --deep 5 --dev http://localhost:3000
 ```
 
 It writes a run directory (`.imgtune/run/<timestamp>`, or `--out`) and prints a summary of at most 40 lines: the site totals,
-the worst patterns, the deep pages, the top call sites by saving per view, the warnings and the next commands. The
+the worst route types, the deep pages, the top call sites by saving per view, the warnings and the next commands. The
 directory's `run.json` lists every file and every command, so a single step can be run again by hand. `imgtune summary
 <run dir>` prints the same summary again.
 
@@ -55,7 +69,7 @@ reason and the likely fix are printed. When more than half of the survey is brok
 
 ## Site-wide: survey first
 
-A whole site is faster to read in two passes (this is what `run` does for you). First, survey every URL (or a sample of each route pattern):
+A whole site is faster to read in two passes (this is what `run` and `check` do for you). First, survey every URL (or a sample of each route type):
 
 ```sh
 npx imgtune scan --urls-from sitemap.xml --survey --out .imgtune/survey
@@ -66,7 +80,7 @@ A survey measures two viewports, `iphone-15` and `desktop`, with no quality esti
 of waiting for the network to go idle. Its numbers are exact savings only, and every output says so, for example
 `survey: 2 viewports, exact savings only, no est.`
 
-Then full-scan only the worst route patterns, or the pages that stand for them, with all six viewports and the estimate:
+Then full-scan only the heaviest route types, or the pages that stand for them, with all six viewports and the estimate:
 
 ```sh
 npx imgtune scan https://your-site/products/a https://your-site/category/b --out .imgtune/scan
@@ -89,8 +103,8 @@ comment. A sitemap works too:
 npx imgtune scan --urls-from sitemap.xml --sample-per-pattern 5
 ```
 
-`--sample-per-pattern` keeps at most that many URLs of each route pattern, so a site with ten thousand product pages is
-sampled, not read in full. Each pattern is spread across its URLs, not taken from the top of the list.
+`--sample-per-pattern` keeps at most that many URLs of each route type, so a site with ten thousand product pages is
+sampled, not read in full. Each type is spread across its URLs, not taken from the top of the list.
 
 A long run can be split into parts. Each page is written as soon as it is done:
 
