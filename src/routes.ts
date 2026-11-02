@@ -1,6 +1,8 @@
 // Route types: the template a page is an instance of. A storefront with one catalogue per locale or store has the same
 // templates under every prefix, so the locale (`ae-en`, `sa_AR`, `en`) and the device variant (`desktop`, `mobile`) are
 // stripped into dimensions, and the variable segments of the path (product slugs, ids, store names) collapse to `*`.
+// A docs site's version (`/docs/15/app/...`, `/docs/v2.3/...`) is a dimension the same way: it is stripped when the same
+// section also has unversioned pages (`/docs/app/...`), so the versions merge with them.
 // The grouping reads the whole URL set: a segment is a variable one when its shape says so (digits, a long hyphenated
 // slug, an id) or when its siblings are many single pages, and a `.html` leaf with many siblings is a listing or product
 // family (`*.html`). A --route-map overrides the grouping for the URLs it matches. Pure functions: no browser, no files.
@@ -11,6 +13,11 @@ import { stripControls } from "./text.js";
 const LOCALE = /^[a-z]{2}(?:[-_][a-z]{2})?$/i;
 /** The second segment of a locale-prefixed page that names its device variant, stripped into a dimension. */
 const VARIANTS: ReadonlySet<string> = new Set(["desktop", "mobile"]);
+/**
+ * A version segment: `15`, `v15`, `v2.3`, `15.x`. Not `latest`: that is a word a site may use as a section name too, so
+ * it stays a route type of its own.
+ */
+const VERSION = /^v?\d+(?:\.\d+)*(?:\.x)?$/i;
 /** Query parameters that only carry campaign or click tracking: dropped from a route type. */
 const TRACKING = /^(utm_|fbclid$|gclid$|msclkid$)/i;
 const HTML_LEAF = /\.html?$/i;
@@ -38,6 +45,8 @@ export interface RouteOf {
   type: string;
   locale?: string;
   variant?: string;
+  /** The version segment stripped from the path (`15` in `/docs/15/app/...`). */
+  version?: string;
   /** True when a --route-map rule named the type. */
   mapped: boolean;
 }
@@ -48,6 +57,7 @@ export interface RouteType {
   urls: string[];
   locales: string[];
   variants: string[];
+  versions: string[];
   mapped: boolean;
 }
 
@@ -66,6 +76,8 @@ interface Parsed {
   segs: string[];
   locale?: string;
   variant?: string;
+  /** The version segment stripped after the first segment (see VERSION), when there was one. */
+  version?: string;
   /** Query parameter names that stay in the type, sorted. */
   params: string[];
   /** False when the URL does not parse: it is its own type. */
@@ -189,6 +201,16 @@ export function groupRoutes(urls: string[], options: { routeMap?: RouteMapRule[]
     }
   }
 
+  // A version after the first segment: stripped when the same first segment has unversioned pages with something under them
+  // (`/docs/app/x`). A version with nothing after it (`/docs/15`), or a section with no unversioned pages, is left alone, so
+  // a numeric id (`/product/123/x` with no `/product/x`) is not read as a version.
+  const unversioned = new Set(parts.filter((p) => p.parsed && p.segs.length >= 3 && !VERSION.test(p.segs[1])).map((p) => p.segs[0]));
+  for (const p of parts) {
+    if (!p.parsed || p.segs.length < 3 || !VERSION.test(p.segs[1]) || !unversioned.has(p.segs[0])) continue;
+    p.version = p.segs[1];
+    p.segs = [p.segs[0], ...p.segs.slice(2)];
+  }
+
   const routeMap = options.routeMap ?? [];
   const labels: string[][] = parts.map(() => []);
   const mapped: (string | undefined)[] = parts.map((p) => {
@@ -198,6 +220,12 @@ export function groupRoutes(urls: string[], options: { routeMap?: RouteMapRule[]
 
   // Top-down grouping over the URLs that the route map does not name.
   const unmapped = parts.map((p, i) => i).filter((i) => parts[i].parsed && mapped[i] === undefined);
+  // A child is a single page when one URL is under it, or when its URLs are one page in several versions (`/docs/15/app/x`
+  // and `/docs/app/x`): a version copy is not a second page, so the leaves of a versioned docs site still count as single.
+  // Locale and query copies are counted as before.
+  const pageKeyOf = (i: number): string => `${parts[i].locale ?? ""}|${parts[i].segs.join("/")}|${parts[i].params.join("&")}`;
+  const singleChild = (list: number[]): boolean =>
+    list.length === 1 || (list.some((i) => parts[i].version !== undefined) && list.every((i) => pageKeyOf(i) === pageKeyOf(list[0])));
   const visit = (members: number[], depth: number): void => {
     const rest = members.filter((i) => parts[i].segs.length > depth);
     if (rest.length === 0) return;
@@ -208,7 +236,7 @@ export function groupRoutes(urls: string[], options: { routeMap?: RouteMapRule[]
       if (list) list.push(i);
       else byValue.set(value, [i]);
     }
-    const singles = [...byValue.values()].filter((list) => list.length === 1).length;
+    const singles = [...byValue.values()].filter(singleChild).length;
     const singleShare = singles / byValue.size;
     const htmlLeaves = [...byValue.entries()].filter(([value, list]) => HTML_LEAF.test(value) && list.every((i) => parts[i].segs.length === depth + 1)).length;
     const byLabel = new Map<string, number[]>();
@@ -245,6 +273,7 @@ export function groupRoutes(urls: string[], options: { routeMap?: RouteMapRule[]
     const route: RouteOf = { url: p.url, type: `${base}${query}`, mapped: isMapped };
     if (p.locale !== undefined) route.locale = p.locale;
     if (p.variant !== undefined) route.variant = p.variant;
+    if (p.version !== undefined) route.version = p.version;
     routes.push(route);
   });
 
@@ -258,15 +287,16 @@ export function routeGrouping(routes: RouteOf[]): RouteGrouping {
   for (const route of routes) {
     let entry = typeMap.get(route.type);
     if (!entry) {
-      entry = { type: route.type, urls: [], locales: [], variants: [], mapped: route.mapped };
+      entry = { type: route.type, urls: [], locales: [], variants: [], versions: [], mapped: route.mapped };
       typeMap.set(route.type, entry);
     }
     entry.urls.push(route.url);
     if (route.locale !== undefined && !entry.locales.includes(route.locale)) entry.locales.push(route.locale);
     if (route.variant !== undefined && !entry.variants.includes(route.variant)) entry.variants.push(route.variant);
+    if (route.version !== undefined && !entry.versions.includes(route.version)) entry.versions.push(route.version);
   }
   const types = [...typeMap.values()]
-    .map((t) => ({ ...t, locales: t.locales.sort(), variants: t.variants.sort() }))
+    .map((t) => ({ ...t, locales: t.locales.sort(), variants: t.variants.sort(), versions: t.versions.sort() }))
     .sort((a, b) => b.urls.length - a.urls.length || a.type.localeCompare(b.type));
   return {
     routes,
