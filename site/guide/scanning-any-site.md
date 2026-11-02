@@ -60,8 +60,8 @@ npx imgtune run --urls-from sitemap.xml --sample-per-pattern 5 --deep 5 --dev ht
 
 It writes a run directory (`.imgtune/run/<timestamp>`, or `--out`) and prints a summary of at most 40 lines: the site totals,
 the worst route types, the deep pages, the top call sites by saving per view, the warnings and the next commands. The
-directory's `run.json` lists every file and every command, so a single step can be run again by hand. `imgtune summary
-<run dir>` prints the same summary again.
+directory's `run.json` lists every file and every command, so a single step can be run again by hand.
+`imgtune summary <run dir>` prints the same summary again.
 
 A page that cannot be measured as the app is (its document answered an HTTP error, a linked stylesheet did not load, or a
 full scan finds no images where the survey found some) is `broken`. A broken page has no numbers and counts in no total; its

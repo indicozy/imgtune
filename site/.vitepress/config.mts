@@ -8,7 +8,7 @@ export default defineConfig({
   title: "ImgTune",
   titleTemplate: ":title | ImgTune",
   description:
-    "Measure image waste on any live site. Your AI agent fixes it, in any framework. ImgTune measures size, quality and format per image at six viewports, and gives the fix.",
+    "Get the exact sizes and quality for every image, located in your code and checked with SSIMULACRA2. Your coding agent applies the fix. Works with your image CDN.",
   cleanUrls: false,
   appearance: true,
   lastUpdated: false,
