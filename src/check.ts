@@ -25,7 +25,7 @@ import {
 import type { Viewport } from "./types.js";
 import { restrictRoutes, groupRoutes, parseRouteMap, type RouteGrouping, type RouteMapRule } from "./routes.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
-import { selectDeepPages, type DeepSelection } from "./deep.js";
+import { deepRetries, selectDeepPages, type DeepRetry, type DeepSelection } from "./deep.js";
 import { buildCheckReport } from "./check-report.js";
 import { DEFAULT_DEEP, deepSelectionNote, filesOf, type RunManifest } from "./run.js";
 import { safeText, shellWord } from "./text.js";
@@ -211,6 +211,8 @@ export interface CheckScans {
   survey: PageResult[];
   deep: PageResult[];
   selection: DeepSelection;
+  /** The deep pages that failed to load, each with the page scanned in its place (one retry). */
+  retries: DeepRetry[];
   /** Why the deep phase did not run, when it did not (the survey was mostly broken or measured nothing). */
   stop: SurveyStop;
   surveyViewports: string[];
@@ -282,6 +284,7 @@ export async function scanCheckPages(input: {
   const stop = surveyStop(survey);
   let selection: DeepSelection = { picks: [], leftOut: [] };
   let deep: PageResult[] = [];
+  let retries: DeepRetry[] = [];
   let deepSeconds = 0;
   if (!stop.stop) {
     const deepDir = join(outRoot, "deep");
@@ -301,8 +304,7 @@ export async function scanCheckPages(input: {
     ];
     commands.push({ phase: "deep", command: ["imgtune scan", ...deepUrls.map(shellWord), "--out", shellWord(deepDir), ...flags].join(" ") });
     log(`deep: ${deepUrls.length} page(s), full scan`);
-    const deepStart = performance.now();
-    deep = await runScan(deepUrls, {
+    const deepRun = {
       ...common,
       outDir: deepDir,
       viewports: viewportsOf(fullPlan.viewports),
@@ -310,8 +312,24 @@ export async function scanCheckPages(input: {
       pageConcurrency: fullPlan.pageConcurrency,
       idleTimeoutMs: fullPlan.idleTimeoutMs,
       gpu: settings.gpu,
-      expectImages: (url) => expected.get(url),
-    });
+      expectImages: (url: string) => expected.get(url),
+    };
+    const deepStart = performance.now();
+    deep = await runScan(deepUrls, deepRun);
+    // A deep page the browser could not load (status failed) gets one retry: the next-heaviest measured page of its route
+    // type, scanned in its place. The failed page stays in the results, so the counts and the report say it failed.
+    retries = deepRetries(
+      deep.filter((page) => page.status === "failed").map((page) => page.url),
+      survey,
+      routes,
+      deepUrls,
+    );
+    if (retries.length > 0) {
+      const replacements = retries.map((retry) => retry.replacement);
+      commands.push({ phase: "deep", command: ["imgtune scan", ...replacements.map(shellWord), "--out", shellWord(deepDir), ...flags].join(" ") });
+      log(`deep: ${retries.length} failed page(s) retried with the next-heaviest page of their route type`);
+      deep = [...deep, ...(await runScan(replacements, deepRun))];
+    }
     deepSeconds = secondsSince(deepStart);
     for (const page of deep) if (page.status === "broken" && page.broken !== undefined) broken.push({ url: page.url, phase: "deep", kind: page.broken.kind, reason: page.broken.reason, fix: page.broken.fix });
   }
@@ -319,6 +337,7 @@ export async function scanCheckPages(input: {
     survey,
     deep,
     selection,
+    retries,
     stop,
     surveyViewports: [...(surveyPlan.viewports ?? [])],
     surveySeconds,
@@ -363,6 +382,7 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
   const surveySeconds = scans.surveySeconds;
   const deepSeconds = scans.deepSeconds;
   const deepOk = scans.deep.filter((p) => p.status === "ok" && p.page !== undefined);
+  const deepFailed = scans.deep.filter((p) => p.status === "failed").length;
   const stop = scans.stop;
 
   const reportStart = performance.now();
@@ -375,6 +395,7 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
     deep: scans.deep,
     routes: input.routes,
     selection: scans.selection,
+    retries: scans.retries,
     urls: { listed: input.listed, surveyed: scans.survey.length },
     timings: { survey: surveySeconds, deep: deepSeconds },
     options: {
@@ -421,9 +442,10 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
     },
     deep: scans.selection.picks.map((pick) => pick.url),
     deepLeftOut: scans.selection.leftOut,
+    ...(scans.retries.length > 0 ? { deepRetries: scans.retries } : {}),
     phases: [
-      { name: "survey", seconds: surveySeconds, pages: scans.survey.length, ok: scans.survey.filter((p) => p.status === "ok").length, broken: scans.survey.filter((p) => p.status === "broken").length },
-      ...(stop.stop ? [] : [{ name: "deep" as const, seconds: deepSeconds, pages: scans.deep.length, ok: deepOk.length, broken: scans.deep.filter((p) => p.status === "broken").length }]),
+      { name: "survey", seconds: surveySeconds, pages: scans.survey.length, ok: scans.survey.filter((p) => p.status === "ok").length, broken: scans.survey.filter((p) => p.status === "broken").length, failed: scans.survey.filter((p) => p.status === "failed").length },
+      ...(stop.stop ? [] : [{ name: "deep" as const, seconds: deepSeconds, pages: scans.deep.length, ok: deepOk.length, broken: scans.deep.filter((p) => p.status === "broken").length, failed: deepFailed }]),
       ...(input.extraPhases ?? []),
     ],
     commands: [...scans.commands, ...(input.extraCommands ?? [])],
@@ -438,7 +460,7 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
   await writeFileAtomic(join(outRoot, "run.json"), `${JSON.stringify(manifest, null, 2)}\n`, { root: outRoot });
 
   const lines = [
-    `${input.title}: ${safeText(input.site, 200)}: ${scans.survey.length} URL(s) surveyed, ${input.routes.types.length} route type(s), ${scans.selection.picks.length} deep page(s), ${deepOk.length} measured, exit ${exitCode}`,
+    `${input.title}: ${safeText(input.site, 200)}: ${scans.survey.length} URL(s) surveyed, ${input.routes.types.length} route type(s), ${scans.selection.picks.length} deep page(s), ${deepOk.length} measured, ${deepFailed} failed, exit ${exitCode}`,
     `time: survey ${surveySeconds.toFixed(1)} s, deep ${deepSeconds.toFixed(1)} s, report ${reportSeconds.toFixed(1)} s`,
     `report: ${safeText(join(outRoot, "report.md"), 500)}`,
     `run:    ${safeText(join(outRoot, "run.json"), 500)}`,

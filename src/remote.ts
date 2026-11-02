@@ -6,7 +6,7 @@ import type { Browser, BrowserContext, BrowserContextOptions, CDPSession, Page, 
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
-import { mdCode, mdText, safeText } from "./text.js";
+import { errorLine, mdCode, mdText, safeText } from "./text.js";
 import { commentHints } from "./hints.js";
 import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
@@ -3487,7 +3487,7 @@ const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: string): string[] {
   const head = `${safeText(result.url)}  ${result.status}${result.nextjs ? "  (Next.js)" : ""}`;
   if (result.status !== "ok" || !result.page) {
-    const lines = [head, `  ${safeText(result.error ?? result.status)}`];
+    const lines = [head, `  ${errorLine(result.error ?? result.status)}`];
     if (result.broken !== undefined) lines.push(`  fix: ${safeText(result.broken.fix)}`);
     return lines;
   }
@@ -3613,7 +3613,7 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   for (const result of results) {
     const label = pageLabel(result.url);
     if (result.status !== "ok" || !result.page) {
-      const status = result.error ? `${mdText(result.status)} ${mdCode(result.error)}` : mdText(result.status);
+      const status = result.error ? `${mdText(result.status)} ${mdCode(errorLine(result.error))}` : mdText(result.status);
       lines.push(mdRow([label, status], width));
       continue;
     }

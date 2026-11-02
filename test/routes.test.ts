@@ -175,3 +175,73 @@ describe("restrictRoutes", () => {
     expect(sample.types.reduce((n, t) => n + t.urls.length, 0)).toBe(2);
   });
 });
+
+describe("version segments after the first segment (docs sites)", () => {
+  const DOCS = "https://docs.example";
+  const PAGES = ["routing", "data", "styling", "config"];
+
+  it("merges a versioned section with the unversioned one: /docs/15/app/x and /docs/app/x are one type", () => {
+    const urls = [...PAGES.map((p) => `${DOCS}/docs/app/${p}`), ...PAGES.map((p) => `${DOCS}/docs/15/app/${p}`)];
+    const grouping = groupRoutes(urls);
+    expect(grouping.types.map((t) => [t.type, t.urls.length, t.versions])).toEqual([["/docs/app/*", 8, ["15"]]]);
+    expect(grouping.typeOf(`${DOCS}/docs/15/app/routing`)).toBe(grouping.typeOf(`${DOCS}/docs/app/routing`));
+  });
+
+  it("reads v-prefixed, dotted and .x versions the same way, and merges all the versions of one section", () => {
+    const urls = [...PAGES.map((p) => `${DOCS}/docs/app/${p}`), ...PAGES.map((p) => `${DOCS}/docs/v2.3/app/${p}`), ...PAGES.map((p) => `${DOCS}/docs/15.x/app/${p}`)];
+    const grouping = groupRoutes(urls);
+    expect(grouping.types.map((t) => t.type)).toEqual(["/docs/app/*"]);
+    expect(grouping.types[0].urls).toHaveLength(12);
+    expect(grouping.types[0].versions).toEqual(["15.x", "v2.3"]);
+  });
+
+  it("does not split a family in two: the versioned copies of its pages count as the pages they copy", () => {
+    // Plain words, not slugs: a slug collapses to `*` by its shape, which would hide the single-page count.
+    const words = ["routing", "data", "styling", "config", "layouts", "images"];
+    const section = (version?: string) => words.map((word) => `${DOCS}/docs/${version === undefined ? "" : `${version}/`}app/${word}`);
+    const plain = groupRoutes(section());
+    const versioned = groupRoutes([...section(), ...section("15")]);
+    expect(plain.types.map((t) => t.type)).toEqual(["/docs/app/*"]);
+    expect(versioned.types.map((t) => t.type)).toEqual(["/docs/app/*"]);
+    expect(versioned.types[0].urls).toHaveLength(12);
+  });
+
+  it("keeps the version in the route map's view of the URL: a version is a dimension, not part of the type", () => {
+    const grouping = groupRoutes([...PAGES.map((p) => `${DOCS}/docs/app/${p}`), `${DOCS}/docs/15/app/data`]);
+    expect(grouping.routes.find((r) => r.url === `${DOCS}/docs/15/app/data`)?.version).toBe("15");
+    expect(grouping.routes.find((r) => r.url === `${DOCS}/docs/app/data`)?.version).toBeUndefined();
+  });
+
+  it("does not strip latest: it is a word a site may use as a section name, so it stays its own type", () => {
+    const grouping = groupRoutes([...PAGES.map((p) => `${DOCS}/docs/app/${p}`), ...PAGES.map((p) => `${DOCS}/docs/latest/app/${p}`)]);
+    expect(grouping.typeOf(`${DOCS}/docs/latest/app/data`)).not.toBe(grouping.typeOf(`${DOCS}/docs/app/data`));
+    expect(grouping.types.find((t) => t.type === "/docs/app/*")?.urls).toHaveLength(4);
+  });
+
+  it("does not strip a version with nothing under it (/docs/15 stays the section page)", () => {
+    const grouping = groupRoutes([...PAGES.map((p) => `${DOCS}/docs/app/${p}`), `${DOCS}/docs/15`]);
+    expect(grouping.routes.find((r) => r.url === `${DOCS}/docs/15`)?.version).toBeUndefined();
+    expect(grouping.typeOf(`${DOCS}/docs/15`)).toBe("/docs/*");
+  });
+
+  it("does not read a numeric id as a version when its section has no unversioned pages (/product/123/x)", () => {
+    const urls = [`${DOCS}/product/123/aviator`, `${DOCS}/product/456/bob`, `${DOCS}/product/789/cara`];
+    const grouping = groupRoutes(urls);
+    expect(grouping.routes.every((r) => r.version === undefined)).toBe(true);
+    expect(grouping.typeOf(`${DOCS}/product/123/aviator`)).toBe("/product/*/aviator");
+  });
+
+  it("keeps a product id with no page under it as the product type (/product/123 is /product/*)", () => {
+    const grouping = groupRoutes([`${DOCS}/product/123`, `${DOCS}/product/456`, `${DOCS}/product/789`, `${DOCS}/product/aviator-1234`]);
+    expect(grouping.typeOf(`${DOCS}/product/123`)).toBe("/product/*");
+  });
+
+  it("keeps dated blog archives apart from the blog home and from each other's templates", () => {
+    const urls = [`${DOCS}/blog`, `${DOCS}/blog/2024`, `${DOCS}/blog/2023`, `${DOCS}/blog/2024/05/a-long-title-one`, `${DOCS}/blog/2023/01/a-long-title-two`];
+    const grouping = groupRoutes(urls);
+    expect(grouping.typeOf(`${DOCS}/blog/2024`)).toBe("/blog/*");
+    expect(grouping.typeOf(`${DOCS}/blog`)).toBe("/blog");
+    expect(grouping.typeOf(`${DOCS}/blog/2024/05/a-long-title-one`)).toBe(grouping.typeOf(`${DOCS}/blog/2023/01/a-long-title-two`));
+    expect(grouping.routes.every((r) => r.version === undefined)).toBe(true);
+  });
+});

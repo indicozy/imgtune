@@ -8,6 +8,15 @@
   `--block-third-party`. `--allow-third-party` is accepted for one release as a no-op with a deprecation note. The
   recorded setting is `allowed` by default, so a scan from before this change (recorded as `blocked`, or with no record)
   does not match on `--resume` or `recheck` where the setting differs.
+- `check`: failed pages are counted. A deep page the browser could not load (status `failed`, for example a navigation
+  timeout) gets one retry: the next-heaviest measured page of its route type is scanned in its place, and the report names
+  both. `run.json` has a `failed` count per phase and a `deepRetries` list, `imgtune summary` prints the failed count in its
+  survey and deep lines, and the report's header and "broken, not measured" section count the failed pages.
+- Browser errors in the report and the terminal are one line: ANSI escape sequences are removed whole (`stripControls`), and
+  the Playwright "Call log:" block after the first line is dropped (`errorLine`). The full message stays in the page JSON.
+- Route types (`src/routes.ts`): a version segment after the first segment (`/docs/15/app/...`, `/docs/v2.3/...`) is a
+  dimension when the same section has unversioned pages, so the versions merge with them. Dated archives and numeric ids
+  are not read as versions (see the tests).
 - Route types (`src/routes.ts`): the URLs of a site group into the templates they are instances of. A leading locale or store
   segment (`ae-en`, `sa_AR`) and a `desktop` or `mobile` variant are dimensions, not part of the type. Product slugs, ids
   and listing families collapse to `*`, and query strings keep their parameter names (`/search?q=*`). Used by the survey

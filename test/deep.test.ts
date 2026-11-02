@@ -1,7 +1,7 @@
 // Deep-page selection (deep.ts): one page per route type, the heaviest types first, the cap, and what was left out.
 import { describe, expect, it } from "vitest";
 import { groupRoutes } from "../src/routes.js";
-import { selectDeepPages } from "../src/deep.js";
+import { deepRetries, selectDeepPages } from "../src/deep.js";
 import { okPage, otherPage } from "./page-fixtures.js";
 
 const SHOP = "https://shop.example";
@@ -69,5 +69,38 @@ describe("selectDeepPages", () => {
   it("returns nothing for a count of zero, and for no measured pages", () => {
     expect(selectDeepPages([okPage(`${SHOP}/cart`, 1, 1)], groupRoutes([`${SHOP}/cart`]), 0).picks).toEqual([]);
     expect(selectDeepPages([], groupRoutes([]), 20)).toEqual({ picks: [], leftOut: [] });
+  });
+});
+
+describe("deepRetries", () => {
+  const showcase = ["site-a", "site-b", "site-c", "site-d"].map((name) => `${SHOP}/showcase/${name}`);
+
+  it("retries a failed deep page with the next-heaviest measured page of its route type", () => {
+    const survey = [okPage(showcase[0], 300, 1), okPage(showcase[1], 200, 1), okPage(showcase[2], 100, 1), okPage(showcase[3], 50, 1)];
+    const routes = groupRoutes(survey.map((r) => r.url));
+    const picks = selectDeepPages(survey, routes, 10).picks.map((p) => p.url);
+    expect(picks).toEqual([showcase[0]]);
+    expect(deepRetries([showcase[0]], survey, routes, picks)).toEqual([{ type: "/showcase/*", failed: showcase[0], replacement: showcase[1] }]);
+  });
+
+  it("skips a candidate already picked and one with no images, and takes the next", () => {
+    const survey = [okPage(showcase[0], 300, 1), okPage(showcase[1], 200, 1), okPage(showcase[2], 0, 0), okPage(showcase[3], 50, 1)];
+    const routes = groupRoutes(survey.map((r) => r.url));
+    expect(deepRetries([showcase[0]], survey, routes, [showcase[0], showcase[1]])).toEqual([
+      { type: "/showcase/*", failed: showcase[0], replacement: showcase[3] },
+    ]);
+  });
+
+  it("gives no retry when the route type has no other measured page with images", () => {
+    const survey = [okPage(`${SHOP}/team`, 90, 5), okPage(`${SHOP}/faqs`, 60, 5), otherPage(`${SHOP}/faqs-2`, "failed")];
+    const routes = groupRoutes(survey.map((r) => r.url));
+    expect(deepRetries([`${SHOP}/team`], survey, routes, [`${SHOP}/team`])).toEqual([]);
+  });
+
+  it("never retries a page that is not measured in the survey, and retries each failed page once", () => {
+    const survey = [okPage(showcase[0], 300, 1), otherPage(showcase[1], "failed"), okPage(showcase[2], 100, 1), okPage(showcase[3], 50, 1)];
+    const routes = groupRoutes(survey.map((r) => r.url));
+    const retries = deepRetries([showcase[0]], survey, routes, [showcase[0]]);
+    expect(retries.map((r) => r.replacement)).toEqual([showcase[2]]);
   });
 });

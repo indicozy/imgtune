@@ -119,8 +119,9 @@ function surveyBlock(survey: PageResult[], label: string | undefined, routes?: R
   const ok = survey.filter((p) => p.status === "ok" && p.page !== undefined);
   const count = (status: string) => survey.filter((p) => p.status === status).length;
   const broken = count("broken");
-  const other = survey.length - ok.length - broken;
-  const lines: string[] = [`survey: ${survey.length} page(s), ${ok.length} ok, ${broken} broken, ${other} not measured`];
+  const failed = count("failed");
+  const other = survey.length - ok.length - broken - failed;
+  const lines: string[] = [`survey: ${survey.length} page(s), ${ok.length} ok, ${broken} broken, ${failed} failed, ${other} not measured`];
   if (label !== undefined) lines.push(`  ${safeText(label.replace(/^survey: /, ""))}`);
   const numbers = ok.map((p) => p.page as NonNullable<PageResult["page"]>);
   lines.push(
@@ -144,7 +145,8 @@ function deepBlock(deep: PageResult[]): string[] {
   const ok = deep.filter((p) => p.status === "ok" && p.page !== undefined);
   const sorted = [...ok].sort((a, b) => exactOf(b) - exactOf(a) || a.url.localeCompare(b.url));
   const shown = Math.min(DEEP_ROWS, sorted.length);
-  const lines = [`deep: ${deep.length} page(s) full-scanned, ${ok.length} ok (${shown} of ${ok.length} shown, worst first)`];
+  const failed = deep.filter((p) => p.status === "failed").length;
+  const lines = [`deep: ${deep.length} page(s) full-scanned, ${ok.length} ok, ${failed} failed (${shown} of ${ok.length} shown, worst first)`];
   if (sorted.length === 0) return lines;
   lines.push(
     `  ${"page".padEnd(LABEL_WIDTH)} ${"KB/view".padStart(8)} ${"exact".padStart(7)} ${"exact+est".padStart(10)} ${"sharp KB".padStart(9)}`,
@@ -453,7 +455,16 @@ export function parseManifest(text: string, file: string): RunManifest {
     const entry = objectOf(phase, file, "phases[]");
     if (!(PHASE_NAMES as readonly unknown[]).includes(entry.name)) bad(file, "phases[].name", `must be one of ${PHASE_NAMES.join(", ")}`);
     numberOf(entry.seconds, file, "phases[].seconds");
-    for (const key of ["pages", "ok", "broken", "exitCode"]) if (entry[key] !== undefined) numberOf(entry[key], file, `phases[].${key}`);
+    for (const key of ["pages", "ok", "broken", "failed", "exitCode"]) if (entry[key] !== undefined) numberOf(entry[key], file, `phases[].${key}`);
+  }
+  if (root.deepRetries !== undefined) {
+    if (!Array.isArray(root.deepRetries)) bad(file, "deepRetries", "must be a list");
+    for (const retry of root.deepRetries) {
+      const entry = objectOf(retry, file, "deepRetries[]");
+      stringOf(entry.type, file, "deepRetries[].type");
+      stringOf(entry.failed, file, "deepRetries[].failed");
+      stringOf(entry.replacement, file, "deepRetries[].replacement");
+    }
   }
   if (root.stop !== null && root.stop !== undefined) {
     const stop = objectOf(root.stop, file, "stop");

@@ -50,11 +50,16 @@ describe("renderSummary", () => {
     expect(out[0]).toBe("imgtune run: 4 URL(s), 2 pattern(s), exit 0");
     expect(out[1]).toBe("out: .imgtune/run/x");
     expect(out[2]).toBe("time: 137 s total (survey 52 s, deep 84 s)");
-    expect(out.join("\n")).toMatch(/^survey: 4 page\(s\), 3 ok, 0 broken, 1 not measured$/m);
+    expect(out.join("\n")).toMatch(/^survey: 4 page\(s\), 3 ok, 0 broken, 0 failed, 1 not measured$/m);
     expect(out.join("\n")).toMatch(/^  2 viewports, exact savings only, no est\.$/m);
     expect(out.join("\n")).toMatch(/^  site \(3 ok, mean\): image KB\/view /m);
     expect(out.join("\n")).toMatch(/worst route types \(mean exact KB\/view per page, 2 of 2 shown\):/);
     expect(out.join("\n")).toMatch(/\/p\/\*\s+2 page\(s\)/);
+  });
+
+  it("counts the failed survey pages apart from the not measured ones", () => {
+    const text = renderSummary(input({ survey: [...(input().survey ?? []), otherPage("https://shop.example/c/z", "failed", { error: "net::ERR_TIMED_OUT" })] }));
+    expect(text).toMatch(/^survey: 5 page\(s\), 3 ok, 0 broken, 1 failed, 1 not measured$/m);
   });
 
   it("prints the deep table with KB per view, exact, exact + est. and sharpness", () => {
@@ -96,7 +101,7 @@ describe("renderSummary", () => {
     );
     expect(lines(big).length).toBeLessThanOrEqual(MAX_SUMMARY_LINES);
     expect(big).toMatch(/call sites by saving per view \(top 10 of 25\)/);
-    expect(big).toMatch(/deep: 12 page\(s\) full-scanned, 12 ok \(5 of 12 shown/);
+    expect(big).toMatch(/deep: 12 page\(s\) full-scanned, 12 ok, 0 failed \(5 of 12 shown/);
     expect(big).toMatch(/warnings \(9, first 3 shown\):/);
     expect(big).not.toMatch(/line\(s\) cut/);
   });
@@ -200,6 +205,23 @@ describe("run.json is checked before anything from it is printed", () => {
     rejects(JSON.stringify(noExit), /exitCode must be a whole number/);
   });
 
+  it("accepts a phase with a failed count, and a list of deep retries", () => {
+    const manifest = parseManifest(
+      withPatch({
+        phases: [{ name: "deep", seconds: 9, pages: 3, ok: 2, broken: 0, failed: 1 }],
+        deepRetries: [{ type: "/showcase", failed: "https://shop.example/showcase", replacement: "https://shop.example/faqs" }],
+      }),
+      "run.json",
+    );
+    expect(manifest.phases[0].failed).toBe(1);
+    expect(manifest.deepRetries?.[0].replacement).toBe("https://shop.example/faqs");
+  });
+
+  it("refuses a failed count that is not a number, and deep retries that are not a list", () => {
+    rejects(withPatch({ phases: [{ name: "deep", seconds: 1, failed: "1" }] }), /phases\[\]\.failed/);
+    rejects(withPatch({ deepRetries: { type: "/x" } }), /deepRetries/);
+  });
+
   it("refuses a phase name that is not one of the known phases (no escape sequence reaches the heading)", () => {
     rejects(withPatch({ phases: [{ name: "\u001b[2Jsurvey", seconds: 1 }] }), /phases\[\]\.name must be one of survey, deep, locate, hints/);
   });
@@ -256,6 +278,6 @@ describe("run.json is checked before anything from it is printed", () => {
   it("prints the heading with control characters removed", () => {
     const text = renderSummary(input({ heading: "imgtune run:\u001b[31m 4 URL(s)\u0007" }));
     expect(text).not.toMatch(/\u001b|\u0007/);
-    expect(text.split("\n")[0]).toBe("imgtune run:[31m 4 URL(s)");
+    expect(text.split("\n")[0]).toBe("imgtune run: 4 URL(s)");
   });
 });

@@ -495,7 +495,7 @@ describe("mdText, mdCode and the Markdown summary", () => {
     expect(out).toContain("&#35;1");
     expect(out).toContain("&#126;s&#126;");
     expect(out).toContain("&#36;x&#36;");
-    expect(mdText("line\nbreak\u001b[2J")).toBe("linebreak&#91;2J");
+    expect(mdText("line\nbreak\u001b[2J")).toBe("linebreak");
   });
 
   it("puts page text in code spans, which do not autolink, mention or format", () => {
@@ -1090,7 +1090,8 @@ describe("makeFetcher over a local server", () => {
 
 describe("safeText and terminal output", () => {
   it("strips C0 and C1 control characters, ESC included", () => {
-    expect(safeText("a\u001b[2Jb\u0007c\u009bd\u007fe\nf")).toBe("a[2Jbcdef");
+    expect(safeText("a\u001b[2Jb\u0007c\u009bd\u007fe\nf")).toBe("abcdef");
+    expect(safeText("a\u001bb")).toBe("ab");
     expect(safeText("\u001b]0;title\u0007x")).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 
@@ -1129,7 +1130,7 @@ describe("safeText and terminal output", () => {
     };
     const lines = renderPage(page, false);
     for (const line of lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-    expect(lines.join("\n")).toContain("33vw[2J -> 280px");
+    expect(lines.join("\n")).toContain("33vw -> 280px");
   });
 });
 

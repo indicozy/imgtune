@@ -32,9 +32,46 @@ export interface DeepSelection {
   leftOut: LeftOutType[];
 }
 
+/** The order of the candidates: heaviest first by image KB per view, then exact KB, then URL. */
+function heavier(a: Candidate, b: Candidate): number {
+  return b.kbPerView - a.kbPerView || b.exactKB - a.exactKB || a.url.localeCompare(b.url);
+}
+
 /** The heaviest page of a route type: image KB per view, then exact KB, then URL. */
 function heaviest(members: Candidate[]): Candidate {
-  return [...members].sort((a, b) => b.kbPerView - a.kbPerView || b.exactKB - a.exactKB || a.url.localeCompare(b.url))[0];
+  return [...members].sort(heavier)[0];
+}
+
+/** A deep page that failed (the browser could not load it), and the page the run scanned in its place. */
+export interface DeepRetry {
+  type: string;
+  /** The deep page that failed. */
+  failed: string;
+  /** The next-heaviest measured page of the same route type, scanned in its place (one retry). */
+  replacement: string;
+}
+
+/**
+ * One retry per failed deep page: the next-heaviest measured survey page of its route type that is not already picked, with
+ * images. A type with no such page gets no retry (the failed page stays failed, and the report says so).
+ */
+export function deepRetries(failed: string[], survey: PageResult[], routes: RouteGrouping, picked: string[]): DeepRetry[] {
+  const byType = new Map<string, Candidate[]>();
+  for (const candidate of candidatesOf(survey, routes.typeOf)) {
+    const list = byType.get(candidate.pattern);
+    if (list) list.push(candidate);
+    else byType.set(candidate.pattern, [candidate]);
+  }
+  const used = new Set(picked);
+  const retries: DeepRetry[] = [];
+  for (const url of failed) {
+    const type = routes.typeOf(url);
+    const next = [...(byType.get(type) ?? [])].sort(heavier).find((c) => !used.has(c.url) && c.kbPerView > 0);
+    if (next === undefined) continue;
+    used.add(next.url);
+    retries.push({ type, failed: url, replacement: next.url });
+  }
+  return retries;
 }
 
 /**
