@@ -49,6 +49,13 @@ describe("parseAuditArgs", () => {
     expect(() => parseAuditArgs(["--app", "web", "--prod", "https://shop.example", "--dev", "nope"])).toThrow(/http or https origin/);
   });
 
+  it("takes --max-locales (3 by default), a whole number of at least 1", () => {
+    expect(parseAuditArgs(["--app", "web", "--prod", "https://shop.example"]).maxLocales).toBe(3);
+    expect(parseAuditArgs(["--app", "web", "--prod", "https://shop.example", "--max-locales", "5"]).maxLocales).toBe(5);
+    expect(() => parseAuditArgs(["--app", "web", "--prod", "https://shop.example", "--max-locales", "0"])).toThrow(/--max-locales needs a whole number/);
+    expect(() => parseAuditArgs(["--app", "web", "--prod", "https://shop.example", "--max-locales"])).toThrow(/--max-locales needs a value/);
+  });
+
   it("allows third-party requests by default, as check does", () => {
     expect(parseAuditArgs(["--app", "web", "--prod", "https://shop.example"]).flags.thirdParty).toEqual({ block: false, allowHosts: [] });
   });

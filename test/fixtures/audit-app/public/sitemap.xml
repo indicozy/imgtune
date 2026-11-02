@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A sitemap index that lists another host (the production one), as a sitemap built for the live site does. -->
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>https://shop.example/sitemap/sitemap-1.xml</loc>
+  </sitemap>
+</sitemapindex>

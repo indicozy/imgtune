@@ -9,14 +9,15 @@ import { join, resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { BROKEN_EXIT, brokenOf, type BrokenInfo } from "./broken.js";
 import { locateCommand } from "./locate-only.js";
-import { appRouteGrouping, routesFromFiles, staticRouteUrls, type AppRoute } from "./app-routes.js";
+import { isLocalTarget } from "./address.js";
+import { learnedValues, matchRoute, routeFileOf, routesFromFiles, seedUrlsOf, staticRouteUrls, type AppRoute } from "./app-routes.js";
 import { CRAWL_DEPTH, crawlSite } from "./crawl.js";
 import { nextQualities } from "./next-config.js";
 import { DEFAULT_CHECK_SAMPLE, finishCheck, parseCheckFlags, routeMapOf, sampleUrls, scanCheckPages, type CheckArgs, type CheckSettings } from "./check.js";
-import { groupRoutes } from "./routes.js";
+import { groupRoutes, routeGrouping, type RouteGrouping, type RouteMapRule, type RouteOf } from "./routes.js";
 import { urlsFromSource } from "./urls.js";
 import { devUrlOf, type RunManifest } from "./run.js";
-import { pageFileName, readStorageState, runScan, scanPlan, type PageResult, type StorageState } from "./remote.js";
+import { pageFileName, parseLimit, readStorageState, runScan, scanPlan, type PageResult, type StorageState } from "./remote.js";
 import { safeText, shellWord } from "./text.js";
 import type { Viewport } from "./types.js";
 
@@ -27,7 +28,12 @@ export const DEFAULT_AUDIT_DIR = ".imgtune/audit";
 const SOURCE_DIRS = ["app", "src/app", "pages", "src/pages"];
 
 const AUDIT_USAGE =
-  "usage: imgtune audit --app <dir> --prod <origin> [--dev <origin>] [--urls-from <file|sitemap-url>] [--sample-per-pattern N] [--deep N] [--route-map file] [--out dir] [--qualities list] [--gpu] [--gpu-device n] [--page-concurrency N] [--idle-timeout ms] [--no-cache] [--ignore-robots] [--storage-state file] [--block-third-party] [--allow-host h1,h2]";
+  "usage: imgtune audit --app <dir> --prod <origin> [--dev <origin>] [--urls-from <file|sitemap-url>] [--max-locales N] [--sample-per-pattern N] [--deep N] [--route-map file] [--out dir] [--qualities list] [--gpu] [--gpu-device n] [--page-concurrency N] [--idle-timeout ms] [--no-cache] [--ignore-robots] [--storage-state file] [--block-third-party] [--allow-host h1,h2]";
+
+/** The values of a dynamic first segment (`[store]`, `[locale]`) the crawl expands, when --max-locales is not given. */
+export const DEFAULT_MAX_LOCALES = 3;
+/** The sitemap URLs an audit takes, at most: the rest are not listed (the report says how many there were). */
+export const SITEMAP_URL_CAP = 5000;
 
 export interface AuditArgs {
   /** --app: the Next.js app's root (the folder with app/ or pages/, and next.config). */
@@ -36,6 +42,8 @@ export interface AuditArgs {
   prod: string;
   /** --dev: the dev server origin the deep pages are located on (optional). */
   dev?: string;
+  /** --max-locales: the values of a dynamic first segment the crawl expands (see crawl.ts). */
+  maxLocales: number;
   /** The check flags (the URL source is --urls-from, or the sitemap and crawl of --prod). */
   flags: CheckArgs;
 }
@@ -56,10 +64,16 @@ export function parseAuditArgs(argv: string[]): AuditArgs {
   let app: string | undefined;
   let prod: string | undefined;
   let dev: string | undefined;
+  let maxLocales = DEFAULT_MAX_LOCALES;
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--app" || arg === "--prod" || arg === "--dev") {
+    if (arg === "--max-locales") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${AUDIT_USAGE})`);
+      maxLocales = parseLimit(arg, value);
+      i++;
+    } else if (arg === "--app" || arg === "--prod" || arg === "--dev") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${AUDIT_USAGE})`);
       i++;
@@ -74,7 +88,7 @@ export function parseAuditArgs(argv: string[]): AuditArgs {
   if (prod === undefined) throw new Error(`audit needs --prod <origin> (${AUDIT_USAGE})`);
   const flags = parseCheckFlags(rest);
   if (flags.target !== undefined) throw new Error(`audit takes --prod for the site, not the URL ${safeText(flags.target)} (${AUDIT_USAGE})`);
-  return { app, prod, dev, flags };
+  return { app, prod, dev, maxLocales, flags };
 }
 
 const stamp = (date: Date): string => date.toISOString().replace(/[:.]/g, "-");
@@ -103,35 +117,110 @@ export async function sourceFilesOf(appRoot: string): Promise<string[]> {
 }
 
 /**
- * The URLs of an audit: --urls-from as given; else the sitemap of --prod; else the links of its home page (CRAWL_DEPTH
- * levels). The static routes of the app (no parameters) are added directly, whatever the list had.
+ * The URLs of an audit. --urls-from replaces the discovery: its URLs as given, and no seeds are added. Otherwise the site is
+ * crawled from its home page and from the app's seeds (its static routes, and its dynamic first segments expanded for the
+ * values the home page leads to; see crawl.ts). The sitemap of --prod adds its URLs (capped, see SITEMAP_URL_CAP). A sitemap
+ * that lists another host, when --prod is local, is read on --prod: its URLs are moved onto that origin, and the audit says so.
  */
-async function auditUrls(args: AuditArgs, appRoutes: AppRoute[], cwd: string, log: (message: string) => void): Promise<string[]> {
-  let urls: string[];
+export async function auditUrls(args: AuditArgs, appRoutes: AppRoute[], cwd: string, log: (message: string) => void): Promise<string[]> {
   if (args.flags.urlsFrom !== undefined) {
     const source = await urlsFromSource(args.flags.urlsFrom, cwd);
     log(`--urls-from: ${source.urls.length} URL(s) from ${safeText(args.flags.urlsFrom)}`);
-    urls = source.urls;
-  } else {
-    const sitemap = `${args.prod}/sitemap.xml`;
-    urls = [];
-    try {
-      const source = await urlsFromSource(sitemap, cwd);
-      if (source.urls.length > 0) {
-        log(`sitemap ${sitemap}: ${source.urls.length} URL(s)`);
-        urls = source.urls;
-      }
-    } catch (err) {
-      log(`no sitemap at ${sitemap} (${safeText((err as Error).message, 200)})`);
-    }
-    if (urls.length === 0) {
-      urls = await crawlSite(args.prod, { depth: CRAWL_DEPTH });
-      log(`crawl from ${safeText(args.prod)}: ${urls.length} page(s), up to ${CRAWL_DEPTH} links deep`);
-    }
+    return [...new Set(source.urls)];
   }
-  const listed = new Set(urls);
-  const statics = staticRouteUrls(args.prod, appRoutes).filter((url) => !listed.has(url));
-  return [...new Set([...urls, ...statics])];
+  const prod = args.prod;
+  const sitemap = `${prod}/sitemap.xml`;
+  let sitemapUrls: string[] = [];
+  try {
+    const source = await urlsFromSource(sitemap, cwd, { rewriteOriginTo: isLocalTarget(prod) ? prod : undefined });
+    if (source.urls.length > 0) {
+      sitemapUrls = source.urls.slice(0, SITEMAP_URL_CAP);
+      log(`sitemap ${sitemap}: ${source.urls.length} URL(s)${source.urls.length > sitemapUrls.length ? `, the first ${sitemapUrls.length} are used` : ""}`);
+    }
+    if (source.rewritten > 0) {
+      log(`sitemap ${sitemap} lists ${source.rewritten} URL(s) on another host: they are read on ${safeText(prod)} instead (the other host is not fetched)`);
+    }
+  } catch (err) {
+    log(`no sitemap at ${sitemap} (${safeText((err as Error).message, 200)})`);
+  }
+
+  const seeds = staticRouteUrls(prod, appRoutes);
+  const dynamicFirst = appRoutes.some((r) => r.segments[0] === "*");
+  const crawled = await crawlSite(prod, {
+    depth: CRAWL_DEPTH,
+    seeds,
+    seedsAfterHome: (seen) => {
+      if (!dynamicFirst) return [];
+      const values = learnedValues(seen, appRoutes, args.maxLocales);
+      log(`dynamic first segment: ${values.length} value(s) learned from the home page: ${values.map((v) => safeText(v, 80)).join(", ") || "none"}`);
+      return seedUrlsOf(prod, appRoutes, values);
+    },
+  });
+  log(`crawl from ${safeText(prod)}: ${crawled.length} page(s) from ${seeds.length} static seed(s) and the home page, up to ${CRAWL_DEPTH} links deep`);
+  return [...new Set([...crawled, ...sitemapUrls])];
+}
+
+/**
+ * The route types of an audit: groupRoutes (routes.ts) over the URLs, where the first segment of a URL that the app takes as a
+ * dynamic segment (`[store]`, `[locale]`) is stripped first. That segment is a dimension of the site, not part of the page's
+ * template, whatever its shape: groupRoutes strips only a locale-shaped one (`ae-en`), and a store named `el-seed` would
+ * otherwise be a route type of its own. The device variant after it (`desktop`, `mobile`) is stripped the same way, as groupRoutes
+ * strips it after a locale. The stripped values are kept as the URL's locale and variant. --route-map patterns match the path
+ * after those segments.
+ */
+export function groupAuditRoutes(urls: string[], routes: AppRoute[], routeMap: RouteMapRule[]): RouteGrouping {
+  const distinct = [...new Set(urls)];
+  const keyOf = new Map<string, string>();
+  const dimensionOf = new Map<string, { locale: string; variant?: string }>();
+  for (const url of distinct) {
+    const route = matchRoute(url, routes);
+    let parsed: URL | undefined;
+    try {
+      parsed = new URL(url);
+    } catch {
+      parsed = undefined;
+    }
+    if (route === undefined || route.segments[0] !== "*" || parsed === undefined) {
+      keyOf.set(url, url);
+      continue;
+    }
+    const segments = parsed.pathname.split("/").filter((s) => s !== "");
+    let rest = segments.slice(1);
+    const variant = rest[0] === "desktop" || rest[0] === "mobile" ? rest[0] : undefined;
+    if (variant !== undefined) rest = rest.slice(1);
+    dimensionOf.set(url, variant === undefined ? { locale: segments[0] } : { locale: segments[0], variant });
+    const stripped = new URL(url);
+    stripped.pathname = `/${rest.join("/")}`;
+    keyOf.set(url, stripped.href);
+  }
+  const grouped = groupRoutes([...new Set(keyOf.values())], { routeMap });
+  const byKey = new Map(grouped.routes.map((r) => [r.url, r]));
+  const out: RouteOf[] = distinct.map((url) => {
+    const key = keyOf.get(url) as string;
+    const found = byKey.get(key) as RouteOf;
+    const route: RouteOf = { url, type: found.type, mapped: found.mapped };
+    const dimension = dimensionOf.get(url);
+    if (dimension !== undefined) {
+      route.locale = dimension.locale;
+      if (dimension.variant !== undefined) route.variant = dimension.variant;
+    }
+    return route;
+  });
+  return routeGrouping(out);
+}
+
+/** The route files of each route type: the files of its URLs' most specific routes, in the order the types are listed. */
+export function routeFilesByType(grouping: RouteGrouping, routes: AppRoute[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const type of grouping.types) {
+    const files = new Set<string>();
+    for (const url of type.urls) {
+      const file = routeFileOf(url, routes);
+      if (file !== undefined) files.add(file);
+    }
+    out.set(type.type, [...files]);
+  }
+  return out;
 }
 
 /**
@@ -256,7 +345,8 @@ export async function auditCommand(argv: string[], cwd: string, log: (message: s
   const listed = await auditUrls(args, appRoutes, cwd, log);
   if (listed.length === 0) throw new Error("no URL to audit");
   const routeMap = await routeMapOf(args.flags.routeMap, cwd);
-  const fullRoutes = appRouteGrouping(listed, appRoutes, groupRoutes(listed, { routeMap }));
+  const fullRoutes = groupAuditRoutes(listed, appRoutes, routeMap);
+  const routeFiles = routeFilesByType(fullRoutes, appRoutes);
   const sample = args.flags.samplePerPattern ?? DEFAULT_CHECK_SAMPLE;
   const picked = sampleUrls(listed, fullRoutes, sample, log);
   const scans = await scanCheckPages({ cwd, log, outRoot, urls: picked.urls, routes: picked.routes, settings, storageState });
@@ -300,6 +390,7 @@ export async function auditCommand(argv: string[], cwd: string, log: (message: s
     warnings,
     qualitiesNote: quality.note,
     dev: args.dev,
+    routeFiles,
   });
   return { output: finished.output, exitCode: finished.exitCode };
 }
