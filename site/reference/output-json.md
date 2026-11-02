@@ -4,6 +4,11 @@
 The numbers are per page view, and the savings are shares of the image bytes, as described in
 [How it measures](/guide/how-it-measures). The fields below come from the scan's output types.
 
+The primary number is the **estimated saving**: `exactEstPct` on a page, and `savedBytes` on a group. The CLI prints it as
+`saving exact + est.`. The other savings fields are its breakdown: `exactPct` (and `exactSaved` on a viewport or an image) is the
+smaller-file part, and `estSaved` is the re-encode part. The JSON keeps the names `exact` and `est`, so existing consumers still
+read the same numbers.
+
 ## Page file
 
 | field | meaning |
@@ -48,8 +53,8 @@ The numbers are per page view, and the savings are shares of the image bytes, as
 | field | meaning |
 | --- | --- |
 | `meanImageBytes` | mean image bytes per page view, over the viewports |
-| `exactPct` | exact savings, as a percentage of the image bytes |
-| `exactEstPct` | exact plus est. savings, as a percentage of the image bytes |
+| `exactPct` | breakdown: the smaller-file part of the estimated saving, as a percentage of the image bytes |
+| `exactEstPct` | the estimated saving (primary): the smaller-file part plus the re-encode part, as a percentage of the image bytes |
 | `fixablePct` | the same savings as a share of the bytes of the images that have a saving |
 | `sharpnessKB` | sharpness growth, in KB per view |
 | `aggressiveExactEstPct` | only with `--aggressive` |
@@ -110,7 +115,7 @@ with no measured partner), `noOrder` (elements without `domIndex`) and `reasons`
 | `estQuality` | the median quality the estimates reached, when there is one |
 | `loader` | the loader most of the group comes from |
 | `qualityHint` | how the loader's quality parameter limits the saving |
-| `savedBytes` | exact + est. bytes per page view for the group, averaged over the viewports |
+| `savedBytes` | the estimated saving in bytes per page view for the group (exact + est.), averaged over the viewports |
 | `members` | the number of distinct elements in the group |
 | `samples` | up to two image URLs |
 | `hint` | a ready line, such as `set sizes="28px"`, when the suggestion differs from the current `sizes` |

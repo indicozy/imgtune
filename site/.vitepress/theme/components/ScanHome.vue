@@ -126,7 +126,7 @@ function copy() {
       <div class="survey-home">
         <p class="survey-line">
           <span class="survey-kicker">survey</span>
-          <span>{{ survey.count }} production sites on many stacks, anonymous. The median site could cut its image bytes by {{ survey.summary.medianExactEstPct.toFixed(1) }}%.</span>
+          <span>{{ survey.count }} production sites on many stacks, anonymous. The median site's estimated saving is {{ survey.summary.medianExactEstPct.toFixed(1) }}% of its image bytes.</span>
         </p>
         <SurveyStats :tiles="['medianKb', 'medianSaving', 'share20']" />
         <SavingDistribution compact />

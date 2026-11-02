@@ -10,6 +10,9 @@ npx imgtune --version
 ImgTune needs Node.js 20.9 or later and Chromium for Playwright (`npx playwright install chromium`). When Chromium is missing,
 ImgTune prints that command and exits with status 2. `image` and `hints` need no browser.
 
+The CLI prints the savings as `exact`, `exact + est.` and `sharpness`. The `exact + est.` figure is the estimated saving, the one
+number the site reports. [How it measures](/guide/how-it-measures) explains how it is built.
+
 ## Commands
 
 | command | what it does |
@@ -172,7 +175,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--root <dir>` | the folder project source files are read from, for `--locate-only` and source checks. Default: the nearest folder above the cwd that holds the file, else the nearest with a `package.json` or `.git`. Unread sources are named in the output with the folder they were looked up in |
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--markdown <file>` | write a PR-comment Markdown summary: per page, its top groups and the method |
-| `--fail-over <pct>` | exit 3 when a page's exact + est. share is above this percentage (default: never fail) |
+| `--fail-over <pct>` | exit 3 when a page's estimated saving (its `exact + est.` share) is above this percentage (default: never fail) |
 | `--fail-on-broken` | exit 4 when a page is broken: a document error, a failed stylesheet, or no images where the survey had some. Each broken page prints its reason and fix. Broken pages are left out of every total |
 | `--summary-json <file>` | write one JSON file with every page's status and numbers |
 | `--ignore-robots` | scan a page even when robots.txt disallows it (a warning is printed; the verdict is recorded in the JSON) |

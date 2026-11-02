@@ -8,7 +8,7 @@ is created per pull request and updated on each push. It is identified by a hidd
 | input | default | meaning |
 | --- | --- | --- |
 | `urls` | required | page URLs, separated by newlines or spaces |
-| `fail-over` | none | exit 3 when a page's exact + est. share is above this percentage |
+| `fail-over` | none | exit 3 when a page's estimated saving (its `exact + est.` share) is above this percentage |
 | `comment` | `true` | post or update the pull request comment |
 | `viewports` | all six | comma-separated viewport names |
 | `github-token` | `github.token` | token that posts the comment |
@@ -23,7 +23,8 @@ itself failed (2 when Chromium is missing).
 
 ## The comment
 
-The comment starts with one row per page: its image weight, its exact and exact + est. savings, and its sharpness growth. Below
+The comment starts with one row per page: its image weight, its estimated saving (the `exact + est.` column, with `exact` as its
+first part), and its sharpness growth. Below
 the table, the top groups of each page list their current and suggested `sizes`.
 
 Below those, a collapsed section, **Fix hints for your AI agent**, lists the top ten fix hints across the pages, one line each:

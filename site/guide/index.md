@@ -8,7 +8,7 @@ loop, scanning many pages, repo images, CI, and how the numbers are made.
 - [Scanning any site](/guide/scanning-any-site): sitemaps, sampling, logged-in pages, resuming a long run, and the limits.
 - [Repo images and file mode](/guide/repo-images): measure image files in your repository, with `imgtune image`.
 - [CI action](/guide/ci-action): scan the pages of each pull request, and comment the image waste and the fix hints on it.
-- [How it measures](/guide/how-it-measures): resolution, quality and format per view and viewport, and what exact, est. and sharpness mean.
+- [How it measures](/guide/how-it-measures): resolution, quality and format per view and viewport, and what the estimated saving and sharpness mean.
 - [Image loaders and CDNs](/guide/loaders-and-cdns): which loaders ImgTune detects, and which of them it can change the quality of.
 - [Limitations and FAQ](/guide/limitations-and-faq): what ImgTune does not measure, and common questions.
 - [Compared with other tools](/guide/compared-with-other-tools): how it differs from compressors, image CDNs, `next/image` and Lighthouse.

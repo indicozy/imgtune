@@ -4,7 +4,7 @@
 
 - **Six deciders.** The production study is a signal, not proof. Its sample leans toward sites without bot walls. See the
   [study](/study/).
-- **Exact is measured, est. is estimated.** Estimates are local re-encodes scored against the original, not bytes a server sent.
+- **Part of the estimate is an estimate.** Re-encodes are local encodes scored against the original, not bytes a server sent.
   Where a loader could not be scored, the estimate is a floor.
 - **Live pages only.** A scan measures the page as the browser loads it, at six viewports, scrolled to the end.
 - **CSS backgrounds are measured apart.** An element whose `background-image` names a file gets its own records
@@ -32,8 +32,8 @@ API. An agent reads that code well, and a measuring tool does not. So ImgTune me
 trustworthy part: it reports the bytes, judges each candidate with SSIMULACRA2, and the rescan checks every change the agent
 makes. Because the hint is the same whatever the framework, the same loop works in any framework.
 
-**Why is there an est. number at all?** Not every site serves a smaller candidate for every image. The estimate shows what a re-encode
-or a resize would save. It is always labelled as an estimate.
+**Why does the estimate include re-encodes at all?** Not every site serves a smaller candidate for every image. The re-encode part
+shows what a lower quality, a newer format or a resize would save, and it is always labelled as an estimate.
 
 **Why six viewports?** Four phones, a 1440 px desktop at 2x and a 1280 px desktop at 1x. Lighthouse measures one viewport per run.
 ImgTune measures all six, because the width an image needs changes with the viewport.

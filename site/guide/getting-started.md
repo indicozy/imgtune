@@ -56,9 +56,8 @@ https://your-site.example/bags  ok  (Next.js)
 ```
 
 - **image bytes per view** is the image weight a visitor downloads on one view of the page, averaged over the viewports.
-- **saving exact** is what the site's own smaller candidates would save, measured byte for byte.
-- **saving exact + est.** adds the savings of a local re-encode (another quality, another format, or a resize). These are
-  estimates, labelled as such.
+- **saving exact + est.** is the **estimated saving**, the number to act on. **saving exact** is its first part. Both are
+  explained in [How it measures](./how-it-measures).
 - **sharpness (separate)** is the bytes that undersized images would add. It is reported apart and never netted against the
   savings.
 - **top groups** are the largest groups of images, with the `sizes` in use and a suggested one.

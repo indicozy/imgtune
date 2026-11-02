@@ -74,7 +74,7 @@ function groupLabel(g: Group) {
     <div class="console">
       <div class="bar-top">
         <span>replay · <b>{{ site.site }}</b> · page {{ page.path }}</span>
-        <span>KB / view · exact · exact + est.</span>
+        <span>KB / view · estimated saving</span>
       </div>
       <div class="play">
         <button type="button" class="playbtn" @click="play">{{ playing ? "pause" : "play" }}</button>
@@ -111,14 +111,10 @@ function groupLabel(g: Group) {
           <span class="mono-b">{{ site.site }}{{ page.path === "/" ? "" : page.path }}</span>
           <span class="kb">{{ fmtKb(page.kbPerView) }} KB / view</span>
         </div>
-        <div class="meter x">
-          <span>exact</span>
-          <div class="track"><i :style="{ width: barWidth(page.exactPct) }"></i></div>
-          <span class="num">{{ fmtPct(page.exactPct) }}</span>
-        </div>
         <div class="meter e">
-          <span>+ est.</span>
+          <span>estimate</span>
           <div class="track">
+            <i :style="{ width: barWidth(page.exactPct) }"></i>
             <i class="est" :style="{ left: barWidth(page.exactPct), width: barWidth(estOnly) }"></i>
             <span class="bar15"></span>
           </div>
@@ -134,13 +130,12 @@ function groupLabel(g: Group) {
               <th>slot</th>
               <th>needed</th>
               <th>served</th>
-              <th>exact KB</th>
-              <th>est. KB</th>
+              <th>saved KB</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="page.groups.length === 0">
-              <td colspan="6" class="none">No image in this page carries a saving at the six viewports.</td>
+              <td colspan="5" class="none">No image in this page carries a saving at the six viewports.</td>
             </tr>
             <tr v-for="(g, i) in page.groups" :key="i">
               <td>
@@ -149,8 +144,7 @@ function groupLabel(g: Group) {
               <td>{{ fmtPx(g.slotCssPx) }} <span class="unit">css</span></td>
               <td>{{ fmtPx(g.neededPx) }}</td>
               <td :class="{ over: g.servedPx > g.neededPx * 1.5 }">{{ fmtPx(g.servedPx) }}</td>
-              <td class="x">{{ g.exactKb.toFixed(1) }}</td>
-              <td class="e">{{ g.estKb.toFixed(1) }}</td>
+              <td class="e">{{ (g.exactKb + g.estKb).toFixed(1) }}</td>
             </tr>
           </tbody>
         </table>
@@ -158,8 +152,8 @@ function groupLabel(g: Group) {
 
       <div class="foot">
         Scanned {{ site.scannedAt }} with imgtune {{ site.imgtuneVersion }} (tool commit 14b3c12), six viewports, SSIMULACRA2 delta 2,
-        page fully scrolled. Exact is measured from the site's own smaller candidates. Est. is a local re-encode and is drawn
-        hatched. The 15% line is the study's bar. Slot is the CSS width the image fills, needed is the device pixels it
+        page fully scrolled. The hatched part of the estimate is a local re-encode, not a measured file (see how it is
+        measured). The 15% line is the study's bar. Slot is the CSS width the image fills, needed is the device pixels it
         needs (widest viewport), served is the file's own width.
       </div>
     </div>
@@ -169,8 +163,7 @@ function groupLabel(g: Group) {
         <span class="id">{{ r.id }} · production</span>
         <span class="kbv">{{ fmtKb(r.kb) }}<small>KB / view</small></span>
         <div class="pct">
-          <span>exact <b class="x">{{ fmtPct(r.exactPct) }}</b></span>
-          <span>+ est. <b class="e">{{ fmtPct(r.exactEstPct) }}</b></span>
+          <span>estimated saving <b class="e">{{ fmtPct(r.exactEstPct) }}</b></span>
         </div>
       </div>
     </div>

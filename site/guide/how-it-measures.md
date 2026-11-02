@@ -9,12 +9,19 @@ scored with SSIMULACRA2.
 Each page is loaded at six viewports and scrolled to the end. Each image is recorded with the size it renders at, the device
 pixel ratio, and the pixels it needs (rendered width x dpr, capped at the largest file the site offers).
 
-## Exact and est.
+## The estimated saving
 
-- **Exact** savings come from the site's own smaller `srcset` candidates. Each one is fetched and measured, so the number is the
-  real byte difference.
-- **Est.** savings come from a local re-encode of the image: another quality, another format, or a resize of a plain `<img>`.
-  They are estimates, and they are labelled as such everywhere.
+The estimated saving is the one number to act on. It is the share of a page view's image bytes that a better file would save.
+It has two parts:
+
+- **A smaller file the site already has.** The site's own smaller `srcset` candidates, each fetched and measured, so this part is
+  the real byte difference.
+- **A re-encode.** The image encoded locally at a lower quality or in a newer format (or resized, for a plain `<img>`). A
+  re-encode counts only when SSIMULACRA2 says it looks the same as the original (see below). These are estimates, and they are
+  labelled as such.
+
+The CLI prints the estimate on its `saving exact + est.` line. Its `saving exact` line is the first part alone, and the difference
+is the re-encode part. A figure the CLI marks with `≈` is approximate: the file is above the size limit for a full match.
 
 A page's saving is the share of all its image bytes per page view. It is the mean over the viewports of each viewport's share,
 and a site's figure is the mean over its pages. The same method is used for the production study.
@@ -49,8 +56,8 @@ still counts. Its estimate is then a floor.
 
 ## Groups
 
-Images are grouped by the key ImgTune builds for each element, so one layout is reported once. For each group ImgTune reports its exact + est. bytes per page view, the
-`sizes` in use, a suggested `sizes`, and up to two sample URLs. The scan keeps the ten largest groups in the JSON and the top five
+Images are grouped by the key ImgTune builds for each element, so one layout is reported once. For each group ImgTune reports its
+estimated saving in bytes per page view, the `sizes` in use, a suggested `sizes`, and up to two sample URLs. The scan keeps the ten largest groups in the JSON and the top five
 in the Markdown summary.
 
 ## Robots, blocks and what was not measured

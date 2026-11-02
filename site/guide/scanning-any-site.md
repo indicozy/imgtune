@@ -18,13 +18,13 @@ renders at, the file the browser fetched, its `srcset` candidates, and the layou
 | `--summary-json <file>` | one JSON file with every page's status and numbers |
 | `--markdown <file>` | a Markdown summary: per page, its top groups and the method. Used as the CI comment |
 | `--viewports <names>` | a comma-separated subset of the six viewport names (default: all six) |
-| `--survey` | a fast site-wide pass: two viewports (`iphone-15`, `desktop`), no quality, 4 pages at once, a 3 s network-idle cap. Exact savings only. See below |
+| `--survey` | a fast site-wide pass: two viewports (`iphone-15`, `desktop`), no quality, 4 pages at once, a 3 s network-idle cap. Its estimate covers sizes only. See below |
 | `--no-quality` | skip the SSIMULACRA2 quality measurement |
 | `--page-concurrency <N>` | scan up to N pages at once on one browser, 1 to 6 (default 1; `--survey` sets 4) |
 | `--idle-timeout <ms>` | cap on the wait for network idle after scroll, 0 to 600000 (default 10000; `0` skips the wait; `--survey` sets 3000) |
 | `--shared-loads` | opt-in: one page load per viewport class (the mobile and the desktop viewports), the other viewports of the class resize the open page. It saves CPU but costs wall time, so by default each viewport is loaded fresh |
 | `--aggressive` | also report a delta 4 column, beside the main numbers. It is never used for the headline |
-| `--fail-over <pct>` | exit with status 3 when a page's exact + est. share is above this percentage (default: never fail) |
+| `--fail-over <pct>` | exit with status 3 when a page's estimated saving (the CLI's `exact + est.` share) is above this percentage (default: never fail) |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file, a local `sitemap.xml`, or a remote sitemap of the same domain |
 | `--sample-per-pattern <N>` | with `--urls-from`, at most N URLs per route type (`/p/*`, `/c/*`: see the CLI reference), spread over the type |
 | `--storage-state <file>` | a Playwright storage state, for a logged-in session in every browser context |
@@ -77,8 +77,8 @@ npx imgtune scan --urls-from sitemap.xml --survey --sample-per-pattern 5 --out .
 ```
 
 A survey measures two viewports, `iphone-15` and `desktop`, with no quality estimate, four pages at once, and at most 3 s
-of waiting for the network to go idle. Its numbers are exact savings only, and every output says so, for example
-`survey: 2 viewports, exact savings only, no est.`
+of waiting for the network to go idle. Its estimated saving covers sizes only: no re-encodes run, so it is the smaller-file part
+alone. Every output says so, and the CLI prints this label today: `survey: 2 viewports, exact savings only, no est.`
 
 Then full-scan only the heaviest route types, or the pages that stand for them, with all six viewports and the estimate:
 
@@ -167,10 +167,9 @@ Scan only the sites you own, and scan each one once unless you need more.
 
 The JSON for each page has the numbers listed in [Output JSON fields](/reference/output-json). The short version:
 
-- **exact**: savings from the site's own smaller candidates, fetched and measured.
-- **est.**: savings from a local re-encode. It is an estimate.
+- **estimated saving** (`exact + est.` in the CLI): the number to act on. [How it measures](./how-it-measures) explains how it is built.
 - **sharpness**: images smaller than their slot. Reported apart, and it contributes no saving.
 - **images**: one fix record per image, with its locator, its layout chain, its `sizes` at each viewport, and a fix hint with
   two byte numbers: bytes saved, and bytes added for sharpness.
 
-Report exact and est. separately. [How it measures](./how-it-measures) explains each number.
+Report the estimated saving and the sharpness separately.
