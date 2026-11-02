@@ -1,19 +1,17 @@
 // The same-origin link crawl of audit (crawl.ts): the links of a page, and the levels followed from the home page.
 import { describe, expect, it } from "vitest";
-import { crawlSite, linksOf } from "../src/crawl.js";
+import { crawlSite, linksOf, type PageGet } from "../src/crawl.js";
+import type { Resolver } from "../src/address.js";
 
 const ORIGIN = "https://shop.example";
 
-/** A fake fetch over a map of path to HTML (a missing path answers 404). Records each URL asked for. */
-function fakeSite(pages: Record<string, string>, asked: string[] = []): typeof fetch {
-  return (async (input: string | URL | Request) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+/** A fake page source over a map of path to HTML (a missing path answers nothing). Records each URL asked for. */
+function fakeSite(pages: Record<string, string>, asked: string[] = []): PageGet {
+  return async (url: string) => {
     asked.push(url);
-    const path = new URL(url).pathname;
-    const body = pages[path];
-    if (body === undefined) return new Response("not found", { status: 404, headers: { "content-type": "text/html" } });
-    return new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
-  }) as unknown as typeof fetch;
+    const body = pages[new URL(url).pathname];
+    return body === undefined ? undefined : Buffer.from(body, "utf8");
+  };
 }
 
 describe("linksOf", () => {
@@ -44,20 +42,31 @@ describe("crawlSite", () => {
 
   it("follows links two levels from the home page, and lists the pages it reached", async () => {
     const asked: string[] = [];
-    const found = await crawlSite(ORIGIN, { fetchImpl: fakeSite(pages, asked) });
+    const found = await crawlSite(ORIGIN, { get: fakeSite(pages, asked) });
     expect(found).toEqual([`${ORIGIN}/`, `${ORIGIN}/a`, `${ORIGIN}/b`, `${ORIGIN}/c`, `${ORIGIN}/d`]);
     expect(asked).not.toContain(`${ORIGIN}/deep`);
     expect(asked.some((u) => u.startsWith("https://other.example"))).toBe(false);
   });
 
   it("stops at the page cap", async () => {
-    const found = await crawlSite(ORIGIN, { fetchImpl: fakeSite(pages), max: 2 });
+    const found = await crawlSite(ORIGIN, { get: fakeSite(pages), max: 2 });
     expect(found).toHaveLength(2);
     expect(found[0]).toBe(`${ORIGIN}/`);
   });
 
+  it("does not list a body that is not an HTML document", async () => {
+    const found = await crawlSite(ORIGIN, { get: async () => Buffer.from('{"links":["/a"]}', "utf8") });
+    expect(found).toEqual([]);
+  });
+
+  it("refuses a site whose host resolves to a private address, unless the site is local (the checked fetcher)", async () => {
+    const privateResolver: Resolver = async () => [{ address: "10.0.0.5", family: 4 }];
+    const found = await crawlSite(ORIGIN, { resolver: privateResolver, max: 5 });
+    expect(found).toEqual([]);
+  });
+
   it("does not list a page that answers an error", async () => {
-    const found = await crawlSite(ORIGIN, { fetchImpl: fakeSite({ "/": `<a href="/gone">g</a>` }) });
+    const found = await crawlSite(ORIGIN, { get: fakeSite({ "/": `<a href="/gone">g</a>` }) });
     expect(found).toEqual([`${ORIGIN}/`]);
   });
 });

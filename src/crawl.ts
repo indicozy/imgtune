@@ -1,16 +1,21 @@
 // A same-origin link crawl for `imgtune audit`, used when a site has no sitemap: the home page, then the pages it links to,
-// to CRAWL_DEPTH levels, at most CRAWL_MAX_PAGES pages. It reads the HTML of each page with fetch (no browser: the links
-// are in the HTML the server sends). Only pages that answer 2xx with an HTML type are listed; a page that does not is
-// skipped, not retried. Links to other origins, to files (images, scripts, PDFs) and to fragments are not followed.
+// to CRAWL_DEPTH levels, at most CRAWL_MAX_PAGES pages. The pages are fetched with the checked fetcher (fetch.ts), the same
+// one the sitemap reader uses: every redirect hop must stay on the site's registrable domain, each destination is checked
+// at connect time (no loopback or private address unless the site is one), and the body is capped. No browser: the links
+// are in the HTML the server sends. A page that does not answer 2xx, or whose body is not HTML, is skipped, not retried.
+import { makeFetcher, type Fetcher } from "./fetch.js";
+import { isLocalTarget, type Resolver } from "./address.js";
+import { IMGTUNE_VERSION } from "./version.js";
+
 export const CRAWL_DEPTH = 2;
 export const CRAWL_MAX_PAGES = 500;
 /** Pages fetched at once. */
 export const CRAWL_CONCURRENCY = 4;
-/** Longest wait for one page, in ms. */
-const CRAWL_TIMEOUT_MS = 15_000;
-/** The HTML read of one page, in characters: the links of a page are in its first part in practice. */
-const MAX_HTML_CHARS = 2 * 1024 * 1024;
+/** The largest HTML body read for one page, in bytes: a larger one is refused by the fetcher. */
+export const CRAWL_MAX_HTML_BYTES = 2 * 1024 * 1024;
 const FILE_LINK = /\.(?:png|jpe?g|gif|webp|avif|svg|ico|pdf|zip|gz|css|js|mjs|json|xml|txt|mp4|webm|mp3|woff2?|ttf|otf)$/i;
+/** The start of an HTML document in its first bytes: a doctype, an html, head or body element, or an anchor. */
+const HTML_START = /<(?:!doctype\s+html|html|head|body|a)[\s>]/i;
 
 /** The same-origin page links of an HTML document, absolute and without fragments, in document order and unique. */
 export function linksOf(html: string, pageUrl: string, origin: string): string[] {
@@ -34,24 +39,29 @@ export function linksOf(html: string, pageUrl: string, origin: string): string[]
   return [...out];
 }
 
+/** Fetches one page's body: the checked fetcher's answer, or undefined. Injected by the tests. */
+export type PageGet = (url: string) => Promise<Buffer | undefined>;
+
 export interface CrawlOptions {
   depth?: number;
   max?: number;
-  /** Tests inject a fake; production uses the global fetch. */
-  fetchImpl?: typeof fetch;
+  /** Tests inject a fake page source. Production: the checked fetcher, with the site's own origin as the same-site rule. */
+  get?: PageGet;
+  /** Tests inject a resolver for the checked fetcher. Production uses the system resolver. */
+  resolver?: Resolver;
 }
 
-/** The HTML of a page, or undefined when it is not an HTML page that answers 2xx on the same origin. */
-async function htmlOf(url: string, origin: string, fetchImpl: typeof fetch): Promise<string | undefined> {
-  try {
-    const response = await fetchImpl(url, { redirect: "follow", headers: { accept: "text/html" }, signal: AbortSignal.timeout(CRAWL_TIMEOUT_MS) });
-    if (!response.ok) return undefined;
-    if (new URL(response.url || url).origin !== origin) return undefined;
-    if (!/text\/html|application\/xhtml/i.test(response.headers.get("content-type") ?? "")) return undefined;
-    return (await response.text()).slice(0, MAX_HTML_CHARS);
-  } catch {
-    return undefined;
-  }
+/** The checked fetcher of a crawl: private destinations only for a site that is itself local (see isLocalTarget). */
+function checkedGet(origin: string, fetcher: Fetcher): PageGet {
+  const allowPrivate = isLocalTarget(origin);
+  return (url) => fetcher.get(url, { maxBytes: CRAWL_MAX_HTML_BYTES, allowPrivate, sameSiteAs: origin });
+}
+
+/** The HTML text of a body, or undefined when the body does not start like an HTML document. */
+function htmlOf(body: Buffer | undefined): string | undefined {
+  if (body === undefined) return undefined;
+  const text = body.toString("utf8");
+  return HTML_START.test(text.slice(0, 4096)) ? text : undefined;
 }
 
 /**
@@ -62,7 +72,7 @@ export async function crawlSite(originUrl: string, opts: CrawlOptions = {}): Pro
   const origin = new URL(originUrl).origin;
   const depthLimit = opts.depth ?? CRAWL_DEPTH;
   const max = opts.max ?? CRAWL_MAX_PAGES;
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const get = opts.get ?? checkedGet(origin, makeFetcher({ userAgent: `imgtune/${IMGTUNE_VERSION}`, resolver: opts.resolver }));
   const start = `${origin}/`;
   const seen = new Set<string>([start]);
   const pages: string[] = [];
@@ -71,9 +81,9 @@ export async function crawlSite(originUrl: string, opts: CrawlOptions = {}): Pro
     const next: string[] = [];
     for (let i = 0; i < level.length && pages.length < max; i += CRAWL_CONCURRENCY) {
       const chunk = level.slice(i, i + CRAWL_CONCURRENCY);
-      const bodies = await Promise.all(chunk.map((url) => htmlOf(url, origin, fetchImpl)));
+      const bodies = await Promise.all(chunk.map((url) => get(url).catch(() => undefined)));
       chunk.forEach((url, k) => {
-        const html = bodies[k];
+        const html = htmlOf(bodies[k]);
         if (html === undefined || pages.length >= max) return;
         pages.push(url);
         if (depth < depthLimit) {
