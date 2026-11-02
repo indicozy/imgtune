@@ -75,15 +75,14 @@ const tip = computed(() => {
     title: `${s.id} · ${s.category} · ${s.tech}`,
     rows: [
       { label: "image KB / view", value: fmtInt(s.imageKbPerView) },
-      { label: "exact", value: fmtPct(s.exactPct) },
-      { label: "exact + est.", value: fmtPct(s.exactEstPct) },
+      { label: "estimated saving", value: fmtPct(s.exactEstPct) },
       { label: "fixable", value: fmtPct(s.fixablePct) },
       { label: "saved KB / view", value: fmtInt(s.savedKbPerView) },
     ],
   };
 });
 const label = (s: SurveySite) =>
-  `${s.id}, ${s.category}, stack ${s.tech}, ${fmtInt(s.imageKbPerView)} KB per view, exact ${fmtPct(s.exactPct)}, exact plus est. ${fmtPct(s.exactEstPct)}, fixable ${fmtPct(s.fixablePct)}`;
+  `${s.id}, ${s.category}, stack ${s.tech}, ${fmtInt(s.imageKbPerView)} KB per view, estimated saving ${fmtPct(s.exactEstPct)}, fixable ${fmtPct(s.fixablePct)}`;
 </script>
 
 <template>
@@ -96,7 +95,7 @@ const label = (s: SurveySite) =>
       <svg
         role="group"
         :aria-describedby="`${id}-desc`"
-        aria-label="Dot plot: one dot per site by exact plus estimated saving"
+        aria-label="Dot plot: one dot per site by estimated saving"
         :viewBox="`0 0 ${W} ${H}`"
         :width="W"
         :height="H"
@@ -168,11 +167,11 @@ const label = (s: SurveySite) =>
       />
     </div>
     <figcaption v-if="!compact" :id="`${id}-desc`" class="survey-caption">
-      One dot per site, grouped in {{ 100 / BINS }}% steps of exact + est. saving (share of image bytes per view). Dots
+      One dot per site, grouped in {{ 100 / BINS }}% steps of estimated saving (share of image bytes per view). Dots
       stack upward; hover or tab through them for each site.
     </figcaption>
     <span v-else :id="`${id}-desc`" class="sr-only">
-      One dot per site, grouped in 5% steps of exact plus estimated saving.
+      One dot per site, grouped in 5% steps of estimated saving.
     </span>
   </figure>
 </template>

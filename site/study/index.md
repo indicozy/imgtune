@@ -35,18 +35,18 @@ const shareCount = survey.sites.filter((s) => s.exactEstPct >= 20).length;
 
 **Results**
 
-- **6 production sites (the deciders):** exact savings alone put **2 of 6** above 15%, a pass at the bar set in advance. With
-  estimates, **6 of 6** pass, at 16.5% to 53.1% of image bytes per view.
+- **6 production sites (the deciders):** the estimated saving is 16.5% to 53.1% of image bytes per view on all six. The kill
+  criterion, fixed in advance, was set on the smaller-file part alone: **2 of 6** above 15%, a pass at the bar.
 - **{{ survey.count }} more production sites, anonymous:** the median site loads {{ fmt(tldr.medianKbPerView) }} KB of images per view
   and could cut **{{ tldr.medianExactEstPct }}%** of them. **{{ shareCount }} of {{ survey.count }}** ({{ tldr.shareAtLeast20Pct }}%)
-  could save 20% or more. Most of it is est.: few sites ship a smaller `srcset` candidate that goes unused.
+  could save 20% or more. Most of the estimate is re-encodes: few sites ship a smaller `srcset` candidate that goes unused.
 - **8 open-source apps:** developer sites carry few image bytes. The waste sits in image-heavy commerce.
 
 **Method**
 
 - Each site is scanned once, in headless Chromium: 2 pages, 6 viewports, scrolled to the end.
-- **Exact** is the site's own smaller `srcset` candidate, fetched and measured. **Est.** is a re-encode or resize, kept only
-  if SSIMULACRA2 stays within a delta of 2 of the original.
+- The **estimated saving** is built as described in [How it measures](/guide/how-it-measures). Re-encodes count only when
+  SSIMULACRA2 stays within a delta of 2 of the original.
 - robots.txt is respected, and sites behind bot walls are dropped. The sample leans toward sites without them.
 - Any stack: the scan measures the live page, not the source. Details are in [Method](#method) and [Limits](#limits).
 
@@ -56,8 +56,8 @@ const shareCount = survey.sites.filter((s) => s.exactEstPct >= 20).length;
   1280 px desktop at 1x), SSIMULACRA2 at a delta of 2.
 - Each page is loaded in headless Chromium, scrolled to the end, and every image is recorded with the size it renders at.
 - **Saving** is the share of all image bytes per page view. It is averaged over the viewports, then over the two pages.
-- **Exact** is the site's own smaller `srcset` candidate, fetched and measured.
-- **Est.** is a local re-encode at another quality or format, or a resize of a plain `img`, judged by SSIMULACRA2 against the original.
+- **Estimated saving** is the one number reported here. It is built as in [How it measures](/guide/how-it-measures), with
+  re-encodes judged by SSIMULACRA2 against the original.
 - Sharpness growth (images smaller than their slot) is reported apart and never subtracted from another image's saving.
 
 The kill criterion was fixed in advance: a pass needs at least 2 of the 6 production sites above 15%.
@@ -66,26 +66,26 @@ The kill criterion was fixed in advance: a pass needs at least 2 of the 6 produc
 
 <table class="study-table">
   <thead>
-    <tr><th>site</th><th>KB / view</th><th>exact</th><th>exact + est.</th><th>of fixable</th></tr>
+    <tr><th>site</th><th>KB / view</th><th>estimated saving</th><th>of fixable</th></tr>
   </thead>
   <tbody>
     <tr v-for="r in study.production" :key="r.id">
-      <th>{{ r.id }}</th><td>{{ r.kb.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td>
+      <th>{{ r.id }}</th><td>{{ r.kb.toLocaleString("en-US") }}</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td>
     </tr>
   </tbody>
 </table>
 
-Kill criterion: exact only, **2 of 6** above 15%, which is a pass at the bar. Exact with estimates, **6 of 6**.
+Kill criterion (fixed in advance, on the smaller-file part alone): **2 of 6** above 15%, a pass at the bar. On the estimated saving: **6 of 6**.
 
 ## Open-source apps (v4, do not decide)
 
 <table class="study-table">
   <thead>
-    <tr><th>site</th><th>KB / view</th><th>exact</th><th>exact + est.</th><th>of fixable</th></tr>
+    <tr><th>site</th><th>KB / view</th><th>estimated saving</th><th>of fixable</th></tr>
   </thead>
   <tbody>
     <tr v-for="r in study.openSource" :key="r.site">
-      <th>{{ r.site }}</th><td>{{ r.kb.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td>
+      <th>{{ r.site }}</th><td>{{ r.kb.toLocaleString("en-US") }}</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td>
     </tr>
   </tbody>
 </table>
@@ -95,7 +95,7 @@ Developer sites carry few image bytes. The waste sits in image-heavy commerce.
 ## More production sites (anonymous) {#more-sites}
 
 These are {{ survey.count }} real public sites, scanned on {{ scanWhen }} with the same CLI: 2 pages each, 6 viewports, the same rules as the
-six above. The owners were not asked, so the sites stay anonymous. Labels P001 onward are assigned by rank (highest exact + est.
+six above. The owners were not asked, so the sites stay anonymous. Labels P001 onward are assigned by rank (highest estimated saving
 first), not by name or scan order. KB values are rounded to the nearest 10. The sites are a mix of stacks: {{ stacks.length }} named ones ({{ stackNames }}),
 and {{ unknownCount }} that no named stack covers.
 
@@ -118,28 +118,28 @@ without bot walls. The scan measures the live page in a browser, so it works on 
 
 <table class="study-table">
   <thead>
-    <tr><th>id</th><th>category</th><th>stack</th><th>image KB / view</th><th>exact</th><th>exact + est.</th><th>fixable</th><th>saved KB / view</th></tr>
+    <tr><th>id</th><th>category</th><th>stack</th><th>image KB / view</th><th>estimated saving</th><th>fixable</th><th>saved KB / view</th></tr>
   </thead>
   <tbody>
     <tr v-for="r in survey.sites" :key="r.id">
-      <th>{{ r.id }}</th><td>{{ r.category }}</td><td>{{ r.tech }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="x">{{ r.exactPct.toFixed(1) }}%</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
+      <th>{{ r.id }}</th><td>{{ r.category }}</td><td>{{ r.tech }}</td><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td class="e">{{ r.exactEstPct.toFixed(1) }}%</td><td>{{ r.fixablePct.toFixed(1) }}%</td><td>{{ r.savedKbPerView.toLocaleString("en-US") }}</td>
     </tr>
   </tbody>
 </table>
 
 </details>
 
-Est. is judged as in the method above: a local re-encode or resize, scored with SSIMULACRA2 at a delta of 2.
+The estimate is built as in the method above, with re-encodes scored with SSIMULACRA2 at a delta of 2.
 
 ## Limits
 
 - **Six deciders** is a signal, not proof. The sample leans toward sites without bot walls.
-- **Exact is measured, est. is estimated.** On measured savings alone, 2 of 6 pass. Est. is a floor where an image could not be scored
-  (counted per page as `qualityNA`).
+- **Part of the estimate is an estimate.** The re-encode part is a floor where an image could not be scored (counted per page as
+  `qualityNA`).
 - Quality and format are only estimated when the original is known. Where the loader is not known, the estimate is not made.
 - A3 rose from 13% to 38% between v1 and v4, because its images sit on a custom domain at quality 100, which v1 could not score.
 - A rescan of the open-source sites on 2026-10-30 matched v4 to the rounding shown for three of them. Two moved: supabase.com's
-  exact share rose from 1.9% to 4.5%, and langfuse.com's image bytes rose by about 16%. Part of the difference may come from
+  smaller-file share rose from 1.9% to 4.5%, and langfuse.com's image bytes rose by about 16%. Part of the difference may come from
   tool changes since v4, not only from the sites. See the [replay](/replay) page.
 
 ## Reproduce it

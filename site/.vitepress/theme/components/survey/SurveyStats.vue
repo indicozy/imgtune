@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { survey, median, fmtInt, fmtPct, scanWhen, UNKNOWN_TECH } from "./shared";
+import { survey, fmtInt, fmtPct, scanWhen, UNKNOWN_TECH } from "./shared";
 
 // Tile keys; `tiles` picks a subset (the homepage shows three).
 type TileKey = "sites" | "medianKb" | "medianSaving" | "share20" | "totalSaved";
@@ -9,7 +9,6 @@ const props = withDefaults(defineProps<{ tiles?: TileKey[] }>(), {
 });
 
 const s = survey.summary;
-const medianExact = median(survey.sites.map((x) => x.exactPct));
 // KB = 1000 bytes, as everywhere on the site. From 10,000 KB the total reads in MB.
 const totalKb = s.totalSavedKbPerView;
 const totalValue = totalKb >= 10000 ? (totalKb / 1000).toFixed(1) : fmtInt(totalKb);
@@ -24,8 +23,8 @@ const all = computed(() => [
     key: "medianSaving" as TileKey,
     value: fmtPct(s.medianExactEstPct),
     unit: "",
-    label: "median saving, exact + est.",
-    sub: `exact only: median ${fmtPct(medianExact)}`,
+    label: "median estimated saving",
+    sub: "",
   },
   {
     key: "share20" as TileKey,

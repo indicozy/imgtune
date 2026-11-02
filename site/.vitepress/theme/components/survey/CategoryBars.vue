@@ -112,7 +112,7 @@ const tip = computed(() => {
     title: c.name,
     rows: [
       { label: "sites (n)", value: String(c.count) },
-      { label: "median saving, exact + est.", value: fmtPct(c.medianExactEstPct) },
+      { label: "median estimated saving", value: fmtPct(c.medianExactEstPct) },
       { label: "median fixable", value: fmtPct(c.medianFixablePct) },
       { label: "median image KB / view", value: fmtInt(c.medianKbPerView) },
       { label: "median saved KB / view", value: fmtInt(c.medianSavedKbPerView) },

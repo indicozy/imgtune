@@ -99,15 +99,14 @@ const tip = computed(() => {
     title: `${s.id} · ${s.category}`,
     rows: [
       { label: "image KB / view", value: fmtInt(s.imageKbPerView) },
-      { label: "exact", value: fmtPct(s.exactPct) },
-      { label: "exact + est.", value: fmtPct(s.exactEstPct) },
+      { label: "estimated saving", value: fmtPct(s.exactEstPct) },
       { label: "fixable", value: fmtPct(s.fixablePct) },
       { label: "saved KB / view", value: fmtInt(s.savedKbPerView) },
     ],
   };
 });
 const label = (s: SurveySite) =>
-  `${s.id}, ${s.category}, ${fmtInt(s.imageKbPerView)} KB per view, exact plus est. ${fmtPct(s.exactEstPct)}`;
+  `${s.id}, ${s.category}, ${fmtInt(s.imageKbPerView)} KB per view, estimated saving ${fmtPct(s.exactEstPct)}`;
 </script>
 
 <template>
@@ -227,7 +226,7 @@ const label = (s: SurveySite) =>
       />
     </div>
     <figcaption :id="`${id}-desc`" class="survey-caption">
-      One dot per site: image KB per view on a log scale against exact + est. saving. Selecting a category highlights its
+      One dot per site: image KB per view on a log scale against estimated saving. Selecting a category highlights its
       sites in the accent color and grays the others. The stack row works the same way and combines with the category.
     </figcaption>
   </figure>
