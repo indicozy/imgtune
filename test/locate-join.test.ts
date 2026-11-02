@@ -310,7 +310,7 @@ describe("argument parsing", () => {
       viewport: undefined,
       out: undefined,
       ignoreRobots: false,
-      thirdParty: { block: true, allowHosts: [] },
+      thirdParty: { block: false, allowHosts: [] },
     });
     expect(() => parseLocateArgs(["--locate-only", "--from", "m.json"])).toThrow(/usage: imgtune scan <dev-url>/);
     expect(() => parseLocateArgs(["http://localhost/a", "--locate-only"])).toThrow(/needs --from/);
@@ -326,7 +326,7 @@ describe("argument parsing", () => {
       ids: ["ab1", "cd2"],
       url: "http://localhost:3300/a",
       ignoreRobots: false,
-      thirdParty: { block: true, allowHosts: [] },
+      thirdParty: { block: false, allowHosts: [] },
     });
     expect(() => parseSizesArgs(["--recheck", "s.json", "--sizes-only", "--ids", "../x"])).toThrow(/not an image id/);
     expect(() => parseSizesArgs(["--recheck", "s.json", "--sizes-only", "--gpu"])).toThrow(/not an option of --sizes-only/);

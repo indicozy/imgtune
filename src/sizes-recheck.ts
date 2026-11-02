@@ -19,7 +19,7 @@ export interface SizesArgs {
   ids?: string[];
   url?: string;
   ignoreRobots: boolean;
-  /** Third-party requests: blocked by default, as in a scan (--allow-third-party, --allow-host). */
+  /** Third-party requests: allowed by default, as in a scan (--block-third-party, --allow-host). */
   thirdParty: ThirdPartyPolicy;
 }
 
@@ -34,14 +34,16 @@ export function parseSizesArgs(argv: string[]): SizesArgs {
   let ids: string[] | undefined;
   let url: string | undefined;
   let ignoreRobots = false;
-  let allowThirdParty = false;
+  let blockThirdParty = false;
   let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--allow-third-party") {
-      allowThirdParty = true;
+    if (arg === "--block-third-party") {
+      blockThirdParty = true;
       continue;
     }
+    // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
+    if (arg === "--allow-third-party") continue;
     if (arg === "--sizes-only" || arg === "--recheck") {
       if (arg === "--sizes-only") continue;
       const value = argv[i + 1];
@@ -85,7 +87,7 @@ export function parseSizesArgs(argv: string[]): SizesArgs {
     throw new Error(`${safeText(arg)} is not an option of --sizes-only (${USAGE})`);
   }
   if (file === undefined) throw new Error(USAGE);
-  return { file, ids, url, ignoreRobots, thirdParty: thirdPartyFromFlags(allowThirdParty, allowHosts) };
+  return { file, ids, url, ignoreRobots, thirdParty: thirdPartyFromFlags(blockThirdParty, allowHosts) };
 }
 
 /** Two widths (CSS px) count as the same layout within this tolerance: a pixel or two of rounding, or 2 %. */

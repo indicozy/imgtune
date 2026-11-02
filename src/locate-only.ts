@@ -25,7 +25,7 @@ export interface LocateArgs {
   ignoreRobots: boolean;
   /** --root: the folder the project sources are read from. */
   root?: string;
-  /** Third-party requests: blocked by default, as in a scan (--allow-third-party, --allow-host). */
+  /** Third-party requests: allowed by default, as in a scan (--block-third-party, --allow-host). */
   thirdParty: ThirdPartyPolicy;
 }
 
@@ -41,7 +41,7 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
   let out: string | undefined;
   let root: string | undefined;
   let ignoreRobots = false;
-  let allowThirdParty = false;
+  let blockThirdParty = false;
   let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -50,10 +50,12 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
       ignoreRobots = true;
       continue;
     }
-    if (arg === "--allow-third-party") {
-      allowThirdParty = true;
+    if (arg === "--block-third-party") {
+      blockThirdParty = true;
       continue;
     }
+    // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
+    if (arg === "--allow-third-party") continue;
     if (arg === "--from" || arg === "--viewports" || arg === "--locate-out" || arg === "--root" || arg === "--allow-host") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
@@ -81,7 +83,7 @@ export function parseLocateArgs(argv: string[]): LocateArgs {
   }
   if (url === undefined) throw new Error(USAGE);
   if (from === undefined) throw new Error(`--locate-only needs --from <measured-scan.json> (${USAGE})`);
-  return { url, from, viewport, out, ignoreRobots, root, thirdParty: thirdPartyFromFlags(allowThirdParty, allowHosts) };
+  return { url, from, viewport, out, ignoreRobots, root, thirdParty: thirdPartyFromFlags(blockThirdParty, allowHosts) };
 }
 
 /** The default output: the measured file's name with `.located.json` in its place. */

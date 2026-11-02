@@ -159,67 +159,76 @@ describe("parseAllowHosts", () => {
 });
 
 describe("thirdPartyFromFlags", () => {
-  it("blocks by default, with no hosts kept", () => {
+  it("allows every request by default, with no hosts kept", () => {
+    expect(DEFAULT_THIRD_PARTY).toEqual({ block: false, allowHosts: [] });
     expect(thirdPartyFromFlags(false, undefined)).toEqual(DEFAULT_THIRD_PARTY);
   });
 
-  it("turns blocking off with --allow-third-party", () => {
-    expect(thirdPartyFromFlags(true, undefined)).toEqual({ block: false, allowHosts: [] });
+  it("turns blocking on with --block-third-party", () => {
+    expect(thirdPartyFromFlags(true, undefined)).toEqual({ block: true, allowHosts: [] });
   });
 
-  it("keeps the named hosts while blocking stays on", () => {
-    expect(thirdPartyFromFlags(false, ["a.test"])).toEqual({ block: true, allowHosts: ["a.test"] });
+  it("keeps the named hosts while blocking is on", () => {
+    expect(thirdPartyFromFlags(true, ["a.test"])).toEqual({ block: true, allowHosts: ["a.test"] });
   });
 
-  it("refuses --allow-host together with --allow-third-party, since nothing is blocked", () => {
-    expect(() => thirdPartyFromFlags(true, ["a.test"])).toThrow(/has no effect with --allow-third-party/);
+  it("refuses --allow-host without --block-third-party, since nothing is blocked", () => {
+    expect(() => thirdPartyFromFlags(false, ["a.test"])).toThrow(/has no effect without --block-third-party/);
   });
 });
 
 describe("scan flags", () => {
   const url = "https://shop.example.co.uk/";
 
-  it("blocks third-party requests when no flag is given", () => {
-    expect(parseScanArgs([url]).thirdParty).toEqual({ block: true, allowHosts: [] });
+  it("allows third-party requests when no flag is given", () => {
+    expect(parseScanArgs([url]).thirdParty).toEqual({ block: false, allowHosts: [] });
   });
 
-  it("reads --allow-third-party", () => {
+  it("reads --block-third-party", () => {
+    expect(parseScanArgs([url, "--block-third-party"]).thirdParty).toEqual({ block: true, allowHosts: [] });
+  });
+
+  it("accepts the deprecated --allow-third-party as a no-op, with the default policy", () => {
     expect(parseScanArgs([url, "--allow-third-party"]).thirdParty).toEqual({ block: false, allowHosts: [] });
+    expect(parseScanArgs([url, "--allow-third-party", "--block-third-party"]).thirdParty).toEqual({ block: true, allowHosts: [] });
   });
 
-  it("reads --allow-host as a comma list", () => {
-    expect(parseScanArgs([url, "--allow-host", "Carousel.test,cdn.x.io"]).thirdParty).toEqual({
+  it("reads --allow-host as a comma list, with blocking on", () => {
+    expect(parseScanArgs([url, "--block-third-party", "--allow-host", "Carousel.test,cdn.x.io"]).thirdParty).toEqual({
       block: true,
       allowHosts: ["carousel.test", "cdn.x.io"],
     });
   });
 
-  it("refuses --allow-host with --allow-third-party, and a value that is not a host", () => {
-    expect(() => parseScanArgs([url, "--allow-third-party", "--allow-host", "a.test"])).toThrow(/has no effect/);
-    expect(() => parseScanArgs([url, "--allow-host", "https://a.test"])).toThrow(/host names/);
-    expect(() => parseScanArgs([url, "--allow-host"])).toThrow(/needs a value/);
+  it("refuses --allow-host without --block-third-party, and a value that is not a host", () => {
+    expect(() => parseScanArgs([url, "--allow-host", "a.test"])).toThrow(/has no effect without --block-third-party/);
+    expect(() => parseScanArgs([url, "--block-third-party", "--allow-host", "https://a.test"])).toThrow(/host names/);
+    expect(() => parseScanArgs([url, "--block-third-party", "--allow-host"])).toThrow(/needs a value/);
   });
 
   it("reads the same flags in the recheck, locate-only and sizes-only commands", () => {
     expect(parseRecheckArgs(["--recheck", "a.json"]).thirdParty).toEqual(DEFAULT_THIRD_PARTY);
-    expect(parseRecheckArgs(["--recheck", "a.json", "--allow-third-party"]).thirdParty).toEqual({ block: false, allowHosts: [] });
-    expect(parseRecheckArgs(["--recheck", "a.json", "--allow-host", "a.test"]).thirdParty).toEqual({ block: true, allowHosts: ["a.test"] });
-    expect(parseLocateArgs(["http://localhost:3000/p", "--locate-only", "--from", "a.json", "--allow-host", "a.test"]).thirdParty).toEqual({
+    expect(parseRecheckArgs(["--recheck", "a.json", "--block-third-party"]).thirdParty).toEqual({ block: true, allowHosts: [] });
+    expect(parseRecheckArgs(["--recheck", "a.json", "--block-third-party", "--allow-host", "a.test"]).thirdParty).toEqual({
+      block: true,
+      allowHosts: ["a.test"],
+    });
+    expect(parseLocateArgs(["http://localhost:3000/p", "--locate-only", "--from", "a.json", "--block-third-party", "--allow-host", "a.test"]).thirdParty).toEqual({
       block: true,
       allowHosts: ["a.test"],
     });
     expect(parseSizesArgs(["--recheck", "a.json", "--sizes-only"]).thirdParty).toEqual(DEFAULT_THIRD_PARTY);
-    expect(parseSizesArgs(["--recheck", "a.json", "--sizes-only", "--allow-third-party"]).thirdParty).toEqual({ block: false, allowHosts: [] });
+    expect(parseSizesArgs(["--recheck", "a.json", "--sizes-only", "--block-third-party"]).thirdParty).toEqual({ block: true, allowHosts: [] });
   });
 });
 
 describe("recorded options", () => {
   const base = { aggressive: false, quality: true, viewports: [...DEFAULT_VIEWPORTS], ignoreRobots: false, storageState: undefined, gpu: undefined };
 
-  it("records blocked by default, and allowed with --allow-third-party", () => {
+  it("records allowed by default, and blocked with --block-third-party", () => {
     expect(recordOptionsOf({ ...base, thirdParty: BLOCK }).thirdParty).toBe("blocked");
     expect(recordOptionsOf({ ...base, thirdParty: ALLOW }).thirdParty).toBe("allowed");
-    expect(recordOptionsOf({ ...base }).thirdParty).toBe("blocked");
+    expect(recordOptionsOf({ ...base }).thirdParty).toBe("allowed");
   });
 
   it("records the kept hosts, sorted, and only while blocking", () => {
@@ -276,7 +285,7 @@ describe("third-party blocking in a real browser", () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  const scanPage = async (thirdParty?: ThirdPartyPolicy) => {
+  const scanPage = async (thirdParty: ThirdPartyPolicy = ALLOW) => {
     hits.length = 0;
     const out = join(dir, `out-${Math.random().toString(36).slice(2)}`);
     const [result] = await runScan([`${origin}/page`], {
@@ -301,7 +310,7 @@ describe("third-party blocking in a real browser", () => {
     expect(result.options?.thirdParty).toBe("blocked");
   }, 90_000);
 
-  it("loads the third-party script with blocking off, and records that", async () => {
+  it("loads the third-party script by default (blocking off), and records that", async () => {
     const { result, requested } = await scanPage(ALLOW);
     expect(requested).toContain("/tracker.js");
     expect(result.thirdPartyBlocked).toBe(0);

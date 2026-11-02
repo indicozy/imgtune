@@ -6,16 +6,21 @@ import { registrableDomain } from "./site.js";
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
- * What the scan does with requests to other sites. `block` is on by default: a third-party script, fetch, websocket,
- * media file, beacon or iframe is aborted, which makes the page reach `load` and network idle sooner. `allowHosts` are
- * exact host names whose requests are kept even when blocking.
+ * What the scan does with requests to other sites. `block` is off by default (every request loads, as a visitor's browser
+ * would load it). With --block-third-party a third-party script, fetch, websocket, media file, beacon or iframe is
+ * aborted, which makes the page reach `load` and network idle sooner, but it can drop images a page loads through its own
+ * API on another host. `allowHosts` are exact host names whose requests are kept while blocking.
  */
 export interface ThirdPartyPolicy {
   block: boolean;
   allowHosts: readonly string[];
 }
 
-export const DEFAULT_THIRD_PARTY: ThirdPartyPolicy = { block: true, allowHosts: [] };
+export const DEFAULT_THIRD_PARTY: ThirdPartyPolicy = { block: false, allowHosts: [] };
+
+/** The stderr note for the deprecated --allow-third-party (accepted as a no-op for one release). */
+export const ALLOW_THIRD_PARTY_NOTE =
+  "--allow-third-party is deprecated and does nothing: third-party requests are allowed by default now. Use --block-third-party to block them. The flag will be removed in the next release.";
 
 /**
  * Hosting platforms whose subdomains belong to different owners (a.github.io and b.github.io are two sites). The
@@ -142,11 +147,10 @@ export function parseAllowHosts(text: string): string[] {
 }
 
 /**
- * The policy the scan flags name: --allow-third-party turns blocking off, --allow-host keeps the named hosts while
- * blocking stays on. The two together are refused: a kept host means nothing when nothing is blocked.
+ * The policy the flags name: --block-third-party turns blocking on, and --allow-host keeps the named hosts while blocking
+ * is on. A host list without blocking is refused: a kept host means nothing when nothing is blocked.
  */
-export function thirdPartyFromFlags(allowAll: boolean, hosts: readonly string[] | undefined): ThirdPartyPolicy {
-  if (allowAll && hosts !== undefined) throw new Error("--allow-host has no effect with --allow-third-party");
-  if (allowAll) return { block: false, allowHosts: [] };
-  return { block: true, allowHosts: hosts ?? [] };
+export function thirdPartyFromFlags(block: boolean, hosts: readonly string[] | undefined): ThirdPartyPolicy {
+  if (!block && hosts !== undefined) throw new Error("--allow-host has no effect without --block-third-party");
+  return { block, allowHosts: hosts ?? [] };
 }

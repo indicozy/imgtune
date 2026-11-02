@@ -40,7 +40,7 @@ describe("parseRecheckArgs", () => {
       ids: ["a1", "b2"],
       ignoreRobots: false,
       noCache: false,
-      thirdParty: { block: true, allowHosts: [] },
+      thirdParty: { block: false, allowHosts: [] },
     });
   });
 
@@ -139,7 +139,7 @@ describe("the scan file is untrusted", () => {
 
   it("refuses ids that are not of the expected form on the command line", async () => {
     const path = join(dir, "ids.json");
-    await writeFile(path, JSON.stringify({ url: "https://shop.example/", images: [], options: { thirdParty: "blocked" } }));
+    await writeFile(path, JSON.stringify({ url: "https://shop.example/", images: [], options: { thirdParty: "allowed" } }));
     await expect(recheckScan(["--recheck", path, "--ids", "a;rm"], dir, () => {})).rejects.toThrow("not an image id");
   });
 

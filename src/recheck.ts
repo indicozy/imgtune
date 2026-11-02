@@ -28,7 +28,7 @@ export interface RecheckArgs {
   viewports?: string[];
   /** --no-cache: the numbers are computed again, and none is kept. */
   noCache?: boolean;
-  /** Third-party requests: blocked by default, as in a scan (--allow-third-party, --allow-host). */
+  /** Third-party requests: allowed by default, as in a scan (--block-third-party, --allow-host). */
   thirdParty: ThirdPartyPolicy;
 }
 
@@ -54,7 +54,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
   let gpu: { device: number } | undefined;
   let viewports: string[] | undefined;
   let noCache = false;
-  let allowThirdParty = false;
+  let blockThirdParty = false;
   let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -62,10 +62,12 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
       ignoreRobots = true;
       continue;
     }
-    if (arg === "--allow-third-party") {
-      allowThirdParty = true;
+    if (arg === "--block-third-party") {
+      blockThirdParty = true;
       continue;
     }
+    // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
+    if (arg === "--allow-third-party") continue;
     if (arg === "--gpu") {
       gpu ??= { device: 0 };
       continue;
@@ -91,7 +93,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
     }
   }
   if (files.length === 0) throw new Error(USAGE);
-  return { files, ids, ignoreRobots, gpu, viewports, noCache, thirdParty: thirdPartyFromFlags(allowThirdParty, allowHosts) };
+  return { files, ids, ignoreRobots, gpu, viewports, noCache, thirdParty: thirdPartyFromFlags(blockThirdParty, allowHosts) };
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
@@ -331,7 +333,7 @@ async function recheckPage(
   const scannedThirdParty = previous.options?.thirdParty ?? "allowed";
   const rechecked = args.thirdParty.block ? "blocked" : "allowed";
   if (scannedThirdParty !== rechecked) {
-    const flag = scannedThirdParty === "allowed" ? "--allow-third-party" : "no third-party flag";
+    const flag = scannedThirdParty === "blocked" ? "--block-third-party" : "no third-party flag";
     throw new Error(`${safeText(file)} was scanned with third-party requests ${scannedThirdParty}; pass ${flag} to recheck it too`);
   }
   const images = usableRecords(previous.images, log);
