@@ -126,7 +126,7 @@ async function auditUrls(args: AuditArgs, appRoutes: AppRoute[], cwd: string, lo
     }
     if (urls.length === 0) {
       urls = await crawlSite(args.prod, { depth: CRAWL_DEPTH });
-      log(`crawl from ${args.prod}: ${urls.length} page(s), up to ${CRAWL_DEPTH} links deep`);
+      log(`crawl from ${safeText(args.prod)}: ${urls.length} page(s), up to ${CRAWL_DEPTH} links deep`);
     }
   }
   const listed = new Set(urls);
@@ -242,7 +242,7 @@ export async function auditCommand(argv: string[], cwd: string, log: (message: s
   if (appRoutes.length === 0) throw new Error(`no route files under ${safeText(args.app)}: expected app/**/page.* (or src/app) or pages/**`);
   const quality =
     args.flags.qualities !== undefined ? { qualities: args.flags.qualities, note: "allowed qualities from --qualities" } : await nextQualities(appRoot);
-  log(`app: ${appRoutes.length} route(s); ${quality.note}`);
+  log(`app: ${appRoutes.length} route(s); ${safeText(quality.note)}`);
   const settings: CheckSettings = { ...args.flags, qualities: quality.qualities };
 
   // 2. Preflight: the production home must load its stylesheets.

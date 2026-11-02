@@ -11,8 +11,12 @@ const TEXT_LIMIT = 200;
  * Page-derived text as it may be printed: C0 and C1 control characters removed (no escape sequences reach the
  * terminal), and at most TEXT_LIMIT characters, the last three of them "...". JSON output is not passed through here.
  */
+export function stripControls(text: string): string {
+  return text.replace(CONTROL_CHARS, "");
+}
+
 export function safeText(text: string, limit = TEXT_LIMIT): string {
-  const clean = text.replace(CONTROL_CHARS, "");
+  const clean = stripControls(text);
   return clean.length > limit ? `${clean.slice(0, limit - 3)}...` : clean;
 }
 

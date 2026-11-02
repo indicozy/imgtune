@@ -398,8 +398,8 @@ export function deepSelectionNote(picks: DeepPick[], leftOut: LeftOutType[]): st
   const capped = leftOut.filter((t) => t.reason === "cap");
   const noImages = leftOut.filter((t) => t.reason === "no-images");
   const parts = [`deep: ${picks.length} route type(s), one page each (heaviest first)`];
-  if (capped.length > 0) parts.push(`${capped.length} left out by --deep: ${capped.map((t) => t.type).join(", ")}`);
-  if (noImages.length > 0) parts.push(`${noImages.length} without images: ${noImages.map((t) => t.type).join(", ")}`);
+  if (capped.length > 0) parts.push(`${capped.length} left out by --deep: ${capped.map((t) => safeText(t.type, 100)).join(", ")}`);
+  if (noImages.length > 0) parts.push(`${noImages.length} without images: ${noImages.map((t) => safeText(t.type, 100)).join(", ")}`);
   return parts.join("; ");
 }
 

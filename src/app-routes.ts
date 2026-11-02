@@ -4,6 +4,7 @@
 // routes `(.)photo` and private folders `_lib` are not routes. A URL maps to its most specific matching pattern, and that
 // pattern's route file is the URL's route type. Pure functions over the file list and the URLs: no files are read here.
 import { routeGrouping, type RouteGrouping, type RouteOf } from "./routes.js";
+import { stripControls } from "./text.js";
 
 /** The App Router page file, under app/ or src/app/ (the segment path before `page.*`). */
 const APP_PAGE = /^(?:src\/)?app\/(?:(.*)\/)?page\.(?:tsx|ts|jsx|js|mdx)$/;
@@ -112,10 +113,11 @@ export function pathSegmentsOf(url: string): string[] | undefined {
       .split("/")
       .filter((s) => s !== "")
       .map((s) => {
+        // Control characters out of decoded segments (see text.ts): a route type is printed as it is.
         try {
-          return decodeURIComponent(s);
+          return stripControls(decodeURIComponent(s));
         } catch {
-          return s;
+          return stripControls(s);
         }
       });
   } catch {

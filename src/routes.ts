@@ -6,6 +6,8 @@
 // family (`*.html`). A --route-map overrides the grouping for the URLs it matches. Pure functions: no browser, no files.
 
 /** A locale segment: `en`, `ae-en`, `sa_AR`. Two of them in the set are needed before any is stripped (see groupRoutes). */
+import { stripControls } from "./text.js";
+
 const LOCALE = /^[a-z]{2}(?:[-_][a-z]{2})?$/i;
 /** The second segment of a locale-prefixed page that names its device variant, stripped into a dimension. */
 const VARIANTS: ReadonlySet<string> = new Set(["desktop", "mobile"]);
@@ -152,14 +154,16 @@ function parseUrlParts(url: string): Parsed {
   } catch {
     return { url, segs: [], params: [], parsed: false };
   }
+  // Decoded segments and parameter names can hold control characters (%1b, %07): they are stripped here, so a route type
+  // name is safe to print anywhere (see text.ts).
   const segs = target.pathname.split("/").filter((s) => s !== "").map((s) => {
     try {
-      return decodeURIComponent(s);
+      return stripControls(decodeURIComponent(s));
     } catch {
-      return s;
+      return stripControls(s);
     }
   });
-  const params = [...new Set([...target.searchParams.keys()].filter((name) => !TRACKING.test(name)))].sort();
+  const params = [...new Set([...target.searchParams.keys()].map(stripControls).filter((name) => !TRACKING.test(name)))].sort();
   return { url, segs, params, parsed: true };
 }
 
