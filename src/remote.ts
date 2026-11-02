@@ -43,6 +43,7 @@ import {
 } from "./backgrounds.js";
 import { applySizesOutcome } from "./sizes-outcome.js";
 import { sampleByPattern, urlsFromSource } from "./urls.js";
+import { groupRoutes, parseRouteMap } from "./routes.js";
 import { countDocumentNavigations, gotoParsed, NETWORK_IDLE_TIMEOUT_MS, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
@@ -454,15 +455,17 @@ export interface ScanArgs {
   sharedLoads?: boolean;
   /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
   urlsFrom?: string;
-  /** At most this many URLs per route pattern of the --urls-from list. */
+  /** At most this many URLs per route type of the --urls-from list (see routes.ts). */
   samplePerPattern?: number;
+  /** --route-map: a file of route rules that overrides the grouping of the sample (see routes.ts). */
+  routeMap?: string;
   /** A Playwright storage state file (cookies and local storage) applied to every context. */
   storageState?: string;
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
   gpu?: { device: number };
   /** --harness: the pages are harness routes (Storybook, a temporary route): their records are measured-harness. */
   harness?: boolean;
-  /** Third-party requests: blocked by default; --allow-third-party turns that off, --allow-host keeps hosts. */
+  /** Third-party requests: allowed by default; --block-third-party turns blocking on, --allow-host keeps hosts while blocking. */
   thirdParty: ThirdPartyPolicy;
   /** --fail-on-broken: exit 4 when a page is broken (see broken.ts). */
   failOnBroken?: boolean;
@@ -513,6 +516,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--idle-timeout",
   "--urls-from",
   "--sample-per-pattern",
+  "--route-map",
   "--storage-state",
   "--gpu-device",
   "--allow-host",
@@ -536,12 +540,14 @@ export function parseRange(name: string, text: string, min: number, max: number)
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
   const args: ScanArgs = { urls: [], out: DEFAULT_OUT, aggressive: false, quality: true, thirdParty: DEFAULT_THIRD_PARTY };
-  let allowThirdParty = false;
+  let blockThirdParty = false;
   let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--aggressive") args.aggressive = true;
-    else if (arg === "--allow-third-party") allowThirdParty = true;
+    else if (arg === "--block-third-party") blockThirdParty = true;
+    // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
+    else if (arg === "--allow-third-party") continue;
     else if (arg === "--no-quality") args.quality = false;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--resume") args.resume = true;
@@ -566,6 +572,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--urls-from") args.urlsFrom = value;
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
+      else if (arg === "--route-map") args.routeMap = value;
       else if (arg === "--storage-state") args.storageState = value;
       else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
       else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
@@ -578,7 +585,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
   }
   if (args.urls.length === 0 && args.urlsFrom === undefined) throw new Error("scan needs at least one URL or --urls-from");
   if (args.samplePerPattern !== undefined && args.urlsFrom === undefined) throw new Error("--sample-per-pattern needs --urls-from");
-  args.thirdParty = thirdPartyFromFlags(allowThirdParty, allowHosts);
+  args.thirdParty = thirdPartyFromFlags(blockThirdParty, allowHosts);
   return args;
 }
 
@@ -2415,7 +2422,7 @@ export interface PageResult {
   options?: ScanRecordOptions;
   /** Set on a page that `scan --locate-only` read the sources of from a dev page (see locate-join.ts). */
   locate?: LocateSummary;
-  /** Requests to other sites the browser was stopped from making, over the page's viewports (0 with --allow-third-party). */
+  /** Requests to other sites the browser was stopped from making, over the page's viewports (0 unless --block-third-party). */
   thirdPartyBlocked?: number;
 }
 
@@ -2436,7 +2443,7 @@ export interface ScanRecordOptions {
   idleTimeoutMs?: number;
   /** A --survey scan: its numbers are exact savings only. Absent (not false) otherwise, so older scans still match. */
   survey?: true;
-  /** Third-party requests: "blocked" (the default) or "allowed" (--allow-third-party). Scans from before it have none. */
+  /** Third-party requests: "allowed" (the default) or "blocked" (--block-third-party). Scans from before blocking had a default have none: they count as allowed. */
   thirdParty: "blocked" | "allowed";
   /** The hosts kept while blocking (--allow-host), sorted. Absent when there are none. */
   allowHosts?: string[];
@@ -3763,8 +3770,9 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     log(`--urls-from: ${source.urls.length} URL(s) from the ${named}${dropped}`);
     urls = [...new Set([...urls, ...source.urls])];
     if (args.samplePerPattern !== undefined) {
-      const sample = sampleByPattern(urls, args.samplePerPattern);
-      log(`--sample-per-pattern ${args.samplePerPattern}: ${sample.urls.length} of ${urls.length} URL(s), ${sample.patterns} pattern(s)`);
+      const routeMap = args.routeMap !== undefined ? parseRouteMap(await readFile(resolve(cwd, args.routeMap), "utf8")) : [];
+      const sample = sampleByPattern(urls, args.samplePerPattern, groupRoutes(urls, { routeMap }));
+      log(`--sample-per-pattern ${args.samplePerPattern}: ${sample.urls.length} of ${urls.length} URL(s), ${sample.patterns} route type(s)`);
       urls = sample.urls;
     }
   }

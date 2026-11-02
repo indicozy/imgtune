@@ -24,9 +24,9 @@ describe("parseRunArgs", () => {
     expect(args.noCache).toBe(false);
   });
 
-  it("defaults to five deep pages, and reads --gpu-device, --urls-from and --sample-per-pattern", () => {
+  it("defaults to twenty deep pages, and reads --gpu-device, --urls-from and --sample-per-pattern", () => {
     const args = parseRunArgs(["--urls-from", "sitemap.xml", "--sample-per-pattern", "2", "--gpu-device", "1", "--page-concurrency", "3"]);
-    expect(args.deep).toBe(5);
+    expect(args.deep).toBe(20);
     expect(args.urlsFrom).toBe("sitemap.xml");
     expect(args.samplePerPattern).toBe(2);
     expect(args.gpu).toEqual({ device: 1 });

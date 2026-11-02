@@ -1,7 +1,7 @@
 // `imgtune run`: the whole agent flow in one command. Survey every URL, full-scan the worst pages, locate them on a dev
 // server (optional), group the fix hints by call site, and write a run directory with a manifest that names every file and
 // every command it ran. The summary it prints is the one `imgtune summary <run dir>` prints.
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { writeFileAtomic } from "./atomic.js";
@@ -9,7 +9,7 @@ import { parseGpuDevice } from "./gpu.js";
 import { hintsCommand, parseQualities } from "./hints.js";
 import { locateCommand } from "./locate-only.js";
 import { surveyStop, withBroken, BROKEN_EXIT } from "./broken.js";
-import { DEFAULT_THIRD_PARTY } from "./third-party.js";
+import { DEFAULT_THIRD_PARTY, parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import {
   MAX_IDLE_TIMEOUT_MS,
   MAX_PAGE_CONCURRENCY,
@@ -24,8 +24,9 @@ import {
   type PageResult,
   type StorageState,
 } from "./remote.js";
-import { patternOf, sampleByPattern, urlsFromSource } from "./urls.js";
-import { candidatesOf, selectDeep } from "./worst.js";
+import { sampleByPattern, urlsFromSource } from "./urls.js";
+import { groupRoutes, parseRouteMap, type RouteGrouping, type RouteMapRule } from "./routes.js";
+import { selectDeepPages, type DeepPick, type LeftOutType } from "./deep.js";
 import { showPath, summaryCommand } from "./summary.js";
 import { safeText, shellWord } from "./text.js";
 import { IMGTUNE_VERSION } from "./version.js";
@@ -33,8 +34,8 @@ import type { Viewport } from "./types.js";
 
 /** Where a run's directory goes when --out is not given: a timestamped folder under this. */
 export const DEFAULT_RUN_DIR = ".imgtune/run";
-/** The deep pages when --deep is not given. */
-export const DEFAULT_DEEP = 5;
+/** The deep pages when --deep is not given: one per route type, the heaviest types first. */
+export const DEFAULT_DEEP = 20;
 
 export interface RunArgs {
   urls: string[];
@@ -53,10 +54,14 @@ export interface RunArgs {
   root?: string;
   storageState?: string;
   ignoreRobots: boolean;
+  /** Third-party requests: allowed by default; --block-third-party turns blocking on, --allow-host keeps hosts. */
+  thirdParty: ThirdPartyPolicy;
+  /** --route-map: a file of route rules (see routes.ts), read when the run starts. */
+  routeMap?: string;
 }
 
 const RUN_USAGE =
-  "usage: imgtune run <url> [<url> ...] | --urls-from <file|sitemap> [--sample-per-pattern N] [--deep N] [--out dir] [--dev origin] [--qualities list] [--gpu] [--gpu-device n] [--page-concurrency N] [--idle-timeout ms] [--no-cache] [--root dir] [--storage-state file] [--ignore-robots]";
+  "usage: imgtune run <url> [<url> ...] | --urls-from <file|sitemap> [--sample-per-pattern N] [--deep N] [--route-map file] [--out dir] [--dev origin] [--qualities list] [--gpu] [--gpu-device n] [--page-concurrency N] [--idle-timeout ms] [--no-cache] [--root dir] [--storage-state file] [--ignore-robots] [--block-third-party] [--allow-host h1,h2]";
 
 function parseHttpUrl(text: string, what: string): string {
   let url: URL;
@@ -71,11 +76,16 @@ function parseHttpUrl(text: string, what: string): string {
 
 /** The arguments after `run`. Throws with the message the CLI prints. */
 export function parseRunArgs(argv: string[]): RunArgs {
-  const args: RunArgs = { urls: [], deep: DEFAULT_DEEP, noCache: false, ignoreRobots: false };
+  const args: RunArgs = { urls: [], deep: DEFAULT_DEEP, noCache: false, ignoreRobots: false, thirdParty: DEFAULT_THIRD_PARTY };
+  let blockThirdParty = false;
+  let allowHosts: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
+    else if (arg === "--block-third-party") blockThirdParty = true;
+    // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
+    else if (arg === "--allow-third-party") continue;
     else if (arg === "--gpu") args.gpu ??= { device: 0 };
     else if (arg === "--gpu-device") {
       const value = argValue(argv, i, arg);
@@ -91,7 +101,9 @@ export function parseRunArgs(argv: string[]): RunArgs {
       arg === "--dev" ||
       arg === "--qualities" ||
       arg === "--root" ||
-      arg === "--storage-state"
+      arg === "--storage-state" ||
+      arg === "--allow-host" ||
+      arg === "--route-map"
     ) {
       const value = argValue(argv, i, arg);
       i++;
@@ -104,6 +116,8 @@ export function parseRunArgs(argv: string[]): RunArgs {
       else if (arg === "--dev") args.dev = new URL(parseHttpUrl(value, "--dev")).origin;
       else if (arg === "--qualities") args.qualities = parseQualities(value);
       else if (arg === "--root") args.root = value;
+      else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
+      else if (arg === "--route-map") args.routeMap = value;
       else args.storageState = value;
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option ${safeText(arg)} (${RUN_USAGE})`);
@@ -113,6 +127,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
   }
   if (args.urls.length === 0 && args.urlsFrom === undefined) throw new Error(RUN_USAGE);
   if (args.samplePerPattern !== undefined && args.urlsFrom === undefined) throw new Error("--sample-per-pattern needs --urls-from");
+  args.thirdParty = thirdPartyFromFlags(blockThirdParty, allowHosts);
   return args;
 }
 
@@ -128,8 +143,13 @@ export function devUrlOf(devOrigin: string, pageUrl: string): string {
   return `${devOrigin}${page.pathname}${page.search}`;
 }
 
-/** The URL list of a run: the named URLs, then --urls-from (deduplicated), then the per-pattern sample. */
-export async function resolveUrls(args: RunArgs, cwd: string, log: (message: string) => void): Promise<{ urls: string[]; patterns: number }> {
+/** The URL list of a run: the named URLs, then --urls-from (deduplicated), then the per-type sample. */
+export async function resolveUrls(
+  args: RunArgs,
+  cwd: string,
+  log: (message: string) => void,
+  routeMap: RouteMapRule[] = [],
+): Promise<{ urls: string[]; routes: RouteGrouping }> {
   let urls = args.urls;
   if (args.urlsFrom !== undefined) {
     const source = await urlsFromSource(args.urlsFrom, cwd);
@@ -138,12 +158,18 @@ export async function resolveUrls(args: RunArgs, cwd: string, log: (message: str
     log(`--urls-from: ${source.urls.length} URL(s) from the ${named}${dropped}`);
     urls = [...new Set([...urls, ...source.urls])];
     if (args.samplePerPattern !== undefined) {
-      const sample = sampleByPattern(urls, args.samplePerPattern);
-      log(`--sample-per-pattern ${args.samplePerPattern}: ${sample.urls.length} of ${urls.length} URL(s), ${sample.patterns} pattern(s)`);
+      const sample = sampleByPattern(urls, args.samplePerPattern, groupRoutes(urls, { routeMap }));
+      log(`--sample-per-pattern ${args.samplePerPattern}: ${sample.urls.length} of ${urls.length} URL(s), ${sample.patterns} route type(s)`);
       urls = sample.urls;
     }
   }
-  return { urls, patterns: new Set(urls.map(patternOf)).size };
+  return { urls, routes: groupRoutes(urls, { routeMap }) };
+}
+
+/** The route-map rules of a --route-map file (read relative to cwd). Empty when there is none. */
+export async function routeMapOf(args: RunArgs, cwd: string): Promise<RouteMapRule[]> {
+  if (args.routeMap === undefined) return [];
+  return parseRouteMap(await readFile(resolve(cwd, args.routeMap), "utf8"));
 }
 
 /** One step of the run, as the manifest records it. */
@@ -163,7 +189,7 @@ export interface RunManifest {
   startedAt: string;
   finishedAt: string;
   out: string;
-  urls: { count: number; patterns: number; file: string };
+  urls: { count: number; types: number; file: string };
   options: {
     deep: number;
     dev?: string;
@@ -175,12 +201,23 @@ export interface RunManifest {
     root?: string;
     ignoreRobots: boolean;
     storageState: boolean;
+    /** The third-party setting: "allowed" (the default) or "blocked" (--block-third-party). */
+    thirdParty: "allowed" | "blocked";
+    allowHosts?: string[];
+    /** The --route-map file as it was given (relative to the cwd). Absent when there is none. */
+    routeMap?: string;
   };
   deep: string[];
+  /** The route types that were not deep-scanned, heaviest first, and why (the cap, or no images). */
+  deepLeftOut: LeftOutType[];
   phases: PhaseRecord[];
   /** The commands the run executed, equivalent to the CLI calls: an agent can re-run one step from here. */
   commands: { phase: string; command: string }[];
-  files: { path: string; kind: "urls" | "survey" | "deep" | "located" | "hints" | "manifest" }[];
+  files: { path: string; kind: "urls" | "survey" | "deep" | "located" | "hints" | "manifest" | "report" }[];
+  /** `check` and `audit` runs only: the mode, the site as the reader named it, and the Markdown report's file name. */
+  mode?: "run" | "check" | "audit";
+  site?: string;
+  report?: string;
   broken: { url: string; phase: string; kind: string; reason: string; fix: string }[];
   stop: { phase: "survey"; reason: string; fix: string } | null;
   warnings: string[];
@@ -199,7 +236,8 @@ export async function runCommand(
   const started = new Date();
   const outRoot = resolve(cwd, args.out ?? join(DEFAULT_RUN_DIR, stamp(started)));
   const show = (path: string) => showPath(path, cwd);
-  const { urls, patterns } = await resolveUrls(args, cwd, log);
+  const routeMap = await routeMapOf(args, cwd);
+  const { urls, routes } = await resolveUrls(args, cwd, log, routeMap);
   if (urls.length === 0) throw new Error("no URL to scan");
   await mkdir(outRoot, { recursive: true });
   const urlsFile = join(outRoot, "urls.txt");
@@ -215,6 +253,7 @@ export async function runCommand(
     cache: !args.noCache,
     ignoreRobots: args.ignoreRobots,
     aggressive: false,
+    thirdParty: args.thirdParty,
   };
   const base: ScanArgs = { urls: [], out: outRoot, aggressive: false, quality: true, thirdParty: DEFAULT_THIRD_PARTY };
   const surveyPlan = scanPlan({ ...base, survey: true, pageConcurrency: args.pageConcurrency, idleTimeoutMs: args.idleTimeoutMs });
@@ -224,6 +263,7 @@ export async function runCommand(
   const warnings: string[] = [];
   const broken: RunManifest["broken"] = [];
   const flagWords = runFlags(args);
+  const types = routes.types.length;
 
   // 1. Survey: every URL, fast and exact only.
   const surveyDir = join(outRoot, "survey");
@@ -253,8 +293,9 @@ export async function runCommand(
       started,
       args,
       urls,
-      patterns,
+      types,
       deep: [],
+      deepLeftOut: [],
       phases,
       commands,
       broken,
@@ -267,7 +308,9 @@ export async function runCommand(
   }
 
   // 2. Deep: the worst pages (by exact KB per view, at least one per worst route pattern), full scan.
-  const deepUrls = selectDeep(candidatesOf(survey), args.deep);
+  const selection = selectDeepPages(survey, routes, args.deep);
+  const deepUrls = selection.picks.map((pick) => pick.url);
+  log(deepSelectionNote(selection.picks, selection.leftOut));
   const expected = new Map<string, number>();
   for (const page of survey) if (page.status === "ok") expected.set(page.url, page.counts.images);
   const deepDir = join(outRoot, "deep");
@@ -337,8 +380,9 @@ export async function runCommand(
     started,
     args,
     urls,
-    patterns,
+    types,
     deep: deepUrls,
+    deepLeftOut: selection.leftOut,
     phases,
     commands,
     broken,
@@ -347,6 +391,16 @@ export async function runCommand(
     exitCode,
   });
   return { output: (await summaryCommand([outRoot], cwd)).output, exitCode };
+}
+
+/** The log line of the deep selection: the pages picked, and the route types left out (the cap, or no images). */
+export function deepSelectionNote(picks: DeepPick[], leftOut: LeftOutType[]): string {
+  const capped = leftOut.filter((t) => t.reason === "cap");
+  const noImages = leftOut.filter((t) => t.reason === "no-images");
+  const parts = [`deep: ${picks.length} route type(s), one page each (heaviest first)`];
+  if (capped.length > 0) parts.push(`${capped.length} left out by --deep: ${capped.map((t) => t.type).join(", ")}`);
+  if (noImages.length > 0) parts.push(`${noImages.length} without images: ${noImages.map((t) => t.type).join(", ")}`);
+  return parts.join("; ");
 }
 
 /** The viewports a phase measures: the named ones, or all six. */
@@ -363,6 +417,8 @@ function runFlags(args: RunArgs): { survey: string[]; deep: string[] } {
   if (args.noCache) common.push("--no-cache");
   if (args.pageConcurrency !== undefined) common.push("--page-concurrency", String(args.pageConcurrency));
   if (args.idleTimeoutMs !== undefined) common.push("--idle-timeout", String(args.idleTimeoutMs));
+  if (args.thirdParty.block) common.push("--block-third-party");
+  if (args.thirdParty.allowHosts.length > 0) common.push("--allow-host", shellWord(args.thirdParty.allowHosts.join(",")));
   const deep = [...common];
   if (args.gpu !== undefined) deep.push("--gpu-device", String(args.gpu.device));
   return { survey: common, deep };
@@ -399,7 +455,7 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /** Every file of the run directory, relative to it, by the folder it is in. */
-async function filesOf(outRoot: string): Promise<RunManifest["files"]> {
+export async function filesOf(outRoot: string): Promise<RunManifest["files"]> {
   const files: RunManifest["files"] = [{ path: "urls.txt", kind: "urls" }];
   const folders: [string, RunManifest["files"][number]["kind"]][] = [
     ["survey", "survey"],
@@ -411,20 +467,22 @@ async function filesOf(outRoot: string): Promise<RunManifest["files"]> {
     for (const name of (await readdir(join(outRoot, folder))).sort()) files.push({ path: `${folder}/${name}`, kind });
   }
   if (await exists(join(outRoot, "hints.json"))) files.push({ path: "hints.json", kind: "hints" });
+  if (await exists(join(outRoot, "report.md"))) files.push({ path: "report.md", kind: "report" });
   files.push({ path: "run.json", kind: "manifest" });
   return files;
 }
 
 /** Writes run.json: the manifest, with the file list read from the run directory as it is now. */
-async function writeManifest(
+export async function writeManifest(
   outRoot: string,
   cwd: string,
   run: {
     started: Date;
     args: RunArgs;
     urls: string[];
-    patterns: number;
+    types: number;
     deep: string[];
+    deepLeftOut: LeftOutType[];
     phases: PhaseRecord[];
     commands: RunManifest["commands"];
     broken: RunManifest["broken"];
@@ -440,7 +498,7 @@ async function writeManifest(
     startedAt: run.started.toISOString(),
     finishedAt: new Date().toISOString(),
     out: showPath(outRoot, cwd),
-    urls: { count: run.urls.length, patterns: run.patterns, file: "urls.txt" },
+    urls: { count: run.urls.length, types: run.types, file: "urls.txt" },
     options: {
       deep: args.deep,
       dev: args.dev,
@@ -452,8 +510,12 @@ async function writeManifest(
       root: args.root,
       ignoreRobots: args.ignoreRobots,
       storageState: args.storageState !== undefined,
+      thirdParty: args.thirdParty.block ? "blocked" : "allowed",
+      ...(args.thirdParty.block && args.thirdParty.allowHosts.length > 0 ? { allowHosts: [...args.thirdParty.allowHosts] } : {}),
+      ...(args.routeMap !== undefined ? { routeMap: args.routeMap } : {}),
     },
     deep: run.deep,
+    deepLeftOut: run.deepLeftOut,
     phases: run.phases,
     commands: run.commands,
     files: [],
