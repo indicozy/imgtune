@@ -30,7 +30,17 @@
   `report.md` has the file:line of every located fix and the route file of every route type. A preflight stops the audit
   when the production home's stylesheets do not load (a CDN host the machine cannot reach: set the CDN variable empty for
   both `next build` and `next start`). URLs come from `--urls-from`, else the `--prod` sitemap, else a same-origin crawl of
-  the home page two links deep (at most 500 pages, plain HTTP, no browser). The crawl and the audit are not yet measured on a real site.
+  the home page two links deep (at most 500 pages, plain HTTP, no browser). See the audit discovery entry below.
+- `imgtune audit` discovery: the crawl starts from the home page and from the app's seeds (its static routes, and each route under a
+  dynamic first segment such as `/[store]/about-us` once per learned value). The values are where the home page redirects, then the
+  other first segments of its links and its `hreflang` alternates, capped by `--max-locales N` (default 3). The crawl takes the groups
+  of first segments in turn, so one locale cannot use up the page budget. A redirect or link is followed only on the exact origin of
+  `--prod` (a redirect to a sibling subdomain is refused). A sitemap or alternate that names another host is read on a local `--prod`
+  instead (path and query kept, the other host never fetched), and the audit says how many URLs it moved. `--urls-from` replaces the
+  discovery and adds no seeds.
+- `imgtune audit` route types are URL templates (`routes.ts`), not route files. The first segment of a URL that the app takes as a
+  dynamic segment, and a `desktop` or `mobile` variant after it, are dimensions. The route file of each type is an attribute and a
+  column of the report's route-type table. A route file that renders several templates gives several types.
 - Third-party requests (scan, recheck, locate-only, sizes-only, `run`, `check`, `audit`) are allowed by default. Scan files
   that predate the setting carry no record and are read as allowed, as they were measured with every request allowed.
 - Scan: the extra fetches (originals, srcset candidates, source maps, robots) are shared across the whole run as before, but a
