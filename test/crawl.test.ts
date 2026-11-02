@@ -36,7 +36,7 @@ describe("crawlSite", () => {
     "/a": `<a href="/c">c</a><a href="/">home</a>`,
     "/b": `<a href="/d">d</a>`,
     "/c": `<a href="/deep">deep</a>`,
-    "/d": ``,
+    "/d": `<!doctype html><title>d</title>`,
     "/deep": `<a href="/deeper">x</a>`,
   };
 
