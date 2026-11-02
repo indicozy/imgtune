@@ -171,7 +171,7 @@ function copy() {
 .scan-h1 {
   font-family: var(--scan-display);
   font-weight: 650;
-  font-size: clamp(2.6rem, 1.1rem + 5.6vw, 5.25rem);
+  font-size: clamp(2.25rem, 0.9rem + 3.4vw, 3.35rem);
   line-height: 0.98;
   letter-spacing: -0.025em;
   margin: 0;
