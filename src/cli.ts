@@ -9,7 +9,7 @@ import { compareCommand } from "./compare.js";
 import { reportCommand } from "./report.js";
 import { runCommand, DEFAULT_RUN_DIR, DEFAULT_DEEP } from "./run.js";
 import { checkCommand, DEFAULT_CHECK_DIR, DEFAULT_CHECK_SAMPLE } from "./check.js";
-import { auditCommand, DEFAULT_AUDIT_DIR } from "./audit.js";
+import { auditCommand, DEFAULT_AUDIT_DIR, DEFAULT_MAX_LOCALES } from "./audit.js";
 import { ALLOW_THIRD_PARTY_NOTE } from "./third-party.js";
 import { summaryCommand } from "./summary.js";
 import { ChromiumMissingError } from "./browser.js";
@@ -228,6 +228,7 @@ Options:
   --prod <origin>                 the production origin that is measured (required)
   --dev <origin>                  the dev server origin: the deep pages are located there, with --app as the source root
   --urls-from <file|sitemap-url>  a URL list, a local sitemap.xml, or a remote sitemap (instead of the sitemap or crawl of --prod)
+  --max-locales <N>               the values of a dynamic first segment (such as [store]) the crawl expands, at least 1 (default ${DEFAULT_MAX_LOCALES})
   --sample-per-pattern <N>        the survey measures at most N URLs per route type (default ${DEFAULT_CHECK_SAMPLE})
   --deep <N>                      route types to full-scan, one page each (default ${DEFAULT_DEEP})
   --route-map <file>              route rules for the URLs no route file matches (see the docs)
