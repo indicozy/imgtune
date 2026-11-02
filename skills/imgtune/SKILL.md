@@ -1,6 +1,6 @@
 ---
 name: imgtune
-description: Reduce image weight and fix slow pages in any web framework. Use when asked to optimise or optimize images, cut page weight, improve LCP, fix images Lighthouse flags as oversized, badly encoded or old-format, or make a live page send fewer image bytes. imgtune measures each image on the live page at six viewports and gives per-image fix hints (sizes, quality, format) that you apply in the source.
+description: Reduce image weight and fix slow pages in any web framework. Use when asked to optimise or optimize images, cut page weight, improve LCP, fix image sizes, next/image sizes, the LCP image, images Lighthouse flags as oversized, badly encoded or old-format, or make a live page send fewer image bytes. imgtune measures each image on the live page at six viewports and gives per-image fix hints (sizes, quality, format) with the component and line that renders each one, which you apply in the source.
 ---
 
 # imgtune
@@ -13,6 +13,25 @@ format) with two byte numbers. Run `npx imgtune --help`, or `<command> --help` f
 The user asks to cut image weight or improve LCP; Lighthouse flags images as oversized, badly encoded or old-format; or
 pages are heavy and the images are most of the bytes. Not for scripts, fonts or video. Do not use it on sites the user
 does not own or run, unless they say they are authorised.
+
+## Fix the images
+
+Use this when the user asks to fix image sizes, next/image sizes, or the LCP image, or after a scan has hints to apply.
+
+1. **Scan** the pages on a built server into a folder: `npx imgtune scan <url> [<url> ...] --out .imgtune/scan`.
+2. **Read the hints in batches**: `npx imgtune hints .imgtune/scan/*.json --limit 10`. The LCP image comes first, and its line
+   starts with `LCP image`. Take it first in every batch.
+3. **Open each hint's file and line**, check that it renders that image, then apply the hint's `sizes` (or `width` for a
+   plain image), its quality and its format, as `reference.md` says. A hint marked `(unverified)`, or with no file and line,
+   is not edited: say so in the report.
+4. **Apply the site-level `next.config: images.qualities: [...]` line once**, in `next.config`, and keep it as printed. Never
+   lower a quality below the hint's target.
+5. **Leave the CDN's own quality alone**: a `quality handled by <loader> (q_auto)` hint is not a quality fix. A
+   `sizes="auto, <proposed>"` alternative is an option for a lazy image; the explicit value stays the fix unless the user
+   asks for the alternative.
+6. **Scan the same URLs again** into a new folder, and report before and after separately: the exact saving, the estimated
+   saving, the LCP line, and the `images.qualities` list. `npx imgtune compare <before.json> <after.json>` gives the bytes.
+7. **Leave git to the user.** Do not commit, branch or push.
 
 ## Before you start
 

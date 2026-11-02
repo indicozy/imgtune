@@ -98,6 +98,10 @@ One entry per viewport name. Each has:
 | `loader` | the loader the URL came from, such as `next-default` or `generic` |
 | `duplicateOf` | the index of the element measured instead, when this element repeats its URL. Its savings are zero |
 
+
+Each viewport's entry also has `lcp`: `image` (the LCP is an image of the page, its record is in `images` with `lcpViewports`),
+`other` (the LCP is another element) or `none` (no LCP entry). It is absent in scans from before LCP was read.
+
 ## locate
 
 Set by `scan --locate-only` on the located copy of a page: `url` (the dev page), `viewport`, `scannedAt`, `imgtuneVersion`,
@@ -143,6 +147,7 @@ with no measured partner), `noOrder` (elements without `domIndex`) and `reasons`
 | `tunable` | what can be changed at the call site (below) |
 | `current` | what the page serves now (below) |
 | `lazy` | `true` when the element has `loading="lazy"` |
+| `lcpViewports` | the viewports at which the element is the page's largest contentful paint, read before the first scroll (`[]` when none; absent in older scans) |
 | `perViewport` | what the element does at each viewport it was seen at (below) |
 | `layoutChain` | the ancestors of the element at the reference viewport, with the viewports whose chain differs (below) |
 | `fix` | the fix and its two byte numbers (below) |
@@ -213,6 +218,7 @@ One entry per viewport the element was seen at:
 | `overFetchRatio` | served pixels per device pixel needed. Above 1, the file is larger than the screen can show |
 | `undersized` | `true` when the file is smaller than the slot it fills |
 | `loaded` | `true` when the element's own file was received at this viewport |
+| `lcp` | `true` when the element is the largest contentful paint at this viewport (absent in older scans, and at a viewport whose LCP was not read) |
 | `skipped` | why the element is not measured here (a duplicate of another element, a data URI, and so on) |
 
 ### images[].layoutChain
@@ -252,6 +258,8 @@ Each node in `nodes`:
 | `format` | the best format for the image. `avif` for a JPEG or PNG that has a saving |
 | `bytes.saved` | the bytes the fix saves per page view, averaged over the viewports |
 | `bytes.addedForSharpness` | the bytes the fix adds on undersized images, per page view |
+| `cdnQuality` | present on a CDN's auto quality (`q_auto`): `handled` (`true` when the CDN's quality is left alone, because its estimated saving is below a tenth of the group's served bytes; that saving is then not counted), and `saved`, the group's estimated quality saving per view |
+| `formatHandled` | `true` on a jpeg or png whose format the CDN negotiates (`f_auto`, `auto=format`): no format saving is counted or proposed |
 
 `bytes.saved` and `bytes.addedForSharpness` are two numbers and are never netted. An undersized image adds bytes and saves none.
 

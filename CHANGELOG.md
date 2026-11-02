@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- LCP first. Each scanned page reads the largest contentful paint before its first scroll, per viewport. A page's report
+  and the PR comment show one line above its numbers: `LCP image (<viewports>): <file:line>, <KB> served, <KB> fixable`,
+  or `LCP is not an image`. `hints` sorts the LCP image first and prefixes its line with `LCP image (<viewports>):`. The
+  scan JSON gains `lcp` and `lcpViewports` on images, `lcp` on each viewport, and the hints JSON gains `lcp` and `lcpViewports`.
+- `sizes="auto"` awareness. A lazy image whose only fix is its sizes gets an alternative line,
+  `sizes="auto, <proposed>"` (Chrome, Edge, Firefox 150 or later; Safari falls back to the proposed value). The explicit
+  value stays the fix. Eager and LCP images never get it.
+- CDN auto quality. A Cloudinary `q_auto` group whose estimated quality saving is below a tenth of its served bytes is
+  reported as `quality handled by <loader> (q_auto)`, and that saving is not counted. Above it, the hint names the explicit
+  `q_<N>`. A jpeg or png whose format the CDN negotiates (`f_auto`, imgix `auto=format`) gets no format change. The
+  fix record gains `cdnQuality` and `formatHandled`.
+- `images.qualities` cap. The next/image quality targets of a scan (across its pages) are clustered into at most
+  `--max-qualities N` values (default 2, 1 to 4). Each target is raised to the nearest chosen value, so the SSIMULACRA2 bar
+  still holds. The site-level line `next.config: images.qualities: [...]` is printed by `hints`, `scan` and the reports;
+  a usage's estimated quality saving is scaled to its capped value and marked approximate. `--qualities` turns the cap off.
+- The agent skill has a "Fix the images" section: the hints in batches, the LCP image first, the `images.qualities` line
+  once, then a scan again with before and after reported apart. Its description names "fix image sizes", "next/image
+  sizes" and "LCP image".
 - Third-party requests are allowed by default. `--block-third-party` turns the blocking on (scans, rechecks, locate-only,
   sizes-only, `run` and `check`). Blocking can drop images that a page loads through its own API on another host: on a
   local store build, 0 images were recorded with blocking and 50 without it. `--allow-host <h1,h2>` now needs
