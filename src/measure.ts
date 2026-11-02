@@ -227,8 +227,10 @@ export async function waitForLoadWithin(page: Page, ms: number): Promise<boolean
 export async function settlePage(
   page: Page,
   imageSelector: string,
-  options: { networkIdle?: boolean; networkIdleMs?: number } = {},
+  options: { networkIdle?: boolean; networkIdleMs?: number; beforeScroll?: () => Promise<void> } = {},
 ): Promise<void> {
+  // The page is read before the first scroll: a scroll can bring a larger image into view and make it the LCP.
+  if (options.beforeScroll !== undefined) await options.beforeScroll();
   await measure("settle: scroll", () => scrollThrough(page));
   await page.evaluate(() => window.scrollTo(0, 0));
   // A page that keeps a connection open (a dev server, a tracker) never reaches network idle: each wait would cost the

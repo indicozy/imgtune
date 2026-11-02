@@ -22,6 +22,7 @@ import {
   type Hint,
 } from "../src/hints.js";
 import { renderPage, type PageResult } from "../src/remote.js";
+import { planQualityCap } from "../src/qualities-cap.js";
 
 /** A synthetic image record. The fix defaults to a saving of `saved` bytes and a formula sizes value. */
 function record(id: string, overrides: { saved?: number; sharpness?: number; component?: string[]; file?: string; line?: number; sizes?: string; proposed?: string } = {}): ImageRecord {
@@ -660,3 +661,102 @@ describe("callerMapOf", () => {
     expect(body.callSites[0].callers.callers.map((c: { file: string }) => c.file)).toEqual(["src/landing/Carousel.tsx", "src/plp/Grid.tsx"]);
   });
 });
+
+describe("LCP first, sizes=\"auto\", CDN quality and the images.qualities cap (positioning)", () => {
+  const LCP_VIEWPORTS = ["iphone-15", "desktop"];
+
+  it("sorts the LCP image first, whatever it saves, and prefixes its line with its viewports", () => {
+    const hero = { ...record("hero", { saved: 2 * 1024, component: ["Hero"], file: "components/Hero.tsx", line: 42 }), lcpViewports: LCP_VIEWPORTS };
+    const big = record("big", { saved: 900 * 1024, component: ["Grid"], file: "components/Grid.tsx", line: 7 });
+    const hints = hintsOf(page([big, hero]));
+    expect(selectHints(hints, { limit: 10, offset: 0 }).map((h) => h.id)).toEqual(["hero", "big"]);
+    const [first] = selectHints(hints, { limit: 1, offset: 0 });
+    expect(first.lcp).toBe(true);
+    expect(first.lcpViewports).toEqual(LCP_VIEWPORTS);
+    expect(renderHint(first, 1)[0]).toMatch(/^1\. LCP image \(iphone-15, desktop\): hero {2}"components\/Hero\.tsx:42"/);
+    expect(hintsOf(page([big]))[0].lcp).toBeUndefined();
+  });
+
+  it("offers sizes=\"auto\" as an alternative only for a lazy image whose only fix is its sizes", () => {
+    const lazy = { ...record("lazy", { saved: 5000 }), lazy: true };
+    const hint = hintsOf(page([lazy]))[0];
+    expect(hint.sizesAuto).toBe(`auto, ${hint.sizes.proposed}`);
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain(`alternative: sizes="auto, ${hint.sizes.proposed}" (Chrome, Edge, Firefox 150+; Safari falls back to ${hint.sizes.proposed})`);
+    // Eager: no alternative.
+    expect(hintsOf(page([{ ...record("eager", { saved: 5000 }), lazy: false }]))[0].sizesAuto).toBeUndefined();
+    // Lazy, but the LCP image: no alternative.
+    expect(hintsOf(page([{ ...record("lcp", { saved: 5000 }), lazy: true, lcpViewports: ["desktop"] }]))[0].sizesAuto).toBeUndefined();
+    // Lazy, but with a quality saving too: sizes is not the only fix.
+    const withQuality = { ...record("q", { saved: 5000 }), lazy: true };
+    withQuality.fix.bytes = { saved: 5000, addedForSharpness: 0, sizes: 1000, quality: 4000 };
+    expect(hintsOf(page([withQuality]))[0].sizesAuto).toBeUndefined();
+  });
+
+  it("names a CDN's auto quality: handled (no quality target) or the explicit quality it leaves out", () => {
+    const cloud = (id: string, cdnQuality: { handled: boolean; saved: number }) => {
+      const r = record(id, { saved: 5000 });
+      r.locator.loader = "cloudinary";
+      r.fix.cdnQuality = cdnQuality;
+      return r;
+    };
+    const handled = hintsOf(page([cloud("h", { handled: true, saved: 1000 })]))[0];
+    expect(handled.qualityNote).toBe("quality handled by cloudinary (q_auto)");
+    expect(handled.quality).toBeUndefined();
+    const explicit = hintsOf(page([cloud("e", { handled: false, saved: 40 * 1024 })]))[0];
+    expect(explicit.qualityNote).toBe("cloudinary: q_auto leaves 40 KB per view; an explicit q_80 passes SSIMULACRA2");
+    expect(explicit.quality?.target).toBe(80);
+  });
+
+  it("says a CDN negotiates the format of a jpeg or png, and proposes no format change", () => {
+    const r = record("f", { saved: 0, sharpness: 0 });
+    r.locator.loader = "cloudinary";
+    r.current.format = "jpeg";
+    r.fix.formatHandled = true;
+    r.fix.format = "jpeg";
+    r.fix.sizes = undefined;
+    r.fix.bytes = { saved: 3000, addedForSharpness: 0, sizes: 3000, quality: 0 };
+    const hint = hintsOf(page([r]))[0];
+    expect(hint.formatNote).toBe("format handled by cloudinary (f_auto)");
+    expect(hint.format).toEqual({ current: "jpeg", best: "jpeg" });
+  });
+
+  it("caps the next/image targets to the plan's values, scaling the saving, and not with --qualities", () => {
+    const a = { ...record("a", { saved: 6000 }), current: { ...record("a").current, quality: 90 } };
+    a.fix.quality = { perFormat: { webp: 60 }, groupRule: "max-of-targets", group: "A", samples: 1, current: 90, qualityAssumed: false };
+    a.fix.bytes = { saved: 6000, addedForSharpness: 0, sizes: 0, quality: 6000 };
+    const result = page([a]);
+    const plan = planQualityCap([result], 1);
+    expect(plan?.values).toEqual([60]);
+    const hint = hintsOf(result, undefined, plan)[0];
+    expect(hint.quality?.target).toBe(60);
+    expect(hint.quality?.approx).toBeUndefined();
+    // A cap above the target: the target moves up, the saving is scaled between the target and the current quality.
+    const planUp = { ...plan!, values: [80], byRecord: new Map([["a", { to: 80, from: 60, saved: 6000 * (90 - 80) / (90 - 60) }]]) };
+    const up = hintsOf(result, undefined, planUp)[0];
+    expect(up.quality).toMatchObject({ target: 80, cappedFrom: 60, approx: true });
+    expect(up.bytes.quality).toBe(2000);
+    expect(up.bytes.saved).toBe(2000);
+    // The framework's own list: the cap is not applied.
+    const framework = hintsOf(result, [60, 90], planUp)[0];
+    expect(framework.quality?.cappedFrom).toBeUndefined();
+  });
+
+  it("prints the site-level images.qualities line, and parses --max-qualities within 1 to 4", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-qualities-"));
+    const file = join(dir, "page.json");
+    const a = record("a1", { saved: 5000 });
+    a.fix.quality = { perFormat: { webp: 70 }, groupRule: "max-of-targets", group: "A", samples: 1, current: 90, qualityAssumed: false };
+    await writeFile(file, JSON.stringify(page([a])));
+    const text = await hintsCommand([file, "--max-qualities", "1"], dir);
+    expect(text.output).toMatch(/next\.config: images\.qualities: \[70\]/);
+    const json = JSON.parse((await hintsCommand([file, "--format", "json", "--max-qualities", "3"], dir)).output) as { qualities: { values: number[]; maxValues: number; approx: boolean } };
+    expect(json.qualities).toMatchObject({ values: [70], maxValues: 3, approx: true });
+    const off = await hintsCommand([file, "--qualities", "75,90", "--format", "json"], dir);
+    expect((JSON.parse(off.output) as { qualities: unknown }).qualities).toBeNull();
+    expect(() => parseHintsArgs(["a.json", "--max-qualities", "5"])).toThrow(/whole number from 1 to 4/);
+    expect(() => parseHintsArgs(["a.json", "--max-qualities", "0"])).toThrow(/whole number from 1 to 4/);
+    expect(parseHintsArgs(["a.json", "--max-qualities", "4"]).maxQualities).toBe(4);
+  });
+});
+

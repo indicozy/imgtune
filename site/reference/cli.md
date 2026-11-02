@@ -189,6 +189,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--max-pages <N>` | stop after N pages (scanned or resumed); run again with `--resume` to continue |
 | `--no-cache` | do not read or write `.imgtune/cache`. The cache keeps the local encode sizes and scores, so a rescan or a second run reuses them; the numbers are the same either way |
 | `--max-images <N>` | stop after the page that brings the images counted to N (checked between pages) |
+| `--max-qualities <N>` | the most values for `images.qualities` in `next.config`, 1 to 4 (default 2): the site-level line of the output, the Markdown report and the PR comment |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file (one per line, `#` comments), a local `sitemap.xml`, or a remote sitemap (same domain only) |
 | `--sample-per-pattern <N>` | with `--urls-from`: at most N URLs per route type (see "Route types"), spread over the type |
 | `--storage-state <file>` | a Playwright storage state (logged-in session) for every context. It holds session cookies: never commit it |
@@ -234,14 +235,25 @@ Exit status: 0 on success, 3 when a `--fail-over` budget was exceeded, 4 when a 
 2 when Chromium is missing, and 1 for other scan failures, a failed `--recheck` or `--sizes-only`, and a `--locate-only` that
 located nothing. `run` uses the same codes: 4 when it stops on broken pages, 1 when no page was measured.
 
+**The LCP line.** Each page prints, above its numbers, the image that is the largest contentful paint at each viewport:
+`LCP image (iphone-15, desktop): components/Hero.tsx:42, 412 KB served, 288 KB fixable (exact 120 KB, est. 168 KB)`, or
+`LCP is not an image (…)` when the largest paint is text or another element. The LCP is read before the page is scrolled, so
+a lazy image that loads on scroll cannot take it. It is read on a fresh load of each viewport (the default); a viewport
+that `--shared-loads` resizes has no LCP line.
+
 ## hints
 
 ```sh
 npx imgtune hints <scan.json> [options]
 ```
 
-Prints a compact batch of the per-image fix hints of one scanned page, sorted by the bytes a fix saves. Each hint names the
-image, its component and `file:line` when they resolved, the sizes and quality to use, and the two byte numbers.
+Prints a compact batch of the per-image fix hints of one or more scanned pages, sorted by the bytes a fix saves. The
+largest-contentful-paint (LCP) image comes first, whatever it saves, and its line starts with `LCP image (<viewports>):`.
+Each hint names the image, its component and `file:line` when they resolved, the sizes and quality to use, and the two byte
+numbers. A lazy image whose only fix is its sizes also gets `alternative: sizes="auto, <proposed>"` (Chrome, Edge and Firefox
+150 or later; Safari falls back to the proposed value). The explicit value stays the fix. A CDN's auto quality (`q_auto`) is
+reported as `quality handled by <loader> (q_auto)`, or as the explicit `q_<Q>` it would need, and a CDN that negotiates the
+format (`f_auto`) gets no format change. The `images.qualities` line comes first when the site has next/image images.
 
 | flag | meaning |
 | --- | --- |
@@ -249,6 +261,7 @@ image, its component and `file:line` when they resolved, the sizes and quality t
 | `--component <name>` | only images whose component or file contains the text |
 | `--flat` | one entry per image instead of one per call site (`file:line`, across pages) |
 | `--qualities <list>` | the framework's allowed qualities, e.g. `75,85,100`: each quality target is raised to the nearest allowed value (`q82 -> 85 (allowed: 75,85,100)`), and a quality saving the snap voids is `void after snap` |
+| `--max-qualities <N>` | the most values `images.qualities` in `next.config` may list, 1 to 4 (default 2). The next/image targets of all the files given are clustered into at most N values, each target raised to the nearest one above it; the list is printed as one site-level line. `--qualities` turns this off |
 | `--limit <N>` | call sites to print (default 10; images with `--flat`) |
 | `--offset <N>` | skip the first N call sites (for the next batch) |
 | `--min-kb <N>` | only hints that save at least N KB per view |

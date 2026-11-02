@@ -134,6 +134,10 @@ Every fix has one rung. It is shown in the ledger and in the report.
   matching sharpness fix.
 - **Use only the quality values the framework allows.** Next.js takes the values in `images.qualities` in `next.config`.
   Add a value to that list only when the fix needs it, and say so in the report.
+- **Fix the LCP image first.** Its hints come first, and its line starts with `LCP image`. A lazy image with a `sizes="auto"`
+  alternative keeps the explicit value as the fix.
+- **Apply `images.qualities` once, from the site-level line.** Do not raise a quality on one usage to a value the list
+  does not have, and never lower one below its hint's target.
 - **When a hint says `tunable: false`, fix the loader, not the call site.** The hint's `reason` says why, for example a
   custom loader that ignores width or quality. Report the loader change if it is outside the code you own.
 

@@ -282,6 +282,23 @@ export function originalFor(currentSrc: string, src: string | undefined, baseUrl
   return new URL(unwrapOnce(chosen, observed.adapter.name, baseUrl), baseUrl).toString();
 }
 
+/**
+ * Whether the CDN picks the format of the URL per request: Cloudinary's `f_auto` transform, or imgix's `auto=format`. Such a
+ * URL serves webp or avif to a browser that takes them, so a format change is not a fix ImgTune proposes for it.
+ */
+export function formatAutoOf(src: string, pageUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(src, pageUrl);
+  } catch {
+    return false;
+  }
+  const parts = splitCloudinary(url);
+  if (parts !== undefined && parts.transforms.some((segment) => segment.split(",").includes("f_auto"))) return true;
+  const auto = url.searchParams.get("auto");
+  return auto !== null && auto.split(",").includes("format");
+}
+
 /** The Cloudflare rule alone: `/cdn-cgi/image/<opts>/<path>` gives `<path>`, anything else is resolved as it is. */
 export function cloudflareOriginal(url: URL): string | undefined {
   return cloudflare.original(url);

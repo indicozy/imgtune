@@ -49,6 +49,20 @@ Every image with a saving, or with a `sizes` value that differs from the current
 sharpness. The two are never netted. A scan's hints stand on the `measured-page` rung. See
 [Fix it with your agent](./fix-with-your-agent) for the other rungs.
 
+## The LCP image
+
+The largest contentful paint is the image the first paint waits for. ImgTune reads it at each viewport before the page is
+scrolled, so a lazy image that loads on scroll cannot take its place. The LCP image is the first line of every page's
+report and the first hint of the fix list, and its line says what it serves and what a fix saves. A page whose largest
+paint is text says so. Fix the LCP image first: `sizes="auto"` helps lazy images, and the LCP image is eager.
+
+## CDN auto quality
+
+A CDN's auto quality (Cloudinary `q_auto`) is set by the CDN, not by the URL, so an explicit quality is an extra step. ImgTune
+leaves it alone when its estimated saving is below a tenth of the group's served bytes: the hint says the CDN handles the
+quality, and that saving is not counted. Above a tenth, the hint names the explicit quality it would need. A CDN that
+negotiates the format (`f_auto`, imgix `auto=format`) gets no format change.
+
 ## qualityNA
 
 When an image's quality cannot be scored, usually because its original is unknown, it is counted as `qualityNA`. Its resolution

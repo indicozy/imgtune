@@ -305,7 +305,7 @@ describe("referenceUrl and currentQuality", () => {
 describe("qualityHintFor", () => {
   it("says how to get the saving for a loader that cannot take a quality", () => {
     expect(qualityHintFor("shopify", "none", 60)).toBe("shopify: no quality parameter — re-export sources at lower quality");
-    expect(qualityHintFor("cloudinary", "auto", undefined)).toBe("cloudinary: q_auto in use — set an explicit q_<N>");
+    expect(qualityHintFor("cloudinary", "auto", undefined)).toBe("quality handled by cloudinary (q_auto)");
   });
 
   it("names the quality for a tunable loader only once a quality is estimated", () => {
