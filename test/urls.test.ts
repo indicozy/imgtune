@@ -12,7 +12,6 @@ import {
   MAX_CHILD_SITEMAPS,
   parseSitemapText,
   parseUrlList,
-  patternOf,
   sampleByPattern,
   sitemapMayBeFetched,
   urlsFromSource,
@@ -271,20 +270,12 @@ describe("urlsFromSource", () => {
   });
 });
 
-describe("patternOf and sampleByPattern", () => {
-  it("names a route pattern by its first segment after a locale, with a wildcard for the rest", () => {
-    expect(patternOf("https://shop.example/ae-en/p/ray-ban-aviator-1234")).toBe("/ae-en/p/*");
-    expect(patternOf("https://shop.example/c/bags/totes")).toBe("/c/*");
-    expect(patternOf("https://shop.example/about")).toBe("/about");
-    expect(patternOf("https://shop.example/")).toBe("/");
-    expect(patternOf("https://shop.example/ae-en/c")).toBe("/ae-en/c");
-  });
-
-  it("takes N URLs of each pattern, spread over the pattern, and keeps a small pattern whole", () => {
+describe("sampleByPattern", () => {
+  it("takes N URLs of each route type, spread over the type, and keeps a small type whole", () => {
     const products = Array.from({ length: 10 }, (_, i) => `https://shop.example/p/item-${i}`);
     const categories = ["https://shop.example/c/bags", "https://shop.example/c/shoes"];
     const { urls, patterns } = sampleByPattern([...products, ...categories, "https://shop.example/about"], 3);
-    expect(patterns).toBe(3);
+    expect(patterns).toBe(4);
     expect(urls.filter((u) => u.includes("/p/"))).toEqual([
       "https://shop.example/p/item-0",
       "https://shop.example/p/item-5",
@@ -294,8 +285,8 @@ describe("patternOf and sampleByPattern", () => {
     expect(urls).toContain("https://shop.example/about");
   });
 
-  it("with N = 1 takes the first URL of each pattern", () => {
-    const { urls } = sampleByPattern(["https://shop.example/p/a", "https://shop.example/p/b"], 1);
-    expect(urls).toEqual(["https://shop.example/p/a"]);
+  it("with N = 1 takes the first URL of each route type", () => {
+    const { urls } = sampleByPattern(["https://shop.example/p/a-1", "https://shop.example/p/b-2"], 1);
+    expect(urls).toEqual(["https://shop.example/p/a-1"]);
   });
 });

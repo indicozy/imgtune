@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { isLocalTarget } from "./address.js";
 import { makeFetcher, type Fetcher } from "./fetch.js";
 import { sameSite } from "./site.js";
+import { groupRoutes, type RouteGrouping } from "./routes.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
 /** Sitemap indexes are followed this many levels deep (the top-level index is level 0). */
@@ -250,36 +251,14 @@ export async function urlsFromSource(arg: string, cwd: string): Promise<UrlSourc
   return { urls: parseUrlList(text), source: "list", dropped: 0 };
 }
 
-/** Whether a first path segment is a locale such as `en`, `ae-en` or `pt-br`: it is skipped when grouping. */
-const LOCALE = /^[a-z]{2}(?:-[a-z]{2,4})?$/i;
-
 /**
- * The route pattern of a page, by path template: the first path segment after a leading locale names the group, and the
- * rest is a wildcard (`/p/*` for `/p/some-product-1234`, `/ae-en/c/*` for `/ae-en/c/bags`). A page with no segment after
- * the locale is its own pattern (`/`, `/about`). Unparseable URLs group under themselves.
+ * At most `perPattern` URLs of each route type (routes.ts), spread evenly over the type's URLs in their own order. A type
+ * with fewer URLs keeps them all. Returns the sample in the input order, and the number of route types.
  */
-export function patternOf(url: string): string {
-  let segments: string[];
-  try {
-    segments = new URL(url).pathname.split("/").filter((s) => s !== "");
-  } catch {
-    return url;
-  }
-  const locale = segments.length > 0 && LOCALE.test(segments[0]) && segments.length > 1 ? segments[0] : undefined;
-  const rest = locale === undefined ? segments : segments.slice(1);
-  const prefix = locale === undefined ? "" : `/${locale}`;
-  if (rest.length <= 1) return `${prefix}/${rest.join("/")}`.replace(/\/$/, "") || "/";
-  return `${prefix}/${rest[0]}/*`;
-}
-
-/**
- * At most `perPattern` URLs of each route pattern, spread evenly over the pattern's URLs in their own order. A pattern with
- * fewer URLs keeps them all. Returns the sample in the input order.
- */
-export function sampleByPattern(urls: string[], perPattern: number): { urls: string[]; patterns: number } {
+export function sampleByPattern(urls: string[], perPattern: number, routes: RouteGrouping = groupRoutes(urls)): { urls: string[]; patterns: number } {
   const groups = new Map<string, string[]>();
   for (const url of urls) {
-    const key = patternOf(url);
+    const key = routes.typeOf(url);
     const list = groups.get(key);
     if (list) list.push(url);
     else groups.set(key, [url]);

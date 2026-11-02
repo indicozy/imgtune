@@ -45,7 +45,7 @@ function input(over: Partial<SummaryInput> = {}): SummaryInput {
 const lines = (text: string) => text.replace(/\n$/, "").split("\n");
 
 describe("renderSummary", () => {
-  it("prints the heading, the timings, the survey totals and the worst pattern", () => {
+  it("prints the heading, the timings, the survey totals and the worst route types", () => {
     const out = lines(renderSummary(input()));
     expect(out[0]).toBe("imgtune run: 4 URL(s), 2 pattern(s), exit 0");
     expect(out[1]).toBe("out: .imgtune/run/x");
@@ -53,7 +53,7 @@ describe("renderSummary", () => {
     expect(out.join("\n")).toMatch(/^survey: 4 page\(s\), 3 ok, 0 broken, 1 not measured$/m);
     expect(out.join("\n")).toMatch(/^  2 viewports, exact savings only, no est\.$/m);
     expect(out.join("\n")).toMatch(/^  site \(3 ok, mean\): image KB\/view /m);
-    expect(out.join("\n")).toMatch(/worst patterns \(mean exact KB\/view per page, 2 of 2 shown\):/);
+    expect(out.join("\n")).toMatch(/worst route types \(mean exact KB\/view per page, 2 of 2 shown\):/);
     expect(out.join("\n")).toMatch(/\/p\/\*\s+2 page\(s\)/);
   });
 
@@ -164,7 +164,7 @@ describe("run.json is checked before anything from it is printed", () => {
   const good = {
     tool: "imgtune",
     version: "0.1.0",
-    urls: { count: 4, patterns: 2, file: "urls.txt" },
+    urls: { count: 4, types: 2, file: "urls.txt" },
     options: { deep: 2, qualities: [75, 85, 100], noCache: false, ignoreRobots: false, storageState: false },
     phases: [{ name: "survey", seconds: 3.2 }],
     stop: null,
@@ -191,7 +191,7 @@ describe("run.json is checked before anything from it is printed", () => {
 
   it("refuses counts and exitCode that are not numbers", () => {
     rejects(withPatch({ urls: { ...good.urls, count: "4" } }), /urls\.count must be a whole number/);
-    rejects(withPatch({ urls: { ...good.urls, patterns: null } }), /urls\.patterns/);
+    rejects(withPatch({ urls: { ...good.urls, types: null } }), /urls\.types/);
     const { exitCode: _omit, ...noExit } = good;
     rejects(JSON.stringify(noExit), /exitCode must be a whole number/);
   });

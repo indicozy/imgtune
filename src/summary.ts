@@ -6,6 +6,7 @@ import { hintsCommand } from "./hints.js";
 import { safeText, shellWord } from "./text.js";
 import { APPROX_MARK, APPROX_NOTE, pageFileName, type PageResult, siteNumbers, surveyLabelOf } from "./remote.js";
 import { candidatesOf, patternRanking } from "./worst.js";
+import { groupRoutes, parseRouteMap, type RouteGrouping } from "./routes.js";
 import type { RunManifest } from "./run.js";
 
 /** The phases a manifest may name: the only values a manifest's phase name can take when it is printed. */
@@ -47,6 +48,8 @@ export interface SummaryInput {
   surveyLabel?: string;
   /** The survey's pages (every status). Absent for a scan of files. */
   survey?: PageResult[];
+  /** The route types of the survey's URLs (with the run's --route-map). Absent: grouped without a map. */
+  routes?: RouteGrouping;
   /** The full-scan pages (every status), in the order they were scanned. */
   deep: PageResult[];
   /** Call sites worst first; undefined when the hints were not read. */
@@ -94,7 +97,7 @@ export function renderSummary(input: SummaryInput): string {
   if (input.stop !== undefined) {
     lines.push(`STOPPED before the deep phase: ${safeText(input.stop.reason)}`, `  fix: ${safeText(input.stop.fix)}`, "");
   }
-  if (input.survey !== undefined) lines.push(...surveyBlock(input.survey, input.surveyLabel), "");
+  if (input.survey !== undefined) lines.push(...surveyBlock(input.survey, input.surveyLabel, input.routes), "");
   else if (input.surveyLabel !== undefined) lines.push(safeText(input.surveyLabel), "");
   if (input.deep.length > 0) lines.push(...deepBlock(input.deep), "");
   if (input.callSites !== undefined) lines.push(...callSiteBlock(input.callSites), "");
@@ -109,7 +112,8 @@ export function renderSummary(input: SummaryInput): string {
 }
 
 /** The survey: its page counts, the label (exact only), the site totals, and the worst route patterns. */
-function surveyBlock(survey: PageResult[], label: string | undefined): string[] {
+function surveyBlock(survey: PageResult[], label: string | undefined, routes?: RouteGrouping): string[] {
+  const grouping = routes ?? groupRoutes(survey.map((p) => p.url));
   const ok = survey.filter((p) => p.status === "ok" && p.page !== undefined);
   const count = (status: string) => survey.filter((p) => p.status === status).length;
   const broken = count("broken");
@@ -122,10 +126,10 @@ function surveyBlock(survey: PageResult[], label: string | undefined): string[] 
       ? "  site: no page measured"
       : `  site (${numbers.length} ok, mean): image KB/view ${kbText(siteNumbers(numbers).meanImageBytes / 1024)} · exact ${pctText(siteNumbers(numbers).exactPct)} · exact + est. ${pctText(siteNumbers(numbers).exactEstPct)}${siteNumbers(numbers).estApprox === true ? APPROX_MARK : ""}`,
   );
-  const ranks = patternRanking(candidatesOf(survey));
+  const ranks = patternRanking(candidatesOf(survey, grouping.typeOf));
   if (ranks.length > 0) {
     const shown = Math.min(PATTERN_ROWS, ranks.length);
-    lines.push(`  worst patterns (mean exact KB/view per page, ${shown} of ${ranks.length} shown):`);
+    lines.push(`  worst route types (mean exact KB/view per page, ${shown} of ${ranks.length} shown):`);
     for (const rank of ranks.slice(0, PATTERN_ROWS)) {
       lines.push(`    ${trim(rank.pattern, 22).padEnd(22)} ${String(rank.pages).padStart(3)} page(s)  ${kbText(rank.meanExactKB).padStart(6)} KB  worst ${trim(labelOf(rank.worst.url), 30)}`);
     }
@@ -325,6 +329,8 @@ async function runDirInput(dir: string, cwd: string): Promise<{ input: SummaryIn
   const manifest = parseManifest(await readFile(manifestFile, "utf8"), manifestFile);
   const survey = (await exists(join(dir, "survey"))) ? await readPages(join(dir, "survey")) : undefined;
   const deep = (await exists(join(dir, "deep"))) ? await readPages(join(dir, "deep")) : [];
+  const routeMap = manifest.options.routeMap !== undefined ? parseRouteMap(await readFile(resolve(cwd, manifest.options.routeMap), "utf8")) : [];
+  const routes = survey !== undefined ? groupRoutes(survey.map((p) => p.url), { routeMap }) : undefined;
   const warnings: string[] = [];
   if (survey !== undefined) warnings.push(...pageWarnings("survey", survey));
   warnings.push(...pageWarnings("deep", deep));
@@ -349,11 +355,12 @@ async function runDirInput(dir: string, cwd: string): Promise<{ input: SummaryIn
   const hintsFile = join(dir, "hints.json");
   const callSites = (await exists(hintsFile)) ? callSitesFromJson(await readFile(hintsFile, "utf8")) : undefined;
   const input: SummaryInput = {
-    heading: `imgtune run: ${manifest.urls.count} URL(s), ${manifest.urls.patterns} pattern(s), exit ${manifest.exitCode}`,
+    heading: `imgtune run: ${manifest.urls.count} URL(s), ${manifest.urls.types} route type(s), exit ${manifest.exitCode}`,
     out: showPath(dir, cwd),
     timings: manifest.phases.map((p) => ({ name: p.name, seconds: p.seconds })),
     surveyLabel: survey !== undefined ? surveyLabelOf(survey) : undefined,
     survey,
+    routes,
     deep,
     callSites,
     stop: manifest.stop ?? undefined,
@@ -431,7 +438,7 @@ export function parseManifest(text: string, file: string): RunManifest {
   const fileName = stringOf(urls.file, file, "urls.file");
   if (!PLAIN_NAME.test(fileName) || fileName.includes("..")) bad(file, "urls.file", "must be a plain file name in the run directory");
   integerOf(urls.count, file, "urls.count", 0, MAX_COUNT);
-  integerOf(urls.patterns, file, "urls.patterns", 0, MAX_COUNT);
+  integerOf(urls.types, file, "urls.types", 0, MAX_COUNT);
   const options = objectOf(root.options, file, "options");
   if (options.qualities !== undefined) {
     if (!Array.isArray(options.qualities) || options.qualities.length === 0) bad(file, "options.qualities", "must be a list of whole numbers");
