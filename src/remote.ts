@@ -8,6 +8,8 @@ import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { mdCode, mdText, safeText } from "./text.js";
 import { commentHints } from "./hints.js";
+import { lcpLinesOf } from "./lcp.js";
+import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
@@ -18,7 +20,7 @@ import { confirmMatch, matchLocalQuality, type SizeAt } from "./calibrate.js";
 import { DEFAULT_THIRD_PARTY, isThirdPartyBlocked, parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { encode, encodedBytes, ENCODE_THREADS, ENCODER_ID, FAST_AVIF_EFFORT, type EncoderProfile } from "./encode.js";
-import { adapterFor, originalOf, type QualityParam } from "./loaders.js";
+import { adapterFor, formatAutoOf, originalOf, type QualityParam } from "./loaders.js";
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwnerChain, resolveOwners } from "./locate.js";
@@ -238,10 +240,10 @@ export function currentQuality(src: string, pageUrl = "http://localhost"): { qua
 }
 
 /** The loader name and its quality parameter for one image URL; "generic" when the URL does not parse. */
-export function loaderOf(src: string, pageUrl: string): { loader: string; qualityParam: QualityParam } {
+export function loaderOf(src: string, pageUrl: string): { loader: string; qualityParam: QualityParam; formatAuto?: true } {
   try {
     const { adapter } = adapterFor(src, pageUrl);
-    return { loader: adapter.name, qualityParam: adapter.qualityParam };
+    return { loader: adapter.name, qualityParam: adapter.qualityParam, ...(formatAutoOf(src, pageUrl) ? { formatAuto: true as const } : {}) };
   } catch {
     return { loader: "generic", qualityParam: "yes" };
   }
@@ -422,6 +424,8 @@ export function pageFileName(url: URL): string {
 
 export interface ScanArgs {
   urls: string[];
+  /** --max-qualities: the most values the next/image quality list may have (see qualities-cap.ts). Undefined: the default. */
+  maxQualities?: number;
   /** --root: the folder that project source files are read from. */
   root?: string;
   /** --no-cache: encode and score everything again, and keep nothing on disk. */
@@ -512,6 +516,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--summary-json",
   "--max-pages",
   "--max-images",
+  "--max-qualities",
   "--page-concurrency",
   "--idle-timeout",
   "--urls-from",
@@ -568,6 +573,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--summary-json") args.summaryJson = value;
       else if (arg === "--max-pages") args.maxPages = parseLimit(arg, value);
       else if (arg === "--max-images") args.maxImages = parseLimit(arg, value);
+      else if (arg === "--max-qualities") args.maxQualities = parseRange(arg, value, MIN_MAX_QUALITIES, MAX_MAX_QUALITIES);
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--urls-from") args.urlsFrom = value;
@@ -1036,6 +1042,12 @@ export interface ObservedLocator {
   functionLocations?: StackFrame[];
 }
 
+/**
+ * The page's largest contentful paint, as the page stood before its first scroll: an image (its index among the page's
+ * <img> elements, the same index as ObservedImage.index), another element, or none (no LCP entry).
+ */
+export type LcpObservation = { kind: "image"; index: number } | { kind: "other" } | { kind: "none" };
+
 /** The most owner components whose function location is read per image (nearest first). */
 export const MAX_FUNCTION_LOCATIONS = 8;
 
@@ -1059,6 +1071,8 @@ export interface ViewportObservation {
   finalUrl?: string;
   /** True when the page's `load` event did not come within the cap; the figures were taken anyway. */
   loadTimedOut?: boolean;
+  /** The page's LCP, read before the scroll: a fresh load's viewport only (see readLcp). Absent for a resized viewport. */
+  lcp?: LcpObservation;
   blocked: boolean;
   /** Requests the browser was stopped from making (the page is public and they reach a blocked address). */
   blockedRequests: number;
@@ -1102,6 +1116,8 @@ function isNavigationError(err: unknown): boolean {
 interface PageView {
   seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[] };
   html: string;
+  /** The LCP read before the scroll (fresh loads only). */
+  lcp?: LcpObservation;
 }
 
 /** A Playwright storage state: cookies and local storage of a logged-in session. */
@@ -1316,9 +1332,93 @@ async function readView(page: Page, light = false): Promise<PageView> {
   return { seen, html };
 }
 
+/** The longest wait for the viewport's images to finish before the LCP is read (see readLcp). */
+export const LCP_READ_CAP_MS = 2_000;
+
+/** The window property (a symbol) the LCP observer keeps its entries in. */
+const LCP_KEY = "imgtune.lcp";
+
+/**
+ * Installed in each context before the page's own scripts: a buffered largest-contentful-paint observer that keeps every
+ * entry from the start of the document. Chromium records LCP only once an observer for it exists, so an observer made
+ * after the load would miss the paints that came before it.
+ */
+export const LCP_OBSERVER_SCRIPT = `(() => {
+  const entries = [];
+  Object.defineProperty(window, Symbol.for(${JSON.stringify(LCP_KEY)}), { value: entries });
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) entries.push(entry);
+    }).observe({ type: "largest-contentful-paint", buffered: true });
+  } catch {
+    // No LCP support: the entries stay empty, and the LCP is read as none.
+  }
+})();`;
+
+/** Installs the LCP observer in a context (see LCP_OBSERVER_SCRIPT). Call before the context's first page. */
+export async function installLcpObserver(context: BrowserContext): Promise<void> {
+  await context.addInitScript({ content: LCP_OBSERVER_SCRIPT });
+}
+
+/**
+ * The LCP as the page stands before its first scroll (settlePage's beforeScroll). The images in the viewport get a moment to
+ * finish, since an image LCP is an entry only once it is painted; then two frames for the paint, and the buffered
+ * largest-contentful-paint entries are read. An image LCP is its <img>'s index among the page's images (the ObservedImage
+ * index); any other element is "other"; no entry is "none". Nothing is written to the page.
+ */
+export async function readLcp(page: Page): Promise<LcpObservation> {
+  return page.evaluate(
+    async ({ capMs, keyName }: { capMs: number; keyName: string }): Promise<LcpObservation> => {
+      const inView = Array.from(document.images).filter((img) => {
+        const r = img.getBoundingClientRect();
+        return r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+      });
+      const pending = inView
+        .filter((img) => !img.complete)
+        .map(
+          (img) =>
+            new Promise<void>((done) => {
+              img.addEventListener("load", () => done(), { once: true });
+              img.addEventListener("error", () => done(), { once: true });
+            }),
+        );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(pending), new Promise<void>((done) => (timer = setTimeout(done, capMs)))]);
+      clearTimeout(timer);
+      await new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+      // The entries are dispatched a frame after the paint, so the read waits: it ends at an image entry (painted), or when
+      // no new entry came for a while. The observer (LCP_OBSERVER_SCRIPT) keeps them in the window.
+      const entries: PerformanceEntry[] = (window as unknown as Record<symbol, PerformanceEntry[] | undefined>)[Symbol.for(keyName)] ?? [];
+      const started = performance.now();
+      let seen = -1;
+      let stableSince = started;
+      const lastEntry = (): (PerformanceEntry & { element?: Element | null }) | undefined => entries[entries.length - 1];
+      while (performance.now() - started < capMs) {
+        await new Promise<void>((done) => setTimeout(done, 50));
+        if (entries.length !== seen) {
+          seen = entries.length;
+          stableSince = performance.now();
+        }
+        if (lastEntry()?.element instanceof HTMLImageElement) break;
+        if (performance.now() - stableSince >= 250) break;
+      }
+      const last = lastEntry();
+      if (last === undefined) return { kind: "none" };
+      const element = last.element;
+      if (element instanceof HTMLImageElement) {
+        const index = Array.from(document.querySelectorAll("img")).indexOf(element);
+        if (index >= 0) return { kind: "image", index };
+      }
+      return { kind: "other" };
+    },
+    { capMs: LCP_READ_CAP_MS, keyName: LCP_KEY },
+  );
+}
+
 /**
  * The settle step, then one read, taken again whenever the page navigated while it ran (a reload or a script's
  * location change after load). At most MAX_POST_LOAD_NAVIGATIONS repeats; past that, the last complete read is used.
+ * `readLcpFirst`: the LCP is read before the first scroll, and kept with the read it belongs to (fresh loads only).
  */
 async function settledView(
   page: Page,
@@ -1327,16 +1427,27 @@ async function settledView(
   light = false,
   idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
   afterSettle?: () => Promise<void>,
+  readLcpFirst = false,
 ): Promise<PageView> {
   let last: PageView | undefined;
   for (let repeat = 0; ; repeat++) {
     const start = navigations();
     let view: PageView | undefined;
+    let lcp: LcpObservation | undefined;
     try {
       // A resized read waits for its network through afterSettle (Playwright's networkidle returns at once there).
-      await settlePage(page, "img", { networkIdle: !light && afterSettle === undefined, networkIdleMs: idleTimeoutMs });
+      await settlePage(page, "img", {
+        networkIdle: !light && afterSettle === undefined,
+        networkIdleMs: idleTimeoutMs,
+        beforeScroll: readLcpFirst
+          ? async () => {
+              lcp = await readLcp(page);
+            }
+          : undefined,
+      });
       if (afterSettle !== undefined) await afterSettle();
       view = await measure("read view", () => readView(page, light));
+      view.lcp = lcp;
     } catch (err) {
       if (!isNavigationError(err)) throw err;
     }
@@ -1563,6 +1674,8 @@ async function readGroup(
       proxy: { server: egress.url, bypass: "<-loopback>" },
       ...(storageState !== undefined ? { storageState } : {}),
     }));
+    // The LCP observer is in place before the page's own scripts (a light read takes no LCP).
+    if (!light) await installLcpObserver(context);
     try {
       // The route guard decides the URL of each request and aborts it when refused. The proxy checks what it cannot see.
       await context.route("**/*", async (route) => {
@@ -1674,13 +1787,15 @@ async function readGroup(
           } else {
             await measure(`resize ${viewport.name}`, () => resizeTo(cdp as CDPSession, page, viewport, resizeState));
           }
-          const { seen, html } = await settledView(
+          // The LCP belongs to the page's own load: a fresh load's viewport reads it (a resized one shares that load's LCP).
+          const { seen, html, lcp } = await settledView(
             page,
             navigations,
             loadCapMs,
             light,
             idleTimeoutMs,
             step === 0 ? undefined : () => waitNetworkQuiet(() => busy.size, idleTimeoutMs),
+            !light && step === 0,
           );
           if (step > 0 && navigations() !== navigatedBefore) {
             fresh = viewports.slice(step);
@@ -1711,6 +1826,7 @@ async function readGroup(
               status,
               finalUrl: page.url(),
               ...(step === 0 && loaded !== undefined ? { loadTimedOut: loaded.loadTimedOut } : {}),
+              ...(lcp !== undefined ? { lcp } : {}),
               blocked: isChallenge(status, seen.images.length, html),
               blockedRequests: blockedRequests - blockedBefore,
               thirdPartyBlocked: thirdPartyBlocked - thirdBefore,
@@ -1813,6 +1929,10 @@ export interface Instance {
   duplicateOf?: number;
   loader: string;
   qualityParam: QualityParam;
+  /** The CDN negotiates the format of the URL (f_auto, auto=format): see formatAutoOf. Absent otherwise. */
+  formatAuto?: true;
+  /** The CDN's auto quality of the element's group (see applyCdnPolicies). Set on q_auto images only. */
+  cdnQuality?: { handled: boolean; saved: number };
 }
 
 export interface AnalysisContext {
@@ -2134,13 +2254,63 @@ function modeOf(values: string[]): string {
 }
 
 /**
- * The hint for a group whose loader limits the quality: none (re-export the sources), auto (set an explicit q_N), or
- * tunable (the quality the estimate lands on, once there is one).
+ * The hint for a group whose loader limits the quality: none (re-export the sources), auto (the CDN's auto quality: handled
+ * by the CDN, or an explicit q_<Q> when its est. saving is worth it: see applyCdnPolicies), or tunable (the quality the
+ * estimate lands on, once there is one).
  */
-export function qualityHintFor(loader: string, qualityParam: QualityParam, estQuality: number | undefined): string | undefined {
+export function qualityHintFor(
+  loader: string,
+  qualityParam: QualityParam,
+  estQuality: number | undefined,
+  cdn?: { handled: boolean; saved: number },
+): string | undefined {
   if (qualityParam === "none") return `${loader}: no quality parameter — re-export sources at lower quality`;
-  if (qualityParam === "auto") return `${loader}: q_auto in use — set an explicit q_<N>`;
+  if (qualityParam === "auto") {
+    if (cdn === undefined || cdn.handled) return `quality handled by ${loader} (q_auto)`;
+    const explicit = estQuality === undefined ? "q_<N>" : `q_${estQuality}`;
+    return `${loader}: q_auto leaves ${Math.round(cdn.saved / 1024)} KB per view; an explicit ${explicit} passes SSIMULACRA2`;
+  }
   return estQuality === undefined ? undefined : `${loader}: set quality=${estQuality}`;
+}
+
+/**
+ * A CDN's auto quality (Cloudinary q_auto) is handled by the CDN when its est. quality saving is below this share of its
+ * group's served bytes. Such a group's quality saving is not counted; the hint says the CDN handles it. Named, not tuned.
+ */
+export const CDN_AUTO_QUALITY_SHARE = 0.1;
+
+/**
+ * The CDN's own quality and format, so ImgTune does not nag about them. A jpeg or png whose format the CDN negotiates
+ * (f_auto, auto=format) loses its format saving: no format change is proposed for it. A group of q_auto images is
+ * handled by the CDN when its est. quality saving is below CDN_AUTO_QUALITY_SHARE of its served bytes: its est. is then
+ * zero (the hint names the CDN). Otherwise its est. stays and the group names an explicit quality. Runs after applyQuality.
+ */
+export function applyCdnPolicies(instances: Instance[], viewportCount: number): void {
+  for (const inst of instances) {
+    if (inst.formatAuto === true && inst.kind !== "skipped" && (inst.format === "jpeg" || inst.format === "png")) {
+      inst.est = 0;
+      inst.estAggressive = 0;
+    }
+  }
+  const groups = new Map<string, Instance[]>();
+  for (const inst of instances) {
+    if (inst.qualityParam !== "auto" || inst.kind === "skipped") continue;
+    const list = groups.get(inst.group);
+    if (list) list.push(inst);
+    else groups.set(inst.group, [inst]);
+  }
+  for (const members of groups.values()) {
+    const served = members.reduce((sum, m) => sum + m.bytes, 0) / viewportCount;
+    const saved = members.reduce((sum, m) => sum + m.est, 0) / viewportCount;
+    const handled = served > 0 && saved < CDN_AUTO_QUALITY_SHARE * served;
+    for (const m of members) {
+      if (handled) {
+        m.est = 0;
+        m.estAggressive = 0;
+      }
+      m.cdnQuality = { handled, saved };
+    }
+  }
 }
 
 function median(values: number[]): number | undefined {
@@ -2321,6 +2491,8 @@ export interface ViewportReport {
   estSaved: number;
   estAggressiveSaved?: number;
   sharpnessGrowth: number;
+  /** What the page's largest contentful paint is at this viewport: an image, another element, or none (absent: not read). */
+  lcp?: "image" | "other" | "none";
   images: ImageReport[];
   /** The CSS background layers at this viewport (not in the totals above). Absent in a light read. */
   backgrounds?: BackgroundTotals;
@@ -2583,7 +2755,7 @@ export function groupReports(instances: Instance[], viewportCount: number): Grou
       suggestedSizes,
       estQuality,
       loader,
-      qualityHint: qualityHintFor(loader, lead.qualityParam, estQuality),
+      qualityHint: qualityHintFor(loader, lead.qualityParam, estQuality, lead.cdnQuality),
       savedBytes,
       ...estApprox,
       members: new Set(members.map((m) => m.element)).size,
@@ -2642,6 +2814,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
   const sources = await resolveSources(ctx, observations);
   if (ctx.quality) await estimateQualities(ctx, instances, refName);
   for (const inst of instances) applyQuality(inst);
+  applyCdnPolicies(instances, observations.length);
   // CSS background layers: measured apart. They stay out of the totals, the groups and the counts below (the page's
   // `backgrounds` line reports them), so the headline numbers are the images' alone.
   const bgInstances: BackgroundInstance[] = [];
@@ -2677,6 +2850,7 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
       estSaved: vt.est,
       estAggressiveSaved: ctx.aggressive ? vt.estAggressive : undefined,
       sharpnessGrowth: vt.growth,
+      ...(obs.lcp !== undefined ? { lcp: obs.lcp.kind } : {}),
       images: own.map(toReport),
       ...(obs.backgrounds !== undefined
         ? { backgrounds: backgroundTotals(bgInstances.filter((i) => i.viewport.name === obs.viewport.name)) }
@@ -3496,6 +3670,7 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
     head,
     ...(result.harness === true || rungOfPage(result.url) === "measured-harness" ? ["  measured in isolation (harness route): the component, not the page a visitor sees"] : []),
     `  viewports: ${safeText(result.viewports.join(", "))}`,
+    ...lcpLinesOf(result).map((line) => `  ${line}`),
     `  image bytes per view   ${kb(n.meanImageBytes)}`,
     `  saving exact           ${pct(n.exactPct)}`,
     `  saving exact + est.    ${pct(n.exactEstPct)}${n.estApprox === true ? APPROX_MARK : ""}`,
@@ -3526,7 +3701,7 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
 }
 
 /** Per-site line for hosts with two or more scanned pages. */
-export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string): string {
+export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string, maxQualities?: number): string {
   const lines: string[] = [];
   const survey = surveyLabelOf(results);
   if (survey !== undefined) lines.push(survey, "");
@@ -3547,6 +3722,8 @@ export function renderScan(results: PageResult[], aggressive: boolean, hintsFile
       `${safeText(host)} (${site.pages} pages): exact ${pct(site.exactPct)} · exact + est. ${pct(site.exactEstPct)}${site.estApprox === true ? APPROX_MARK : ""} · fixable ${pct(site.fixablePct)} · sharpness +${site.sharpnessKB.toFixed(1)} KB`,
     );
   }
+  const plan = planQualityCap(results, maxQualities);
+  if (plan !== undefined) lines.push(qualitiesLine(plan));
   return `${lines.join("\n")}\n`;
 }
 
@@ -3584,10 +3761,10 @@ const COMMENT_TRUNCATED = "Comment truncated to fit GitHub's 65,536-character li
  * agent. Contains no HTML comment and no mention. Over COMMENT_BUDGET the hints are left out; over it still, the text is cut
  * at a line and says so.
  */
-export function renderMarkdown(results: PageResult[], aggressive: boolean): string {
-  const full = markdownBody(results, aggressive, true);
+export function renderMarkdown(results: PageResult[], aggressive: boolean, maxQualities?: number): string {
+  const full = markdownBody(results, aggressive, true, maxQualities);
   if (full.length <= COMMENT_BUDGET) return full;
-  const lean = markdownBody(results, aggressive, false);
+  const lean = markdownBody(results, aggressive, false, maxQualities);
   if (lean.length + HINTS_LEFT_OUT.length + 2 <= COMMENT_BUDGET) return `${lean}\n\n${HINTS_LEFT_OUT}`;
   const kept: string[] = [];
   let size = 0;
@@ -3599,7 +3776,7 @@ export function renderMarkdown(results: PageResult[], aggressive: boolean): stri
   return `${kept.join("\n")}\n\n${COMMENT_TRUNCATED}`;
 }
 
-function markdownBody(results: PageResult[], aggressive: boolean, withHints: boolean): string {
+function markdownBody(results: PageResult[], aggressive: boolean, withHints: boolean, maxQualities?: number): string {
   const width = aggressive ? 7 : 6;
   const head = ["page", "status", "image KB/view", "exact", "exact + est.", "sharpness"];
   if (aggressive) head.push(`exact + est. at delta ${SCAN_AGGRESSIVE_DELTA}`);
@@ -3623,8 +3800,14 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
     lines.push(mdRow(cells, width));
   }
   for (const result of results) {
-    if (result.status !== "ok" || !result.page || result.groups.length === 0) continue;
-    lines.push("", `### ${pageLabel(result.url)}`, "", mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
+    if (result.status !== "ok" || !result.page) continue;
+    // The LCP line goes above the page's table: the image that the first paint waits for comes first.
+    const lcp = lcpLinesOf(result, mdCode);
+    if (lcp.length === 0 && result.groups.length === 0) continue;
+    lines.push("", `### ${pageLabel(result.url)}`, "");
+    for (const line of lcp) lines.push(line, "");
+    if (result.groups.length === 0) continue;
+    lines.push(mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
     lines.push(mdRow(["---", "---", "---:", "---", "---"], 5));
     for (const g of result.groups.slice(0, SUMMARY_GROUPS)) {
       const current = g.sizes === undefined ? "no sizes" : mdCode(g.sizes);
@@ -3634,8 +3817,10 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
       lines.push(mdRow([current, suggested, `${kbNumber(g.savedBytes)}${g.estApprox === true ? APPROX_MARK : ""}`, loader, hint || "-"], 5));
     }
   }
+  const plan = planQualityCap(results, maxQualities);
+  if (plan !== undefined) lines.push("", mdCode(qualitiesLine(plan)));
   if (withHints) {
-    const hints = commentHints(results);
+    const hints = commentHints(results, undefined, maxQualities);
     if (hints.lines.length > 0) {
       lines.push(
         "",
@@ -3803,11 +3988,11 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     report,
     thirdParty: args.thirdParty,
   });
-  if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive)}\n`);
+  if (args.markdown !== undefined) await writeOutput(resolve(cwd, args.markdown), `${renderMarkdown(results, args.aggressive, args.maxQualities)}\n`);
   if (args.summaryJson !== undefined) {
     await writeOutput(resolve(cwd, args.summaryJson), `${JSON.stringify(summaryOf(results), null, 2)}\n`);
   }
-  let output = renderScan(results, args.aggressive, (result) => join(args.out, pageFileName(new URL(result.url))));
+  let output = renderScan(results, args.aggressive, (result) => join(args.out, pageFileName(new URL(result.url))), args.maxQualities);
   const unreadFiles: string[] = [];
   for (const result of results) {
     for (const image of result.images ?? []) {

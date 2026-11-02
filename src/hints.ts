@@ -10,6 +10,7 @@ import { cleanLocate } from "./locate-join.js";
 import type { OwnerSource } from "./locate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
+import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, type QualityCapPlan } from "./qualities-cap.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
@@ -32,6 +33,8 @@ export interface HintsArgs {
   qualities?: number[];
   /** `--top N`: the N call sites that save the most per view, one line each (no batch, no offset). */
   top?: number;
+  /** `--max-qualities N`: the most values the next/image `images.qualities` list may have (1 to 4; default 2). */
+  maxQualities?: number;
 }
 
 /** One hint: an image record reduced to what an agent needs to make the fix. */
@@ -69,6 +72,10 @@ export interface Hint {
     target?: number;
     samples: number;
     group: string;
+    /** The target before the images.qualities cap moved it up (see qualities-cap.ts). Set with `approx`. */
+    cappedFrom?: number;
+    /** The saving is scaled to the capped target, not estimated there. */
+    approx?: true;
     /** The target before it was snapped up to an allowed quality (--qualities). */
     snapFrom?: number;
     /** The allowed qualities the target was snapped to. */
@@ -78,19 +85,28 @@ export interface Hint {
   };
   format?: { current?: string; best?: string };
   bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number };
+  /** The element is the page's largest contentful paint at some viewport (`lcpViewports`): sorted first (see lcp.ts). */
+  lcp?: true;
+  lcpViewports?: string[];
+  /** The `sizes="auto, <proposed>"` alternative: a lazy image whose only fix is its sizes (never an LCP or eager image). */
+  sizesAuto?: string;
+  /** The CDN's auto quality: "quality handled by <loader> (q_auto)", or the explicit quality the CDN leaves out. */
+  qualityNote?: string;
+  /** The CDN negotiates the format of a jpeg or png: no format change is proposed. */
+  formatNote?: string;
   rung: string;
   notes: string[];
 }
 
 const usage =
-  "usage: imgtune hints <scan.json> [<scan.json> ...] [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat] [--qualities 75,85,100]";
+  "usage: imgtune hints <scan.json> [<scan.json> ...] [--page <text>] [--component <name>] [--limit N] [--offset N] [--min-kb N] [--format text|json] [--flat] [--qualities 75,85,100] [--max-qualities N]";
 
 function nonNegativeInteger(name: string, text: string): number {
   if (!/^\d+$/.test(text)) throw new Error(`${name} needs a whole number, not ${safeText(text)}`);
   return Number(text);
 }
 
-const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offset", "--min-kb", "--format", "--qualities", "--top"];
+const OPTIONS: readonly string[] = ["--page", "--component", "--limit", "--offset", "--min-kb", "--format", "--qualities", "--top", "--max-qualities"];
 
 /** A list of allowed quality values: whole numbers 1 to 100, separated by commas. Sorted, without repeats. */
 export function parseQualities(text: string): number[] {
@@ -142,6 +158,11 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
     } else if (arg === "--top") {
       args.top = nonNegativeInteger(arg, value);
       if (args.top === 0) throw new Error("--top needs a number of at least 1");
+    } else if (arg === "--max-qualities") {
+      if (!/^\d+$/.test(value) || Number(value) < MIN_MAX_QUALITIES || Number(value) > MAX_MAX_QUALITIES) {
+        throw new Error(`--max-qualities needs a whole number from ${MIN_MAX_QUALITIES} to ${MAX_MAX_QUALITIES}, not ${safeText(value)}`);
+      }
+      args.maxQualities = Number(value);
     } else if (arg === "--format") {
       if (value !== "text" && value !== "json") throw new Error(`--format is text or json, not ${safeText(value)}`);
       args.format = value;
@@ -152,8 +173,11 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
   return args;
 }
 
-/** The hints of one page: its image records that have a fix, as hints. */
-export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
+/**
+ * The hints of one page: its image records that have a fix, as hints. `plan` is the site's images.qualities cap (see
+ * planQualityCap); it applies only when no --qualities list was given (that list is the framework's own).
+ */
+export function hintsOf(result: PageResult, qualities?: number[], plan?: QualityCapPlan): Hint[] {
   return (result.images ?? []).filter(hasFix).map((record) => {
     const served = record.current.format;
     const rawTarget = served !== undefined ? record.fix.quality?.perFormat[served] : undefined;
@@ -161,7 +185,9 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
     // raw target, so after a snap it is not counted, and the hint says so.
     const snapped = rawTarget !== undefined && qualities !== undefined ? snapUp(rawTarget, qualities) : undefined;
     const snapFrom = snapped !== undefined && snapped !== rawTarget ? rawTarget : undefined;
-    const target = snapped ?? rawTarget;
+    // The cap moves the target up to a listed value; its quality saving is scaled to that value (approx).
+    const capped = qualities === undefined ? plan?.byRecord.get(record.id) : undefined;
+    const target = snapped ?? capped?.to ?? rawTarget;
     const hint: Hint = {
       id: record.id,
       page: record.page,
@@ -169,10 +195,26 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
       component: record.locator.component.filter((c) => !OWNER_PLACEHOLDERS.has(c)),
       selector: record.locator.selector,
       sizes: { current: record.current.sizes, proposed: record.fix.sizes?.value, basis: record.fix.sizes?.basis },
-      bytes: { ...record.fix.bytes },
+      // A raise (the list has no lower value for this usage) adds bytes: its quality saving is then none, not negative.
+      bytes:
+        capped !== undefined
+          ? { ...record.fix.bytes, saved: (record.fix.bytes.sizes ?? 0) + Math.max(0, capped.saved), quality: Math.max(0, capped.saved) }
+          : { ...record.fix.bytes },
       rung: record.evidence.rung,
       notes: record.evidence.notes,
     };
+    const lcpViewports = record.lcpViewports ?? [];
+    if (lcpViewports.length > 0) {
+      hint.lcp = true;
+      hint.lcpViewports = lcpViewports;
+    }
+    // A lazy image's sizes can be "auto" (Chrome, Edge, Firefox 150+; the proposed value elsewhere). Only for an image whose
+    // only fix is its sizes: the quality saving and the format change are both none. Never for an eager or LCP image.
+    const sizesOnly = (hint.bytes.quality ?? 0) <= 0 && (record.fix.format === undefined || record.fix.format === served);
+    if (record.lazy === true && lcpViewports.length === 0 && hint.sizes.proposed !== undefined && record.fix.width === undefined && sizesOnly) {
+      hint.sizesAuto = `auto, ${hint.sizes.proposed}`;
+    }
+    if (record.fix.formatHandled === true) hint.formatNote = `format handled by ${record.locator.loader} (f_auto)`;
     if (record.locator.file !== undefined) {
       hint.file = record.locator.file;
       hint.line = record.locator.line;
@@ -197,19 +239,40 @@ export function hintsOf(result: PageResult, qualities?: number[]): Hint[] {
     });
     if (measured.length > 0) hint.measured = measured;
     if (record.fix.width !== undefined) hint.width = record.fix.width;
-    if (record.fix.quality !== undefined && record.current.quality !== undefined) {
-      hint.quality = {
-        current: record.current.quality,
+    const cdn = record.fix.cdnQuality;
+    if (cdn !== undefined) {
+      hint.qualityNote = cdn.handled
+        ? `quality handled by ${record.locator.loader} (q_auto)`
+        : `${record.locator.loader}: q_auto leaves ${kb(cdn.saved)} per view; an explicit q_${target ?? "<N>"} passes SSIMULACRA2`;
+    }
+    // The cap leaves the usage at its current quality or raises it: no target to print (its saving is none).
+    const current = record.current.quality;
+    const capKept = capped !== undefined && current !== undefined && capped.to >= current && capped.from < current;
+    if (capKept && capped !== undefined && current !== undefined) {
+      hint.qualityNote =
+        capped.to > current
+          ? `quality raised to ${capped.to} by images.qualities: adds bytes, not counted`
+          : `quality kept at ${current}: no listed value from ${capped.from} to ${current}`;
+    }
+    // A CDN-handled quality has no target to print: its saving is not counted.
+    if (record.fix.quality !== undefined && current !== undefined && cdn?.handled !== true && !capKept) {
+      const quality: NonNullable<Hint["quality"]> = {
+        current,
         target,
         samples: record.fix.quality.samples,
         group: record.fix.quality.group,
       };
-      if (qualities !== undefined) hint.quality.allowed = [...new Set(qualities)].sort((a, b) => a - b);
+      if (capped !== undefined && rawTarget !== undefined && capped.to !== rawTarget) {
+        quality.cappedFrom = rawTarget;
+        quality.approx = true;
+      }
+      if (qualities !== undefined) quality.allowed = [...new Set(qualities)].sort((a, b) => a - b);
       if (snapFrom !== undefined) {
-        hint.quality.snapFrom = snapFrom;
-        hint.quality.void = true;
+        quality.snapFrom = snapFrom;
+        quality.void = true;
         if (hint.bytes.sizes !== undefined) hint.bytes = { ...hint.bytes, saved: hint.bytes.sizes, quality: 0 };
       }
+      hint.quality = quality;
     }
     if (record.fix.format !== undefined || served !== undefined) hint.format = { current: served, best: record.fix.format };
     return hint;
@@ -227,7 +290,7 @@ export function selectHints(hints: Hint[], args: Pick<HintsArgs, "page" | "compo
       return h.component.some((c) => c.toLowerCase().includes(component)) || (h.file ?? "").toLowerCase().includes(component);
     })
     .filter((h) => args.minKb === undefined || h.bytes.saved >= args.minKb * 1024)
-    .sort((a, b) => b.bytes.saved - a.bytes.saved || a.id.localeCompare(b.id))
+    .sort((a, b) => Number(b.lcp === true) - Number(a.lcp === true) || b.bytes.saved - a.bytes.saved || a.id.localeCompare(b.id))
     .slice(args.offset, args.offset + args.limit);
 }
 
@@ -242,6 +305,7 @@ export function locationNote(hint: Hint): string {
 /** The quality target as printed: "-> 85", or "q82 -> 85 (allowed: 75,85,100)" when the target was snapped to an allowed value. */
 export function qualityTarget(quality: NonNullable<Hint["quality"]>): string {
   if (quality.target === undefined) return "";
+  if (quality.cappedFrom !== undefined) return ` q${quality.cappedFrom} -> ${quality.target} (capped to the listed qualities, approx)`;
   const allowed = quality.allowed !== undefined ? ` (allowed: ${quality.allowed.join(",")})` : "";
   return quality.snapFrom !== undefined ? ` q${quality.snapFrom} -> ${quality.target}${allowed}` : ` -> ${quality.target}${allowed}`;
 }
@@ -265,7 +329,8 @@ export function renderHint(hint: Hint, rank: number): string[] {
       ? `${JSON.stringify(`${hint.file}:${hint.line ?? 0}`)}${locationNote(hint)}`
       : JSON.stringify(hint.component[0] ?? hint.selector);
   const component = hint.component.length > 0 && hint.file !== undefined ? ` (${JSON.stringify(hint.component[0])})` : "";
-  const lines = [`${rank}. ${hint.id}  ${where}${component}  ${safeText(hint.page)}`];
+  const lcpPrefix = hint.lcp === true ? `LCP image (${(hint.lcpViewports ?? []).map((v) => safeText(v)).join(", ")}): ` : "";
+  const lines = [`${rank}. ${lcpPrefix}${hint.id}  ${where}${component}  ${safeText(hint.page)}`];
   const attributes = [
     hint.alt !== undefined ? `alt ${JSON.stringify(hint.alt)}` : undefined,
     hint.testid !== undefined ? `testid ${JSON.stringify(hint.testid)}` : undefined,
@@ -284,6 +349,7 @@ export function renderHint(hint: Hint, rank: number): string[] {
   if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
+  if (hint.sizesAuto !== undefined) lines.push(`   alternative: sizes="${safeText(hint.sizesAuto)}" (Chrome, Edge, Firefox 150+; Safari falls back to ${safeText(hint.sizes.proposed ?? "-")})`);
   if (hint.via === "prod-sourcemap") {
     lines.push("   located via the production source map: the component's definition; the image is inside it");
   }
@@ -292,8 +358,9 @@ export function renderHint(hint: Hint, rank: number): string[] {
   } else if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
   const parts: string[] = [];
   if (hint.quality) parts.push(`quality ${hint.quality.current}${qualityTarget(hint.quality)} (max of ${hint.quality.samples}, ${safeText(hint.quality.group)})`);
-  if (hint.format) parts.push(`format ${hint.format.current ?? "?"}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${hint.format.best}` : ""}`);
+  if (hint.format) parts.push(`format ${hint.format.current ?? "?"}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${hint.format.best}` : ""}${hint.formatNote !== undefined ? ` (${safeText(hint.formatNote)})` : ""}`);
   if (parts.length > 0) lines.push(`   ${parts.join("  ")}`);
+  if (hint.qualityNote !== undefined) lines.push(`   ${safeText(hint.qualityNote)}`);
   lines.push(
     `   ${savesText(hint)}, +${kb(hint.bytes.addedForSharpness)} sharpness (separate)  rung ${hint.rung}`,
   );
@@ -390,7 +457,8 @@ export function groupHints(hints: Hint[]): HintGroup[] {
     group.saved += hint.bytes.saved;
     groups.set(key, group);
   }
-  return [...groups.values()].sort((a, b) => b.saved - a.saved || a.key.localeCompare(b.key));
+  const hasLcp = (group: HintGroup): number => Number(group.hints.some((h) => h.lcp === true));
+  return [...groups.values()].sort((a, b) => hasLcp(b) - hasLcp(a) || b.saved - a.saved || a.key.localeCompare(b.key));
 }
 
 /**
@@ -480,7 +548,9 @@ export function groupHeadLine(group: HintGroup, rank: number): string {
   const name = first.file !== undefined && first.component[0] !== undefined ? ` (${JSON.stringify(first.component[0])})` : "";
   const sizes = group.hints.every((h) => h.bytes.sizes !== undefined) ? group.hints.reduce((sum, h) => sum + (h.bytes.sizes ?? 0), 0) : undefined;
   const split = sizes !== undefined ? ` = sizes ${kb(sizes)} + quality ${kb(group.saved - sizes)}` : "";
-  return `${rank}. ${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`;
+  const lcp = group.hints.find((h) => h.lcp === true);
+  const lcpPrefix = lcp !== undefined ? `LCP image (${(lcp.lcpViewports ?? []).map((v) => safeText(v)).join(", ")}): ` : "";
+  return `${rank}. ${lcpPrefix}${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`;
 }
 
 /** `--top`: the call sites that save the most per view, one line each. */
@@ -571,6 +641,19 @@ export function locateNoteOf(result: PageResult, hints: Hint[]): string | undefi
   return `${without} of ${hints.length} image(s) have no file:line: locate them on the dev server (scan <dev-url> --locate-only --from <this file>)`;
 }
 
+/** The site's images.qualities plan as JSON (null when there is none). The savings are per view, in bytes, and approximate. */
+function planJson(plan: QualityCapPlan | undefined): object | null {
+  if (plan === undefined) return null;
+  return {
+    values: plan.values,
+    maxValues: plan.maxValues,
+    images: plan.images,
+    approx: true,
+    estKeptBytes: Math.round(plan.kept),
+    estTotalBytes: Math.round(plan.total),
+  };
+}
+
 /** `imgtune hints <scan.json> [<scan.json> ...] ...`: reads the pages' scan files, returns the text or JSON to print. */
 export async function hintsCommand(argv: string[], cwd: string): Promise<{ output: string; exitCode: number }> {
   const args = parseHintsArgs(argv);
@@ -588,9 +671,12 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
     // The file's locate block is checked before anything prints it (a block that is not usable is dropped).
     results.push({ ...result, locate: cleanLocate(result.locate) });
   }
-  const perPage = results.map((result) => ({ result, hints: hintsOf(result, args.qualities) }));
+  // The site's images.qualities cap: over all the files given, and not when the framework's own --qualities list is given.
+  const plan = args.qualities === undefined ? planQualityCap(results, args.maxQualities) : undefined;
+  const perPage = results.map((result) => ({ result, hints: hintsOf(result, args.qualities, plan) }));
   const all = perPage.flatMap((p) => p.hints);
   const notes = perPage.map((p) => locateNoteOf(p.result, p.hints)).filter((n): n is string => n !== undefined);
+  if (plan !== undefined) notes.push(qualitiesLine(plan));
   // Sizes proposals the scan dropped because their predicted outcome adds bytes (or saves none): not hints, but counted.
   const dropped = results.reduce((sum, r) => sum + (r.images ?? []).filter((i) => i.fix?.noSaving !== undefined).length, 0);
   if (dropped > 0) notes.push(`${dropped} sizes proposal(s) left out: no saving (their predicted outcome adds bytes or changes nothing)`);
@@ -598,7 +684,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   if (args.top !== undefined) {
     const top = groupHints(filtered).slice(0, args.top);
     if (args.format === "json") {
-      return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g) })) }, null, 2)}\n`, exitCode: 0 };
+      return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g) })), qualities: planJson(plan) }, null, 2)}\n`, exitCode: 0 };
     }
     return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}`, exitCode: 0 };
   }
@@ -618,6 +704,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
         offset: args.offset,
         limit: args.limitGiven ? args.limit : null,
         truncated: args.offset + selectedGroups.length < groups.length,
+        qualities: planJson(plan),
         callSites: selectedGroups.map((group) => ({
           key: group.key,
           file: group.hints[0].file,
@@ -648,6 +735,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
       offset: args.offset,
       limit: args.limitGiven ? args.limit : null,
       truncated: args.offset + selected.length < filtered.length,
+      qualities: planJson(plan),
       hints: selected,
     };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
@@ -664,8 +752,10 @@ const COMMENT_FIELD = 80;
 const COMMENT_QUOTED_LIMIT = 1000;
 
 /** The hints of a PR comment: the top `limit` across the pages, one line each, and the number of hints in all. */
-export function commentHints(results: PageResult[], limit = COMMENT_HINTS): { total: number; lines: string[] } {
-  const all = results.filter((r) => r.status === "ok").flatMap((r) => hintsOf(r));
+export function commentHints(results: PageResult[], limit = COMMENT_HINTS, maxQualities?: number): { total: number; lines: string[] } {
+  const ok = results.filter((r) => r.status === "ok");
+  const plan = planQualityCap(ok, maxQualities);
+  const all = ok.flatMap((r) => hintsOf(r, undefined, plan));
   const top = selectHints(all, { limit, offset: 0 });
   return { total: all.length, lines: top.map((hint, i) => `${i + 1}. ${commentLine(hint)}`) };
 }
@@ -692,12 +782,15 @@ function commentLine(hint: Hint): string {
       ? `width ${hint.width}px`
       : `sizes ${quoted(hint.sizes.current ?? "none")} -> ${quoted(hint.sizes.proposed ?? "-")}`;
   const parts: (string | undefined)[] = [
+    hint.lcp === true ? `LCP image (${(hint.lcpViewports ?? []).map((v) => quoted(v)).join(", ")})` : undefined,
     `${savesText(hint)}, +${kb(hint.bytes.addedForSharpness)} sharpness`,
     `${location}${component}`,
     hint.alt !== undefined ? `alt ${quoted(hint.alt)}` : undefined,
     `page ${quoted(pathOf(hint.page))}`,
     sizes,
     hint.quality ? `quality ${hint.quality.current}${hint.quality.target !== undefined ? ` -> ${hint.quality.target}` : ""}` : undefined,
+    hint.qualityNote !== undefined ? quoted(hint.qualityNote) : undefined,
+    hint.sizesAuto !== undefined ? `sizes auto alternative ${quoted(hint.sizesAuto)}` : undefined,
     hint.format ? `format ${quoted(hint.format.current ?? "?")}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${quoted(hint.format.best)}` : ""}` : undefined,
     `rung ${hint.rung}`,
     `id ${quoted(hint.id)}`,

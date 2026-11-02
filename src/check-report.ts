@@ -2,6 +2,8 @@
 // the deep selection. No browser, no files. The audit mode extends it with source-aware sections; the sections below keep
 // their order so the two stay comparable. Page-derived text goes through mdText and mdCode (see text.ts).
 import { hintsOf, type Hint } from "./hints.js";
+import { lcpLinesOf } from "./lcp.js";
+import { planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import { hasFix, type ImageRecord } from "./images.js";
 import { APPROX_MARK, siteNumbers, type PageResult } from "./remote.js";
 import type { RouteGrouping } from "./routes.js";
@@ -120,9 +122,11 @@ export interface FixGroup {
  */
 export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[] {
   const groups = new Map<string, { hints: Hint[]; loaders: string[]; patterns: (string | undefined)[]; located: boolean; key: string }>();
+  // The site's images.qualities cap across the deep pages (none when the framework's own --qualities list is given).
+  const plan = qualities === undefined ? planQualityCap(measured(deep)) : undefined;
   for (const result of measured(deep)) {
     const records = new Map<string, ImageRecord>((result.images ?? []).map((r) => [r.id, r]));
-    for (const hint of hintsOf(result, qualities)) {
+    for (const hint of hintsOf(result, qualities, plan)) {
       const record = records.get(hint.id);
       if (record === undefined || !hasFix(record)) continue;
       const located = hint.file !== undefined;
@@ -256,6 +260,10 @@ export function buildCheckReport(input: CheckReportInput): string {
       `  - exact + est.: ${APPROX_MARK.trim()} ${kb(exactEst)} KB/view (${pct(numbers.exactEstPct)})${approx ? " (some estimates are approximate)" : ""}`,
       `  - sharpness: +${kb(mean(deepTotals.map((t) => t.sharpnessKB)))} KB/view, a separate number: it is never netted against the saving`,
     );
+    // The LCP image is the one the first paint waits for: its line, per page, before the ranked fixes.
+    for (const page of deepOk) {
+      for (const line of lcpLinesOf(page, mdCode)) out(`  - ${mdCode(pathOf(page.url))}: ${line}`);
+    }
   } else {
     out("- Deep: no deep page measured.");
   }
@@ -264,6 +272,8 @@ export function buildCheckReport(input: CheckReportInput): string {
   // 3. Ranked fixes.
   out("## Ranked fixes", "");
   const fixes = fixGroupsOf(input.deep, input.options.qualities);
+  const plan = input.options.qualities === undefined ? planQualityCap(deepOk) : undefined;
+  if (plan !== undefined) out(mdCode(qualitiesLine(plan)), "");
   if (fixes.length === 0) out("No deep image has a fix.", "");
   else {
     out(`Merged across the deep pages: one file:line when located, else one image pattern with the same proposed sizes. Ranked by the total saving over the pages. Top ${Math.min(REPORT_FIXES, fixes.length)} of ${fixes.length}.`, "");

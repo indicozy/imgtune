@@ -133,6 +133,11 @@ export interface ImagePerViewport {
   undersized: boolean;
   /** The element's own file was received at this viewport. */
   loaded: boolean;
+  /**
+   * The element is the page's largest contentful paint at this viewport (read before the scroll; see lcp.ts). Absent in
+   * scans from before this field, and at a viewport whose LCP was not read (a resized viewport of --shared-loads).
+   */
+  lcp?: boolean;
   /** Why the element is not measured here (duplicate of another element, data URI, ...). */
   skipped?: string;
 }
@@ -163,6 +168,14 @@ export interface ImageFix {
    * it is not a saving. `sizes` is then absent (see sizes-outcome.ts).
    */
   noSaving?: string;
+  /**
+   * A CDN's auto quality (Cloudinary q_auto): `handled` when its est. quality saving is below the share that makes it worth
+   * an explicit quality (see CDN_AUTO_QUALITY_SHARE). `saved` is the group's est. quality saving per view, which is left out
+   * of `bytes` when handled, and named in the hint otherwise.
+   */
+  cdnQuality?: { handled: boolean; saved: number };
+  /** The format is negotiated by the CDN (f_auto, auto=format) on a jpeg or png: no format saving is counted or proposed. */
+  formatHandled?: true;
 }
 
 export interface ImageRecord {
@@ -183,6 +196,8 @@ export interface ImageRecord {
     naturalWidth?: number;
   };
   lazy?: boolean;
+  /** The viewports at which the element is the page's largest contentful paint (see lcp.ts). Absent in older scans; [] when none. */
+  lcpViewports?: string[];
   /** Set when the element's source was read from a dev page by `scan --locate-only` (see locate-join.ts). */
   locate?: { viewport: string; by: "alt-order" | "url-unique"; devIndex: number };
   perViewport: ImagePerViewport[];
@@ -354,6 +369,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
         servedBytes: inst.bytes,
         undersized: inst.undersized === true,
         loaded: inst.url !== "" && obs.responses.get(inst.url)?.buffer !== undefined,
+        lcp: obs.lcp?.kind === "image" && obs.lcp.index === inst.element,
       };
       if (inst.pixelWidth > 0) entry.servedPx = inst.pixelWidth;
       if (inst.pixelWidth > 0 && inst.needed > 0) entry.overFetchRatio = round2(inst.pixelWidth / inst.needed);
@@ -401,6 +417,8 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const best = served === "jpeg" || served === "png" ? (saved > 0 ? "avif" : served) : served;
 
     const fix: ImageFix = { bytes: { saved: savedEff, addedForSharpness, sizes: savedSizesEff, quality: savedEff - savedSizesEff } };
+    if (member.cdnQuality !== undefined) fix.cdnQuality = { ...member.cdnQuality };
+    if (member.formatAuto === true && (served === "jpeg" || served === "png")) fix.formatHandled = true;
     if (sizes && left !== undefined) {
       fix.noSaving = `sizes proposal left out: ${left}`;
       notes.push(`sizes proposal left out: ${left}`);
@@ -431,6 +449,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
         naturalWidth: member.pixelWidth > 0 ? member.pixelWidth : undefined,
       },
       lazy: member.img.lazy,
+      lcpViewports: perViewport.filter((p) => p.lcp).map((p) => p.viewport),
       perViewport,
       layoutChain,
       fix,
@@ -446,6 +465,8 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     }
     else if (locator.component.length > 0) notes.push(`component: ${locator.component.join(" > ")} (no project file resolved)`);
     else notes.push("source: not resolved (production build, or no React owner)");
+    if (fix.cdnQuality?.handled === true) notes.push(`quality handled by ${locator.loader} (q_auto): its est. quality saving is not counted`);
+    if (fix.formatHandled === true) notes.push(`format handled by ${locator.loader} (f_auto): no format change proposed`);
     if (layoutChain?.truncated) notes.push("layout chain cut at the depth cap");
     if (layoutChain && layoutChain.skipped.length > 0) notes.push(`skipped ancestors: ${layoutChain.skipped.length}`);
 

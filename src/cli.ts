@@ -60,6 +60,10 @@ const OPTION_HELP = {
   resume: ["--resume", "reuse the complete pages already in --out that were scanned with the same options"],
   maxPages: ["--max-pages <N>", "stop after N pages (scanned or resumed); run again with --resume to continue"],
   maxImages: ["--max-images <N>", "stop after the page that brings the images counted to N (checked between pages)"],
+  maxQualities: [
+    "--max-qualities <N>",
+    "the most values next.config's images.qualities may list, 1 to 4 (default 2): next/image qualities are clustered, each mapped up",
+  ],
   urlsFrom: [
     "--urls-from <file|sitemap-url>",
     "scan the URLs of a text file (one per line, # comments), a local sitemap.xml, or a remote sitemap (same domain only)",
@@ -152,6 +156,7 @@ const SCAN_HELP = commandHelp(
     "resume",
     "maxPages",
     "maxImages",
+    "maxQualities",
     "pageConcurrency",
     "idleTimeout",
     "sharedLoads",
@@ -295,6 +300,8 @@ Options:
   --top <N>           the N call sites that save the most per view, one line each (no batch, no offset)
   --flat              one hint per image, not grouped by call site
   --qualities <list>  the quality values the framework allows, e.g. 75,85,100 (targets are snapped up to one of them)
+  --max-qualities <N>  the most values for next.config's images.qualities, 1 to 4 (default 2); clusters the next/image
+                      targets of all the files given into one list (--qualities turns this off)
   --format <text|json>  text (default) or JSON
   -h, --help          show this help
 `;
