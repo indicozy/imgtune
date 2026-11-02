@@ -167,6 +167,10 @@ describe("run.json is checked before anything from it is printed", () => {
     urls: { count: 4, types: 2, file: "urls.txt" },
     options: { deep: 2, qualities: [75, 85, 100], noCache: false, ignoreRobots: false, storageState: false },
     phases: [{ name: "survey", seconds: 3.2 }],
+    deepLeftOut: [{ type: "/shop", pages: 3, typeKbPerView: 120, reason: "cap" }],
+    mode: "check",
+    site: "https://shop.example",
+    report: "report.md",
     stop: null,
     exitCode: 0,
   };
@@ -198,6 +202,29 @@ describe("run.json is checked before anything from it is printed", () => {
 
   it("refuses a phase name that is not one of the known phases (no escape sequence reaches the heading)", () => {
     rejects(withPatch({ phases: [{ name: "\u001b[2Jsurvey", seconds: 1 }] }), /phases\[\]\.name must be one of survey, deep, locate, hints/);
+  });
+
+  it("refuses a mode that is not a run mode, and a report that is not a plain file name", () => {
+    rejects(withPatch({ mode: "deploy" }), /mode must be "run", "check" or "audit"/);
+    rejects(withPatch({ mode: 1 }), /mode must be/);
+    for (const report of ["../report.md", "/tmp/report.md", "report.md; rm -rf ~"]) {
+      rejects(withPatch({ report }), /report must be a plain file name/);
+    }
+    rejects(withPatch({ report: 7 }), /report must be a string/);
+  });
+
+  it("refuses a site that is not a string, and a deepLeftOut that is not checked", () => {
+    rejects(withPatch({ site: ["https://shop.example"] }), /site must be a string/);
+    rejects(withPatch({ deepLeftOut: undefined }), /deepLeftOut must be a list/);
+    rejects(withPatch({ deepLeftOut: [{ type: "/shop", pages: "3", typeKbPerView: 1, reason: "cap" }] }), /deepLeftOut\[\]\.pages must be a whole number/);
+    rejects(withPatch({ deepLeftOut: [{ type: "/shop", pages: 3, typeKbPerView: -1, reason: "cap" }] }), /deepLeftOut\[\]\.typeKbPerView must be a number/);
+    rejects(withPatch({ deepLeftOut: [{ type: "/shop", pages: 3, typeKbPerView: 1, reason: "maybe" }] }), /deepLeftOut\[\]\.reason must be/);
+    rejects(withPatch({ deepLeftOut: ["/shop"] }), /deepLeftOut\[\] must be an object/);
+  });
+
+  it("accepts a plain run, which writes no mode, site or report", () => {
+    const { mode: _m, site: _s, report: _r, ...plain } = good;
+    expect(parseManifest(JSON.stringify(plain), "run.json").deepLeftOut).toHaveLength(1);
   });
 
   it("refuses a file that is not a manifest, and says which file", () => {

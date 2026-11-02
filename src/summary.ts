@@ -13,6 +13,8 @@ import type { RunManifest } from "./run.js";
 export const PHASE_NAMES = ["survey", "deep", "locate", "hints"] as const;
 /** A plain file name in the run directory: letters, digits, dots, dashes and underscores, not starting with a dot. */
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** The modes a manifest may name: a plain run leaves `mode` out, a check or an audit writes one of these. */
+const RUN_MODES = ["run", "check", "audit"] as const;
 /** The largest count a manifest may carry (pages, images, patterns): far above any real run. */
 const MAX_COUNT = 1_000_000_000;
 
@@ -422,7 +424,8 @@ function stringOf(value: unknown, file: string, field: string): string {
 
 /**
  * Parses and checks a run.json. A field the summary prints or puts in a command is checked here: qualities are whole numbers,
- * urls.file is a plain name in the run directory (no path, no `..`), counts and exitCode are numbers, phase names are known.
+ * urls.file and report are plain names in the run directory (no path, no `..`), counts and exitCode are numbers, phase names are
+ * known, mode is one of the run modes, and each deepLeftOut entry has a type, a page count, a size and a known reason.
  * Anything else is an error that names the field, so nothing unchecked reaches the terminal or a pasted command.
  */
 export function parseManifest(text: string, file: string): RunManifest {
@@ -461,6 +464,20 @@ export function parseManifest(text: string, file: string): RunManifest {
   if (root.warnings !== undefined) {
     if (!Array.isArray(root.warnings)) bad(file, "warnings", "must be a list of strings");
     for (const warning of root.warnings) stringOf(warning, file, "warnings[]");
+  }
+  if (root.mode !== undefined && !(RUN_MODES as readonly unknown[]).includes(root.mode)) bad(file, "mode", 'must be "run", "check" or "audit"');
+  if (root.site !== undefined) stringOf(root.site, file, "site");
+  if (root.report !== undefined) {
+    const report = stringOf(root.report, file, "report");
+    if (!PLAIN_NAME.test(report) || report.includes("..")) bad(file, "report", "must be a plain file name in the run directory");
+  }
+  if (!Array.isArray(root.deepLeftOut)) bad(file, "deepLeftOut", "must be a list");
+  for (const left of root.deepLeftOut) {
+    const entry = objectOf(left, file, "deepLeftOut[]");
+    stringOf(entry.type, file, "deepLeftOut[].type");
+    integerOf(entry.pages, file, "deepLeftOut[].pages", 0, MAX_COUNT);
+    numberOf(entry.typeKbPerView, file, "deepLeftOut[].typeKbPerView");
+    if (entry.reason !== "cap" && entry.reason !== "no-images") bad(file, "deepLeftOut[].reason", 'must be "cap" or "no-images"');
   }
   return root as unknown as RunManifest;
 }
