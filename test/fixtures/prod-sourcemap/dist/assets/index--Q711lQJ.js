@@ -1,0 +1,2 @@
+function e(n){let r=document.createElement(`img`);r.src=`/hero.jpg`,r.width=300,r.height=200,r.alt=`Aviator`,r.__reactFiber$fixture={type:`img`,return:{type:e,return:{type:t,return:null}}},n.root.append(r)}function t(t){e({root:t})}t(document.getElementById(`root`));
+//# sourceMappingURL=index--Q711lQJ.js.map
