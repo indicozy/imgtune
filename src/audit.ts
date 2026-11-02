@@ -210,7 +210,8 @@ async function locateDeep(input: {
     const name = pageFileName(new URL(page.url));
     const from = join(deepDir, name);
     const to = join(locatedDir, name.replace(/\.json$/, ".located.json"));
-    const dev = devUrlOf(input.dev, page.url);
+    // The dev server is asked for the page the measure ended on: a page that redirects (the home page to its locale) would be refused.
+    const dev = devUrlOf(input.dev, page.finalUrl ?? page.url);
     const args = [dev, "--locate-only", "--from", from, "--locate-out", to, "--root", input.appRoot];
     if (input.ignoreRobots) args.push("--ignore-robots");
     input.commands.push({

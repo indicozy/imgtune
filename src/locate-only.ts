@@ -107,7 +107,8 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
   if (viewport === undefined || !measured.viewports.includes(viewport)) {
     throw new Error(`${safeText(args.from)} has no measured viewport to locate at (measured: ${measured.viewports.map((v) => safeText(v)).join(", ")})`);
   }
-  const measuredPath = new URL(measured.url).pathname;
+  // A page that redirected is measured where it ended (finalUrl): the dev page is compared with that.
+  const measuredPath = new URL(measured.finalUrl ?? measured.url).pathname;
   const devPath = new URL(args.url).pathname;
   if (devPath !== measuredPath) throw new Error(`the dev page path ${safeText(devPath)} is not the measured page's ${safeText(measuredPath)}`);
 

@@ -143,6 +143,16 @@ describe("the measured, locate and sizes-only flow on a local server", () => {
     ).rejects.toThrow(/is not the measured page's/);
   });
 
+  it("locates a page that redirected at the page it ended on (finalUrl), not at the path it was asked for", async () => {
+    const measured = JSON.parse(await readFile(join(dir, "measured.json"), "utf8")) as PageResult;
+    const redirected = { ...measured, url: new URL("/", builtUrl).href, finalUrl: builtUrl };
+    await writeFile(join(dir, "measured-redirected.json"), JSON.stringify(redirected));
+    const result = await locateCommand([devUrl, "--locate-only", "--from", join(dir, "measured-redirected.json"), "--locate-out", join(dir, "redirected.located.json")], dir, quiet);
+    expect(result.exitCode).toBe(0);
+    const out = JSON.parse(await readFile(join(dir, "redirected.located.json"), "utf8")) as PageResult;
+    expect(out.locate?.joined).toBeGreaterThan(0);
+  });
+
   it("the scan run is still a scan: runScan writes the measured page (no locate fields)", async () => {
     const outDir = join(dir, "scan-out");
     const iphone = DEFAULT_VIEWPORTS.filter((v) => v.name === "iphone-15").map((v) => ({ ...v }));
