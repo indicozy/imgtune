@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-11-03)
 
 - LCP first. Each scanned page reads the largest contentful paint before its first scroll, per viewport. A page's report
   and the PR comment show one line above its numbers: `LCP image (<viewports>): <file:line>, <KB> served, <KB> fixable`,
@@ -68,8 +68,6 @@
 - `imgtune audit` route types are URL templates (`routes.ts`), not route files. The first segment of a URL that the app takes as a
   dynamic segment, and a `desktop` or `mobile` variant after it, are dimensions. The route file of each type is an attribute and a
   column of the report's route-type table. A route file that renders several templates gives several types.
-- Third-party requests (scan, recheck, locate-only, sizes-only, `run`, `check`, `audit`) are allowed by default. Scan files
-  that predate the setting carry no record and are read as allowed, as they were measured with every request allowed.
 - Scan: the extra fetches (originals, srcset candidates, source maps, robots) are shared across the whole run as before, but a
   failed fetch, or a body with `Cache-Control: no-store`, is no longer kept for later pages: a later page asks again. No
   response of the 8-URL nextjs.org run changed.
@@ -228,10 +226,6 @@
   predicted saving beside the measured served bytes.
 - `basis: fit` is kept: it is emitted when the layout formula does not match the measured widths (for example with no
   layout chain). It is rare, and documented as such.
-
-## 0.1.0
-
-First release.
 
 - `scan` measures the images of live pages in headless Chromium, per view and per viewport, at six viewports. It reports
   exact and est. byte savings, sharpness growth apart from them, and a SSIMULACRA2 quality check.

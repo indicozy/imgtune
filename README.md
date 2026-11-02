@@ -2,30 +2,33 @@
 
 [![npm version](https://img.shields.io/npm/v/imgtune.svg)](https://www.npmjs.com/package/imgtune)
 
-**ImgTune measures image waste on any live site, and your AI agent fixes it in any framework.**
+**ImgTune measures image waste on any live site.**
 
 Website: https://indicozy.github.io/imgtune/ · [Try the demo](https://indicozy.github.io/imgtune/demo) · [Docs](https://indicozy.github.io/imgtune/guide/getting-started)
 
-Images waste traffic three ways: served larger than the space they fill, encoded at a quality nobody can see, and in an
-older format, usually all at once. Image tools fix one of these at a time. ImgTune measures all three together on the live
-page, at six viewports, against a perceptual quality bar. It reports, for each image, the sizes, quality and format to
-use, and the bytes each change saves. Your AI agent (Claude Code, Cursor, Codex, or any other) finds those images in your
-source and makes the changes, then checks them with a rescan.
+Lighthouse tells you your images are too big. ImgTune tells you the `sizes`, quality and format to set for each image,
+points at the line of code that renders it (when your dev server is running), and checks each quality target with
+SSIMULACRA2. Your coding agent applies the change, and a rescan checks it.
 
-### Why one lever is not enough
+**Works with your image CDN.** Cloudinary, imgix and `next/image` resize to whatever width `sizes` asks for, so a wrong
+`sizes` is waste that no CDN removes. ImgTune works on top of a CDN, not instead of one. Already on Cloudinary auto
+quality (`q_auto`)? ImgTune focuses on `sizes`, which no CDN can fix for you. A format the CDN picks per request
+(Cloudinary `f_auto`, imgix `auto=format`) is not proposed as a change.
 
-- **Compressors** squeeze the file you hand them, but never learn how wide it is shown. A 6,000 px logo in a 150 px
-  slot stays 6,000 px, only better compressed.
-- **Image CDNs and `next/image`** resize on request, but only to the widths your `sizes` attribute asks for. A wrong or
-  missing `sizes` makes every phone fetch a file several times too wide.
-- **Lighthouse** flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate.
-  It tells you something is wrong, not which `sizes` or quality to set.
-- **ImgTune** measures size, quality and format together, per image, on the live page at six viewports, accepts a
-  saving only when SSIMULACRA2 says nobody can see it.
+**Built for image-heavy sites:** e-commerce catalogs, media, marketplaces.
 
-It looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the
-encoder setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per
-viewport, and quality is scored with SSIMULACRA2.
+## Two ways to measure
+
+- **`npx imgtune check https://your-site`** measures any live site, in a browser, with no source. It reads the site's
+  sitemap, groups the URLs into route types (templates such as product or listing pages), deep-scans the heaviest page of
+  each type at six viewports, and writes a Markdown report, `report.md`.
+- **`npx imgtune audit --app . --prod http://localhost:3000 --dev http://localhost:3001`** is the deep mode for your own
+  Next.js app. It reads the route files and `next.config`, measures the production build, and with `--dev` locates each
+  fix at its `file:line` in the source.
+
+Each page's report shows one line above its numbers for its LCP image (the largest contentful paint element, when it is an
+image). Where `next.config` lists several `images.qualities`, ImgTune clusters them into at most
+`--max-qualities` values (default 2), and each target is raised to the nearest value kept, so the SSIMULACRA2 bar still holds.
 
 ## Install
 
@@ -55,6 +58,24 @@ Each hint names the image, its component and `file:line` when they resolve, the 
 the fix saves per view, with the bytes it adds for sharpness shown separately. Run `npx imgtune --help`, or
 `npx imgtune scan --help` for every option.
 
+For the whole site in one report, run `npx imgtune check https://your-site.example/` instead. It writes `report.md` to
+`.imgtune/check/`, and `imgtune summary` prints its one-screen summary.
+
+## Why one lever is not enough
+
+It looks at three levers for each image: **resolution** (the pixels the browser actually needs), **quality** (the
+encoder setting), and **format** (for example AVIF or WebP instead of JPEG). Measurements are per page view, per
+viewport, and quality is scored with SSIMULACRA2.
+
+- **Compressors** squeeze the file you hand them, but never learn how wide it is shown. A 6,000 px logo in a 150 px
+  slot stays 6,000 px, only better compressed.
+- **Image CDNs and `next/image`** resize on request, but only to the widths your `sizes` attribute asks for. A wrong or
+  missing `sizes` makes every phone fetch a file several times too wide.
+- **Lighthouse** flags oversized, poorly encoded and old-format images, at one viewport per run, with a fixed estimate.
+  It tells you something is wrong, not which `sizes` or quality to set.
+- **ImgTune** measures size, quality and format together, per image, on the live page at six viewports, accepts a
+  saving only when SSIMULACRA2 says nobody can see it.
+
 ## Fix it with your agent
 
 ImgTune measures; it does not edit your project. The agent skill does the editing: it scans, matches each hint to the
@@ -71,9 +92,10 @@ source, fixes it, verifies with a rescan, and reports from a ledger it keeps in 
 - **Cursor, Codex, Copilot, and other agents**: paste `node_modules/imgtune/skills/imgtune/AGENTS.snippet.md` into your
   `AGENTS.md` or `CLAUDE.md`. It is the short form of the same loop and rules, and points to `npx imgtune --help`.
 
-The skill works in batches of about ten hints, writes `.imgtune/ledger.jsonl` (one line per image usage), and writes
-`.imgtune/HANDOFF.md` when its context fills, so a new session can resume. Use a built or preview server for the
-before and after numbers, and the dev server for the edit loop: source locations only resolve in dev builds.
+The skill works in batches of about ten hints, starting with the LCP image, and writes `.imgtune/ledger.jsonl` (one line
+per image usage). When its context fills, it writes `.imgtune/HANDOFF.md`, so a new session can resume. Use a built or
+preview server for the before and after numbers, and the dev server for the edit loop: source locations only resolve in
+dev builds, or in a built page that ships source maps.
 
 ## What `scan` measures
 
@@ -82,8 +104,10 @@ desktop at 1x), scrolls it to the end, and records every image.
 
 - **Exact** savings come from the site's own smaller `srcset` candidates. Each one is fetched and measured, so the
   number is the real byte difference.
-- **Est.** savings come from a local re-encode of the image: a different quality, a different format, or a resize of a
-  plain `<img>`. They are estimates.
+- **Estimated** savings come from a local re-encode of the image: a different quality, a different format, or a resize of
+  a plain `<img>`. They are estimates.
+- The CLI prints `exact` and `exact + est.`. The `exact + est.` figure is the estimated saving: the exact part plus the
+  estimate.
 - Quality is judged with SSIMULACRA2 at a delta of 2 points. `--aggressive` adds a delta 4 column, which is reported
   beside the main numbers and never used for the headline.
 - Undersized images (a file smaller than the slot it fills) are reported as sharpness growth, separately. Growth from
@@ -102,8 +126,8 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Large sites: `--urls-from` reads a URL list or a sitemap, `--sample-per-pattern` samples each route type, and
   `--resume`, `--max-pages` and `--max-images` split a long run into parts. `--survey` is a fast pass over every URL
   (two viewports, exact savings only, labelled as such); full-scan the heaviest page of each route type after it.
-- Production check: `imgtune check <site or sitemap>` surveys a live site in a browser, full-scans the heaviest page of
-  each route type, and writes a Markdown report (no source needed).
+- Production check: `imgtune check` (see [Two ways to measure](#two-ways-to-measure)) and `imgtune audit` do the same
+  survey and deep scan for a whole site, with no source needed for `check`.
 
 ## The evidence ladder
 
@@ -123,8 +147,12 @@ the browser resolved, not from a guess.
 
 | command | what it does |
 | --- | --- |
-| `imgtune scan <url> [<url> ...]` | measures live pages, one JSON file per page in `--out` (default `.imgtune/scan`) |
-| `imgtune hints <scan.json>` | prints a batch of fix hints: `--limit` (default 10), `--offset`, `--page`, `--component`, `--min-kb`, `--format json` |
+| `imgtune check <origin \| sitemap-url \| page-url>` | the production check, in a browser only: surveys the URLs, deep-scans the heaviest page of each route type, writes `report.md` and `run.json` to `--out` (default `.imgtune/check/<timestamp>`); `--urls-from <file\|sitemap>` instead of the URL; `--sample-per-pattern` (default 3), `--deep` (default 20), `--route-map` |
+| `imgtune audit --app <dir> --prod <origin> [--dev <origin>]` | the deep mode for a Next.js app: the check, plus the route files and `images.qualities` from `next.config`; with `--dev`, the `file:line` of each located fix; `--urls-from <file\|sitemap>`, `--max-locales` (default 3, how many values of a dynamic first segment the crawl expands) |
+| `imgtune run <url> [<url> ...] \| --urls-from <file\|sitemap>` | the whole flow in one command: survey, deep scan, locate (`--dev`), hints, and one run directory with a summary |
+| `imgtune scan <url> [<url> ...]` | measures live pages, one JSON file per page in `--out` (default `.imgtune/scan`); `--urls-from`, `--max-qualities <N>` (1 to 4, default 2) |
+| `imgtune hints <scan.json>` | prints a batch of fix hints: `--limit` (default 10), `--offset`, `--page`, `--component`, `--min-kb`, `--top`, `--flat`, `--qualities`, `--max-qualities`, `--format json` |
+| `imgtune summary <run dir \| scan.json ...>` | the one-screen summary of a run directory (`run.json`) or of scan files |
 | `imgtune scan --recheck <scan.json> [--ids a,b,c]` | rescans only the named images at the viewports where they rendered; prints before and after; exits 1 on a failed check |
 | `imgtune image <file\|url\|glob>` | measures image files without a page: bytes now, the lowest quality per format that meets the bar, and at a `--width` the bytes at each needed width; `--min-score` sets the bar (default 90), `--write <dir>` writes optimised copies |
 | `imgtune compare <before.json> <after.json>` | compares two scans of one page image by image: the bytes saved and the sharpness bytes added, as two numbers; drift (a changed layout, server variance, a view not loaded) is excluded and its totals printed; `--format json`, `--limit` |
@@ -133,6 +161,7 @@ the browser resolved, not from a guess.
 The scan options that matter most: `--viewports <names>` (a subset of the six), `--markdown <file>` (the PR comment),
 `--summary-json <file>` (one JSON of every page's numbers), `--fail-over <pct>` (exit 3 above a budget),
 `--storage-state <file>` (a logged-in session), and `--ignore-robots` (see Security). `npx imgtune scan --help` lists them all.
+`imgtune check --help`, `imgtune audit --help` and `imgtune run --help` list the options of each command.
 
 Two flows for a large app. One measures on a built server and then checks the edits on a dev server:
 `scan <built-url>`, then `scan <dev-url> --locate-only --from <scan.json>` (reads the React source of the flagged images),
@@ -202,6 +231,8 @@ and open-source apps, for comparison. The site list was fixed before the first s
 scrolled, averaged over viewports and then over the two pages. When the tool changed, every site was scanned again
 with the same version; v1 is the first run, v4 the current tool (loader adapters and the fixes found since).
 
+The `exact + est.` columns are the estimated saving: the exact saving plus the local re-encode estimate.
+
 ### Production sites (decide)
 
 | site | image KB / view | exact | exact + est. (v4) | exact + est. (v1) |
@@ -252,13 +283,18 @@ image-heavy commerce.
 - Node.js 20.9 or later.
 - Chromium for Playwright. Install it once with `npx playwright install chromium`. If it is missing, ImgTune prints
   that command and exits with status 2.
+- GPU scoring is optional. `--gpu` runs SSIMULACRA2 on an NVIDIA GPU through `imgtune-ssimu2-gpu`, an external program
+  that is not bundled with the package. If it is missing or fails, the run prints a warning and scores on the CPU.
 
 ## Limitations
 
-- **Only `<img>`, `srcset` and `<picture>` are measured.** CSS background images are not in the scan's records. Their
-  fixes are `not-measured`, or a `ceiling-code` from the layout.
-- **Source locations need dev builds.** A production build has no component names or `file:line`. The agent matches
-  those hints by `find` clues, `alt`, `testid` and the loader URL instead, and marks the unmatched usages.
+- **Only `<img>`, `srcset`, `<picture>` and CSS background images are measured.** Background layers are kept in their own
+  records (`kind: css-background`), and the headline numbers stay `<img>`-only. Their fixes are `not-measured`, or a
+  `ceiling-code` from the layout.
+- **Source locations need dev builds.** A production build has no component names or `file:line` in its scan. A built
+  page that ships source maps gives the owner component's definition (`via: prod-sourcemap`, never verified as the image's
+  own line). The agent matches the other hints by `find` clues, `alt`, `testid` and the loader URL, and marks the
+  unmatched usages.
 - **Savings are measured on the pages and viewports scanned.** A usage that does not render on them (a hidden tab, a
   modal, a logged-out view) is not measured. A lazy image that never loads is counted as not loaded.
 - **Est. numbers are estimates.** They come from a local re-encode judged by SSIMULACRA2. Quality is `qualityNA` where the

@@ -1,7 +1,7 @@
 {
   "name": "imgtune",
   "version": "0.1.0",
-  "description": "Measures the image waste of live pages per view and viewport, with exact and estimated savings checked by SSIMULACRA2",
+  "description": "Finds the image waste on live pages: the sizes, quality and format for each image, checked with SSIMULACRA2, and the line of code that renders it.",
   "license": "MIT",
   "author": "indicozy",
   "keywords": [
@@ -15,7 +15,10 @@
     "performance",
     "lighthouse",
     "core-web-vitals",
-    "cli"
+    "cli",
+    "next/image",
+    "sizes",
+    "lcp"
   ],
   "homepage": "https://indicozy.github.io/imgtune/",
   "repository": {
