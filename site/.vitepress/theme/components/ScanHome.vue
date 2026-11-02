@@ -27,7 +27,7 @@ function copy() {
     <section class="hero">
       <div class="hero-copy">
         <p class="kicker">scan · 6 viewports · 2 pages · SSIMULACRA2 delta 2</p>
-        <h1 class="scan-h1">Measure image waste on any live site. <span class="fix">Your AI agent fixes it, in any framework.</span></h1>
+        <h1 class="scan-h1">Measure image waste on any live site.</h1>
         <p class="lede">
           Lighthouse tells you your images are too big. ImgTune measures every image on the live page at six viewports, gives the
           <code>sizes</code>, quality and format to set, and checks each quality target with SSIMULACRA2. Run against your dev server,
