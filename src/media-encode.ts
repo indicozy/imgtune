@@ -99,8 +99,16 @@ export interface RangeInfo {
 const SAMPLE_SECONDS = 2;
 /** Frame rate assumed when the probe does not say. */
 const DEFAULT_FPS = 30;
-/** Stillest frames per sample that the SSIMULACRA2 guard scores. */
-const GUARD_FRAMES = 3;
+/**
+ * Stillest frames per sample that the SSIMULACRA2 guard scores. Two, not three: each scored frame at 1280 px costs about
+ * half a second, and the guard is the largest cost of a search (scoring was 52% of a 1280 px search's time; see the
+ * performance round in the report). With 2 per sample the guard p10 is taken over 6 frames, still the minimum.
+ */
+const GUARD_FRAMES = 2;
+/**
+ * libvmaf scores every n-th frame. 2 halves VMAF's frame work; the pooled mean moves by about 0.15 on the test clip.
+ */
+const VMAF_SUBSAMPLE = 2;
 /**
  * Gaussian sigma of the still-frame guard's prefilter for GIF sources. A dithered GIF has per-pixel dither patterns that
  * an encoder smooths, and SSIMULACRA2 scores that as loss even when VMAF passes (anim.gif: VMAF 93 at CRF 40, guard
@@ -144,12 +152,17 @@ interface CodecSpec {
   ext: "mp4" | "webp";
   /** Which end of the range is smaller: a higher CRF is smaller, a lower WebP q is smaller. */
   fewerBytesAt: "high" | "low";
+  /**
+   * The first quality the bisection probes, when it is not the middle. AV1 starts at CRF 40: the search then spends its
+   * expensive passing probes near the answer, not on the far half of the range (see the performance round).
+   */
+  start?: number;
 }
 
 /** Quality ranges and step counts from the design. AVIF shares the AV1 range. */
 const SPECS: Record<MediaCodec, CodecSpec> = {
-  "av1-mp4": { lo: 20, hi: 55, steps: 5, ext: "mp4", fewerBytesAt: "high" },
-  "animated-avif": { lo: 20, hi: 55, steps: 5, ext: "mp4", fewerBytesAt: "high" },
+  "av1-mp4": { lo: 20, hi: 55, steps: 5, ext: "mp4", fewerBytesAt: "high", start: 40 },
+  "animated-avif": { lo: 20, hi: 55, steps: 5, ext: "mp4", fewerBytesAt: "high", start: 40 },
   "h264-mp4": { lo: 18, hi: 35, steps: 4, ext: "mp4", fewerBytesAt: "high" },
   "animated-webp": { lo: 40, hi: 90, steps: 4, ext: "webp", fewerBytesAt: "low" },
 };
@@ -751,7 +764,7 @@ async function vmafOf(
     const graph =
       `[0:v]scale=${width}:-2:flags=bicubic,${retime}[d];` +
       `[1:v]scale=${width}:-2:flags=bicubic,${retime}[r];` +
-      `[d][r]libvmaf=n_threads=${FFMPEG_THREADS}:shortest=1:log_fmt=json:log_path=${escapeFilterValue(log)}`;
+      `[d][r]libvmaf=n_threads=${FFMPEG_THREADS}:shortest=1:n_subsample=${VMAF_SUBSAMPLE}:log_fmt=json:log_path=${escapeFilterValue(log)}`;
     const result = await ffrun(
       [...distorted, ...inputOptions(reference), "-i", reference, "-lavfi", graph, "-f", "null", "-"],
       deadline,
@@ -779,6 +792,11 @@ interface Ctx {
   blur?: number;
   /** Results of this search by quality, so no quality is encoded twice. */
   cache: Map<number, Scored>;
+  /**
+   * The still bar once it is known (after the ceiling). A candidate with a guard score below it has failed: the p10 of up
+   * to 11 frames is their minimum, so the search stops scoring it at that frame.
+   */
+  failBelow?: number;
 }
 
 /** A scored quality, before the search attaches the still bar it was judged against. */
@@ -797,11 +815,41 @@ async function evaluateCached(ctx: Ctx, q: number): Promise<Scored> {
   return result;
 }
 
+/** One sample's candidate, read before any scoring: its bytes, its VMAF, and its guard frames (null when unreadable). */
+interface SampleRead {
+  bytes: number;
+  vmaf: number;
+  frames: RawImage[] | null;
+}
+
 /**
- * The SSIMULACRA2 scores of the still-frame guard for one sample. Two failures are told apart. A frame that cannot be
- * read (a candidate with fewer frames than the reference, for example) scores 0 for that frame, so the candidate fails
- * its bar: it fails closed. A scorer that throws is a broken scorer, not a failing candidate, so it surfaces as
- * score-failed. A deadline ends the search either way.
+ * Encodes one sample at quality `q` and reads what the search needs from it: the bytes, the VMAF, and the frames at the
+ * guard's indices. These are child processes (or a short decode), so the samples of a candidate run in parallel.
+ * A frame that cannot be read (a candidate with fewer frames than the reference, for example) gives null, which scores
+ * 0 for every guard frame of that sample: the candidate fails closed.
+ */
+async function readSample(ctx: Ctx, q: number, dir: string, i: number): Promise<SampleRead> {
+  const { codec, width, opts } = ctx;
+  const out = join(dir, `s${i}.${SPECS[codec].ext}`);
+  await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline);
+  const bytes = (await stat(out)).size;
+  const cand = codec === "animated-webp"
+    ? await stage("no-encoder", () => webpCandidate(out, dir, i, ctx.fps, opts.maxTimelineBytes))
+    : fileCandidate(out, dir, i, opts.deadline);
+  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline);
+  let frames: RawImage[] | null;
+  try {
+    frames = await cand.frames(ctx.guards[i].indices);
+  } catch (err) {
+    if (isDeadline(err)) throw err;
+    frames = null;
+  }
+  return { bytes, vmaf, frames };
+}
+
+/**
+ * The guard scores of one sample, all of them (no early exit). A frame that cannot be read scores 0 (fails closed).
+ * Used by the reference check in searchQuality's sibling, where the bar is not known in advance.
  */
 async function guardScores(ctx: Ctx, i: number, cand: Candidate): Promise<number[]> {
   const ref = ctx.guards[i];
@@ -813,44 +861,57 @@ async function guardScores(ctx: Ctx, i: number, cand: Candidate): Promise<number
     return ref.indices.map(() => 0);
   }
   const out: number[] = [];
-  for (let k = 0; k < frames.length; k++) {
-    if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
-    const want = ref.frames[k];
-    try {
-      let got = await fitTo(frames[k], want.width, want.height);
-      if (ctx.blur !== undefined) got = await blurFrame(got, ctx.blur);
-      out.push(await ctx.opts.score(want, got));
-    } catch (err) {
-      if (isDeadline(err)) throw err;
-      throw new StageError("score-failed");
-    }
-  }
+  for (let k = 0; k < frames.length; k++) out.push(await scoreFrame(ctx, ref.frames[k], frames[k]));
   return out;
+}
+
+/**
+ * The SSIMULACRA2 score of one guard frame: the candidate fitted to the reference's size, prefiltered when the source is
+ * a GIF, then scored. A scorer that throws is a broken scorer, not a failing candidate, so it surfaces as score-failed.
+ * A deadline ends the search either way.
+ */
+async function scoreFrame(ctx: Ctx, want: RawImage, got: RawImage): Promise<number> {
+  if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
+  try {
+    let frame = await fitTo(got, want.width, want.height);
+    if (ctx.blur !== undefined) frame = await blurFrame(frame, ctx.blur);
+    return await ctx.opts.score(want, frame);
+  } catch (err) {
+    if (isDeadline(err)) throw err;
+    throw new StageError("score-failed");
+  }
 }
 
 function mean(values: number[]): number {
   return values.reduce((acc, v) => acc + v, 0) / values.length;
 }
 
-/** Encodes every sample at quality `q`, scores it, and returns the result (pass or fail). Removes its files after. */
+/**
+ * Encodes every sample at quality `q`, scores it, and returns the result (pass or fail). Removes its files after.
+ *
+ * Two phases. First the samples are read in parallel (encode, VMAF, guard frames). Then the guard is scored in order,
+ * and a candidate stops at its first score below ctx.failBelow: the p10 of up to 11 frames is their minimum, so one
+ * frame below the bar already decides the result. The reported `still` is then the minimum so far, which is still
+ * below the bar.
+ */
 async function evaluate(ctx: Ctx, q: number): Promise<Scored> {
   const { codec, width, opts } = ctx;
   const dir = join(opts.workDir, `cand-${codec}-${width}-${q}`);
   await mkdir(dir, { recursive: true });
   try {
-    let sampleBytes = 0;
-    const vmafs: number[] = [];
+    const reads = await Promise.all(ctx.samples.map((_, i) => readSample(ctx, q, dir, i)));
     const scores: number[] = [];
-    for (let i = 0; i < ctx.samples.length; i++) {
-      const out = join(dir, `s${i}.${SPECS[codec].ext}`);
-      await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline);
-      sampleBytes += (await stat(out)).size;
-      const cand = codec === "animated-webp"
-        ? await stage("no-encoder", () => webpCandidate(out, dir, i, ctx.fps, opts.maxTimelineBytes))
-        : fileCandidate(out, dir, i, opts.deadline);
-      vmafs.push(await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline));
-      scores.push(...(await guardScores(ctx, i, cand)));
+    let failed = false;
+    for (let i = 0; i < reads.length && !failed; i++) {
+      const ref = ctx.guards[i];
+      const frames = reads[i].frames;
+      for (let k = 0; k < ref.indices.length && !failed; k++) {
+        const value = frames === null ? 0 : await scoreFrame(ctx, ref.frames[k], frames[k]);
+        scores.push(value);
+        if (ctx.failBelow !== undefined && value < ctx.failBelow) failed = true;
+      }
     }
+    const sampleBytes = reads.reduce((acc, r) => acc + r.bytes, 0);
     const sampleSeconds = ctx.seconds.reduce((acc, s) => acc + s, 0);
     return {
       codec,
@@ -859,7 +920,7 @@ async function evaluate(ctx: Ctx, q: number): Promise<Scored> {
       sampleBytes,
       sampleSeconds,
       bytes: extrapolate(sampleBytes, sampleSeconds, ctx.probe.durationS),
-      vmaf: mean(vmafs),
+      vmaf: mean(reads.map((r) => r.vmaf)),
       still: tenthPercentile(scores),
       estimate: true,
       audio: false,
@@ -987,10 +1048,11 @@ export async function searchQuality(
     const ceiling = await evaluateCached(ctx, bound);
     if (ceiling.vmaf < opts.vmafBar) return { ok: false, reason: "no-passing-quality" };
     const stillBar = effectiveStillBar(opts.stillBar, ceiling.still);
+    ctx.failBelow = stillBar;
     let lo = spec.lo;
     let hi = spec.hi;
     for (let step = 0; step < spec.steps && lo <= hi; step++) {
-      const q = Math.floor((lo + hi) / 2);
+      const q = step === 0 && spec.start !== undefined ? spec.start : Math.floor((lo + hi) / 2);
       const result = await evaluateCached(ctx, q);
       const pass = result.vmaf >= opts.vmafBar && result.still >= stillBar;
       if (pass && (best === undefined || result.bytes < best.bytes)) best = { ...result, stillBar, vmafBar: opts.vmafBar };

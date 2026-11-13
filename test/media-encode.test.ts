@@ -286,7 +286,8 @@ describe("still-frame guard", () => {
     const dir = join(scratch, "guard-self");
     const samples = await cutSamples(fixture("clip.mp4"), probe, dir, Date.now() + 120_000);
     const guard = await guardOf(samples[0], 640, join(dir, "ydif.txt"), join(dir, "ref"), Date.now() + 120_000);
-    expect(guard.frames).toHaveLength(3);
+    // Two stillest frames per sample: the guard takes 2 (see GUARD_FRAMES, performance round).
+    expect(guard.frames).toHaveLength(2);
     for (const frame of guard.frames) {
       expect(await score(frame, frame)).toBeGreaterThanOrEqual(99);
     }
