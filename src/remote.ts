@@ -13,7 +13,7 @@ import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } f
 import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
-import { startEgressProxy, type EgressPolicy } from "./egress-proxy.js";
+import { startEgressProxy, type EgressPolicy, type EgressProxy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
 import { confirmMatch, matchLocalQuality, type SizeAt } from "./calibrate.js";
@@ -54,6 +54,7 @@ import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.j
 import { bisectQuality, confirmBisect, minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
+import { attachMediaResults, mediaAssetsOf, runMediaPhase, skippedMedia, type MediaAsset, type MediaResults } from "./media-phase.js";
 import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
 import { EstimateRegistry, hashOf, withEstimates, type EstimateStore } from "./estimate-jobs.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
@@ -457,6 +458,16 @@ export interface ScanArgs {
   idleTimeoutMs?: number;
   /** --survey: the fast site-wide preset (see survey.ts and scanPlan). */
   survey?: boolean;
+  /** --media-budget: the most animated images and videos sample-encoded per run (default 20). */
+  mediaBudget?: number;
+  /** --media-time: the time limit of the media encodes, in seconds (default 600). */
+  mediaTime?: number;
+  /** --video-bar: the minimum VMAF of a video or animated encode (default 93). */
+  videoBar?: number;
+  /** --video-still-bar: the minimum SSIMULACRA2 of the still-frame guard (default 65). */
+  videoStillBar?: number;
+  /** --max-video-widths: the most widths a video is served at (default 2). */
+  maxVideoWidths?: number;
   /** --shared-loads: a class of viewports is one page load, the others resize its open page (see loadGroups). Off by default. */
   sharedLoads?: boolean;
   /** A text list, a local sitemap or a remote sitemap URL, read by --urls-from. */
@@ -521,6 +532,11 @@ const VALUE_OPTIONS: readonly string[] = [
   "--max-qualities",
   "--page-concurrency",
   "--idle-timeout",
+  "--media-budget",
+  "--media-time",
+  "--video-bar",
+  "--video-still-bar",
+  "--max-video-widths",
   "--urls-from",
   "--sample-per-pattern",
   "--route-map",
@@ -543,6 +559,14 @@ export function parseRange(name: string, text: string, min: number, max: number)
   }
   return value;
 }
+
+/** The media phase's limits and defaults (see media-phase.ts and the --media-* flags). */
+export const DEFAULT_MEDIA_BUDGET = 20;
+const MAX_MEDIA_BUDGET = 1000;
+export const DEFAULT_MEDIA_TIME = 600;
+const MAX_MEDIA_TIME = 3600;
+export const DEFAULT_VIDEO_BAR = 93;
+export const DEFAULT_VIDEO_STILL_BAR = 65;
 
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
@@ -578,6 +602,11 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--max-qualities") args.maxQualities = parseRange(arg, value, MIN_MAX_QUALITIES, MAX_MAX_QUALITIES);
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
+      else if (arg === "--media-budget") args.mediaBudget = parseRange(arg, value, 0, MAX_MEDIA_BUDGET);
+      else if (arg === "--media-time") args.mediaTime = parseRange(arg, value, 1, MAX_MEDIA_TIME);
+      else if (arg === "--video-bar") args.videoBar = parseRange(arg, value, 0, 100);
+      else if (arg === "--video-still-bar") args.videoStillBar = parseRange(arg, value, 0, 100);
+      else if (arg === "--max-video-widths") args.maxVideoWidths = parseRange(arg, value, 1, 3);
       else if (arg === "--urls-from") args.urlsFrom = value;
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
       else if (arg === "--route-map") args.routeMap = value;
@@ -2144,6 +2173,8 @@ export interface Instance {
 
 export interface AnalysisContext {
   pageUrl: string;
+  /** The most widths a video is served at (--max-video-widths). Undefined: SCAN_MAX_VIDEO_WIDTHS. */
+  maxVideoWidths?: number;
   fetcher: Fetcher;
   /** The page is on a loopback or private host, so its candidates and originals may be too. */
   allowPrivate: boolean;
@@ -2761,6 +2792,8 @@ export interface PageResult {
   host: string;
   /** The page's `<video>` elements with a file source, one record each (absent when the page has none). See video-analysis.ts. */
   videos?: VideoRecord[];
+  /** The media phase's note for the run (the missing-ffmpeg note), on a page that has media (see media-phase.ts). */
+  mediaNote?: string;
   scannedAt: string;
   imgtuneVersion: string;
   metric: "ssimulacra2";
@@ -3115,7 +3148,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     refName,
     sources: bgSources,
   });
-  const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", SCAN_MAX_VIDEO_WIDTHS);
+  const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS);
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
@@ -3195,6 +3228,13 @@ export interface ScanOptions {
    * Test seam: the address a checked destination is really connected to (see EgressPolicy). Production leaves it unset.
    */
   connectAddress?: (address: string) => string;
+  /** The media phase's budget, time limit and bars (see ScanArgs; defaults above). */
+  mediaBudget?: number;
+  mediaTime?: number;
+  videoBar?: number;
+  videoStillBar?: number;
+  /** The most widths a video is served at (see video-analysis.ts). Undefined: SCAN_MAX_VIDEO_WIDTHS. */
+  maxVideoWidths?: number;
   /** Reuse the complete pages already in outDir with the same options (--resume). */
   resume?: boolean;
   /** Stop after this many pages, scanned or resumed (--max-pages). */
@@ -3267,6 +3307,8 @@ async function scanPage(
     viewports: Viewport[];
     aggressive: boolean;
     quality: boolean;
+    /** The most widths a video is served at (see AnalysisContext.maxVideoWidths). */
+    maxVideoWidths?: number;
     fetcher: Fetcher;
     deps: QualityDeps;
     loadCapMs: number;
@@ -3422,6 +3464,7 @@ type PageRun = Parameters<typeof scanPage>[1];
 function analysisContextOf(run: PageRun, pageUrl: string): Omit<AnalysisContext, "store"> {
   return {
     pageUrl,
+    maxVideoWidths: run.maxVideoWidths,
     fetcher: run.fetcher,
     allowPrivate: isLocalTarget(pageUrl),
     deps: run.deps,
@@ -3598,6 +3641,7 @@ async function withBrowser<T>(
       storageState: opts.storageState,
       thirdParty: opts.thirdParty ?? DEFAULT_THIRD_PARTY,
       qualityFor: opts.qualityFor,
+      maxVideoWidths: opts.maxVideoWidths,
       projectDir: opts.cwd,
       projectRoot: opts.root,
       viewportConcurrency: opts.viewportConcurrency ?? VIEWPORT_CONCURRENCY,
@@ -3661,6 +3705,44 @@ export function progressLine(done: PageResult[], total: number): string {
 }
 
 /**
+ * The media phase of a run (see media-phase.ts), run once after every page is measured. The videos are read through an
+ * egress proxy started for the phase, which allows private destinations only when every scanned URL is local. A survey
+ * or a scan with quality off encodes nothing, and each asset says so. Never throws.
+ */
+async function runMediaFor(assets: MediaAsset[], run: PageRun, opts: ScanOptions, urls: string[]): Promise<MediaResults> {
+  if (assets.length === 0) return { byKey: new Map() };
+  if (opts.quality !== true || opts.survey === true) return skippedMedia(assets, opts.survey === true ? "survey" : "quality off");
+  const allowPrivate = urls.length > 0 && urls.every((url) => isLocalTarget(url));
+  let proxy: EgressProxy | undefined;
+  try {
+    if (assets.some((asset) => asset.kind === "video")) {
+      proxy = await startEgressProxy({ resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress });
+    }
+    return await runMediaPhase(
+      assets,
+      {
+        budget: opts.mediaBudget ?? DEFAULT_MEDIA_BUDGET,
+        timeS: opts.mediaTime ?? DEFAULT_MEDIA_TIME,
+        vmafBar: opts.videoBar ?? DEFAULT_VIDEO_BAR,
+        stillBar: opts.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR,
+        survey: false,
+        workDir: join(resolve(opts.outDir), ".media-work"),
+        cache: run.deps.cache,
+        log: opts.log,
+        proxy: proxy?.url,
+        score: run.deps.score,
+      },
+      { fetch: (url, maxBytes) => run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate }) },
+    );
+  } catch (err) {
+    const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
+    return skippedMedia(assets, `media error: ${message}`);
+  } finally {
+    await proxy?.close();
+  }
+}
+
+/**
  * Scans the pages in two phases, with a progress line after each. Phase 1 measures every page (up to `pageConcurrency` in
  * flight at once on the shared browser; pages start in input order) and collects the estimate jobs they need, so no
  * estimate is computed yet. Phase 2 runs each unique job once and analyses every measured page with the results; only
@@ -3683,6 +3765,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const registry = new EstimateRegistry();
     const collector = registry.collector();
     const measured: { index: number; url: string; page: MeasuredPage }[] = [];
+    // The media assets (videos and animated images) of every measured page, from its collecting pass (see media-phase.ts).
+    const mediaAssets: MediaAsset[] = [];
     let started = 0;
     let images = 0;
     let measuredCount = 0;
@@ -3707,7 +3791,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       // A page measured by an interrupted run: its estimates only. Its requests are collected as a measured page's are.
       const staged = opts.resume ? await resumeStaged(run, url) : undefined;
       if (staged !== undefined) {
-        await staged.page.analyse(collector);
+        mediaAssets.push(...mediaAssetsOf(await staged.page.analyse(collector)));
         measured.push({ index, url, page: staged.page });
         images += staged.images;
         measuredCount++;
@@ -3729,6 +3813,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       // Staged as soon as it is measured: the collecting pass reads it back from the stage, so no bytes are held meanwhile.
       await outcome.stage?.();
       const provisional = await outcome.analyse(collector);
+      mediaAssets.push(...mediaAssetsOf(provisional));
       await outcome.countImages?.(provisional.counts?.images ?? 0);
       measured.push({ index, url, page: outcome });
       images += provisional.counts?.images ?? 0;
@@ -3740,9 +3825,14 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       const counts = registry.counts();
       opts.log(`estimates: ${counts.unique} unique of ${counts.requests}, ${counts.skipped} skipped`);
       await registry.runJobs(QUALITY_PARALLEL);
+      // The media phase runs once for every page's assets, before any page is written (see runMediaFor).
+      const media = await runMediaFor(mediaAssets, run, opts, urls);
       for (const { index, url, page } of measured) {
         const tally = { fallbacks: 0 };
-        const analysed = await page.analyse(registry.reader(tally));
+        const analysed = attachMediaResults(await page.analyse(registry.reader(tally)), media, {
+          quality: opts.quality,
+          survey: opts.survey === true,
+        });
         const result: PageResult = withBroken({ ...analysed, complete: true, options, scorer: scorerOf(run.gpu, tally.fallbacks) }, opts.expectImages?.(url));
         results[index] = result;
         finished.push(result);
@@ -4201,6 +4291,11 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     resume: args.resume === true,
     maxPages: args.maxPages,
     maxImages: args.maxImages,
+    mediaBudget: args.mediaBudget,
+    mediaTime: args.mediaTime,
+    videoBar: args.videoBar,
+    videoStillBar: args.videoStillBar,
+    maxVideoWidths: args.maxVideoWidths,
     pageConcurrency: plan.pageConcurrency,
     idleTimeoutMs: plan.idleTimeoutMs,
     sharedLoads: args.sharedLoads === true,
