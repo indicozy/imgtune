@@ -425,9 +425,23 @@ export function cfrIndices(delaysMs: number[], fps: number, ticks: number): numb
 }
 
 /** The stillest frames of a sample: their indices, and the reference pixels at the candidate width. */
-interface GuardRef {
+export interface GuardRef {
   indices: number[];
   frames: RawImage[];
+}
+
+/**
+ * The image at exactly `width` x `height`: the same pixels when it already is that size, else resized (lanczos). The
+ * scorer needs equal dimensions, and a candidate can differ by a pixel from the reference after its own scaling.
+ */
+async function fitTo(img: RawImage, width: number, height: number): Promise<RawImage> {
+  if (img.width === width && img.height === height) return img;
+  const bytes = Buffer.from(img.data.buffer as ArrayBuffer, img.data.byteOffset, img.data.byteLength);
+  const { data, info } = await sharp(bytes, { raw: { width: img.width, height: img.height, channels: 4 } })
+    .resize(width, height, { fit: "fill", kernel: "lanczos3" })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), width: info.width, height: info.height };
 }
 
 /** Decodes a PNG (or any sharp-readable image) to 8-bit RGBA. */
@@ -471,7 +485,10 @@ async function framesAt(
 ): Promise<RawImage[]> {
   if (indices.length === 0) return [];
   await mkdir(dir, { recursive: true });
-  const pick = `select='${indices.map((n) => `eq(n,${n})`).join("+")}'`;
+  // format=yuv420p before the select: a scaled frame and a decoded copy carry different chroma-location tags, and the
+  // RGB conversion of each then differs at chroma edges (measured: 16965 channel values off by more than 8). Forcing
+  // one YUV format on both sides makes the reference and the candidate convert identically.
+  const pick = `format=yuv420p,select='${indices.map((n) => `eq(n,${n})`).join("+")}'`;
   const result = await ffrun(
     [
       ...inputOptions(input),
@@ -629,19 +646,26 @@ async function webpCandidate(out: string, dir: string, i: number, fps: number): 
   };
 }
 
-/** Pooled VMAF mean of `distorted` against `reference`, both scaled to `width` as the design sets. */
+/**
+ * Pooled VMAF mean of `distorted` against `reference`, both scaled to `width` as the design sets. Both sides are
+ * re-timed by frame index at `fps`: libvmaf pairs frames by timestamp, and the lossless sample and the encodes carry
+ * different timebases, so their timestamps would otherwise pair the wrong frames. The longer side is trimmed to the
+ * shorter (shortest=1), since an encode can drop or add a frame.
+ */
 async function vmafOf(
   distorted: string[],
   reference: string,
   width: number,
+  fps: number,
   log: string,
   deadline: number,
 ): Promise<number> {
   return stage("no-vmaf", async () => {
+    const retime = `settb=AVTB,setpts=N/${fps}/TB`;
     const graph =
-      `[0:v]scale=${width}:-2:flags=bicubic,setpts=PTS-STARTPTS[d];` +
-      `[1:v]scale=${width}:-2:flags=bicubic,setpts=PTS-STARTPTS[r];` +
-      `[d][r]libvmaf=n_threads=${FFMPEG_THREADS}:log_fmt=json:log_path=${escapeFilterValue(log)}`;
+      `[0:v]scale=${width}:-2:flags=bicubic,${retime}[d];` +
+      `[1:v]scale=${width}:-2:flags=bicubic,${retime}[r];` +
+      `[d][r]libvmaf=n_threads=${FFMPEG_THREADS}:shortest=1:log_fmt=json:log_path=${escapeFilterValue(log)}`;
     const result = await ffrun(
       [...distorted, ...inputOptions(reference), "-i", reference, "-lavfi", graph, "-f", "null", "-"],
       deadline,
@@ -678,7 +702,8 @@ async function guardScores(ctx: Ctx, i: number, cand: Candidate): Promise<number
     const out: number[] = [];
     for (let k = 0; k < frames.length; k++) {
       if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
-      out.push(await ctx.opts.score(ref.frames[k], frames[k]));
+      const want = ref.frames[k];
+      out.push(await ctx.opts.score(want, await fitTo(frames[k], want.width, want.height)));
     }
     return out;
   } catch (err) {
@@ -707,7 +732,7 @@ async function evaluate(ctx: Ctx, q: number): Promise<CandidateResult> {
       const cand = codec === "animated-webp"
         ? await stage("no-encoder", () => webpCandidate(out, dir, i, ctx.fps))
         : fileCandidate(out, dir, i, opts.deadline);
-      vmafs.push(await vmafOf(cand.input, ctx.samples[i], width, join(dir, `vmaf-${i}.json`), opts.deadline));
+      vmafs.push(await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline));
       scores.push(...(await guardScores(ctx, i, cand)));
     }
     const sampleSeconds = ctx.seconds.reduce((acc, s) => acc + s, 0);
@@ -728,19 +753,35 @@ async function evaluate(ctx: Ctx, q: number): Promise<CandidateResult> {
   }
 }
 
+/**
+ * The reference's stillest frames of one sample, at `width`: the frame indices, and the reference pixels there. The
+ * candidate is later read at the same indices (see guardScores). `metadataFile` and `dir` are scratch paths.
+ */
+export async function guardOf(
+  sample: string,
+  width: number,
+  metadataFile: string,
+  dir: string,
+  deadline: number,
+): Promise<GuardRef> {
+  const indices = await stillestOf(sample, metadataFile, deadline);
+  const frames = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, dir, deadline);
+  return { indices, frames };
+}
+
 /** The reference's stillest frames per sample, at the candidate width. Run once per search. */
 async function prepareGuards(ctx: Ctx): Promise<GuardRef[]> {
   const guards: GuardRef[] = [];
   for (let i = 0; i < ctx.samples.length; i++) {
-    const indices = await stillestOf(ctx.samples[i], join(ctx.opts.workDir, `ydif-${i}.txt`), ctx.opts.deadline);
-    const frames = await framesAt(
-      ctx.samples[i],
-      [`scale=${ctx.width}:-2:flags=lanczos`],
-      indices,
-      join(ctx.opts.workDir, `ref-${ctx.width}-${i}`),
-      ctx.opts.deadline,
+    guards.push(
+      await guardOf(
+        ctx.samples[i],
+        ctx.width,
+        join(ctx.opts.workDir, `ydif-${i}.txt`),
+        join(ctx.opts.workDir, `ref-${ctx.width}-${i}`),
+        ctx.opts.deadline,
+      ),
     );
-    guards.push({ indices, frames });
   }
   return guards;
 }

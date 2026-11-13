@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFfmpeg, probeMedia, type MediaProbe } from "../src/ffmpeg.js";
-import { cfrIndices, cutSamples, hasRange, searchQuality, stillestFrames, tenthPercentile } from "../src/media-encode.js";
+import { cfrIndices, cutSamples, guardOf, hasRange, searchQuality, stillestFrames, tenthPercentile } from "../src/media-encode.js";
 import { makeScorer } from "../src/metric.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { systemResolver } from "../src/address.js";
@@ -218,6 +218,19 @@ describe("hasRange", () => {
     expect((await hasRange("https://example.test/clip.mp4", 10_000, proxyUrl)).range).toBe(false);
     expect(seen).toContain("CONNECT example.test:443");
   });
+});
+
+describe("still-frame guard", () => {
+  it("scores a reference frame against itself at about 100", async () => {
+    const probe = (await probeMedia(fixture("clip.mp4"), 10_000))!;
+    const dir = join(scratch, "guard-self");
+    const samples = await cutSamples(fixture("clip.mp4"), probe, dir, Date.now() + 120_000);
+    const guard = await guardOf(samples[0], 640, join(dir, "ydif.txt"), join(dir, "ref"), Date.now() + 120_000);
+    expect(guard.frames).toHaveLength(3);
+    for (const frame of guard.frames) {
+      expect(await score(frame, frame)).toBeGreaterThanOrEqual(99);
+    }
+  }, 120_000);
 });
 
 describe("pure helpers", () => {
