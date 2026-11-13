@@ -18,6 +18,8 @@ import { undersizedProposal, type ProposalPoint } from "./candidates.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
+import { animatedTarget } from "./media-model.js";
+import type { AnimatedFix } from "./video-analysis.js";
 
 export type { SizesBasis, SizesBranch };
 
@@ -176,6 +178,19 @@ export interface ImageFix {
   cdnQuality?: { handled: boolean; saved: number };
   /** The format is negotiated by the CDN (f_auto, auto=format) on a jpeg or png: no format saving is counted or proposed. */
   formatHandled?: true;
+  /**
+   * An animated image (GIF, animated WebP or APNG): its animation, and the encode it is a candidate for (see
+   * video-analysis.ts). Absent for a still image. Its bytes stay in the image totals.
+   */
+  animated?: AnimatedFix;
+}
+
+/**
+ * Whether a served format takes the lossless rules (a local resize and the AVIF proposal): a jpeg or png, or a static GIF
+ * (a palette file, judged as a PNG). An animated GIF does not: its saving is an encode.
+ */
+export function losslessServed(format: string | undefined, animated: boolean): boolean {
+  return format === "jpeg" || format === "png" || (format === "gif" && !animated);
 }
 
 export interface ImageRecord {
@@ -414,11 +429,21 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const savedEff = keepSizes ? saved : saved - savedSizes;
     const savedSizesEff = keepSizes ? savedSizes : 0;
     const served = member.format;
-    const best = served === "jpeg" || served === "png" ? (saved > 0 ? "avif" : served) : served;
+    const animatedMember = members.find((m) => m.animated !== undefined);
+    const lossless = losslessServed(served, animatedMember !== undefined);
+    const best = lossless ? (saved > 0 ? "avif" : served) : served;
 
     const fix: ImageFix = { bytes: { saved: savedEff, addedForSharpness, sizes: savedSizesEff, quality: savedEff - savedSizesEff } };
     if (member.cdnQuality !== undefined) fix.cdnQuality = { ...member.cdnQuality };
-    if (member.formatAuto === true && (served === "jpeg" || served === "png")) fix.formatHandled = true;
+    if (member.formatAuto === true && lossless) fix.formatHandled = true;
+    if (animatedMember?.animated !== undefined) {
+      fix.animated = {
+        info: animatedMember.animated,
+        context: "img",
+        target: animatedTarget("img", undefined),
+        perViewBytes: members.reduce((sum, m) => sum + m.bytes, 0) / viewportCount,
+      };
+    }
     if (sizes && left !== undefined) {
       fix.noSaving = `sizes proposal left out: ${left}`;
       notes.push(`sizes proposal left out: ${left}`);
@@ -467,6 +492,11 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     else notes.push("source: not resolved (production build, or no React owner)");
     if (fix.cdnQuality?.handled === true) notes.push(`quality handled by ${locator.loader} (q_auto): its est. quality saving is not counted`);
     if (fix.formatHandled === true) notes.push(`format handled by ${locator.loader} (f_auto): no format change proposed`);
+    if (member.img.posterOf !== undefined) notes.push(`poster of video ${sanitizeText(member.img.posterOf, 120)} (sized to its box)`);
+    if (fix.animated !== undefined) {
+      const { frames, durationMs, loop } = fix.animated.info;
+      notes.push(`animated ${fix.animated.info.format}: ${frames} frame(s), ${Math.round(durationMs / 100) / 10} s per loop, loops ${loop === 0 ? "forever" : loop}`);
+    }
     if (layoutChain?.truncated) notes.push("layout chain cut at the depth cap");
     if (layoutChain && layoutChain.skipped.length > 0) notes.push(`skipped ancestors: ${layoutChain.skipped.length}`);
 

@@ -25,6 +25,8 @@ import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwnerChain, resolveOwners } from "./locate.js";
 import { buildImageRecords, hasFix, rungOfPage, type ImageRecord, type ResolvedSource } from "./images.js";
+import { animationOf, type AnimationInfo } from "./animated.js";
+import { fullBytesOf, SCAN_MAX_VIDEO_WIDTHS, videoRecordsOf, withPosterImages, type VideoRecord } from "./video-analysis.js";
 import {
   backgroundPage,
   backgroundTotals,
@@ -644,6 +646,28 @@ export async function pixelSize(buffer: Buffer): Promise<PixelSize | undefined> 
   }
 }
 
+/** The animation of a response's bytes, read once per buffer (see animated.ts). Undefined for a still image. */
+const animationMemo = new WeakMap<Buffer, AnimationInfo | null>();
+export function animationOfBuffer(buffer: Buffer): AnimationInfo | undefined {
+  let info = animationMemo.get(buffer);
+  if (info === undefined) {
+    info = animationOf(buffer) ?? null;
+    animationMemo.set(buffer, info);
+  }
+  return info ?? undefined;
+}
+
+/**
+ * The format the pixel rules judge a file by. A static GIF is a lossless palette file, so it takes the PNG rules (a
+ * local resize, and the AVIF that meets the file's own score). An animated GIF takes none of them: its saving is an
+ * encode to video or animated AVIF (see video-analysis.ts), so it keeps its own name and gets no estimate here. The
+ * bytes must really be a GIF (its signature), so a label alone never routes a file to the PNG rules.
+ */
+export function pixelRuleFormat(format: string, buffer: Buffer): string {
+  const isGif = buffer.toString("latin1", 0, 4) === "GIF8";
+  return format === "gif" && isGif && animationOfBuffer(buffer) === undefined ? "png" : format;
+}
+
 /** The file decoded to 8-bit RGBA; resized to `size` when given and different (the scorer needs equal dimensions). */
 export async function decodeRaw(buffer: Buffer, size?: PixelSize): Promise<RawImage> {
   const { data, info } = await openImage(buffer).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -761,7 +785,7 @@ export async function resizedEstimate(
   quality?: number,
 ): Promise<{ bytes: number; buffer: Buffer } | undefined> {
   const targetWidth = clampWidth(requestedWidth);
-  if (format === "png") {
+  if (pixelRuleFormat(format, buffer) === "png") {
     const out = await openImage(buffer).rotate().resize({ width: targetWidth, withoutEnlargement: true }).png().toBuffer();
     return { bytes: out.length, buffer: out };
   }
@@ -991,7 +1015,8 @@ export async function estimateQuality(input: QualityInput, deltas: number[], dep
     return { ratio, target };
   }
 
-  if (input.format === "jpeg" || input.format === "png") {
+  const lossless = pixelRuleFormat(input.format, input.served);
+  if (lossless === "jpeg" || lossless === "png") {
     const servedRaw = await measure("decode: served", () => decodeRaw(input.served, { width: reference.width, height: reference.height }));
     const ownScore = await score(reference, servedRaw);
     for (const delta of deltas) {
@@ -1023,6 +1048,11 @@ export interface ObservedImage {
   inFirstViewport: boolean;
   /** The element asks for lazy loading (loading="lazy"). */
   lazy?: boolean;
+  /**
+   * Set on a video's poster added as an image (see withPosterImages): the video's selector. The record then says it is a
+   * poster, and its box is the video's.
+   */
+  posterOf?: string;
   /** The layout chain of the image at this viewport. */
   layout?: LayoutChainData;
   /** What identifies the element in its source. */
@@ -1066,6 +1096,8 @@ export interface ObservedVideo {
   errorCode?: number;
   renderedWidth: number;
   renderedHeight: number;
+  /** The intrinsic width of the file the browser plays (videoWidth). Absent when no metadata was loaded. */
+  videoWidth?: number;
   inFirstViewport: boolean;
   /** Not displayed: display none, visibility hidden, or no box. */
   hidden: boolean;
@@ -1448,6 +1480,7 @@ async function readView(page: Page, light = false): Promise<PageView> {
             ...(video.error ? { errorCode: video.error.code } : {}),
             renderedWidth: rect.width,
             renderedHeight: rect.height,
+            ...(video.videoWidth > 0 ? { videoWidth: video.videoWidth } : {}),
             inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
             hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
             locator: {
@@ -2075,6 +2108,8 @@ export interface Instance {
   qualityParam: QualityParam;
   /** The CDN negotiates the format of the URL (f_auto, auto=format): see formatAutoOf. Absent otherwise. */
   formatAuto?: true;
+  /** The served file is animated (a GIF, animated WebP or APNG): see animated.ts. Absent for a still image. */
+  animated?: AnimationInfo;
   /** The CDN's auto quality of the element's group (see applyCdnPolicies). Set on q_auto images only. */
   cdnQuality?: { handled: boolean; saved: number };
 }
@@ -2299,7 +2334,9 @@ async function measureBackground(
     needed,
     undersized: served.width < UNDERSIZED_RATIO * needed,
   });
-  if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
+  const animated = animationOfBuffer(response.buffer as Buffer);
+  if (animated !== undefined) instance.animated = animated;
+  if (ctx.estimates !== false && animated === undefined && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("background resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
   }
@@ -2341,6 +2378,8 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   if (response.contentType?.toLowerCase().includes("svg") || served?.format === "svg") return skip("vector");
   if (!served) return skip("not decodable");
   Object.assign(instance, { bytes: response.bytes, pixelWidth: served.width, format: formatName(served.format) });
+  const animated = animationOfBuffer(response.buffer as Buffer);
+  if (animated !== undefined) instance.animated = animated;
 
   const candidates = parseSrcset(img.srcset, ctx.pageUrl);
   if (candidates.length > 0) {
@@ -2379,9 +2418,10 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
     return instance;
   }
 
-  // No w-descriptor srcset: a wider file than needed is estimated by a local resize at its own format (est.).
+  // No w-descriptor srcset: a wider file than needed is estimated by a local resize at its own format (est.). An animated
+  // file gets no resize estimate: its saving is an encode.
   instance.kind = "plain";
-  if (ctx.estimates !== false && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
+  if (ctx.estimates !== false && instance.animated === undefined && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("plain resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
   }
@@ -2431,7 +2471,8 @@ export const CDN_AUTO_QUALITY_SHARE = 0.1;
  */
 export function applyCdnPolicies(instances: Instance[], viewportCount: number): void {
   for (const inst of instances) {
-    if (inst.formatAuto === true && inst.kind !== "skipped" && (inst.format === "jpeg" || inst.format === "png")) {
+    const lossless = inst.format === "jpeg" || inst.format === "png" || (inst.format === "gif" && inst.animated === undefined);
+    if (inst.formatAuto === true && inst.kind !== "skipped" && lossless) {
       inst.est = 0;
       inst.estAggressive = 0;
     }
@@ -2471,7 +2512,8 @@ function median(values: number[]): number | undefined {
 async function estimateQualities(ctx: AnalysisContext, all: Instance[], refName: string): Promise<void> {
   const groups = new Map<string, Instance[]>();
   for (const inst of all) {
-    if (inst.kind !== "srcset" || !inst.right) continue;
+    // An animated file has no quality sweep: its saving is an encode (see video-analysis.ts), not a re-encode of the still.
+    if (inst.kind !== "srcset" || !inst.right || inst.animated !== undefined) continue;
     if (ctx.qualityFor && !ctx.qualityFor(inst)) continue;
     const list = groups.get(inst.group);
     if (list) list.push(inst);
@@ -2689,6 +2731,8 @@ export interface PageScorer {
 export interface PageResult {
   url: string;
   host: string;
+  /** The page's `<video>` elements with a file source, one record each (absent when the page has none). See video-analysis.ts. */
+  videos?: VideoRecord[];
   scannedAt: string;
   imgtuneVersion: string;
   metric: "ssimulacra2";
@@ -2916,7 +2960,9 @@ function referenceViewportName(viewports: Viewport[]): string {
 }
 
 /** Turns the observations of one page into the report. Fetches and local encodes happen here. */
-export async function analysePage(ctx: AnalysisContext, observations: ViewportObservation[], base: PageResult): Promise<PageResult> {
+export async function analysePage(ctx: AnalysisContext, input: ViewportObservation[], base: PageResult): Promise<PageResult> {
+  // A fetched video poster is measured as an image, sized to its video's box (see video-analysis.ts).
+  const observations = withPosterImages(input);
   const refName = referenceViewportName(observations.map((o) => o.viewport));
   const instances: Instance[] = [];
   for (const obs of observations) {
@@ -3041,9 +3087,11 @@ export async function analysePage(ctx: AnalysisContext, observations: ViewportOb
     refName,
     sources: bgSources,
   });
+  const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", SCAN_MAX_VIDEO_WIDTHS);
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
+    ...(videos.length > 0 ? { videos } : {}),
     perViewport,
     page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
     groups: measure("aggregate", () => groupReports(instances, observations.length)),
@@ -3382,8 +3430,10 @@ interface StagedPage {
   images?: number;
 }
 
-interface StagedObservation extends Omit<ViewportObservation, "responses"> {
+interface StagedObservation extends Omit<ViewportObservation, "responses" | "media"> {
   responses: { url: string; record: Omit<ResponseRecord, "buffer">; blob?: string }[];
+  /** The media responses by URL, as entries: a Map does not survive JSON. */
+  media?: [string, MediaRecord][];
 }
 
 /**
@@ -3405,13 +3455,13 @@ function stagedMeasure(
       if (pending === undefined) return;
       const staged: StagedObservation[] = [];
       for (const obs of pending) {
-        const { responses, ...rest } = obs;
+        const { responses, media, ...rest } = obs;
         const records: StagedObservation["responses"] = [];
         for (const [url, record] of responses) {
           const { buffer, ...meta } = record;
           records.push({ url, record: meta, blob: buffer === undefined ? undefined : await putBlob(stage.dir, buffer) });
         }
-        staged.push({ ...rest, responses: records });
+        staged.push({ ...rest, responses: records, ...(media !== undefined ? { media: [...media] } : {}) });
       }
       const state: StagedPage = { version: 1, url: pageUrl, options: stage.options, described, observations: staged };
       await writeStagedJson(stage.dir, file, state);
@@ -3437,12 +3487,12 @@ async function unstagedObservations(stageDir: string, file: string): Promise<Vie
   if (state === undefined) throw new Error(`staged page is missing or unreadable: ${safeText(file)}`);
   const observations: ViewportObservation[] = [];
   for (const staged of state.observations) {
-    const { responses: records, ...rest } = staged;
+    const { responses: records, media, ...rest } = staged;
     const responses = new Map<string, ResponseRecord>();
     for (const { url, record, blob } of records) {
       responses.set(url, blob === undefined ? { ...record } : { ...record, buffer: await getBlob(stageDir, blob) });
     }
-    observations.push({ ...rest, responses });
+    observations.push({ ...rest, responses, ...(media !== undefined ? { media: new Map(media) } : {}) });
   }
   return observations;
 }

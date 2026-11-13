@@ -7,7 +7,9 @@
 // built in buildBackgroundRecords below.
 
 import { sha1 } from "./atomic.js";
-import { rungOfPage, searchHintsOf, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
+import { losslessServed, rungOfPage, searchHintsOf, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
+import type { AnimationInfo } from "./animated.js";
+import { animatedTarget } from "./media-model.js";
 import { loaderName, sanitizeText, urlPattern, type OwnerTrace } from "./locate.js";
 import type { Viewport } from "./types.js";
 
@@ -82,6 +84,8 @@ export interface BackgroundInstance {
   est: number;
   estAggressive: number;
   size: string;
+  /** The served file is animated (see animated.ts). Absent for a still image. */
+  animated?: AnimationInfo;
 }
 
 /** Splits at the top-level separator: not inside parentheses or quotes. */
@@ -347,7 +351,9 @@ export function buildBackgroundRecords(input: {
     }
     const saved = members.reduce((sum, m) => sum + m.est, 0) / viewportCount;
     const served = member.format;
-    const best = served === "jpeg" || served === "png" ? (saved > 0 ? "avif" : served) : served;
+    const animatedMember = members.find((m) => m.animated !== undefined);
+    const lossless = losslessServed(served, animatedMember !== undefined);
+    const best = lossless ? (saved > 0 ? "avif" : served) : served;
     const locator = locatorOfBackground(pageUrl, url, member.bg, source);
     const notes: string[] = [
       `css background: layer ${member.layer + 1}, background-size "${sanitizeText(member.size, 60)}", drawn ${Math.round(member.displayedCss)} CSS px at the reference viewport`,
@@ -380,6 +386,14 @@ export function buildBackgroundRecords(input: {
       evidence: { rung: rungOfPage(pageUrl, input.harness), notes },
     };
     if (best !== undefined) record.fix.format = best;
+    if (animatedMember?.animated !== undefined) {
+      record.fix.animated = {
+        info: animatedMember.animated,
+        context: "css-background",
+        target: animatedTarget("css-background", undefined),
+        perViewBytes: members.reduce((sum, m) => sum + m.bytes, 0) / viewportCount,
+      };
+    }
     records.push(record);
   }
   return records.filter((r) => r.perViewport.some((p) => p.loaded || p.skipped !== undefined));
