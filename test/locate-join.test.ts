@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyLocate,
+  applyLocateVideos,
+  isFlaggedVideo,
+  joinKeyOfUrls,
+  joinVideos,
+  type DevVideo,
   cleanLocate,
   cleanOwnerChain,
   cleanRecord,
@@ -22,6 +27,7 @@ import { parseLocateArgs, defaultLocateOut } from "../src/locate-only.js";
 import { parseSizesArgs } from "../src/sizes-recheck.js";
 import { locateNoteOf, type Hint } from "../src/hints.js";
 import type { ImageRecord } from "../src/images.js";
+import type { VideoRecord } from "../src/video-analysis.js";
 import type { PageResult, ViewportObservation } from "../src/remote.js";
 
 const PAGE = "https://shop.example/list.html";
@@ -474,5 +480,56 @@ describe("cleanOwnerChain", () => {
   it("is empty for anything that is not a list, and caps the length", () => {
     expect(cleanOwnerChain("src/a.tsx")).toEqual([]);
     expect(cleanOwnerChain(Array.from({ length: 20 }, (_, i) => ({ file: "src/a.tsx", line: i + 1 })))).toHaveLength(8);
+  });
+});
+
+describe("video locate (the join of measured videos to the dev page's)", () => {
+  const PAGE = "https://shop.example/";
+  const HERO = "https://shop.example/hero.mp4";
+  const measuredVideo = (src: string, perView = 1000): VideoRecord =>
+    ({
+      id: `video:${src.length}`,
+      page: PAGE,
+      locator: { component: [], selector: "video", classes: "", loader: "video" },
+      src,
+      sources: [{ src }],
+      attributes: { autoplay: true, muted: true, loop: true, playsinline: true, preload: "" },
+      bytes: { perView, perPlay: perView, fullBytesKnown: false },
+      perViewport: [],
+      levers: { info: [] },
+    }) as unknown as VideoRecord;
+  const devVideo = (currentSrc: string, file?: string): DevVideo => ({
+    index: 0,
+    pattern: joinKeyOfUrls([currentSrc], PAGE),
+    currentSrc,
+    component: ["Hero"],
+    ...(file !== undefined ? { file, line: 12, kind: "image" as const, via: "react-dev" as const } : {}),
+  });
+
+  it("flags a video that costs bytes per view", () => {
+    expect(isFlaggedVideo(measuredVideo(HERO, 1000))).toBe(true);
+    expect(isFlaggedVideo(measuredVideo(HERO, 0))).toBe(false);
+  });
+
+  it("joins a measured video to the one dev video with the same URL, and applies its file:line", () => {
+    const record = measuredVideo(HERO);
+    const join = joinVideos([record], [devVideo(HERO, "src/Hero.tsx")], () => true);
+    expect(join.pairs.size).toBe(1);
+    const [located] = applyLocateVideos([record], join);
+    expect(located.locator).toMatchObject({ file: "src/Hero.tsx", line: 12, kind: "image", verified: true, via: "react-dev", component: ["Hero"] });
+    expect(located.id).toBe(record.id);
+  });
+
+  it("leaves two measured videos of one URL unjoined (not guessed), and counts the dev video as unpaired", () => {
+    const join = joinVideos([measuredVideo(HERO), measuredVideo(HERO)], [devVideo(HERO, "src/Hero.tsx")], () => true);
+    expect(join.pairs.size).toBe(0);
+    expect(join.notJoined).toBe(2);
+    expect(join.devLeft).toBe(1);
+  });
+
+  it("does not join a dev video that has no measured partner", () => {
+    const join = joinVideos([measuredVideo(HERO)], [devVideo("https://shop.example/other.mp4", "src/Other.tsx")], () => true);
+    expect(join.pairs.size).toBe(0);
+    expect(join.devLeft).toBe(1);
   });
 });

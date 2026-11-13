@@ -8,7 +8,7 @@ import type { AnimationInfo } from "./animated.js";
 import type { CandidateResult } from "./media-encode.js";
 import type { MediaProbe } from "./ffmpeg.js";
 import { COMPONENT_NAME, sanitizeText, type OwnerTrace } from "./locate.js";
-import type { ImageLocator } from "./images.js";
+import type { ImageLocator, ResolvedSource } from "./images.js";
 import {
   clusterVideoWidths,
   videoBytes,
@@ -78,6 +78,18 @@ export interface VideoRecord {
   estimate?: CandidateResult;
   steps?: LeverSteps;
   notEncoded?: string;
+}
+
+/**
+ * The id of a video. Without a source file it is the group key, as before. With one it is the file step (the rule of the
+ * image ids, images.ts baseKey), with the ordinal of the video among those of its file in document order, so two videos
+ * of one file keep distinct ids. The id is `video:` and 12 hex digits of the hash.
+ */
+function videoIdOf(page: string, key: string, file: string | undefined, perFile: Map<string, number>): string {
+  if (file === undefined) return `video:${sha1(`${page}\n${key}`).slice(0, 12)}`;
+  const n = perFile.get(file) ?? 0;
+  perFile.set(file, n + 1);
+  return `video:${sha1(`${page}\nfile:${file}#${n}`).slice(0, 12)}`;
 }
 
 /**
@@ -207,10 +219,14 @@ export function videoRecordsOf(
   fullBytes: Map<string, number>,
   mode: "scan" | "audit",
   maxWidths: number,
+  sources?: Map<ObservedVideo, ResolvedSource>,
 ): VideoRecord[] {
   const records: VideoRecord[] = [];
+  // The records of each file so far: a file's videos are told apart by their document order (see videoIdOf).
+  const perFile = new Map<string, number>();
   for (const [key, members] of groupVideos(observations)) {
     const ref = members[0].video;
+    const source = sources?.get(ref);
     const src = ref.currentSrc;
     const observedMax = Math.max(0, ...members.map((m) => observedBytesOf(m.obs, m.video.currentSrc)));
     const full = fullBytes.get(src) ?? observedMax;
@@ -251,15 +267,24 @@ export function videoRecordsOf(
     if (ref.poster === undefined) levers.posterMissing = true;
 
     const locator: ImageLocator = {
-      component: componentsOf(ref.locator.owners),
+      component: source?.component.length ? source.component : componentsOf(ref.locator.owners),
       selector: sanitizeText(ref.locator.selector, 300),
       classes: "",
       loader: "video",
     };
     if (ref.locator.testid !== undefined) locator.testid = sanitizeText(ref.locator.testid, 120);
+    if (source?.file !== undefined) {
+      // The project file:line of the element, when the owner resolved (see remote.ts resolveVideoSources).
+      locator.file = source.file;
+      locator.line = source.line;
+      if (source.via !== undefined) locator.via = source.via;
+      locator.kind = source.check ?? "unchecked";
+      locator.verified = locator.kind === "image";
+      if (source.ownerChain?.length) locator.ownerChain = source.ownerChain;
+    }
 
     const record: VideoRecord = {
-      id: `video:${sha1(`${page}\n${key}`).slice(0, 12)}`,
+      id: videoIdOf(page, key, source?.file, perFile),
       page,
       locator,
       src,

@@ -1277,9 +1277,9 @@ export function addMediaResponse(
 }
 
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
-async function readView(page: Page, light = false): Promise<PageView> {
+async function readView(page: Page, light = false, withVideos = false): Promise<PageView> {
   const seen = await page.evaluate(
-    ({ depth, maxOwners, maxBackgrounds, maxValue, light }) => {
+    ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1474,9 +1474,10 @@ async function readView(page: Page, light = false): Promise<PageView> {
       }
       // <video> elements with a file source. Blob, media-stream and adaptive sources, and an empty src, are dropped here
       // (the rule of isOutOfScopeVideo, written out because this function cannot import it). A data: URI is replaced
-      // before it leaves the browser. Light reads take none. Only the top document is read: a video in an iframe is not.
+      // before it leaves the browser. A light read takes none unless it asks (a locate joins the dev page's videos: the DOM
+      // read is cheap, and no media is read). Only the top document is read: a video in an iframe is not.
       const videos: ObservedVideo[] = [];
-      if (!light) {
+      if (!light || withVideos) {
         const OUT_OF_SCOPE = (src: string): boolean => src.trim() === "" || /^(blob|mediastream):/i.test(src) || /\.(m3u8|mpd)(?:[?#]|$)/i.test(src);
         const shortUrl = (url: string): string => (url.startsWith("data:") ? "data:" : url);
         document.querySelectorAll("video").forEach((video, index) => {
@@ -1523,7 +1524,7 @@ async function readView(page: Page, light = false): Promise<PageView> {
       }
       return { nextjs, images, backgrounds, videos };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -1625,6 +1626,7 @@ async function settledView(
   idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
   afterSettle?: () => Promise<void>,
   readLcpFirst = false,
+  withVideos = false,
 ): Promise<PageView> {
   let last: PageView | undefined;
   for (let repeat = 0; ; repeat++) {
@@ -1643,7 +1645,7 @@ async function settledView(
           : undefined,
       });
       if (afterSettle !== undefined) await afterSettle();
-      view = await measure("read view", () => readView(page, light));
+      view = await measure("read view", () => readView(page, light, withVideos));
       view.lcp = lcp;
     } catch (err) {
       if (!isNavigationError(err)) throw err;
@@ -1835,6 +1837,7 @@ async function readGroup(
   light: boolean,
   functionsWanted: ((img: ObservedImage) => boolean) | undefined,
   idleTimeoutMs: number,
+  withVideos = false,
 ): Promise<{ outcomes: ViewportOutcome[]; fresh: Viewport[] }> {
   const first = viewports[0];
   const outcomes: ViewportOutcome[] = [];
@@ -2031,6 +2034,7 @@ async function readGroup(
             idleTimeoutMs,
             step === 0 ? undefined : () => waitNetworkQuiet(() => busy.size, idleTimeoutMs),
             !light && step === 0,
+            withVideos,
           );
           if (step > 0 && navigations() !== navigatedBefore) {
             fresh = viewports.slice(step);
@@ -2107,10 +2111,11 @@ export async function observeLoads(
   light = false,
   functionsWanted?: (img: ObservedImage) => boolean,
   idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
+  withVideos = false,
 ): Promise<ViewportOutcome[]> {
-  const { outcomes, fresh } = await readGroup(browser, pageUrl, viewports, guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs);
+  const { outcomes, fresh } = await readGroup(browser, pageUrl, viewports, guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos);
   for (const viewport of fresh) {
-    const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs);
+    const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos);
     outcomes.push(outcome);
   }
   return outcomes;
@@ -2127,8 +2132,9 @@ async function observeViewport(
   light = false,
   functionsWanted?: (img: ObservedImage) => boolean,
   idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
+  withVideos = false,
 ): Promise<ViewportObservation> {
-  const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs);
+  const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos);
   if (!outcome.ok) throw outcome.error;
   return outcome.value;
 }
@@ -2295,21 +2301,43 @@ async function resolveSources(
   for (const obs of observations) {
     for (const img of obs.images) {
       if (wanted && !wanted(img)) continue;
-      const owners = img.locator?.owners ?? [];
-      const chain: OwnerSource[] = owners.length > 0 ? await resolveOwnerChain(owners, (chunk) => loadSourceMap(ctx, chunk)) : [];
-      const dev = chain[0] !== undefined ? { file: chain[0].file, line: chain[0].line } : undefined;
-      // A production build has no owner source: the function locations of the owners stand in (prod-sourcemap).
-      const prod = dev === undefined && img.locator?.functionLocations?.length
-        ? await resolveFunctionLocations(img.locator.functionLocations, (chunk) => loadSourceMap(ctx, chunk))
-        : undefined;
-      const found = dev ?? prod;
-      const via: LocatorVia | undefined = dev ? "react-dev" : prod ? "prod-sourcemap" : undefined;
-      const component = componentNamesOf(owners);
-      const check = found ? await checkSource(ctx, texts, found.file, found.line, component[0]) : undefined;
-      resolved.set(img, { file: found?.file, line: found?.line, component, check, via, ownerChain: chain.length > 0 ? chain : undefined });
+      resolved.set(img, await resolveLocator(ctx, texts, img.locator));
     }
   }
   return resolved;
+}
+
+/**
+ * The owner source of each observed <video> (the same rule as an image's, see resolveLocator): its file:line on a dev build,
+ * or the function location on a production build, and the check of that line. Used by the scan's video records and by a
+ * locate, which joins the dev page's videos to the measured ones.
+ */
+async function resolveVideoSources(ctx: AnalysisContext, observations: ViewportObservation[]): Promise<Map<ObservedVideo, ResolvedSource>> {
+  const resolved = new Map<ObservedVideo, ResolvedSource>();
+  const texts = new Map<string, Promise<string | undefined>>();
+  for (const obs of observations) {
+    for (const video of obs.videos ?? []) resolved.set(video, await resolveLocator(ctx, texts, video.locator));
+  }
+  return resolved;
+}
+
+/**
+ * The source of one observed element from its locator: the React owner chain (dev builds, through the source map), else the
+ * owner's function location (production builds), and the check of the file:line against the project file.
+ */
+async function resolveLocator(ctx: AnalysisContext, texts: Map<string, Promise<string | undefined>>, locator: ObservedLocator | undefined): Promise<ResolvedSource> {
+  const owners = locator?.owners ?? [];
+  const chain: OwnerSource[] = owners.length > 0 ? await resolveOwnerChain(owners, (chunk) => loadSourceMap(ctx, chunk)) : [];
+  const dev = chain[0] !== undefined ? { file: chain[0].file, line: chain[0].line } : undefined;
+  // A production build has no owner source: the function locations of the owners stand in (prod-sourcemap).
+  const prod = dev === undefined && locator?.functionLocations?.length
+    ? await resolveFunctionLocations(locator.functionLocations, (chunk) => loadSourceMap(ctx, chunk))
+    : undefined;
+  const found = dev ?? prod;
+  const via: LocatorVia | undefined = dev ? "react-dev" : prod ? "prod-sourcemap" : undefined;
+  const component = componentNamesOf(owners);
+  const check = found ? await checkSource(ctx, texts, found.file, found.line, component[0]) : undefined;
+  return { file: found?.file, line: found?.line, component, check, via, ownerChain: chain.length > 0 ? chain : undefined };
 }
 
 const formatName = (format: string | undefined): string | undefined => (format === "jpg" ? "jpeg" : format);
@@ -3154,7 +3182,8 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     refName,
     sources: bgSources,
   });
-  const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS);
+  const videoSources = await resolveVideoSources(ctx, input);
+  const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS, videoSources);
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
@@ -3909,6 +3938,8 @@ export interface LightObservation {
   observations: ViewportObservation[];
   /** The resolved source of each wanted element (see resolveSources). */
   resolved: Map<ObservedImage, ResolvedSource>;
+  /** The resolved source of each observed <video> (see resolveVideoSources). */
+  resolvedVideos: Map<ObservedVideo, ResolvedSource>;
 }
 
 /**
@@ -3934,14 +3965,14 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
     async (browser, run, robotsFor): Promise<LightObservation> => {
       const url = new URL(pageUrl);
       const allowPrivate = isLocalTarget(pageUrl);
-      const empty = (status: PageStatus, error: string): LightObservation => ({ status, error, observations: [], resolved: new Map() });
+      const empty = (status: PageStatus, error: string): LightObservation => ({ status, error, observations: [], resolved: new Map(), resolvedVideos: new Map() });
       const robots = await checkRobots(pageUrl, allowPrivate, () => robotsFor(url.origin, false), run.ignoreRobots);
       if (!robots.allowed) return empty("robots", "robots.txt disallows the page");
       if (robots.ignored) run.log(robotsIgnoredWarning(pageUrl));
       const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
       const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy, thirdParty: run.thirdParty };
       const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) =>
-        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true, (img) => opts.wanted(img, pageUrl)),
+        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true, (img) => opts.wanted(img, pageUrl), undefined, true),
       );
       const observations: ViewportObservation[] = [];
       for (const [index, outcome] of outcomes.entries()) {
@@ -3967,11 +3998,13 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
         projectRoot: run.projectRoot,
       };
       const resolved = new Map<ObservedImage, ResolvedSource>();
+      const resolvedVideos = new Map<ObservedVideo, ResolvedSource>();
       for (const obs of observations) {
         const part = await resolveSources(ctx, [obs], (img) => opts.wanted(img, pageUrl));
         for (const [img, source] of part) resolved.set(img, source);
+        for (const [video, source] of await resolveVideoSources(ctx, [obs])) resolvedVideos.set(video, source);
       }
-      return { status: "ok", observations, resolved };
+      return { status: "ok", observations, resolved, resolvedVideos };
     },
   );
 }

@@ -200,8 +200,8 @@ describe("videos and media responses of a page", () => {
     await new Promise<void>((resolve) => server?.close(() => resolve()));
   });
 
-  const observe = async (light = false): Promise<ViewportObservation> => {
-    const [outcome] = await observeLoads(browser as Browser, `${base}/page.html`, [desktop], guard, undefined, undefined, light);
+  const observe = async (light = false, withVideos = false): Promise<ViewportObservation> => {
+    const [outcome] = await observeLoads(browser as Browser, `${base}/page.html`, [desktop], guard, undefined, undefined, light, undefined, undefined, withVideos);
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
   };
@@ -290,6 +290,13 @@ describe("videos and media responses of a page", () => {
     expect(mp4?.bytes).toBeGreaterThan(0);
     // The poster is an image: it is not a media response.
     expect(obs.media?.has(`${base}/still.png`)).toBe(false);
+  }, 90_000);
+
+  it("a light read that asks for videos (a locate) collects them, and still reads no media", async () => {
+    const obs = await observe(true, true);
+    expect((obs.videos ?? []).length).toBeGreaterThan(0);
+    expect((obs.videos ?? []).map((v) => v.index)).toContain(0);
+    expect(obs.media?.size ?? 0).toBe(0);
   }, 90_000);
 
   it("collects no videos and no media on a light read, which waits on no media response", async () => {

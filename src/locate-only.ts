@@ -6,7 +6,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
-import { applyLocate, devImagesOf, isFlagged, joinLocate, joinKeyOfImage, joinKeyOfRecord, readMeasuredScan, reasonCounts, type LocateSummary, type MeasuredPage } from "./locate-join.js";
+import { applyLocate, applyLocateVideos, devImagesOf, devVideosOf, isFlagged, isFlaggedVideo, joinLocate, joinKeyOfImage, joinKeyOfRecord, joinVideos, readMeasuredScan, reasonCounts, type LocateSummary, type MeasuredPage } from "./locate-join.js";
 import { observeLight, rootOf } from "./remote.js";
 import { parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 import type { PageResult } from "./remote.js";
@@ -137,6 +137,9 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
     root,
   );
   const join = joinLocate(measured.images, viewport, devImages, (record) => flaggedSet.has(record));
+  // Videos are joined by URL (no element order): a flagged video (one that costs bytes per view) gets its dev file:line.
+  const videoJoin = joinVideos(measured.videos ?? [], devVideosOf(observation, args.url, light.resolvedVideos), isFlaggedVideo);
+  const flaggedVideos = (measured.videos ?? []).filter(isFlaggedVideo).length;
   const seconds = (Date.now() - started) / 1000;
 
   const summary: LocateSummary = {
@@ -152,7 +155,12 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
     noOrder: join.noOrder,
     reasons: reasonCounts(join),
   };
-  const located: PageResult = { ...measured, locate: summary, images: applyLocate(measured.images, join, viewport) };
+  const located: PageResult = {
+    ...measured,
+    locate: summary,
+    images: applyLocate(measured.images, join, viewport),
+    ...(measured.videos !== undefined ? { videos: applyLocateVideos(measured.videos, videoJoin) } : {}),
+  };
   const outPath = resolve(cwd, args.out ?? defaultLocateOut(args.from));
   if (outPath === resolve(cwd, args.from)) throw new Error("--locate-out must not be the measured scan itself");
   await mkdir(dirname(outPath), { recursive: true });
@@ -163,10 +171,11 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
     `flagged images: ${summary.flagged}; located: ${summary.joined}; not located: ${summary.notJoined}`,
   ];
   for (const [code, count] of Object.entries(summary.reasons)) lines.push(`  not located, ${count}: ${REASON_TEXT[code] ?? code}`);
+  if (flaggedVideos > 0) lines.push(`flagged videos: ${flaggedVideos}; located: ${videoJoin.pairs.size}; not located: ${videoJoin.notJoined}`);
   if (summary.devLeft > 0) lines.push(`dev images of a flagged URL with no measured partner: ${summary.devLeft}`);
   if (summary.noOrder > 0) lines.push(`measured elements without an element order: ${summary.noOrder} (the scan is older: scan again)`);
   lines.push(`wrote ${safeText(outPath)}`);
-  const exitCode = flagged.length > 0 && summary.joined === 0 ? 1 : 0;
+  const exitCode = flagged.length + flaggedVideos > 0 && summary.joined + videoJoin.pairs.size === 0 ? 1 : 0;
   if (exitCode !== 0) lines.push("nothing located: is this the dev page of the measured scan, with the same images?");
   else lines.push(`next: imgtune hints ${safeText(outPath)}`);
   return { output: `${lines.join("\n")}\n${unread ?? ""}`, exitCode };

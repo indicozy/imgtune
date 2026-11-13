@@ -282,3 +282,39 @@ describe("analysePage with animated and static GIFs (fake fetcher, no network)",
     expect(page.videos?.[0].levers.posterMissing).toBeUndefined();
   }, 120_000);
 });
+
+describe("videoRecordsOf: the resolved source of a video (file:line)", () => {
+  it("takes the file and line of a resolved source into the locator, and names the id by the file", () => {
+    const observations = heroObservations();
+    const hero = observations[0].videos?.[0] as ObservedVideo;
+    const sources = new Map([[hero, { file: "src/Hero.tsx", line: 12, component: ["Hero"], check: "image" as const, via: "react-dev" as const, ownerChain: [] }]]);
+    const [located] = videoRecordsOf(PAGE, observations, new Map([[HERO, 1000]]), "scan", 2, sources);
+    const [unlocated] = videoRecordsOf(PAGE, heroObservations(), new Map([[HERO, 1000]]), "scan", 2);
+
+    expect(located.locator).toMatchObject({ file: "src/Hero.tsx", line: 12, kind: "image", verified: true, via: "react-dev", component: ["Hero"] });
+    expect(located.id).toMatch(/^video:[0-9a-f]{12}$/);
+    expect(located.id).not.toBe(unlocated.id);
+    expect(unlocated.locator.file).toBeUndefined();
+  });
+
+  it("keeps the id of an unresolved video as it was (the same record without a source)", () => {
+    const [plain] = videoRecordsOf(PAGE, heroObservations(), new Map([[HERO, 1000]]), "scan", 2, new Map());
+    const [again] = videoRecordsOf(PAGE, heroObservations(), new Map([[HERO, 1000]]), "scan", 2);
+    expect(plain.id).toBe(again.id);
+  });
+
+  it("gives two videos of one file distinct ids", () => {
+    const first = observedVideo({ locator: { selector: "div.a > video", owners: [] } });
+    const second = observedVideo({ locator: { selector: "div.b > video", owners: [] } });
+    const observations = [observation(VIEW_DESK, { videos: [first, second] })];
+    const sources = new Map<ObservedVideo, { file: string; line: number; component: string[] }>([
+      [first, { file: "src/Page.tsx", line: 5, component: [] }],
+      [second, { file: "src/Page.tsx", line: 9, component: [] }],
+    ]);
+    const records = videoRecordsOf(PAGE, observations, new Map(), "scan", 2, sources);
+    expect(records).toHaveLength(2);
+    expect(records[0].locator.file).toBe("src/Page.tsx");
+    expect(records[1].locator.file).toBe("src/Page.tsx");
+    expect(records[0].id).not.toBe(records[1].id);
+  });
+});

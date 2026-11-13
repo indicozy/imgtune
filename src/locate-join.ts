@@ -10,7 +10,8 @@ import type { ImageLocator, ImagePerViewport, ImageRecord, ResolvedSource } from
 import { cleanOwnerChain, COMPONENT_NAME, projectPath, sanitizeText, urlPattern, type LocatorKind, type LocatorVia, type OwnerSource } from "./locate.js";
 import { ID_PATTERN } from "./recheck.js";
 import { parseSrcset } from "./srcset-parse.js";
-import type { ObservedImage, PageResult, ViewportObservation } from "./remote.js";
+import type { ObservedImage, ObservedVideo, PageResult, ViewportObservation } from "./remote.js";
+import type { VideoRecord } from "./video-analysis.js";
 import { safeText } from "./text.js";
 
 /** Largest measured scan file read: a scan is one page, so this is generous. */
@@ -87,6 +88,103 @@ export function isFlagged(record: ImageRecord): boolean {
   // A CSS background is not an <img>: the dev page's images cannot join it, so it is never located.
   if (record.kind === "css-background") return false;
   return record.fix.bytes.saved > 0 || record.fix.bytes.addedForSharpness > 0;
+}
+
+/** A video costs bytes per view, so a locate asks for it. Posters are image records and follow isFlagged. */
+export function isFlaggedVideo(record: VideoRecord): boolean {
+  return record.bytes.perView > 0;
+}
+
+/** A `<video>` of the dev page, with its source when the dev build resolved one (the video counterpart of DevImage). */
+export interface DevVideo {
+  /** Document order among the page's <video> elements, as observed. */
+  index: number;
+  /** The join key of the video's URL (see joinKeyOfUrls). */
+  pattern: string;
+  currentSrc: string;
+  component: string[];
+  file?: string;
+  line?: number;
+  kind?: LocatorKind;
+  via?: LocatorVia;
+  ownerChain?: OwnerSource[];
+}
+
+/** The videos of a locate: the pairs, the flagged videos with no unique partner, and the dev videos with no partner. */
+export interface VideoJoin {
+  pairs: Map<VideoRecord, DevVideo>;
+  notJoined: number;
+  devLeft: number;
+}
+
+/**
+ * Joins the flagged measured videos to the dev page's videos by URL (each side's URLs are keyed against its own page, see
+ * devVideosOf). A pair is made only when the URL is on exactly one measured video and exactly one dev video; a URL on
+ * several is not guessed at (the videos count as not joined). Videos have no element order to fall back on, so there is
+ * no second rule.
+ */
+export function joinVideos(records: VideoRecord[], devVideos: DevVideo[], flagged: (record: VideoRecord) => boolean): VideoJoin {
+  const measured = records.filter(flagged).map((record) => ({ record, key: joinKeyOfUrls([record.src], record.page) }));
+  const measuredCount = new Map<string, number>();
+  for (const { key } of measured) measuredCount.set(key, (measuredCount.get(key) ?? 0) + 1);
+  const devCount = new Map<string, DevVideo[]>();
+  for (const dev of devVideos) {
+    const list = devCount.get(dev.pattern);
+    if (list) list.push(dev);
+    else devCount.set(dev.pattern, [dev]);
+  }
+  const pairs = new Map<VideoRecord, DevVideo>();
+  let notJoined = 0;
+  for (const { record, key } of measured) {
+    const devs = devCount.get(key) ?? [];
+    if (key !== "" && measuredCount.get(key) === 1 && devs.length === 1) pairs.set(record, devs[0]);
+    else notJoined++;
+  }
+  return { pairs, notJoined, devLeft: devVideos.length - pairs.size };
+}
+
+/** The videos of a dev page's viewport, keyed by URL against that page, with the source the dev build resolved for each. */
+export function devVideosOf(observation: ViewportObservation, pageUrl: string, resolved: Map<ObservedVideo, ResolvedSource>): DevVideo[] {
+  return (observation.videos ?? []).map((video) => {
+    const source = resolved.get(video);
+    const dev: DevVideo = { index: video.index, pattern: joinKeyOfUrls([video.currentSrc], pageUrl), currentSrc: video.currentSrc, component: source?.component ?? [] };
+    if (source?.file !== undefined) {
+      dev.file = source.file;
+      dev.line = source.line;
+      dev.kind = source.check;
+      dev.via = source.via;
+      dev.ownerChain = source.ownerChain;
+    }
+    return dev;
+  });
+}
+
+/**
+ * The located videos: each paired record's locator takes the dev video's file:line and its source check, and its component.
+ * The record's id and bytes do not change: a locate only says where the element is in the source.
+ */
+export function applyLocateVideos(records: VideoRecord[], join: VideoJoin): VideoRecord[] {
+  return records.map((record) => {
+    const dev = join.pairs.get(record);
+    if (dev === undefined) return record;
+    const locator: ImageLocator = { ...record.locator };
+    delete locator.file;
+    delete locator.line;
+    delete locator.kind;
+    delete locator.verified;
+    delete locator.via;
+    delete locator.ownerChain;
+    if (dev.file !== undefined && dev.line !== undefined) {
+      locator.file = dev.file;
+      locator.line = dev.line;
+      if (dev.via !== undefined) locator.via = dev.via;
+      locator.kind = dev.kind ?? "unchecked";
+      locator.verified = locator.kind === "image";
+      if (dev.ownerChain?.length) locator.ownerChain = dev.ownerChain;
+    }
+    if (dev.component.length > 0) locator.component = dev.component;
+    return { ...record, locator };
+  });
 }
 
 /** A URL with the page's own origin taken out, so a built server and a dev server give the same pattern. */
