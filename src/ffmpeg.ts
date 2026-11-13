@@ -3,6 +3,7 @@
 // hold a scan.
 
 import { spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 
 /**
  * What the installed ffmpeg can do. `av1` is the AV1 encoder to use (SVT-AV1 preferred, libaom as the fallback), or
@@ -263,14 +264,36 @@ export function parseListing(text: string): Set<string> {
 }
 
 /**
- * Reads the size, length, frame rate and codecs of a video or animated file with ffprobe. `input` is a file path or an
- * http(s) URL. Resolves undefined when ffprobe fails, times out, or finds no video stream.
+ * The input options for one ffmpeg or ffprobe input, to go before its `-i`. An http(s) URL comes from a scanned page,
+ * so it may read only the network protocols, and goes through `proxy` when one is set. A local file may read only
+ * files and pipes. Any other input is refused: a relative path, or a scheme such as file: or concat:, could read
+ * something the scan did not mean to open. A URL with no proxy is refused with its own message.
  */
-export async function probeMedia(input: string, timeoutMs: number): Promise<MediaProbe | undefined> {
+export function inputOptions(input: string, proxy?: string): string[] {
+  if (/^https?:\/\//i.test(input)) {
+    // A URL comes from a scanned page, so it only ever goes through the egress proxy, which checks each destination.
+    if (proxy === undefined) throw new Error("URL inputs require the egress proxy");
+    return ["-protocol_whitelist", "http,https,tcp,tls,crypto", "-http_proxy", proxy];
+  }
+  if (isAbsolute(input)) return ["-protocol_whitelist", "file,pipe"];
+  throw new Error(`media input must be an absolute path or an http(s) URL: ${input}`);
+}
+
+/**
+ * Reads the size, length, frame rate and codecs of a video or animated file with ffprobe. `input` is an absolute file
+ * path or an http(s) URL (see inputOptions); `opts.proxy` is the HTTP proxy a URL goes through. Resolves undefined when
+ * ffprobe fails, times out, finds no video stream, or the input is refused. A URL with no proxy rejects.
+ */
+export async function probeMedia(
+  input: string,
+  timeoutMs: number,
+  opts: { proxy?: string } = {},
+): Promise<MediaProbe | undefined> {
+  if (/^https?:\/\//i.test(input) && opts.proxy === undefined) throw new Error("URL inputs require the egress proxy");
   try {
     const result = await runBinary(
       ffprobeBin(),
-      ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", "-i", input],
+      ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", ...inputOptions(input, opts.proxy), "-i", input],
       { timeoutMs },
     );
     if (result.code !== 0) return undefined;

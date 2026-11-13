@@ -5,6 +5,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   FfmpegOutputTooLarge,
   FfmpegTimeout,
+  inputOptions,
   probeFfmpeg,
   probeMedia,
   resetFfmpegProbe,
@@ -112,6 +113,28 @@ describe("probeFfmpeg", () => {
   });
 });
 
+describe("inputOptions", () => {
+  it("whitelists http(s) and tcp/tls for URLs, adds the proxy only to URLs, and file/pipe for absolute paths", () => {
+    expect(inputOptions("http://cdn.example/clip.mp4", "http://127.0.0.1:3128")).toEqual([
+      "-protocol_whitelist",
+      "http,https,tcp,tls,crypto",
+      "-http_proxy",
+      "http://127.0.0.1:3128",
+    ]);
+    expect(inputOptions("/srv/clip.mp4", "http://127.0.0.1:3128")).toEqual(["-protocol_whitelist", "file,pipe"]);
+  });
+
+  it("refuses a URL with no egress proxy, with its own message", () => {
+    expect(() => inputOptions("https://cdn.example/clip.mp4")).toThrow("URL inputs require the egress proxy");
+  });
+
+  it("refuses anything that is neither an absolute path nor an http(s) URL", () => {
+    expect(() => inputOptions("clip.mp4")).toThrow();
+    expect(() => inputOptions("file:///etc/passwd")).toThrow();
+    expect(() => inputOptions("concat:a|b")).toThrow();
+  });
+});
+
 describe("probeMedia", () => {
   it("reads duration, size, frame rate and codecs from an H.264 clip with audio", async () => {
     const media = await probeMedia(fixture("clip.mp4"), 10_000);
@@ -136,6 +159,15 @@ describe("probeMedia", () => {
 
   it("returns undefined for a file that does not exist", async () => {
     expect(await probeMedia(fixture("no-such-file.mp4"), 10_000)).toBeUndefined();
+  });
+
+  it("rejects a URL with no egress proxy", async () => {
+    await expect(probeMedia("https://cdn.example/clip.mp4", 10_000)).rejects.toThrow("URL inputs require the egress proxy");
+  });
+
+  it("returns undefined for an input that is not an absolute path or an http(s) URL", async () => {
+    expect(await probeMedia("file:///etc/passwd", 10_000)).toBeUndefined();
+    expect(await probeMedia(fixture("clip.mp4").slice(1), 10_000)).toBeUndefined();
   });
 });
 
