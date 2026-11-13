@@ -4,9 +4,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { runScan, scanOnce, type ScanOptions } from "../src/remote.js";
 import { STAGE_DIR_NAME } from "../src/stage.js";
@@ -27,6 +28,8 @@ describe("runScan stages each measured page", () => {
     const jpg = await sharp({ create: { width: 320, height: 200, channels: 3, background: "#777", noise: { type: "gaussian", mean: 128, sigma: 40 } } })
       .jpeg({ quality: 90 })
       .toBuffer();
+    // A 180 KB WebM for the /v/a page: an autoplaying <video>, so its media response is what the video record reads.
+    const clip = readFileSync(fileURLToPath(new URL("./fixtures/media/clip.webm", import.meta.url)));
     const page = (body: string) =>
       `<!doctype html><html><head><meta charset="utf-8"><title>fixture</title></head><body>${body}</body></html>`;
     server = createServer((req, res) => {
@@ -43,6 +46,16 @@ describe("runScan stages each measured page", () => {
         hits[url] = (hits[url] ?? 0) + 1;
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         return res.end(page('<img src="/pic.png" width="320" height="200" alt="">'));
+      }
+      if (url === "/clip.webm") {
+        // A static file's length is sent: the media bytes come from the headers, never from the body.
+        res.writeHead(200, { "content-type": "video/webm", "content-length": String(clip.length) });
+        return res.end(clip);
+      }
+      if (url === "/v/a") {
+        hits[url] = (hits[url] ?? 0) + 1;
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end(page('<video src="/clip.webm" autoplay muted loop playsinline width="320" height="180"></video>'));
       }
       if (url === "/wide") {
         hits[url] = (hits[url] ?? 0) + 1;
@@ -107,6 +120,34 @@ describe("runScan stages each measured page", () => {
         expect(resumed?.groups).toEqual(alone.groups);
       }
       expect(results.find((r) => r.url === `${base}/wide`)?.page?.exactEstPct).toBeGreaterThan(0);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("keeps the media responses of a staged page, so its video record is the one a page analysed alone gets", async () => {
+    const out = await mkdtemp(join(tmpdir(), "imgtune-stage-media-"));
+    try {
+      const url = `${base}/v/a`;
+      // Interrupted after the page is measured and staged: the video's media response is only in the stage.
+      await expect(
+        runScan(
+          [url],
+          scanOptions(out, {
+            log: (message) => {
+              if (message.startsWith("estimates:")) throw new Error("interrupted");
+            },
+          }),
+        ),
+      ).rejects.toThrow("interrupted");
+
+      const results = await runScan([url], scanOptions(out, { resume: true }));
+      const alone = await scanOnce(url, scanOptions(out));
+      const videos = results.find((r) => r.url === url)?.videos;
+      expect(videos).toHaveLength(1);
+      // An autoplaying video costs its whole file per view, read from the staged media response.
+      expect(videos?.[0].bytes.perView).toBeGreaterThanOrEqual(180_084);
+      expect(videos?.[0].bytes).toEqual(alone.videos?.[0].bytes);
     } finally {
       await rm(out, { recursive: true, force: true });
     }
