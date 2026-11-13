@@ -125,6 +125,7 @@ export async function locateCommand(argv: string[], cwd: string, log: (message: 
     ignoreRobots: args.ignoreRobots,
     wanted: (img, pageUrl) => flaggedPatterns.has(joinKeyOfImage(img, pageUrl)),
     thirdParty: args.thirdParty,
+    videos: true,
   });
   if (light.status !== "ok") {
     return { output: `locate: the dev page is ${light.status}${light.error ? `: ${safeText(light.error)}` : ""}\n`, exitCode: 1 };

@@ -67,6 +67,8 @@ export interface SearchOptions {
   score: Scorer;
   /** Per-run scratch directory. Candidate files are removed as they are scored; the caller removes the directory. */
   workDir: string;
+  /** Largest decoded animated-WebP timeline this search may build (default TIMELINE_CAP_BYTES). */
+  maxTimelineBytes?: number;
 }
 
 export type SearchOutcome =
@@ -81,6 +83,7 @@ export type SearchOutcome =
         | "no-range"
         | "probe-failed"
         | "no-passing-quality"
+        | "too-large"
         | "score-failed";
     };
 
@@ -151,6 +154,27 @@ const SPECS: Record<MediaCodec, CodecSpec> = {
   "animated-webp": { lo: 40, hi: 90, steps: 4, ext: "webp", fewerBytesAt: "low" },
 };
 
+/** Largest decoded timeline of an animated WebP: frames × width × height × 4 bytes, the repeated ticks included. */
+export const TIMELINE_CAP_BYTES = 256 * 1024 * 1024;
+
+/**
+ * An animated WebP whose timeline would be larger than the cap. Raised before any frame is materialised, so a long file
+ * at a large size is refused, not expanded. The message starts "too large to score", which is what the report prints.
+ */
+export class TimelineTooLarge extends Error {
+  readonly bytes: number;
+  readonly capBytes: number;
+
+  constructor(bytes: number, capBytes: number) {
+    super(
+      `too large to score: the frames of this animated WebP would take ${Math.ceil(bytes / (1024 * 1024))} MB decoded (the cap is ${Math.floor(capBytes / (1024 * 1024))} MB)`,
+    );
+    this.name = "TimelineTooLarge";
+    this.bytes = bytes;
+    this.capBytes = capBytes;
+  }
+}
+
 /** The deadline passed before a step could start. */
 class DeadlineHit extends Error {
   constructor() {
@@ -206,7 +230,7 @@ async function stage<T>(reason: StageError["reason"], work: () => Promise<T>): P
   try {
     return await work();
   } catch (err) {
-    if (isDeadline(err) || err instanceof StageError) throw err;
+    if (isDeadline(err) || err instanceof StageError || err instanceof TimelineTooLarge) throw err;
     throw new StageError(reason);
   }
 }
@@ -645,8 +669,18 @@ function fileCandidate(out: string, dir: string, i: number, deadline: number): C
  * animated WebP), then laid out so frame k is the frame on screen at tick k (a frame that lasts longer repeats). Used by
  * the candidates of a search and by the single-file mode, which writes the same frames to a lossless file.
  */
-export async function webpTimeline(bytes: Buffer, fps: number): Promise<{ frames: RawImage[]; width: number; height: number }> {
+export async function webpTimeline(
+  bytes: Buffer,
+  fps: number,
+  capBytes = TIMELINE_CAP_BYTES,
+): Promise<{ frames: RawImage[]; width: number; height: number }> {
   const meta = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
+  // The size of the timeline is known from the metadata, so it is checked before any frame is decoded or repeated.
+  const pagesOf = meta.pages ?? 1;
+  const metaHeight = meta.pageHeight ?? meta.height ?? 0;
+  const metaDelays = meta.delay ?? Array.from({ length: pagesOf }, () => 1000 / fps);
+  const timelineBytes = ticksOf(metaDelays, fps) * (meta.width ?? 0) * metaHeight * 4;
+  if (timelineBytes > capBytes) throw new TimelineTooLarge(timelineBytes, capBytes);
   const { data, info } = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS })
     .ensureAlpha()
     .raw()
@@ -659,19 +693,23 @@ export async function webpTimeline(bytes: Buffer, fps: number): Promise<{ frames
     return { data: new Uint8ClampedArray(part.buffer, part.byteOffset, part.byteLength), width: info.width, height };
   });
   const delays = meta.delay ?? pageFrames.map(() => 1000 / fps);
-  const total = delays.reduce((acc, d) => acc + d, 0);
-  const ticks = Math.max(1, Math.round((total * fps) / 1000));
-  const frames = cfrIndices(delays, fps, ticks).map((p) => pageFrames[Math.min(p, pageFrames.length - 1)]);
+  const frames = cfrIndices(delays, fps, ticksOf(delays, fps)).map((p) => pageFrames[Math.min(p, pageFrames.length - 1)]);
   return { frames, width: info.width, height };
+}
+
+/** The constant-rate ticks a sequence of frame delays (ms) spans at `fps`: at least one. */
+function ticksOf(delaysMs: number[], fps: number): number {
+  const total = delaysMs.reduce((acc, d) => acc + d, 0);
+  return Math.max(1, Math.round((total * fps) / 1000));
 }
 
 /**
  * An animated WebP candidate: every frame decoded, then laid out on the constant-rate timeline of the reference
  * (repeated where a frame lasts longer), so frame k of the candidate is frame k of the reference.
  */
-async function webpCandidate(out: string, dir: string, i: number, fps: number): Promise<Candidate> {
+async function webpCandidate(out: string, dir: string, i: number, fps: number, capBytes?: number): Promise<Candidate> {
   const bytes = await readFile(out);
-  const { frames, width } = await webpTimeline(bytes, fps);
+  const { frames, width } = await webpTimeline(bytes, fps, capBytes);
   const height = frames[0]?.height ?? 0;
 
   const raw = join(dir, `s${i}.rgba`);
@@ -808,7 +846,7 @@ async function evaluate(ctx: Ctx, q: number): Promise<Scored> {
       await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline);
       sampleBytes += (await stat(out)).size;
       const cand = codec === "animated-webp"
-        ? await stage("no-encoder", () => webpCandidate(out, dir, i, ctx.fps))
+        ? await stage("no-encoder", () => webpCandidate(out, dir, i, ctx.fps, opts.maxTimelineBytes))
         : fileCandidate(out, dir, i, opts.deadline);
       vmafs.push(await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline));
       scores.push(...(await guardScores(ctx, i, cand)));
@@ -967,6 +1005,8 @@ export async function searchQuality(
       }
     }
   } catch (err) {
+    // A timeline over the cap is refused as a whole: no quality of this codec can be scored.
+    if (err instanceof TimelineTooLarge) return { ok: false, reason: "too-large" };
     // A broken scorer is reported even when an earlier quality passed: the passes before it were not checked by it.
     if (err instanceof StageError && err.reason === "score-failed") return { ok: false, reason: "score-failed" };
     if (best) return { ok: true, best, tried: ctx.cache.size };

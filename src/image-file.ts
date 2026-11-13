@@ -580,6 +580,7 @@ async function compareMode(
   const refPath = resolve(cwd, reference);
   const refInfo = await stat(refPath).catch(() => undefined);
   if (!refInfo?.isFile()) return fail(`--reference ${safeText(reference)} is not a file`);
+  if (refInfo.size > MAX_IMAGE_BYTES) return fail(`--reference ${safeText(reference)} is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB`);
   const refBuffer = await readFile(refPath);
   if (mediaKindOf(refBuffer) === undefined) return fail(`--reference ${safeText(reference)} is not a video or animated file`);
   const candBuffer = await readInput(candidate, cwd, "");

@@ -3929,6 +3929,8 @@ export interface LightOptions {
   loadCapMs?: number;
   /** Third-party requests (see third-party.ts). Default: blocked, with no hosts kept. */
   thirdParty?: ThirdPartyPolicy;
+  /** Read the page's <video> elements (a locate joins them to the measured videos). Off by default: light reads take none. */
+  videos?: boolean;
 }
 
 /** A light observation of a page: one read per viewport, and the sources of the wanted elements. */
@@ -3972,7 +3974,7 @@ export async function observeLight(pageUrl: string, opts: LightOptions): Promise
       const policy: EgressPolicy = { resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress };
       const guard: RequestGuard = { isBlocked: (u) => run.fetcher.hostIsBlocked(u, allowPrivate), policy, thirdParty: run.thirdParty };
       const outcomes = await settleLimit(run.viewports, VIEWPORT_CONCURRENCY, (viewport) =>
-        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true, (img) => opts.wanted(img, pageUrl), undefined, true),
+        observeViewport(browser, pageUrl, viewport, guard, run.loadCapMs, undefined, true, (img) => opts.wanted(img, pageUrl), undefined, opts.videos === true),
       );
       const observations: ViewportObservation[] = [];
       for (const [index, outcome] of outcomes.entries()) {

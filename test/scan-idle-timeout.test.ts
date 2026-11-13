@@ -172,13 +172,13 @@ describe("scan of a page with an endless-streaming video (autoplay)", () => {
         sharedLoads: true,
         log: () => undefined,
         loadCapMs: 500,
-        idleTimeoutMs: 4000,
+        idleTimeoutMs: 8000,
       });
       const seconds = (Date.now() - started) / 1000;
       expect(result.status).toBe("ok");
-      // The first load's network-idle settle (4 s) and the two body reads of the stream (5 s each, BODY_READ_TIMEOUT_MS)
-      // take about 16 s. A resize that waited out its cap would add 4 s more: the bound sits between the two.
-      expect(seconds).toBeLessThan(18);
+      // The first load's network-idle settle (8 s) and the two body reads of the stream (5 s each, BODY_READ_TIMEOUT_MS)
+      // take about 16 s. A resize that waited out its cap would add 8 s more: the bound sits between the two (about 20 s fixed, 28 s without).
+      expect(seconds).toBeLessThan(24);
     } finally {
       await rm(out, { recursive: true, force: true });
     }

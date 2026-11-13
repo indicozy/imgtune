@@ -68,10 +68,10 @@ export interface PreparedMedia {
  * written as a lossless FFV1 file at WEBP_FPS in `dir`. An APNG reports no length to ffprobe, so its animation length
  * stands in. Throws with the reason when the file cannot be read.
  */
-export async function prepareMedia(path: string, buffer: Buffer, dir: string): Promise<PreparedMedia> {
+export async function prepareMedia(path: string, buffer: Buffer, dir: string, capBytes?: number): Promise<PreparedMedia> {
   const animation = animationOf(buffer);
   if (animation?.format === "webp") {
-    const { frames, width, height } = await webpTimeline(buffer, WEBP_FPS);
+    const { frames, width, height } = await webpTimeline(buffer, WEBP_FPS, capBytes);
     await mkdir(dir, { recursive: true });
     const raw = join(dir, "webp-frames.rgba");
     const out = join(dir, "webp-frames.mkv");
@@ -340,7 +340,9 @@ export function renderAnimated(result: AnimatedFileResult): string {
   const lines = [head];
   const widthNote = result.width.source === "user" ? "from --width" : "the file's own width; --width sets another";
   lines.push(`  width ${result.width.px} px (${widthNote})`);
-  lines.push(`  bars VMAF ${result.bars.vmaf}, still p10 ${result.bars.stillRequested} (lowered for a source whose own best encode scores low)`);
+  // The note only when a candidate's still bar was lowered below the requested one (its own ceiling is low).
+  const lowered = result.candidates.some(({ outcome }) => outcome.ok && outcome.best.stillBar < result.bars.stillRequested);
+  lines.push(`  bars VMAF ${result.bars.vmaf}, still p10 ${result.bars.stillRequested}${lowered ? " (lowered for a source whose own best encode scores low)" : ""}`);
   if (result.note) lines.push(`  ${safeText(result.note)}`);
   let best: { codec: MediaCodec; bytes: number } | undefined;
   for (const { codec, outcome } of result.candidates) {
@@ -348,7 +350,8 @@ export function renderAnimated(result: AnimatedFileResult): string {
       lines.push(candidateLine(codec, outcome.best));
       if (best === undefined || outcome.best.bytes < best.bytes) best = { codec, bytes: outcome.best.bytes };
     } else {
-      lines.push(`  ${codec.padEnd(14)} no quality meets the bars (${outcome.reason})`);
+      const why = outcome.reason === "too-large" ? "too large to score" : outcome.reason;
+      lines.push(`  ${codec.padEnd(14)} no quality meets the bars (${why})`);
     }
   }
   if (best) {
@@ -381,8 +384,12 @@ export function renderReference(result: ReferenceFileResult): string {
   const ref = result.reference;
   lines.push(`  reference ${safeText(ref.label)} (${ref.width}x${ref.height}, ${ref.seconds.toFixed(1)} s); compared at ${result.width} px`);
   if (result.ceiling === undefined) lines.push("  still bar is absolute: no AV1 encoder, so the reference's own ceiling is not measured");
-  else if (result.stillBar < result.stillBarRequested) {
-    lines.push(`  still bar lowered from ${result.stillBarRequested} to ${result.stillBar.toFixed(1)}: the reference's own best encode scores ${result.ceiling.toFixed(1)}`);
+  else {
+    if (result.stillBar < result.stillBarRequested) {
+      lines.push(`  still bar lowered from ${result.stillBarRequested} to ${result.stillBar.toFixed(1)}: the reference's own best encode scores ${result.ceiling.toFixed(1)}`);
+    }
+    // The ceiling is always the reference's AV1 CRF 20 encode, so say so for a candidate of another codec.
+    if (c.format !== "av1") lines.push(`  still bar ceiling: the reference's AV1 CRF 20 encode, whatever the candidate's codec (${safeText(c.format)})`);
   }
   const verdict = `VMAF ${result.vmaf.toFixed(1)} (bar ${result.vmafBar}) still p10 ${result.still.toFixed(1)} (bar ${result.stillBar.toFixed(1)}): ${result.pass ? "pass" : "fail"}`;
   lines.push(verdict);
