@@ -11,6 +11,7 @@ import {
   snapWidth,
   videoBytes,
   widthOptions,
+  withFileLength,
 } from "../src/media-model.js";
 
 /** The six imgtune viewports from src/config.ts, as the clustering sees them for a full-width video. */
@@ -100,6 +101,33 @@ describe("videoBytes", () => {
     const v = videoBytes({ kind: "autoplay", playing: false, observedBytes: 0, fullBytes: 5e6, visible: false });
     expect(v.perView).toBe(0);
     expect(v.perPlay).toBe(5e6);
+  });
+});
+
+describe("per-view bytes never exceed the file (perView ≤ perPlay)", () => {
+  it("clamps an autoplay view that counted more than the file (a looping video re-read)", () => {
+    const v = videoBytes({ kind: "autoplay", playing: true, observedBytes: 9e9, fullBytes: 4e6, visible: true });
+    expect(v.perView).toBe(4e6);
+    expect(v.perPlay).toBe(4e6);
+  });
+
+  it("clamps the observed bytes of a preload auto view to the file", () => {
+    const v = videoBytes({ kind: "auto", playing: false, observedBytes: 7e6, fullBytes: 4e6, visible: true });
+    expect(v.perView).toBe(4e6);
+  });
+});
+
+describe("withFileLength", () => {
+  it("sets the per-play bytes to the length, and an autoplay view to the length too", () => {
+    const auto = videoBytes({ kind: "autoplay", playing: true, observedBytes: 0, fullBytes: 0, visible: true });
+    expect(withFileLength(auto, 2_000_000)).toMatchObject({ perView: 2_000_000, perPlay: 2_000_000, perViewBasis: "full-file" });
+  });
+
+  it("keeps a click-to-play view at its observed bytes, which never exceed the length", () => {
+    const lazy = videoBytes({ kind: "none", playing: false, observedBytes: 0, fullBytes: 0, visible: true });
+    expect(withFileLength(lazy, 2_000_000)).toMatchObject({ perView: 0, perPlay: 2_000_000 });
+    const observed = videoBytes({ kind: "default", playing: false, observedBytes: 3e6, fullBytes: 5e6, visible: true });
+    expect(withFileLength(observed, 2_000_000)).toMatchObject({ perView: 2_000_000, perPlay: 2_000_000 });
   });
 });
 

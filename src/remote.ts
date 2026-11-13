@@ -54,7 +54,17 @@ import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.j
 import { bisectQuality, confirmBisect, minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
-import { attachMediaResults, mediaAssetsOf, partitionByPolicy, runMediaPhase, skippedMedia, type MediaAsset, type MediaResults } from "./media-phase.js";
+import {
+  attachMediaResults,
+  mediaAssetsOf,
+  partitionByPolicy,
+  probeLengths,
+  refineAssetLength,
+  runMediaPhase,
+  skippedMedia,
+  type MediaAsset,
+  type MediaResults,
+} from "./media-phase.js";
 import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
 import { EstimateRegistry, hashOf, withEstimates, type EstimateStore } from "./estimate-jobs.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
@@ -1134,17 +1144,24 @@ export interface ObservedVideo {
 }
 
 /**
- * The bytes of one media URL, summed over all its media responses, 200s and 206s alike (a range request is one response
- * of several). Each response counts the browser's encoded body size once it has finished (sizes), so chunked framing is
- * included; the headers are the fallback. The body is never read, since a video can be far too big to buffer. A re-request
- * of the same bytes adds again: the figure is the bytes the page moved, not the file size.
+ * The bytes of one media URL: the union of the byte ranges the page received for it, over all its media responses (200s
+ * and 206s alike). A looping video re-requests the same ranges, so a sum would count the file once per loop; the union
+ * counts each byte once. A response without a Content-Range covers [0, bytes). The union is capped at the file's total
+ * when a Content-Range gave one. Each response counts the browser's encoded body size once it has finished (sizes), so
+ * chunked framing is included; the headers are the fallback. The body is never read, since a video can be far too big to
+ * buffer.
  */
 export interface MediaRecord {
   url: string;
   contentType?: string;
+  /** The union of `ranges`, capped at `total`. */
   bytes: number;
   /** The status of the last response for the URL. */
   status: number;
+  /** The merged byte ranges received, as [start, end) pairs, ascending. */
+  ranges?: [number, number][];
+  /** The full file length, from a Content-Range total, when a response gave one. */
+  total?: number;
 }
 
 /**
@@ -1259,20 +1276,50 @@ export function mediaBytesOf(headers: Record<string, string>): number | undefine
 }
 
 /**
- * Adds one media response's bytes to the page load's map (see readGroup): they add to the URL's total, so the range
- * responses of one URL add up, and the status is the last one seen. Every media response counts, a 200 as well as a 206
- * (a server that ignores Range sends the whole file once per request, and that is the bytes the page moved).
+ * The start and the total of a Content-Range header (`bytes a-b/total`), when it has them. Undefined fields when the
+ * header is absent or does not parse (a 200 has none, so its bytes start at 0).
+ */
+export function contentRangeOf(headers: Record<string, string>): { start?: number; total?: number } {
+  const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i.exec((headers["content-range"] ?? "").trim());
+  if (!range) return {};
+  const total = range[3] === "*" ? undefined : Number(range[3]);
+  return { start: Number(range[1]), ...(total !== undefined ? { total } : {}) };
+}
+
+/** Merges [start, end) ranges into the ascending, disjoint list that covers the same bytes. */
+export function mergeRanges(ranges: [number, number][]): [number, number][] {
+  const sorted = ranges.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/**
+ * Adds one media response's bytes to the page load's map (see readGroup). The response covers [start, start + bytes) (a
+ * 200 starts at 0), so a re-request of bytes already received adds nothing: the figure is the union of the ranges, capped
+ * at the file's total when one is known. The status and content type are the last ones seen. Every media response counts,
+ * a 200 as well as a 206 (a server that ignores Range sends the whole file, and the bytes the page moved are the union).
  */
 export function addMediaResponse(
   media: Map<string, MediaRecord>,
-  response: { url: string; status: number; contentType?: string; bytes: number },
+  response: { url: string; status: number; contentType?: string; bytes: number; start?: number; total?: number },
 ): void {
   const prev = media.get(response.url);
+  const start = response.start ?? 0;
+  const ranges = mergeRanges([...(prev?.ranges ?? []), [start, start + response.bytes]]);
+  const total = response.total ?? prev?.total;
+  const union = ranges.reduce((sum, [a, b]) => sum + (b - a), 0);
   media.set(response.url, {
     url: response.url,
     contentType: response.contentType ?? prev?.contentType,
-    bytes: (prev?.bytes ?? 0) + response.bytes,
+    bytes: total !== undefined ? Math.min(union, total) : union,
     status: response.status,
+    ranges,
+    ...(total !== undefined ? { total } : {}),
   });
 }
 
@@ -1847,8 +1894,20 @@ async function readGroup(
   // Every media (video) response of the page load, by URL: its bytes from the headers, never from the body.
   const media = new Map<string, MediaRecord>();
   const bodyReads: Promise<void>[] = [];
-  // Per media response: counts its header bytes, for a response still streaming when the body reads settle (see readGroup).
+  // The media bodies, awaited on their own: they share one deadline for the whole page load (see mediaDeadline below).
+  const mediaReads: Promise<void>[] = [];
+  // Per media response: counts the bytes that arrived, for a response still streaming when the media reads settle.
   const mediaFallbacks: (() => void)[] = [];
+  // The media requests in flight, by request id: the bytes received so far (CDP dataReceived), for the fallback above.
+  const inFlightMedia = new Map<string, { url: string; bytes: number }>();
+  const streamedBytesOf = (url: string): number => {
+    let bytes = 0;
+    for (const entry of inFlightMedia.values()) if (entry.url === url) bytes += entry.bytes;
+    return bytes;
+  };
+  // One deadline for the media reads of the whole page load: the viewport steps share it, so a stream that never ends
+  // costs BODY_READ_TIMEOUT_MS once per page, not once per viewport.
+  let mediaDeadline: number | undefined;
   let blockedRequests = 0;
   let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
@@ -1939,14 +1998,16 @@ async function readGroup(
           if (light) return;
           const url = response.url();
           const status = response.status();
-          const headerBytes = mediaBytesOf(response.headers()) ?? 0;
+          const headers = response.headers();
+          const headerBytes = mediaBytesOf(headers) ?? 0;
+          const { start, total } = contentRangeOf(headers);
           let counted = false;
           const count = (bytes: number): void => {
             if (counted) return;
             counted = true;
-            addMediaResponse(media, { url, status, contentType, bytes });
+            addMediaResponse(media, { url, status, contentType, bytes, start, total });
           };
-          bodyReads.push(
+          mediaReads.push(
             (async () => {
               try {
                 // An aborted range request also finishes (with an error): its sizes still count what was received.
@@ -1958,7 +2019,8 @@ async function readGroup(
               }
             })(),
           );
-          mediaFallbacks.push(() => count(headerBytes));
+          // Still streaming at the settle: the bytes that have arrived so far (or the header bytes, when those are more).
+          mediaFallbacks.push(() => count(Math.max(headerBytes, streamedBytesOf(url))));
           return;
         }
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
@@ -2001,17 +2063,25 @@ async function readGroup(
         navigations = await countDocumentNavigations(context, page);
       }
       // The requests in flight, for the network-idle wait after a resize (the browser's own events).
-      const cdp = viewports.length > 1 ? await context.newCDPSession(page) : undefined;
-      if (cdp !== undefined) {
-        // A media request is not counted: a streaming autoplay video never finishes, and would hold every resize's
-        // network-idle wait to its cap. Its bytes are still counted per response (see the media branch above).
-        cdp.on("Network.requestWillBeSent", (event: { requestId: string; type?: string }) => {
-          if (event.type !== "Media") busy.add(event.requestId);
-        });
-        cdp.on("Network.loadingFinished", (event: { requestId: string }) => busy.delete(event.requestId));
-        cdp.on("Network.loadingFailed", (event: { requestId: string }) => busy.delete(event.requestId));
-        await cdp.send("Network.enable");
-      }
+      // Always opened: the media bytes that arrive before a settle are read from its data events (see inFlightMedia).
+      const cdp = await context.newCDPSession(page);
+      // A media request is not counted as busy: a streaming autoplay video never finishes, and would hold every resize's
+      // network-idle wait to its cap. Its bytes are still counted per response (see the media branch above).
+      cdp.on("Network.requestWillBeSent", (event: { requestId: string; type?: string; request?: { url?: string } }) => {
+        if (event.type === "Media") inFlightMedia.set(event.requestId, { url: event.request?.url ?? "", bytes: 0 });
+        else busy.add(event.requestId);
+      });
+      cdp.on("Network.dataReceived", (event: { requestId: string; dataLength?: number }) => {
+        const entry = inFlightMedia.get(event.requestId);
+        if (entry !== undefined) entry.bytes += event.dataLength ?? 0;
+      });
+      const done = (event: { requestId: string }): void => {
+        busy.delete(event.requestId);
+        inFlightMedia.delete(event.requestId);
+      };
+      cdp.on("Network.loadingFinished", done);
+      cdp.on("Network.loadingFailed", done);
+      await cdp.send("Network.enable");
       const resizeState: { userAgent?: string } = { userAgent: first.userAgent };
       let loaded: { response: BrowserResponse | null; loadTimedOut: boolean } | undefined;
       for (const [step, viewport] of viewports.entries()) {
@@ -2050,7 +2120,9 @@ async function readGroup(
             await debug.session.detach().catch(() => undefined);
           }
           await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
-          // A media response still streaming at the settle counts its header bytes (or 0); it is not waited for.
+          mediaDeadline ??= Date.now() + BODY_READ_TIMEOUT_MS;
+          await measure("media reads", () => settleWithin(mediaReads, Math.max(0, mediaDeadline! - Date.now())));
+          // A media response still streaming at the settle counts the bytes that arrived; it is not waited for.
           for (const fallback of mediaFallbacks) fallback();
           const responses = step === 0 ? new Map(fetched) : responsesOfStep(fetched, answered, seen, viewport.dpr);
           count("image responses", responses.size);
@@ -3752,20 +3824,27 @@ async function runMediaFor(assets: MediaAsset[], run: PageRun, opts: ScanOptions
 
 /**
  * The media phase for the assets the policy allows. The videos are read through an egress proxy started for the phase,
- * which allows private destinations only when every scanned URL is local. A survey or a scan with quality off encodes
- * nothing, and each asset says so. Never throws.
+ * which allows private destinations only when every scanned URL is local. The length of every video URL is probed first,
+ * whatever the settings (a click-to-play video's per-play bytes need it, and no ffmpeg); the budget ranks the videos by
+ * that length. A survey or a scan with quality off encodes nothing, and each asset says so. Never throws.
  */
 async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptions, urls: string[]): Promise<MediaResults> {
   if (assets.length === 0) return { byKey: new Map() };
-  if (opts.quality !== true || opts.survey === true) return skippedMedia(assets, opts.survey === true ? "survey" : "quality off");
   const allowPrivate = urls.length > 0 && urls.every((url) => isLocalTarget(url));
   let proxy: EgressProxy | undefined;
   try {
-    if (assets.some((asset) => asset.kind === "video")) {
+    const videoUrls = assets.filter((asset) => asset.kind === "video").map((asset) => asset.url);
+    let lengths = new Map<string, number>();
+    if (videoUrls.length > 0) {
       proxy = await startEgressProxy({ resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress });
+      lengths = await probeLengths(videoUrls, proxy.url);
+    }
+    const sized = assets.map((asset) => refineAssetLength(asset, lengths.get(asset.url)));
+    if (opts.quality !== true || opts.survey === true) {
+      return { ...skippedMedia(sized, opts.survey === true ? "survey" : "quality off"), lengths };
     }
     return await runMediaPhase(
-      assets,
+      sized,
       {
         budget: opts.mediaBudget ?? DEFAULT_MEDIA_BUDGET,
         timeS: opts.mediaTime ?? DEFAULT_MEDIA_TIME,
@@ -3780,7 +3859,7 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         scorerId: run.deps.scorerId,
       },
       { fetch: (url, maxBytes) => run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate }) },
-    );
+    ).then((results) => ({ ...results, lengths }));
   } catch (err) {
     const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
     return skippedMedia(assets, `media error: ${message}`);

@@ -47,20 +47,34 @@ export function videoBytes(input: {
   visible: boolean;
 }): VideoBytes {
   const perPlay = input.fullBytes;
+  const bounded = (view: VideoBytes): VideoBytes => ({ ...view, perView: Math.min(view.perView, perPlay) });
   if (!input.visible) return { perView: 0, perPlay, perViewBasis: "none", browserDependent: false };
   switch (input.kind) {
     case "autoplay":
       return input.playing
-        ? { perView: input.fullBytes, perPlay, perViewBasis: "full-file", browserDependent: false }
-        : { perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: false };
+        ? bounded({ perView: input.fullBytes, perPlay, perViewBasis: "full-file", browserDependent: false })
+        : bounded({ perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: false });
     case "auto":
-      return { perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: true };
+      return bounded({ perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: true });
     case "default":
-      return { perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: false };
+      return bounded({ perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: false });
     case "metadata":
     case "none":
       return { perView: 0, perPlay, perViewBasis: "none", browserDependent: false };
   }
+}
+
+/**
+ * The bytes of a video once its full file length is known (from a Range probe): the per-play figure is the length, and the
+ * per-view figure is the length when the view counts the full file (autoplay), else the observed bytes, never above the
+ * length. Keeps perView ≤ perPlay.
+ */
+export function withFileLength(bytes: VideoBytes, length: number): VideoBytes {
+  return {
+    ...bytes,
+    perPlay: length,
+    perView: Math.min(bytes.perViewBasis === "full-file" ? length : bytes.perView, length),
+  };
 }
 
 /** The chosen renditions for one video: the width each viewport gets and the `<source>` list that serves it. */

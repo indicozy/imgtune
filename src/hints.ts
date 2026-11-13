@@ -793,15 +793,30 @@ export function videoSavingOf(video: VideoRecord): { view: number; play: number 
 }
 
 /**
- * The Video section's totals: bytes per view and per play over the videos, and the saveable bytes (an estimate, marked when
- * any video has steps). Undefined with no video.
+ * One record per file of each page: a URL that two `<video>` elements of a page use is one file, fetched once per page view.
+ * Of the records sharing a URL, the one with the most bytes per view stands for it (the page's own elements keep their rows).
+ */
+export function onePerFile(videos: VideoRecord[]): VideoRecord[] {
+  const byFile = new Map<string, VideoRecord>();
+  for (const video of videos) {
+    const key = `${video.page}\n${video.src}`;
+    const current = byFile.get(key);
+    if (current === undefined || video.bytes.perView > current.bytes.perView) byFile.set(key, video);
+  }
+  return [...byFile.values()];
+}
+
+/**
+ * The Video section's totals: bytes per view and per play over the files (each URL once per page, see onePerFile), and the
+ * saveable bytes (an estimate, marked when any video has steps). Undefined with no video.
  */
 export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
   if (videos.length === 0) return undefined;
+  const files = onePerFile(videos);
   const sum = (values: number[]): number => values.reduce((total, v) => total + v, 0);
-  const savings = videos.map(videoSavingOf);
-  const est = videos.some((v) => v.steps !== undefined && v.estimate !== undefined) ? " est." : "";
-  return `video: ${kb(sum(videos.map((v) => v.bytes.perView)))}/view, ${kb(sum(videos.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}`;
+  const savings = files.map(videoSavingOf);
+  const est = files.some((v) => v.steps !== undefined && v.estimate !== undefined) ? " est." : "";
+  return `video: ${kb(sum(files.map((v) => v.bytes.perView)))}/view, ${kb(sum(files.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}`;
 }
 
 /** A video's encode in one phrase: the encode at its width with its bytes, or why it was not encoded. */

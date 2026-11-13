@@ -23,6 +23,7 @@ import {
   animatedLines,
   renderVideoHints,
   videoLines,
+  onePerFile,
   videoTotalsLine,
 } from "../src/hints.js";
 import { renderMarkdown, renderPage, type PageResult } from "../src/remote.js";
@@ -984,9 +985,19 @@ describe("video hints (levers, target, bytes, evidence)", () => {
   });
 
   it("totals the video bytes per view and per play, and the saveable bytes", () => {
-    const other = videoOf({ id: "video:def", bytes: { perView: 0, perPlay: 1000 * 1024, perViewBasis: "none", browserDependent: false, fullBytesKnown: true } });
+    const other = videoOf({ id: "video:def", src: "https://cdn.example/other.mp4", bytes: { perView: 0, perPlay: 1000 * 1024, perViewBasis: "none", browserDependent: false, fullBytesKnown: true } });
     expect(videoTotalsLine([encodedVideo(), other])).toBe("video: 2000 KB/view, 3000 KB/play, saveable 1600 KB/view (1600 KB/play) est.");
     expect(videoTotalsLine([])).toBeUndefined();
+  });
+
+  it("counts a URL that two video elements of one page use once in the totals, and keeps both rows", () => {
+    const first = encodedVideo({ id: "video:one", src: "https://cdn.example/clip.mp4", page: "https://site.example/" });
+    const second = encodedVideo({ id: "video:two", src: "https://cdn.example/clip.mp4", page: "https://site.example/" });
+    // The same file on another page is another page view: counted there.
+    const elsewhere = encodedVideo({ id: "video:three", src: "https://cdn.example/clip.mp4", page: "https://site.example/about" });
+    expect(videoTotalsLine([first, second])).toBe(videoTotalsLine([first]));
+    expect(videoTotalsLine([first, second, elsewhere])).toBe(videoTotalsLine([first, elsewhere]));
+    expect(onePerFile([first, second]).map((v) => v.id)).toEqual(["video:one"]);
   });
 
   it("renders no video hints for a page without videos", () => {
@@ -1009,7 +1020,7 @@ describe("page output with media (the image output is unchanged)", () => {
 
   it("adds a Video section with the totals and the not encoded reason", () => {
     const result = okPage("https://shop.example/bags", 200, 25, {
-      videos: [encodedVideo(), videoOf({ id: "video:def", notEncoded: "server has no Range support" })],
+      videos: [encodedVideo(), videoOf({ id: "video:def", src: "https://cdn.example/other.mp4", notEncoded: "server has no Range support" })],
     });
     const text = renderPage(result, false).join("\n");
     expect(text).toContain("  video: 2000 KB/view, 4000 KB/play, saveable 1600 KB/view (1600 KB/play) est.");

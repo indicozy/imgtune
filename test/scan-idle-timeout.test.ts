@@ -128,6 +128,11 @@ describe("scan of a page with an endless-streaming video (autoplay)", () => {
   beforeAll(async () => {
     server = createServer((req, res) => {
       const url = req.url ?? "";
+      if (url === "/stream.mp4" && req.method === "HEAD") {
+        // A HEAD is answered at once, as a real server does (the length probe reads it).
+        res.writeHead(200, { "content-type": "video/mp4" });
+        return res.end();
+      }
       if (url === "/stream.mp4") {
         res.writeHead(200, { "content-type": "video/mp4" });
         const chunk = Buffer.alloc(1024, 7);
@@ -176,11 +181,41 @@ describe("scan of a page with an endless-streaming video (autoplay)", () => {
       });
       const seconds = (Date.now() - started) / 1000;
       expect(result.status).toBe("ok");
-      // The first load's network-idle settle (8 s) and the two body reads of the stream (5 s each, BODY_READ_TIMEOUT_MS)
-      // take about 16 s. A resize that waited out its cap would add 8 s more: the bound sits between the two (about 20 s fixed, 28 s without).
+      // The first load's network-idle settle (8 s) and the media reads of the stream (one shared 5 s deadline, BODY_READ_TIMEOUT_MS)
+      // take about 13 s. A resize that waited out its cap would add 8 s more: the bound sits between the two (about 20 s fixed, 28 s without).
       expect(seconds).toBeLessThan(24);
     } finally {
       await rm(out, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it("waits for the stream once per page, not once per viewport, and counts the bytes that arrived before the settle", async () => {
+    const out = await mkdtemp(join(tmpdir(), "imgtune-stream-"));
+    const narrow: Viewport = { name: "narrow", width: 390, height: 844, dpr: 1, mobile: true };
+    try {
+      const started = Date.now();
+      const [result] = await runScan([`${base}/video`], {
+        outDir: out,
+        cwd: out,
+        aggressive: false,
+        quality: false,
+        viewports: [desktop, wide, narrow],
+        sharedLoads: true,
+        log: () => undefined,
+        loadCapMs: 500,
+        idleTimeoutMs: 8000,
+      });
+      const seconds = (Date.now() - started) / 1000;
+      expect(result.status).toBe("ok");
+      // Three viewports, one stream: its media read waits 5 s once for the page (the steps share the deadline). Waiting per
+      // viewport would add 5 s for each further step: the bound sits below that (about 13 s shared, 23 s per step).
+      expect(seconds).toBeLessThan(19);
+      // A chunked stream has no Content-Length, and is still streaming at the settle: its bytes are the ones that arrived.
+      const video = result.videos?.[0];
+      expect(video, "the streaming video is recorded").toBeDefined();
+      expect(video!.bytes.perView).toBeGreaterThan(0);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

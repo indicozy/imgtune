@@ -17,6 +17,8 @@ import {
   mediaAssetsOf,
   mediaKeyOf,
   partitionByPolicy,
+  probeLengths,
+  refineAssetLength,
   runMediaPhase,
   skippedMedia,
   type MediaAsset,
@@ -313,8 +315,9 @@ describe("attachMediaResults", () => {
     const av1 = candidate("av1-mp4", 640, 200_000);
     const results = {
       byKey: new Map([
-        [mediaKeyOf("video", "video", url, [640]), { probe: { ...probe, width: 1280, durationS: 8, audio: { codec: "aac", bitrate: 128_000 } }, candidates: [av1], length: 800_000 }],
+        [mediaKeyOf("video", "video", url, [640]), { probe: { ...probe, width: 1280, durationS: 8, audio: { codec: "aac", bitrate: 128_000 } }, candidates: [av1] }],
       ]),
+      lengths: new Map([[url, 800_000]]),
     };
     const out = attachMediaResults(page, results, { quality: true, survey: false });
     const v = out.videos?.[0] as VideoRecord;
@@ -562,4 +565,86 @@ describe("runMediaPhase log counts the target-width estimates", () => {
     );
     expect(logs.find((line) => line.startsWith("media: done"))).toMatch(/, 1 encoded, 0 not encoded$/);
   });
+});
+
+describe("the length of a video, without ffmpeg", () => {
+  it("probes every unique URL once, with the given probe, and keeps only the URLs with a length", async () => {
+    const asked: string[] = [];
+    const lengths = await probeLengths(["http://h/a.mp4", "http://h/a.mp4", "http://h/b.webm", "http://h/none.mp4"], "proxy:1", async (url, timeout, proxy) => {
+      asked.push(`${url}|${timeout}|${proxy}`);
+      if (url === "http://h/none.mp4") throw new Error("refused");
+      return { range: false, length: url === "http://h/a.mp4" ? 2_000_000 : 0 };
+    });
+    expect(asked.sort()).toEqual(["http://h/a.mp4|10000|proxy:1", "http://h/b.webm|10000|proxy:1", "http://h/none.mp4|10000|proxy:1"]);
+    expect([...lengths]).toEqual([["http://h/a.mp4", 2_000_000]]);
+  });
+
+  it("refines a video asset's bytes to its length for the budget's ranking, and leaves an animated asset alone", () => {
+    const url = "http://h/lazy.webm";
+    const lazy: MediaAsset = { ...video(url, 0), perView: 0, perPlay: 0, perViewBasis: "none" };
+    expect(refineAssetLength(lazy, 3_000_000)).toMatchObject({ perView: 0, perPlay: 3_000_000 });
+    expect(refineAssetLength(lazy, undefined)).toBe(lazy);
+    const anim: MediaAsset = { ...lazy, kind: "animated", context: "img" };
+    expect(refineAssetLength(anim, 3_000_000)).toBe(anim);
+  });
+
+  it("gives a click-to-play video its full file per play, with no entry from the phase (ffmpeg missing, budget, survey)", () => {
+    const url = "http://h/lazy.webm";
+    const record = {
+      src: url,
+      page: "http://h/",
+      bytes: { perView: 0, perPlay: 0, perViewBasis: "none", browserDependent: false, fullBytesKnown: false },
+      widths: { widths: [640], perViewport: [], sources: [], conditions: [], containerDriven: false },
+      attributes: { muted: false },
+      levers: { info: [] },
+    } as unknown as VideoRecord;
+    const page = { url: "http://h/", videos: [record] } as unknown as PageResult;
+    const lengths = new Map([[url, 3_000_000]]);
+    const out = attachMediaResults(page, { ...skippedMedia([video(url, 0)], "ffmpeg not found"), lengths }, { quality: true, survey: false });
+    const v = out.videos?.[0] as VideoRecord;
+    expect(v.bytes).toMatchObject({ perView: 0, perPlay: 3_000_000, fullBytesKnown: true });
+    expect(v.notEncoded).toBe("ffmpeg not found");
+  });
+});
+
+describe("runScan without ffmpeg: a click-to-play video", () => {
+  const saved = process.env.IMGTUNE_FFMPEG;
+  let server: Server;
+  let base = "";
+  beforeAll(async () => {
+    const lazy = Buffer.alloc(2_000_000, 1);
+    server = createServer((req, res) => {
+      if (req.url === "/") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end('<!doctype html><html><body><video id="lazy" preload="none" width="320" height="180" src="/lazy.webm"></video></body></html>');
+      }
+      if (req.url === "/lazy.webm") {
+        res.writeHead(200, { "content-type": "video/webm", "content-length": lazy.length, "accept-ranges": "bytes" });
+        return res.end(method(req) === "HEAD" ? undefined : lazy);
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    const method = (req: IncomingMessage): string => req.method ?? "GET";
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    closers.push(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => {
+    if (saved === undefined) delete process.env.IMGTUNE_FFMPEG;
+    else process.env.IMGTUNE_FFMPEG = saved;
+    resetFfmpegProbe();
+  });
+
+  it("reports the full file as per play (the Content-Length), though nothing is loaded and no ffmpeg is found", async () => {
+    process.env.IMGTUNE_FFMPEG = "/nonexistent/ffmpeg";
+    resetFfmpegProbe();
+    const out = await mkdtemp(join(scratch, "click-"));
+    const desktop: Viewport = { name: "desktop", width: 1280, height: 800, dpr: 1, mobile: false };
+    const results = await runScan([`${base}/`], { outDir: out, cwd: out, aggressive: false, quality: true, viewports: [desktop], log: () => undefined } as ScanOptions);
+    const video = results[0].videos?.[0] as VideoRecord;
+    expect(video).toBeDefined();
+    expect(video.bytes).toMatchObject({ perView: 0, perPlay: 2_000_000, fullBytesKnown: true });
+    expect(video.notEncoded).toBe("ffmpeg not found");
+  }, 120_000);
 });

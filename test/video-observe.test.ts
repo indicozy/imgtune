@@ -12,8 +12,10 @@ import { launchChromium } from "../src/browser.js";
 import { systemResolver } from "../src/address.js";
 import {
   addMediaResponse,
+  contentRangeOf,
   isOutOfScopeVideo,
   mediaBytesOf,
+  mergeRanges,
   observeLoads,
   type MediaRecord,
   type RequestGuard,
@@ -123,21 +125,61 @@ describe("mediaBytesOf", () => {
 });
 
 describe("addMediaResponse", () => {
-  it("sums the bytes of the range responses of one URL and keeps the last status", () => {
+  it("unions the byte ranges of one URL, so a range read twice counts once, and keeps the last status", () => {
     const media = new Map<string, MediaRecord>();
     const url = "http://127.0.0.1:1/clip.webm";
-    addMediaResponse(media, { url, status: 206, contentType: "video/webm", bytes: 100 });
-    addMediaResponse(media, { url, status: 206, bytes: 200 });
-    expect(media.get(url)).toEqual({ url, contentType: "video/webm", bytes: 300, status: 206 });
+    addMediaResponse(media, { url, status: 206, contentType: "video/webm", bytes: 100, start: 0 });
+    addMediaResponse(media, { url, status: 206, bytes: 200, start: 100 });
+    addMediaResponse(media, { url, status: 206, bytes: 100, start: 0 });
+    expect(media.get(url)).toEqual({ url, contentType: "video/webm", bytes: 300, status: 206, ranges: [[0, 300]] });
+  });
+
+  it("does not count a looping video's re-requests: the union stays the file", () => {
+    const media = new Map<string, MediaRecord>();
+    const url = "http://127.0.0.1:1/loop.mp4";
+    // Four loops of a 1000-byte file, each re-requesting the whole range in two parts.
+    for (let loop = 0; loop < 4; loop++) {
+      addMediaResponse(media, { url, status: 206, bytes: 600, start: 0, total: 1000 });
+      addMediaResponse(media, { url, status: 206, bytes: 400, start: 600, total: 1000 });
+    }
+    expect(media.get(url)?.bytes).toBe(1000);
+    expect(media.get(url)?.total).toBe(1000);
+  });
+
+  it("caps the union at the file's total", () => {
+    const media = new Map<string, MediaRecord>();
+    const url = "http://h/c.mp4";
+    addMediaResponse(media, { url, status: 200, bytes: 900, total: 500 });
+    expect(media.get(url)?.bytes).toBe(500);
   });
 
   it("counts a 200 as well as a 206, and keeps URLs apart", () => {
     const media = new Map<string, MediaRecord>();
-    addMediaResponse(media, { url: "http://h/a.mp4", status: 206, bytes: 10 });
+    addMediaResponse(media, { url: "http://h/a.mp4", status: 206, bytes: 10, start: 0 });
     addMediaResponse(media, { url: "http://h/a.mp4", status: 200, contentType: "video/mp4", bytes: 50 });
     addMediaResponse(media, { url: "http://h/b.mp4", status: 200, bytes: 0 });
-    expect(media.get("http://h/a.mp4")).toEqual({ url: "http://h/a.mp4", contentType: "video/mp4", bytes: 60, status: 200 });
-    expect(media.get("http://h/b.mp4")).toEqual({ url: "http://h/b.mp4", contentType: undefined, bytes: 0, status: 200 });
+    expect(media.get("http://h/a.mp4")).toEqual({ url: "http://h/a.mp4", contentType: "video/mp4", bytes: 50, status: 200, ranges: [[0, 50]] });
+    expect(media.get("http://h/b.mp4")).toEqual({ url: "http://h/b.mp4", contentType: undefined, bytes: 0, status: 200, ranges: [] });
+  });
+});
+
+describe("contentRangeOf and mergeRanges", () => {
+  it("reads the start and the total of a Content-Range, and nothing from a bad one", () => {
+    expect(contentRangeOf({ "content-range": "bytes 100-199/5000" })).toEqual({ start: 100, total: 5000 });
+    expect(contentRangeOf({ "content-range": "bytes 0-9/*" })).toEqual({ start: 0 });
+    expect(contentRangeOf({})).toEqual({});
+  });
+
+  it("merges overlapping and touching ranges into disjoint ones", () => {
+    expect(
+      mergeRanges([
+        [10, 20],
+        [0, 5],
+        [5, 10],
+        [15, 30],
+        [40, 40],
+      ]),
+    ).toEqual([[0, 30]]);
   });
 });
 

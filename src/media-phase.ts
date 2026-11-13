@@ -17,7 +17,7 @@ import {
   type MediaCodec,
   type SearchOutcome,
 } from "./media-encode.js";
-import { attributeLevers, rankForBudget, snapWidth, type LeverSteps } from "./media-model.js";
+import { attributeLevers, rankForBudget, snapWidth, withFileLength, type LeverSteps, type VideoBytes } from "./media-model.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { isThirdPartyBlocked, type ThirdPartyPolicy } from "./third-party.js";
 import { CACHE_VERSION, contentHash, type ResultCache } from "./result-cache.js";
@@ -36,6 +36,10 @@ const RANGE_TIMEOUT_MS = 15_000;
 const PROBE_TIMEOUT_MS = 30_000;
 /** A video the server cannot seek in is not downloaded above this size: the encode would read all of it. */
 const NO_RANGE_MAX_BYTES = 50_000_000;
+/** Time allowed for the length probe (a Range request) of one video URL, in ms. */
+export const LENGTH_TIMEOUT_MS = 10_000;
+/** Video URLs probed at once for their length. */
+export const LENGTH_CONCURRENCY = 8;
 /** The notEncoded reason of an asset the third-party policy blocks on its page. */
 export const THIRD_PARTY_BLOCKED = "third-party blocked";
 /** Longest error text kept in a notEncoded reason. */
@@ -56,6 +60,8 @@ export interface MediaAsset {
   /** Bytes per page view and per play, as the cheap levers give them (used to rank the assets). */
   perView: number;
   perPlay: number;
+  /** How perView was counted (a video's; see VideoBytes). Needed to refine it once the file length is known. */
+  perViewBasis?: VideoBytes["perViewBasis"];
   /** The bytes already read, when the caller has them. Otherwise the phase fetches them (see MediaDeps.fetch). */
   buffer?: Buffer;
 }
@@ -90,12 +96,15 @@ export interface MediaEntry {
   candidates: CandidateResult[];
   /** Why no candidate was encoded (a reason from media-encode.ts, or one of the phase's own). */
   notEncoded?: string;
-  /** The full file length the server reported, for a video (refines its per-play bytes). */
-  length?: number;
 }
 
 export interface MediaResults {
   byKey: Map<string, MediaEntry>;
+  /**
+   * The full file length of each video URL, from its Range probe (see probeLengths). Set whenever the probe ran, whatever
+   * the ffmpeg, budget, quality or survey settings: a click-to-play video's per-play bytes come from here.
+   */
+  lengths?: Map<string, number>;
   /** A note for the whole run, such as the missing-ffmpeg note. */
   note?: string;
   /**
@@ -169,7 +178,44 @@ export function videoAssetOf(record: VideoRecord): MediaAsset {
     widths,
     perView: record.bytes.perView,
     perPlay: record.bytes.perPlay,
+    perViewBasis: record.bytes.perViewBasis,
   };
+}
+
+/**
+ * The full file length of each URL, from its Range probe (hasRange: a HEAD and a `bytes=0-0` GET through the proxy). Runs
+ * for every unique URL, LENGTH_CONCURRENCY at a time, each with LENGTH_TIMEOUT_MS. A URL with no length is left out.
+ * Never throws: a failed probe is just no length.
+ */
+export async function probeLengths(
+  urls: readonly string[],
+  proxy: string,
+  probe: typeof hasRange = hasRange,
+): Promise<Map<string, number>> {
+  const lengths = new Map<string, number>();
+  const unique = [...new Set(urls)];
+  await mapLimit(unique, LENGTH_CONCURRENCY, async (url) => {
+    try {
+      const info = await probe(url, LENGTH_TIMEOUT_MS, proxy);
+      if (info.length !== undefined && info.length > 0) lengths.set(url, info.length);
+    } catch {
+      // No length: the record keeps its observed bytes.
+    }
+  });
+  return lengths;
+}
+
+/**
+ * The asset with its per-view and per-play bytes refined by the file length (see withFileLength), so the budget ranks a
+ * click-to-play video by its full file. An asset without a length is returned as it is.
+ */
+export function refineAssetLength(asset: MediaAsset, length: number | undefined): MediaAsset {
+  if (length === undefined || asset.kind !== "video") return asset;
+  const bytes = withFileLength(
+    { perView: asset.perView, perPlay: asset.perPlay, perViewBasis: asset.perViewBasis ?? "observed", browserDependent: false },
+    length,
+  );
+  return { ...asset, perView: bytes.perView, perPlay: bytes.perPlay };
 }
 
 /**
@@ -376,21 +422,18 @@ async function encodeVideo(asset: MediaAsset, env: Env, deadline: number): Promi
   const range = await env.hasRange(asset.url, RANGE_TIMEOUT_MS, proxy);
   const length = range.length;
   if (!range.range && (length ?? 0) > NO_RANGE_MAX_BYTES) {
-    return { candidates: [], notEncoded: "server has no Range support", ...(length !== undefined ? { length } : {}) };
+    return { candidates: [], notEncoded: "server has no Range support" };
   }
-  const withLength = length !== undefined ? { length } : {};
   const dir = join(resolve(env.opts.workDir), digest(asset.key));
   const jobsOf = (probe: MediaProbe): Job[] => videoJobs(asset.widths, probe);
   if (!range.range) {
     const buffer = env.fetch ? await env.fetch(asset.url, NO_RANGE_MAX_BYTES) : undefined;
-    if (buffer === undefined) return { candidates: [], notEncoded: "could not read the video", ...withLength };
+    if (buffer === undefined) return { candidates: [], notEncoded: "could not read the video" };
     const file = await writeSource(dir, buffer);
-    const entry = await encodeFile(file, `${asset.url}|${contentHash(buffer)}`, jobsOf, env, deadline, dir, undefined, "could not read the video");
-    return { ...entry, ...withLength };
+    return encodeFile(file, `${asset.url}|${contentHash(buffer)}`, jobsOf, env, deadline, dir, undefined, "could not read the video");
   }
   const identity = `${asset.url}|${range.etag ?? range.lastModified ?? ""}|${length ?? ""}`;
-  const entry = await encodeFile(asset.url, identity, jobsOf, env, deadline, dir, proxy, "could not read the video");
-  return { ...entry, ...withLength };
+  return encodeFile(asset.url, identity, jobsOf, env, deadline, dir, proxy, "could not read the video");
 }
 
 /** An animated image: its bytes, written to the work folder so ffmpeg reads a local file, then its sample encodes. */
@@ -531,15 +574,10 @@ function audioBytesOf(record: VideoRecord, probe: MediaProbe | undefined): numbe
   return Math.round((bitrate / 8) * probe!.durationS);
 }
 
-/** The full-file bytes refined by the server's length, when the record did not know the full size. */
-function refineBytes(bytes: VideoRecord["bytes"], length: number | undefined): VideoRecord["bytes"] {
+/** The bytes of a video refined by the server's length, when the record did not know the full size. */
+export function refineBytes(bytes: VideoRecord["bytes"], length: number | undefined): VideoRecord["bytes"] {
   if (bytes.fullBytesKnown || length === undefined) return bytes;
-  return {
-    ...bytes,
-    perPlay: length,
-    fullBytesKnown: true,
-    perView: bytes.perViewBasis === "full-file" ? length : bytes.perView,
-  };
+  return { ...withFileLength(bytes, length), fullBytesKnown: true };
 }
 
 /** One video record with its entry: the probe, the audio lever, the estimate and its steps, or the reason it has none. */
@@ -554,7 +592,6 @@ function attachVideo(record: VideoRecord, entry: MediaEntry | undefined, fallbac
   }
   const out: VideoRecord = {
     ...record,
-    bytes: refineBytes(record.bytes, entry.length),
     levers,
     ...(entry.probe !== undefined ? { probe: entry.probe } : {}),
   };
@@ -584,7 +621,8 @@ export function attachMediaResults(result: PageResult, results: MediaResults, ar
   const videos = result.videos?.map((record) => {
     const key = videoAssetOf(record).key;
     if (isBlocked(record.page, key)) return { ...record, notEncoded: THIRD_PARTY_BLOCKED };
-    return attachVideo(record, results.byKey.get(key), fallback);
+    const sized = { ...record, bytes: refineBytes(record.bytes, results.lengths?.get(record.src)) };
+    return attachVideo(sized, results.byKey.get(key), fallback);
   });
   const images = result.images?.map((image) => {
     const animated = image.fix.animated;
