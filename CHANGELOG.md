@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and
+  self-hosted `<video>` elements with a plain file source. Each page gets a Video section with the bytes per view and per
+  play, the levers (audio, width, codec, preload, poster, frame rate) and an AV1 estimate from 2 s samples. Adaptive streams
+  and third-party iframes are not reported. Without ffmpeg on `PATH` the bytes and widths are still reported, with one note.
+  New flags: `--media-budget` (default 20), `--media-time` (600 s), `--video-bar` (93), `--video-still-bar` (65) and
+  `--max-video-widths` (2). `imgtune image` accepts GIF, animated WebP and APNG, MP4 and WebM, and `--reference` checks a
+  candidate against the original with the same bars.
+- The scan JSON gains `videos` and `mediaNote` on each page and `fix.animated` on animated image records. `hints` prints the
+  animated and video hints.
+
 ## 0.1.0 (2026-11-03)
 
 - LCP first. Each scanned page reads the largest contentful paint before its first scroll, per viewport. A page's report

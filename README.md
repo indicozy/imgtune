@@ -143,6 +143,38 @@ Every fix hint is labelled with the strength of its evidence, the rung it stands
 A ceiling is never derived from the existing `sizes` value. When a usage is measured, its `sizes` comes from the layout
 the browser resolved, not from a guess.
 
+## GIFs and video
+
+`scan` also measures animated media: animated GIFs in an `<img>` or a CSS background, animated WebP and APNG, and
+self-hosted `<video>` elements with a plain file source. Static GIFs get the normal image hints.
+
+- **Out of scope, not reported:** adaptive streams (HLS, DASH, Mux, Cloudflare Stream) and third-party iframes (YouTube,
+  Vimeo). A video hosted on another site follows the third-party rules (`--block-third-party`, `--allow-host`).
+- **ffmpeg** is used from `PATH`; ImgTune does not bundle it. Without it, `scan` still reports each animated image's and
+  video's bytes and the width it needs, and prints one note: `install ffmpeg for verified video and GIF hints`. The encodes,
+  and so the fix hints with a size, need it.
+- **Hints.** A large animated GIF gets `<video autoplay muted loop playsinline>` with AV1 first and an H.264 fallback, and
+  the animated-image alternative with its size. A small `<img>` GIF or a CSS background gets an animated AVIF or WebP. A
+  `<video>` hint names each lever: the width per breakpoint (`<source media>`), the CRF, the codec, the audio track of a
+  muted video, and `preload`. A poster is audited as an image. Duration and frame rate are informational only.
+- **Bytes: per view and per play.** Per view is what the first view fetches. An autoplay video counts its full file,
+  `preload="auto"` counts the bytes the scan saw (browser-dependent), and `preload="metadata"` or `"none"` counts 0. Per
+  play is the full file. Both are shown for every video, so a large click-to-play file is not missed. Animated images stay
+  in the image totals; `<video>` has its own Video section, and posters count as images.
+- **Estimates come from 2 s samples.** One sample for a video of up to 6 s, three for a longer one. The full-file bytes
+  are extrapolated from the samples and labelled as an estimate; nothing is encoded in full.
+- **Quality bars.** VMAF must reach `--video-bar` (default 93) against the served file at its display size. A still-frame
+  guard (SSIMULACRA2 on the stillest frames) catches blurred text in screen recordings and must reach `--video-still-bar`
+  (default 65), lowered to at most 10 points below the best the codec reaches on that content, and never below 20. The
+  relative bar catches the loss the encode adds, not what the format can never reproduce, such as GIF dither.
+- **Budget and widths.** Encodes run on the heaviest animated assets first, at most `--media-budget` per run (default 20)
+  and within `--media-time` seconds (default 600). Assets over the budget keep their cheap hints and are marked "over
+  --media-budget". A video is served at most `--max-video-widths` widths (default 2): each viewport gets the smallest
+  kept width that covers its display width times its device pixel ratio. `audit` reports the bytes at one, two and three
+  widths instead, and the agent chooses. `--no-quality` and `--survey` make no encodes.
+- **Check an agent's output** with `imgtune image <candidate> --reference <original>`: the same VMAF and still-frame bar,
+  exit 0 on pass and 1 on fail (see the table below).
+
 ## Commands
 
 | command | what it does |

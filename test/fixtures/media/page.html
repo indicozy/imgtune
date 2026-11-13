@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>media fixture</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  main { padding: 16px; }
+  .hero { width: 100%; height: 180px; background: url("text.gif") center / cover no-repeat; }
+  video, img, iframe { display: block; max-width: 100%; margin: 16px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Media fixture</h1>
+  <!-- A GIF in an img: a large animated file shown small. -->
+  <img src="anim.gif" width="320" height="200" alt="animated card">
+  <!-- A GIF as a CSS background. -->
+  <div class="hero" role="img" aria-label="text background"></div>
+  <!-- A GIF in an img: a screen recording of text. -->
+  <img src="text.gif" width="240" height="72" alt="text demo">
+  <!-- Autoplay, muted, loop, with an audio track: the hero loop. -->
+  <video src="clip.mp4" width="640" height="360" autoplay muted loop playsinline></video>
+  <!-- preload auto: the browser may fetch the whole file. -->
+  <video width="640" height="360" preload="auto" controls>
+    <source src="clip.webm" type="video/webm">
+  </video>
+  <!-- preload none, no poster: nothing is fetched until a play. -->
+  <video width="640" height="360" preload="none" controls>
+    <source src="clip-noaudio.mp4" type="video/mp4">
+  </video>
+  <!-- A 60 frames per second loop. -->
+  <video width="640" height="360" autoplay muted loop playsinline>
+    <source src="clip60.mp4" type="video/mp4">
+  </video>
+  <!-- An adaptive stream: out of scope, not reported. -->
+  <video width="640" height="360" autoplay muted loop playsinline>
+    <source src="stream/index.m3u8" type="application/vnd.apple.mpegurl">
+  </video>
+  <!-- A third-party embed: out of scope; its request is blocked by --block-third-party. -->
+  <iframe src="https://www.youtube.com/embed/x" width="560" height="315" title="embed"></iframe>
+</main>
+</body>
+</html>
