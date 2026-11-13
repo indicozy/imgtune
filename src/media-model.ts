@@ -63,20 +63,26 @@ export function videoBytes(input: {
   }
 }
 
-/** The chosen renditions for one video, with the width each viewport gets and the `<source>` conditions. */
+/** The chosen renditions for one video: the width each viewport gets and the `<source>` list that serves it. */
 export interface WidthPlan {
-  /** The kept widths, ascending. */
+  /** The distinct kept widths, ascending. */
   widths: number[];
-  /** Per viewport: `need` is the snapped pixel width the box needs (ceil(box × DPR), snapped), `width` the kept one. */
+  /**
+   * One row per viewport, in input order. `need` is the snapped pixel width the box needs (ceil(box × DPR), snapped).
+   * `width` is the width assigned to the viewport: it is never below `need`, and it is the width the browser picks.
+   */
   perViewport: { viewport: string; need: number; width: number }[];
   /**
-   * `(min-width: Npx)` media conditions for the `<source>` list, largest width first. The smallest width is the
-   * final source with no media, so it is not in this list.
+   * The `<source>` list in browser order: the largest range first, the first range last with no media. A source's
+   * `media` is `(min-width: Npx)` with N the CSS width of its range's first viewport.
    */
+  sources: { width: number; media: string | undefined }[];
+  /** The `media` of every source that has one, in the same order as `sources`. */
   conditions: string[];
   /**
    * True when the box width is not monotonic in the viewport width (a box that is wider on the smaller viewport).
-   * The media conditions then cannot express the plan, and the hint renderer prints box widths instead.
+   * The media conditions still select the planned widths; the flag tells the hint renderer that the box, not the
+   * viewport, drives the need, so it should print box widths.
    */
   containerDriven: boolean;
 }
@@ -104,60 +110,92 @@ function isMonotonic(needs: readonly WidthNeed[]): boolean {
   return true;
 }
 
+/** The contiguous ranges [first, last] (inclusive indexes) that a list of cut positions makes. */
+function rangesFrom(count: number, cuts: readonly number[]): [number, number][] {
+  const ranges: [number, number][] = [];
+  let start = 0;
+  for (const cut of cuts) {
+    ranges.push([start, cut]);
+    start = cut + 1;
+  }
+  ranges.push([start, count - 1]);
+  return ranges;
+}
+
 /**
- * Picks at most `max` widths for a video and assigns each viewport the smallest kept width that covers its need.
+ * Picks at most `max` widths for a video so that the browser serves each viewport a width that covers its need.
  *
- * The candidate widths are the distinct snapped needs. The largest one is always kept, so no viewport is under-served.
- * Every subset that keeps it and has at most `max` widths is tried (at most six needs, so brute force is cheap). The
- * subset with the smallest sum of per-viewport widths wins; ties go to fewer widths, then to the smaller sum of widths.
+ * The browser chooses a `<source>` by CSS viewport width, not by DPR, so the plan is built the same way. The viewports
+ * are sorted by CSS width (ties keep input order) and cut into at most `max` contiguous ranges. A cut is allowed only
+ * where the CSS width grows, because two viewports of one width always get the same source. Each range gets the
+ * largest snapped need in it, so every viewport in the range is covered. Every set of cuts is tried (at most six
+ * viewports, so brute force is cheap). The set with the smallest sum of per-viewport widths wins; ties go to fewer
+ * ranges, then to the smaller sum of distinct widths. Adjacent ranges that end at the same width are merged.
  *
- * A `(min-width: Npx)` condition for each kept width above the smallest uses N = the smallest viewport width that is
- * assigned that width or a larger one, so the largest match in the `<source>` list gives the same assignment on a
- * monotonic page.
+ * `sources` is the `<source>` list in browser order: the largest range first, each with `(min-width: N)` where N is the
+ * CSS width of the range's first viewport, and the first range as the final source with no media. The browser takes
+ * the first source whose media matches the viewport, so it serves each viewport exactly `perViewport[i].width`.
  */
 export function clusterVideoWidths(needs: WidthNeed[], max: number, sourceWidth: number): WidthPlan {
-  const snapped = needs.map((n) => ({ ...n, need: snapWidth(pixelNeed(n.boxWidth, n.dpr), sourceWidth) }));
-  const distinct = [...new Set(snapped.map((s) => s.need))].sort((a, b) => a - b);
-  const largest = distinct[distinct.length - 1];
-  const others = distinct.slice(0, -1);
+  const containerDriven = !isMonotonic(needs);
+  if (needs.length === 0) return { widths: [], perViewport: [], sources: [], conditions: [], containerDriven };
+
+  const snapped = needs.map((n, order) => ({ ...n, order, need: snapWidth(pixelNeed(n.boxWidth, n.dpr), sourceWidth) }));
+  const byCssWidth = [...snapped].sort((a, b) => a.viewportWidth - b.viewportWidth || a.order - b.order);
+  const count = byCssWidth.length;
+  const cuts: number[] = [];
+  for (let j = 0; j < count - 1; j++) {
+    if (byCssWidth[j].viewportWidth < byCssWidth[j + 1].viewportWidth) cuts.push(j);
+  }
   const limit = Math.max(1, Math.floor(max));
 
-  let best: { chosen: number[]; cost: number; sum: number } | undefined;
-  for (let mask = 0; mask < 1 << others.length; mask++) {
-    const picked = others.filter((_, i) => (mask >> i) & 1);
+  let best: { ranges: [number, number][]; widths: number[]; cost: number; distinctSum: number } | undefined;
+  for (let mask = 0; mask < 1 << cuts.length; mask++) {
+    const picked = cuts.filter((_, i) => (mask >> i) & 1);
     if (picked.length + 1 > limit) continue;
-    const chosen = [...picked, largest];
+    const ranges = rangesFrom(count, picked);
+    const widths = ranges.map(([first, last]) => Math.max(...byCssWidth.slice(first, last + 1).map((s) => s.need)));
     let cost = 0;
-    for (const s of snapped) cost += chosen.find((w) => w >= s.need) as number;
-    const sum = chosen.reduce((acc, w) => acc + w, 0);
+    ranges.forEach(([first, last], i) => {
+      cost += widths[i] * (last - first + 1);
+    });
+    const distinctSum = [...new Set(widths)].reduce((acc, w) => acc + w, 0);
     if (
       !best ||
       cost < best.cost ||
-      (cost === best.cost && (chosen.length < best.chosen.length || (chosen.length === best.chosen.length && sum < best.sum)))
+      (cost === best.cost &&
+        (ranges.length < best.ranges.length || (ranges.length === best.ranges.length && distinctSum < best.distinctSum)))
     ) {
-      best = { chosen, cost, sum };
+      best = { ranges, widths, cost, distinctSum };
     }
   }
-  const widths = best!.chosen;
 
-  const perViewport = snapped.map((s) => ({
-    viewport: s.viewport,
-    need: s.need,
-    width: widths.find((w) => w >= s.need) as number,
-  }));
+  const merged: { first: number; last: number; width: number }[] = [];
+  best!.ranges.forEach(([first, last], i) => {
+    const width = best!.widths[i];
+    const previous = merged[merged.length - 1];
+    if (previous && previous.width === width) previous.last = last;
+    else merged.push({ first, last, width });
+  });
 
-  const conditions: string[] = [];
-  for (let i = widths.length - 1; i >= 1; i--) {
-    const reaching = perViewport.filter((p) => p.width >= widths[i]);
-    const n = Math.min(...reaching.map((p) => viewportWidthOf(needs, p.viewport)));
-    conditions.push(`(min-width: ${n}px)`);
+  const sources: WidthPlan["sources"] = [];
+  for (let i = merged.length - 1; i >= 0; i--) {
+    const range = merged[i];
+    sources.push({
+      width: range.width,
+      media: i === 0 ? undefined : `(min-width: ${byCssWidth[range.first].viewportWidth}px)`,
+    });
   }
 
-  return { widths, perViewport, conditions, containerDriven: !isMonotonic(needs) };
-}
+  const widthByOrder: number[] = new Array(count);
+  for (const range of merged) {
+    for (let k = range.first; k <= range.last; k++) widthByOrder[byCssWidth[k].order] = range.width;
+  }
+  const perViewport = snapped.map((s) => ({ viewport: s.viewport, need: s.need, width: widthByOrder[s.order] }));
+  const widths = [...new Set(merged.map((r) => r.width))].sort((a, b) => a - b);
+  const conditions = sources.flatMap((s) => (s.media === undefined ? [] : [s.media]));
 
-function viewportWidthOf(needs: readonly WidthNeed[], viewport: string): number {
-  return needs.find((n) => n.viewport === viewport)!.viewportWidth;
+  return { widths, perViewport, sources, conditions, containerDriven };
 }
 
 /**
@@ -199,17 +237,27 @@ export interface LeverSteps {
 }
 
 /**
- * Splits the saving of a re-encode into levers. Each lever is the drop from the previous stage, clamped at zero, so a
- * stage that adds bytes is not credited with a negative lever. When every stage shrinks the file, the levers sum to
- * start − final.
+ * Splits the saving of a re-encode into levers, so that nothing is double-counted. The stages are first made
+ * non-increasing (a stage that grows the file is held at the level before it), so every step is at least zero and
+ * the four steps sum to start − the lowest stage. When the last stage is the lowest, that is start − final. If the
+ * last stage grows the file, the sum is start − recoded: a growing stage cannot carry a negative lever.
  */
-export function attributeLevers(chain: { start: number; noAudio: number; resized: number; recoded: number; final: number }): LeverSteps {
-  const step = (from: number, to: number): number => Math.max(0, from - to);
+export function attributeLevers(chain: {
+  start: number;
+  noAudio: number;
+  resized: number;
+  recoded: number;
+  final: number;
+}): LeverSteps {
+  const noAudio = Math.min(chain.noAudio, chain.start);
+  const resized = Math.min(chain.resized, noAudio);
+  const recoded = Math.min(chain.recoded, resized);
+  const final = Math.min(chain.final, recoded);
   return {
-    audio: step(chain.start, chain.noAudio),
-    resolution: step(chain.noAudio, chain.resized),
-    codec: step(chain.resized, chain.recoded),
-    quality: step(chain.recoded, chain.final),
+    audio: chain.start - noAudio,
+    resolution: noAudio - resized,
+    codec: resized - recoded,
+    quality: recoded - final,
   };
 }
 
@@ -240,8 +288,7 @@ export function rankForBudget<T extends { perView: number; perPlay: number; key:
   budget: number,
 ): { encode: T[]; skipped: T[] } {
   const sorted = [...assets].sort(
-    (a, b) =>
-      b.perView - a.perView || b.perPlay - a.perPlay || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    (a, b) => b.perView - a.perView || b.perPlay - a.perPlay || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
   );
   const seen = new Set<string>();
   const unique: T[] = [];

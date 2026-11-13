@@ -103,16 +103,45 @@ describe("videoBytes", () => {
   });
 });
 
+/**
+ * What a browser picks for a CSS viewport width: the first `<source>` whose `(min-width: Npx)` matches, else the
+ * source with no media. The sources are in the order the plan gives them.
+ */
+function browserPick(sources: { width: number; media: string | undefined }[], cssWidth: number): number {
+  for (const s of sources) {
+    if (s.media === undefined) continue;
+    const min = Number(/^\(min-width: (\d+)px\)$/.exec(s.media)![1]);
+    if (cssWidth >= min) return s.width;
+  }
+  return sources.find((s) => s.media === undefined)!.width;
+}
+
 describe("clusterVideoWidths", () => {
-  it("picks two widths for the six viewports of a full-width video", () => {
+  it("picks two widths for the six viewports of a full-width video, matching the browser pick", () => {
     const plan = clusterVideoWidths(fullWidthNeeds, 2, 1920);
-    expect(plan.widths).toEqual([1280, 1920]);
+    expect(plan.widths).toEqual([1440, 1920]);
     expect(plan.containerDriven).toBe(false);
-    expect(plan.conditions).toHaveLength(1);
-    expect(plan.conditions).toEqual(["(min-width: 430px)"]);
-    for (const row of plan.perViewport) {
+    expect(plan.conditions).toEqual(["(min-width: 1440px)"]);
+    for (const [i, row] of plan.perViewport.entries()) {
       expect(row.width).toBeGreaterThanOrEqual(row.need);
-      expect(plan.widths).toContain(row.width);
+      expect(browserPick(plan.sources, fullWidthNeeds[i].viewportWidth)).toBe(row.width);
+    }
+  });
+
+  it("serves desktop-1280 the width the plan says, not the 1920 that a DPR-driven plan would imply", () => {
+    const plan = clusterVideoWidths(fullWidthNeeds, 2, 1920);
+    const desktop1280 = plan.perViewport.find((r) => r.viewport === "desktop-1280")!;
+    expect(desktop1280.width).toBe(browserPick(plan.sources, 1280));
+    expect(desktop1280.width).toBe(1440);
+  });
+
+  it("picks three widths for the six viewports at max 3, matching the browser pick", () => {
+    const plan = clusterVideoWidths(fullWidthNeeds, 3, 1920);
+    expect(plan.widths).toEqual([854, 1440, 1920]);
+    expect(plan.conditions).toEqual(["(min-width: 1440px)", "(min-width: 390px)"]);
+    for (const [i, row] of plan.perViewport.entries()) {
+      expect(row.width).toBeGreaterThanOrEqual(row.need);
+      expect(browserPick(plan.sources, fullWidthNeeds[i].viewportWidth)).toBe(row.width);
     }
   });
 
@@ -120,6 +149,16 @@ describe("clusterVideoWidths", () => {
     const plan = clusterVideoWidths(fullWidthNeeds, 1, 1920);
     expect(plan.widths).toEqual([1920]);
     expect(plan.conditions).toEqual([]);
+  });
+
+  it("returns an empty plan for no viewports", () => {
+    expect(clusterVideoWidths([], 2, 1920)).toEqual({
+      widths: [],
+      perViewport: [],
+      sources: [],
+      conditions: [],
+      containerDriven: false,
+    });
   });
 
   it("gives one width for a 600 px video at every viewport with the same DPR", () => {
@@ -142,7 +181,9 @@ describe("clusterVideoWidths", () => {
     ];
     const plan = clusterVideoWidths(needs, 2, 1920);
     expect(plan.containerDriven).toBe(true);
-    expect(plan.conditions).toHaveLength(1);
+    expect(plan.conditions).toEqual(["(min-width: 768px)"]);
+    expect(browserPick(plan.sources, 390)).toBe(plan.perViewport[0].width);
+    expect(browserPick(plan.sources, 768)).toBe(plan.perViewport[1].width);
   });
 
   it("never returns more widths than max", () => {
@@ -194,10 +235,20 @@ describe("attributeLevers", () => {
     });
   });
 
-  it("clamps a step that grows bytes to zero", () => {
+  it("does not double-count when a stage grows the file: the levers sum to start - final", () => {
     const levers = attributeLevers({ start: 100, noAudio: 100, resized: 110, recoded: 60, final: 50 });
-    expect(levers.resolution).toBe(0);
-    expect(levers.codec).toBe(50);
+    expect(levers).toEqual({ audio: 0, resolution: 0, codec: 40, quality: 10 });
+    expect(levers.audio + levers.resolution + levers.codec + levers.quality).toBe(50);
+  });
+
+  it("never returns a negative lever", () => {
+    const levers = attributeLevers({ start: 100, noAudio: 120, resized: 30, recoded: 130, final: 20 });
+    for (const v of Object.values(levers)) expect(v).toBeGreaterThanOrEqual(0);
+  });
+
+  it("when the last stage grows the file, the levers sum to start - recoded, not start - final", () => {
+    const levers = attributeLevers({ start: 100, noAudio: 100, resized: 100, recoded: 60, final: 70 });
+    expect(levers.audio + levers.resolution + levers.codec + levers.quality).toBe(40);
   });
 });
 
