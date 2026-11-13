@@ -392,9 +392,21 @@ export function capsOf(lists: { encoders?: Set<string>; filters?: Set<string>; m
   };
 }
 
-/** The NVENC options of one encode: preset p4, the high-quality tune, constant quality `cq` in VBR, on GPU index 0. */
-export function nvencOptions(cq: number): string[] {
-  return ["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", String(cq), "-b:v", "0", "-gpu", "0"];
+/**
+ * The AV1 level NVENC is pinned to: 5.1 (seq_level_idx 13). NVENC's default ("auto", 24) writes seq_level_idx 23 at high
+ * quality, which libaom rejects ("not yet defined"), so the stream cannot be scored. 5.1 is far above any sample's bitrate.
+ */
+export const AV1_NVENC_LEVEL = 13;
+
+/**
+ * The NVENC options of one encode: preset p4, the high-quality tune, constant quality `cq` in VBR, on GPU index 0. An AV1
+ * encode also pins its level (AV1_NVENC_LEVEL); H.264's -level is a different scale, so it is not set.
+ */
+export function nvencOptions(cq: number, av1 = false): string[] {
+  return [
+    ...(av1 ? ["-level", String(AV1_NVENC_LEVEL)] : []),
+    "-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", String(cq), "-b:v", "0", "-gpu", "0",
+  ];
 }
 
 /**
@@ -451,7 +463,7 @@ async function vmafCudaOn(device: number): Promise<boolean> {
 async function encodesOn(encoder: string, device: number): Promise<boolean> {
   try {
     const result = await runFfmpeg(
-      [...NVENC_TEST_INPUT, "-c:v", encoder, ...nvencOptions(30), "-f", "null", "-"],
+      [...NVENC_TEST_INPUT, "-c:v", encoder, ...nvencOptions(30, encoder === "av1_nvenc"), "-f", "null", "-"],
       { timeoutMs: NVENC_TEST_TIMEOUT_MS, env: nvencEnv(device) },
     );
     return result.code === 0;

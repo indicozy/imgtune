@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { inputOptions, probeFfmpeg, probeMedia, runFfmpeg, withGpu, type FfmpegCaps } from "../src/ffmpeg.js";
+import { inputOptions, nvencEnv, nvencOptions, probeFfmpeg, probeMedia, runFfmpeg, withGpu, type FfmpegCaps } from "../src/ffmpeg.js";
 import {
   NVENC_BYTE_FACTOR,
   NVENC_MIN_WIDTH,
@@ -264,5 +264,21 @@ describe.skipIf(!nvencCaps.vmafCuda)("libvmaf_cuda against libvmaf (GPU " + GPU 
     const gpu = await vmafOf([...inputOptions(candidate), "-i", candidate], samples[0], 640, fps, join(dir, "gpu.json"), Date.now() + 120_000, undefined, undefined, GPU);
     console.log(`VMAF libvmaf ${cpu.toFixed(4)}, libvmaf_cuda ${gpu.toFixed(4)}`);
     expect(Math.abs(cpu - gpu)).toBeLessThan(0.1);
+  }, 240_000);
+});
+
+describe.skipIf(!nvencCaps.av1Nvenc)("NVENC output at the bottom of the quality range", () => {
+  it("is scored at cq 20: the AV1 level is pinned, so the stream decodes", async () => {
+    const probe = (await probeMedia(fixture("clip.mp4"), 10_000))!;
+    const dir = join(scratch, "nvenc-cq20");
+    const samples = await cutSamples(fixture("clip.mp4"), probe, dir, Date.now() + 120_000);
+    const candidate = join(dir, "cq20.mp4");
+    const made = await runFfmpeg(
+      ["-i", samples[0], "-vf", "scale=640:-2:flags=lanczos", "-c:v", "av1_nvenc", ...nvencOptions(20, true), "-pix_fmt", "yuv420p", "-an", "-y", candidate],
+      { timeoutMs: 120_000, env: nvencEnv(GPU) },
+    );
+    expect(made.code).toBe(0);
+    const vmaf = await vmafOf([...inputOptions(candidate), "-i", candidate], samples[0], 640, probe.fps > 0 ? probe.fps : 30, join(dir, "cq20.json"), Date.now() + 120_000, undefined, undefined, GPU);
+    expect(vmaf).toBeGreaterThan(90);
   }, 240_000);
 });

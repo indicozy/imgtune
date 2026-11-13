@@ -737,7 +737,7 @@ function av1Args(caps: FfmpegCaps, crf: string): string[] {
 
 /** The video encoder arguments of a codec at quality `q`: NVENC (cq) when `nvenc`, else the CPU encoder (CRF). */
 function videoEncoderArgs(codec: "av1-mp4" | "animated-avif" | "h264-mp4", q: number, caps: FfmpegCaps, nvenc: boolean): string[] {
-  if (nvenc) return ["-c:v", codec === "h264-mp4" ? "h264_nvenc" : "av1_nvenc", ...nvencOptions(q)];
+  if (nvenc) return ["-c:v", codec === "h264-mp4" ? "h264_nvenc" : "av1_nvenc", ...nvencOptions(q, codec !== "h264-mp4")];
   if (codec === "h264-mp4") return ["-c:v", "libx264", "-preset", "veryfast", "-crf", String(q)];
   return av1Args(caps, String(q));
 }
@@ -993,7 +993,11 @@ async function readSample(ctx: Ctx, q: number, dir: string, i: number, nvenc: bo
   const cand = codec === "animated-webp"
     ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, ctx.seconds[i]))
     : fileCandidate(out, opts.deadline, opts.signal);
-  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin, cudaFor(ctx, codec));
+  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin, cudaFor(ctx, codec)).catch((err: unknown) => {
+    // An NVENC stream that the scorer cannot read is an NVENC failure: the candidate is encoded again on the CPU.
+    if (nvenc && err instanceof StageError && err.reason === "no-vmaf") throw new NvencFailure("VMAF could not read the NVENC output");
+    throw err;
+  });
   let frames: RawImage[] | null;
   try {
     frames = await cand.frames(ctx.guards[i].indices);
