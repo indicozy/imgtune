@@ -10,7 +10,7 @@ import { probeFfmpeg, probeMedia, runFfmpeg } from "../src/ffmpeg.js";
 import { cutSamples, isAbortError, PixelsTooLarge, WindowTooLarge, type CandidateResult } from "../src/media-encode.js";
 import { mediaKeyOf, runMediaPhase, type MediaAsset, type MediaOptions } from "../src/media-phase.js";
 import { prepareMedia } from "../src/media-prepare.js";
-import { WebpAnimation } from "../src/webp-animation.js";
+import { cfrIndices, WebpAnimation } from "../src/webp-animation.js";
 
 let scratch = "";
 let animated300: Buffer = Buffer.alloc(0);
@@ -73,6 +73,18 @@ describe("animated WebP read frame by frame", () => {
     expect(anim.tickPages[0]).toBe(0);
     expect(anim.tickPages[anim.tickPages.length - 1]).toBe(anim.pages - 1);
     expect(anim.tickPages.every((p, k) => k === 0 || p >= anim.tickPages[k - 1])).toBe(true);
+  });
+});
+
+describe("the tick phase of an encoded candidate", () => {
+  it("maps tick k to frame k at the tick's middle, even when the frame starts are rounded to whole milliseconds", () => {
+    // 30 frames at 30 fps, as ffmpeg writes them in a millisecond timebase: frame i starts at round(i × 1000 / 30).
+    const starts = Array.from({ length: 31 }, (_, i) => Math.round((i * 1000) / 30));
+    const delays = starts.slice(1).map((s, i) => s - starts[i]);
+    // At its start a tick can fall in the frame before (tick 2 is at 66.7 ms, but frame 2 starts at 67 ms).
+    expect(cfrIndices(delays, 30, 30, 0).slice(0, 3)).toEqual([0, 1, 1]);
+    // At its middle every tick shows its own frame.
+    expect(cfrIndices(delays, 30, 30, 0.5)).toEqual(Array.from({ length: 30 }, (_, k) => k));
   });
 });
 

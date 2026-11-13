@@ -39,14 +39,15 @@ export function ticksOf(delaysMs: number[], fps: number): number {
 
 /**
  * The indices of the frames on screen at each constant-rate tick. Frame i covers [start, start + delay) in ms, and tick k is
- * at k × 1000 / fps. A frame that lasts several ticks repeats; the last frame holds to the end.
+ * at (k + phase) × 1000 / fps: phase 0 is the tick's start, 0.5 its middle. A frame that lasts several ticks repeats; the
+ * last frame holds to the end.
  */
-export function cfrIndices(delaysMs: number[], fps: number, ticks: number): number[] {
+export function cfrIndices(delaysMs: number[], fps: number, ticks: number, phase = 0): number[] {
   const out: number[] = [];
   let frame = 0;
   let start = 0;
   for (let k = 0; k < ticks; k++) {
-    const at = (k * 1000) / fps;
+    const at = ((k + phase) * 1000) / fps;
     while (frame < delaysMs.length - 1 && start + delaysMs[frame] <= at) {
       start += delaysMs[frame];
       frame++;
@@ -210,7 +211,11 @@ export class WebpAnimation {
   /** The frame the canvas holds, or -1 before the first frame. */
   private index = -1;
 
-  constructor(bytes: Buffer, fps: number, framePixelLimit = MAX_INPUT_PIXELS_FFMPEG, stillMs = 0) {
+  /**
+   * `phase` places the ticks inside their intervals (see cfrIndices): 0 for the source, where a tick is the frame on screen at
+   * its start; 0.5 for an encoded candidate, whose rounded frame starts would otherwise shift a tick into the frame before.
+   */
+  constructor(bytes: Buffer, fps: number, framePixelLimit = MAX_INPUT_PIXELS_FFMPEG, stillMs = 0, phase = 0) {
     this.fps = fps;
     const parsed = parseWebpAnimation(bytes, stillMs);
     if (parsed.canvasWidth * parsed.canvasHeight > framePixelLimit) {
@@ -222,7 +227,7 @@ export class WebpAnimation {
     this.pages = parsed.frames.length;
     this.delaysMs = parsed.frames.map((f) => f.durationMs);
     this.durationMs = this.delaysMs.reduce((acc, d) => acc + d, 0);
-    this.tickPages = cfrIndices(this.delaysMs, fps, ticksOf(this.delaysMs, fps));
+    this.tickPages = cfrIndices(this.delaysMs, fps, ticksOf(this.delaysMs, fps), phase);
     this.prevKeyframe = [];
     let last = -1;
     parsed.frames.forEach((f, i) => {

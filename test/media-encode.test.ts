@@ -1,13 +1,14 @@
-import { readFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { probeFfmpeg, probeMedia, type MediaProbe } from "../src/ffmpeg.js";
+import { probeFfmpeg, probeMedia, runFfmpeg, type MediaProbe } from "../src/ffmpeg.js";
 import {
   STILL_GUARD_FLOOR,
   blurFrame,
+  compareToReference,
   effectiveStillBar,
   cfrIndices,
   cutSamples,
@@ -17,7 +18,10 @@ import {
   searchQuality,
   stillestFrames,
   tenthPercentile,
+  yuv4mpegFrames,
+  yuvToRgba,
 } from "../src/media-encode.js";
+import { prepareMedia } from "../src/media-prepare.js";
 import { makeScorer, type Scorer } from "../src/metric.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { systemResolver } from "../src/address.js";
@@ -340,6 +344,75 @@ describe("pure helpers", () => {
     expect(tenthPercentile([90, 70, 80, 60, 100, 75, 85, 65, 95])).toBe(60);
     expect(tenthPercentile([42])).toBe(42);
   });
+});
+
+describe("the guard's frame conversion (yuvToRgba, yuv4mpegFrames)", () => {
+  it("converts limited-range BT.601 planes: white, black and mid grey come out exact", () => {
+    // A 2 x 2 frame: luma 235 (white), 16 (black), 126 (grey) and 235 (white), with neutral chroma (128).
+    const frame = { width: 2, height: 2, y: Uint8Array.from([235, 16, 126, 235]), u: Uint8Array.from([128]), v: Uint8Array.from([128]) };
+    const rgba = yuvToRgba(frame).data;
+    expect(Array.from(rgba.subarray(0, 4))).toEqual([255, 255, 255, 255]);
+    expect(Array.from(rgba.subarray(4, 8))).toEqual([0, 0, 0, 255]);
+    expect(Array.from(rgba.subarray(8, 12))).toEqual([128, 128, 128, 255]);
+  });
+
+  it("reads the planes of a YUV4MPEG2 stream by its header size, and every frame of it", () => {
+    // 4 x 2 luma and 2 x 1 chroma per plane, two frames.
+    const header = Buffer.from("YUV4MPEG2 W4 H2 F30:1 Ip A1:1 C420jpeg\n", "latin1");
+    const frame = (fill: number): Buffer => Buffer.concat([Buffer.from("FRAME\n", "latin1"), Buffer.alloc(8, fill), Buffer.alloc(2, 100), Buffer.alloc(2, 150)]);
+    const frames = yuv4mpegFrames(Buffer.concat([header, frame(10), frame(200)]));
+    expect(frames).toHaveLength(2);
+    expect(frames[0].width).toBe(4);
+    expect(frames[0].height).toBe(2);
+    expect(frames[0].y[0]).toBe(10);
+    expect(frames[1].y[7]).toBe(200);
+    expect(frames[1].v).toHaveLength(2);
+  });
+
+  it("refuses a truncated frame rather than reading past the end", () => {
+    const header = Buffer.from("YUV4MPEG2 W4 H2 F30:1\n", "latin1");
+    expect(() => yuv4mpegFrames(Buffer.concat([header, Buffer.from("FRAME\n", "latin1"), Buffer.alloc(5)]))).toThrow(/truncated/);
+  });
+});
+
+describe("the still guard on an animated WebP source (the colour path)", () => {
+  it("scores an AV1 CRF 20 encode of a 720x1280 WebP source at guard p10 of at least 60", async () => {
+    const caps = await probeFfmpeg();
+    const dir = join(scratch, "webp-guard");
+    mkdirSync(dir, { recursive: true });
+    // A synthetic animated WebP, made here: 3 s of testsrc2 (colour, text and motion) at 720 x 1280.
+    const webp = join(dir, "source.webp");
+    const made = await runFfmpeg(
+      ["-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=10:duration=3", "-c:v", "libwebp_anim", "-q:v", "75", "-loop", "0", "-y", webp],
+      { timeoutMs: 240_000 },
+    );
+    expect(made.code).toBe(0);
+    const buffer = readFileSync(webp);
+    const prepared = await prepareMedia(webp, buffer, join(dir, "prepared"));
+    const source = prepared.source;
+    if (typeof source === "string") throw new Error("expected an animated WebP source, not a file");
+    // The candidate: the whole animation as AV1 at CRF 20, from its own frames (the same planes the sample cut gives).
+    const candidate = join(dir, "candidate-av1-crf20.mp4");
+    const encoded = await runFfmpeg(
+      [
+        "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${source.width}x${source.height}`, "-framerate", String(source.fps), "-i", "pipe:0",
+        "-an", "-c:v", "libsvtav1", "-preset", "10", "-crf", "20", "-svtav1-params", "lp=2", "-pix_fmt", "yuv420p", "-y", candidate,
+      ],
+      { timeoutMs: 240_000, stdin: () => source.ticks(0, source.tickPages.length) },
+    );
+    expect(encoded.code).toBe(0);
+    const result = await compareToReference(
+      candidate,
+      source,
+      prepared.probe,
+      source.width,
+      { vmafBar: 0, stillBar: 0, deadline: Date.now() + 240_000, caps, score, workDir: join(dir, "compare") },
+      "av1-mp4",
+    );
+    // The guard reads the same colour for both sides, so a faithful encode scores high. The old path scored 21 here.
+    expect(result.still).toBeGreaterThanOrEqual(60);
+    expect(result.vmaf).toBeGreaterThanOrEqual(93);
+  }, 300_000);
 });
 
 describe("the ceiling fails closed on an unreadable frame (guardScores)", () => {

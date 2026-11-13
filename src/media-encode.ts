@@ -156,8 +156,6 @@ export function effectiveStillBar(requested: number, ceiling: number): number {
 }
 /** Longest single ffmpeg run, in ms; the asset deadline caps it further. */
 const RUN_CAP_MS = 60_000;
-/** Pixels a decoded image may have, the same limit as the image pipeline. */
-const MAX_IMAGE_PIXELS = 100_000_000;
 const MAX_REDIRECTS = 3;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const USER_AGENT = "imgtune";
@@ -232,7 +230,7 @@ function ffrun(
   deadline: number,
   signal?: AbortSignal,
   stdin?: () => AsyncIterable<Uint8Array>,
-): Promise<{ code: number; stderr: string }> {
+): Promise<{ code: number; stdout: Buffer; stderr: string }> {
   return runFfmpeg(["-loglevel", "error", ...args], { timeoutMs: runBudget(deadline), signal, stdin });
 }
 
@@ -548,13 +546,71 @@ async function fitTo(img: RawImage, width: number, height: number): Promise<RawI
   return { data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), width: info.width, height: info.height };
 }
 
-/** Decodes a PNG (or any sharp-readable image) to 8-bit RGBA. */
-async function decodeRgba(bytes: Buffer): Promise<RawImage> {
-  const { data, info } = await sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  return { data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), width: info.width, height: info.height };
+/** One 4:2:0 frame as ffmpeg wrote it: its size and its three planes (chroma is ceil(width/2) × ceil(height/2)). */
+export interface YuvFrame {
+  width: number;
+  height: number;
+  y: Uint8Array;
+  u: Uint8Array;
+  v: Uint8Array;
+}
+
+/**
+ * The frames of a YUV4MPEG2 stream (ffmpeg's yuv4mpegpipe, 4:2:0). The size comes from the header, and each frame's planes
+ * are read as they are: no colour metadata is applied, so the planes are the decoded values.
+ */
+export function yuv4mpegFrames(bytes: Buffer): YuvFrame[] {
+  const headerEnd = bytes.indexOf(0x0a);
+  if (headerEnd < 0 || bytes.toString("latin1", 0, 9) !== "YUV4MPEG2") throw new Error("ffmpeg did not write a YUV4MPEG2 stream");
+  const tokens = bytes.toString("latin1", 0, headerEnd).split(" ");
+  const width = Number(tokens.find((t) => t.startsWith("W"))?.slice(1));
+  const height = Number(tokens.find((t) => t.startsWith("H"))?.slice(1));
+  if (!(width > 0 && height > 0)) throw new Error("the YUV4MPEG2 header has no frame size");
+  const chromaSize = ((width + 1) >> 1) * ((height + 1) >> 1);
+  const lumaSize = width * height;
+  const frames: YuvFrame[] = [];
+  let pos = headerEnd + 1;
+  while (pos < bytes.length) {
+    const lineEnd = bytes.indexOf(0x0a, pos);
+    if (lineEnd < 0 || bytes.toString("latin1", pos, pos + 5) !== "FRAME") throw new Error("a YUV4MPEG2 frame header is malformed");
+    const start = lineEnd + 1;
+    if (start + lumaSize + 2 * chromaSize > bytes.length) throw new Error("a YUV4MPEG2 frame is truncated");
+    frames.push({
+      width,
+      height,
+      y: bytes.subarray(start, start + lumaSize),
+      u: bytes.subarray(start + lumaSize, start + lumaSize + chromaSize),
+      v: bytes.subarray(start + lumaSize + chromaSize, start + lumaSize + 2 * chromaSize),
+    });
+    pos = start + lumaSize + 2 * chromaSize;
+  }
+  return frames;
+}
+
+/**
+ * BT.601 limited-range 4:2:0 YUV to 8-bit RGBA, opaque. Each chroma sample covers its 2 × 2 luma block (nearest). The
+ * constants are written out, so a reference and a candidate with the same planes always give the same pixels, whatever
+ * colour metadata either file carries.
+ */
+export function yuvToRgba(frame: YuvFrame): RawImage {
+  const { width, height, y, u, v } = frame;
+  const cw = (width + 1) >> 1;
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let row = 0; row < height; row++) {
+    const chromaRow = (row >> 1) * cw;
+    for (let col = 0; col < width; col++) {
+      const luma = 1.164383 * (y[row * width + col] - 16);
+      const c = chromaRow + (col >> 1);
+      const cb = u[c] - 128;
+      const cr = v[c] - 128;
+      const o = (row * width + col) * 4;
+      out[o] = luma + 1.596027 * cr;
+      out[o + 1] = luma - 0.391762 * cb - 0.812968 * cr;
+      out[o + 2] = luma + 2.017232 * cb;
+      out[o + 3] = 255;
+    }
+  }
+  return { data: out, width, height };
 }
 
 /** The indices of the stillest frames of one sample, from signalstats' YDIF (see stillestFrames). */
@@ -578,44 +634,25 @@ async function stillestOf(sample: string, metadataFile: string, deadline: number
 }
 
 /**
- * The frames at `indices` (ascending) of a file, after `filters`, decoded to RGBA in index order. Written as PNG
- * through a select filter, so the frames are exactly the ones asked for.
+ * The frames at `indices` (ascending) of a file, after `filters`, as RGBA in index order. A select filter picks exactly
+ * the frames asked for, and ffmpeg writes them as raw 4:2:0 planes (YUV4MPEG2) on stdout. The conversion to RGB is
+ * yuvToRgba, not ffmpeg's. The suspected fault (measured symptom: an AV1 CRF 26 candidate of a 720x1280 WebP scored VMAF
+ * 95.3 but guard 21.3) is that ffmpeg's RGB conversion reads colour metadata (matrix, range, chroma location) that the
+ * sample and the encoded candidate carry differently. VMAF reads luma only, so it cannot see that. Converting the planes
+ * here, with one fixed formula, makes the reference and every candidate take the same conversion. Not yet run.
  */
-async function framesAt(
-  input: string,
-  filters: string[],
-  indices: number[],
-  dir: string,
-  deadline: number,
-  signal?: AbortSignal,
-): Promise<RawImage[]> {
+async function framesAt(input: string, filters: string[], indices: number[], deadline: number, signal?: AbortSignal): Promise<RawImage[]> {
   if (indices.length === 0) return [];
-  await mkdir(dir, { recursive: true });
-  // format=yuv420p before the select: a scaled frame and a decoded copy carry different chroma-location tags, and the
-  // RGB conversion of each then differs at chroma edges (measured: 16965 channel values off by more than 8). Forcing
-  // one YUV format on both sides makes the reference and the candidate convert identically.
   const pick = `format=yuv420p,select='${indices.map((n) => `eq(n,${n})`).join("+")}'`;
   const result = await ffrun(
-    [
-      ...inputOptions(input),
-      "-i",
-      input,
-      "-vf",
-      [...filters, pick].join(","),
-      "-fps_mode",
-      "passthrough",
-      "-y",
-      join(dir, "f-%d.png"),
-    ],
+    [...inputOptions(input), "-i", input, "-vf", [...filters, pick].join(","), "-fps_mode", "passthrough", "-f", "yuv4mpegpipe", "-"],
     deadline,
     signal,
   );
   if (result.code !== 0) throw new Error(`ffmpeg could not read frames: ${lastLine(result.stderr)}`);
-  const frames: RawImage[] = [];
-  for (let k = 1; k <= indices.length; k++) {
-    frames.push(await decodeRgba(await readFile(join(dir, `f-${k}.png`))));
-  }
-  return frames;
+  const planes = yuv4mpegFrames(result.stdout);
+  if (planes.length !== indices.length) throw new Error(`ffmpeg gave ${planes.length} of the ${indices.length} frames asked for`);
+  return planes.map(yuvToRgba);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -709,12 +746,15 @@ export interface Candidate {
 }
 
 /** A candidate that ffmpeg reads from its file. */
-function fileCandidate(out: string, dir: string, i: number, deadline: number, signal?: AbortSignal): Candidate {
+function fileCandidate(out: string, deadline: number, signal?: AbortSignal): Candidate {
   return {
     input: [...inputOptions(out), "-i", out],
-    frames: (indices) => framesAt(out, [], indices, join(dir, `g-${i}`), deadline, signal),
+    frames: (indices) => framesAt(out, [], indices, deadline, signal),
   };
 }
+
+/** The tick phase of a candidate's WebP timeline: the middle of each tick's interval (see webpCandidate). */
+const TICK_CENTRE = 0.5;
 
 /**
  * An animated WebP candidate, read frame by frame: its frames are composed in order (WebpAnimation), so the candidate's
@@ -724,8 +764,10 @@ function fileCandidate(out: string, dir: string, i: number, deadline: number, si
 async function webpCandidate(out: string, fps: number, seconds: number): Promise<Candidate> {
   const bytes = await readFile(out);
   // A still candidate (an encoder writes one when its frames are all alike) holds for the sample's length.
-  const feed = new WebpAnimation(bytes, fps, undefined, seconds * 1000);
-  const guard = new WebpAnimation(bytes, fps, undefined, seconds * 1000);
+  // The candidate has one frame per sample frame, so tick k is read at the middle of its interval: the frame starts of an
+  // encoded WebP are rounded to whole milliseconds, and a tick at its exact start can fall in the frame before (off by one).
+  const feed = new WebpAnimation(bytes, fps, undefined, seconds * 1000, TICK_CENTRE);
+  const guard = new WebpAnimation(bytes, fps, undefined, seconds * 1000, TICK_CENTRE);
   return {
     input: ["-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${feed.width}x${feed.height}`, "-framerate", String(fps), "-i", "pipe:0"],
     stdin: () => feed.ticks(0, feed.tickPages.length),
@@ -858,7 +900,7 @@ async function readSample(ctx: Ctx, q: number, dir: string, i: number): Promise<
   const bytes = (await stat(out)).size;
   const cand = codec === "animated-webp"
     ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, ctx.seconds[i]))
-    : fileCandidate(out, dir, i, opts.deadline, opts.signal);
+    : fileCandidate(out, opts.deadline, opts.signal);
   const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin);
   let frames: RawImage[] | null;
   try {
@@ -991,13 +1033,14 @@ export async function guardOf(
   sample: string,
   width: number,
   metadataFile: string,
-  dir: string,
+  _dir: string,
   deadline: number,
   blurSigma?: number,
   signal?: AbortSignal,
 ): Promise<GuardRef> {
+  // `_dir` is kept so the callers keep their signature: the frames now come over stdout, so no scratch files are written.
   const indices = await stillestOf(sample, metadataFile, deadline, signal);
-  const raw = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, dir, deadline, signal);
+  const raw = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, deadline, signal);
   const frames = blurSigma === undefined ? raw : await Promise.all(raw.map((f) => blurFrame(f, blurSigma)));
   return { indices, frames };
 }
@@ -1220,7 +1263,7 @@ async function scoreSamples(
   for (let i = 0; i < samples.length; i++) {
     const cand = kind.webp
       ? await webpCandidate(candidates[i], ctx.fps, ctx.seconds[i])
-      : fileCandidate(candidates[i], join(opts.workDir, "score"), i, opts.deadline, opts.signal);
+      : fileCandidate(candidates[i], opts.deadline, opts.signal);
     vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin));
     scores.push(...(await guardScores(ctx, i, cand, kind.strict)));
   }
