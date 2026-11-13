@@ -31,7 +31,7 @@ describe("animated WebP: the limits and the search", () => {
       vmafBar: 93,
       stillBar: 65,
       deadline: Date.now() + 60_000,
-      caps: { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true },
+      caps: { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true, av1Nvenc: false, h264Nvenc: false },
       score: makeScorer("ssimulacra2"),
       workDir: join(scratch, "pixels"),
     });
@@ -76,6 +76,8 @@ function candidate(codec: CandidateResult["codec"], quality: number, stillBar: n
     vmafBar: 93,
     estimate: true,
     audio: false,
+    measuredBytes: 39 * 1024,
+    encoder: "cpu",
   };
 }
 

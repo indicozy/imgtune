@@ -1241,7 +1241,7 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
       info: gifInfo,
       context: "img" as const,
       target: { main: "video" as const, alternatives: [] },
-      estimate: [cand("av1-mp4", 960, 32, { encoder: "libsvtav1" }), cand("h264-mp4", 960, 23)],
+      estimate: [cand("av1-mp4", 960, 32, { av1Encoder: "libsvtav1" }), cand("h264-mp4", 960, 23)],
       perViewBytes: 2000 * 1024,
     };
     const text = animatedLines(video, "https://shop.example/a.gif", "animated card").join("\n");
@@ -1254,7 +1254,7 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
       info: gifInfo,
       context: "img" as const,
       target: { main: "video" as const, alternatives: [] },
-      estimate: [cand("av1-mp4", 960, 32, { encoder: "libsvtav1" })],
+      estimate: [cand("av1-mp4", 960, 32, { av1Encoder: "libsvtav1" })],
       perViewBytes: 2000 * 1024,
     };
     const text = animatedLines(video, "https://shop.example/a.gif", "").join("\n");
@@ -1264,10 +1264,10 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
   });
 
   it("gives an AV1 and an AVIF target the exact encoder, and a WebP target its own; the AV1 quality is a CRF", () => {
-    expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40 -pix_fmt yuv420p -movflags +faststart");
-    expect(encoderRecipe("animated-avif", cand("animated-avif", 960, 40, { encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40, -f avif");
+    expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { av1Encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40 -pix_fmt yuv420p -movflags +faststart");
+    expect(encoderRecipe("animated-avif", cand("animated-avif", 960, 40, { av1Encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40, -f avif");
     expect(encoderRecipe("animated-webp", cand("animated-webp", 960, 61))).toBe("libwebp_anim -q:v 61 -loop 0");
-    expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { encoder: "libaom-av1" }))).toContain("libaom-av1 -cpu-used 8");
+    expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { av1Encoder: "libaom-av1" }))).toContain("libaom-av1 -cpu-used 8");
   });
 
   it("names each option's browsers, and the video's H.264 fallback without a claim", () => {
@@ -1275,7 +1275,7 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
       info: gifInfo,
       context: "img",
       target: { main: "video" as const, alternatives: [] },
-      estimate: [cand("av1-mp4", 960, 32, { encoder: "libsvtav1" }), cand("animated-webp", 960, 61)],
+      estimate: [cand("av1-mp4", 960, 32, { av1Encoder: "libsvtav1" }), cand("animated-webp", 960, 61)],
       perViewBytes: 2000 * 1024,
     }).join("\n");
     expect(text).toContain("   browsers: AV1 video: Chrome, Firefox, Edge; Safari only on devices with AV1 hardware decode, so keep the H.264 fallback");

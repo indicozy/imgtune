@@ -749,7 +749,7 @@ const COVERAGE = {
  * format and container options that follow. An AV1 CRF is a CRF, never a q (see the quality label in animatedLines).
  */
 export function encoderRecipe(codec: MediaCodec, c: CandidateResult): string {
-  const av1 = c.encoder === "libaom-av1" ? `libaom-av1 -cpu-used 8 -row-mt 1 -crf ${c.quality} -b:v 0` : `libsvtav1 -preset 10 -crf ${c.quality}`;
+  const av1 = c.av1Encoder === "libaom-av1" ? `libaom-av1 -cpu-used 8 -row-mt 1 -crf ${c.quality} -b:v 0` : `libsvtav1 -preset 10 -crf ${c.quality}`;
   switch (codec) {
     case "av1-mp4":
       return `${av1} -pix_fmt yuv420p -movflags +faststart`;

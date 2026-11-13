@@ -17,6 +17,8 @@ import {
   FFMPEG_THREADS,
   FfmpegTimeout,
   inputOptions,
+  nvencEnv,
+  nvencOptions,
   runFfmpeg,
   type FfmpegCaps,
   type MediaProbe,
@@ -35,7 +37,7 @@ export type ClipSource = string | WebpAnimation;
 /** The encodes the search can produce. AVIF is measured as its AV1 bitstream in MP4 (see encoderArgs). */
 export type MediaCodec = "av1-mp4" | "h264-mp4" | "animated-avif" | "animated-webp";
 
-/** One quality that was encoded and scored. `quality` is the CRF for video and AVIF, the q for WebP. */
+/** One quality that was encoded and scored. `quality` is the CRF for video and AVIF, the cq for NVENC, the q for WebP. */
 export interface CandidateResult {
   codec: MediaCodec;
   width: number;
@@ -44,8 +46,15 @@ export interface CandidateResult {
   sampleBytes: number;
   /** Seconds of the samples together. */
   sampleSeconds: number;
-  /** Bytes extrapolated over the full duration. An estimate. */
+  /**
+   * Bytes extrapolated over the full duration, as a CPU encode would give them. An estimate. For an NVENC encode it is
+   * measuredBytes ÷ NVENC_BYTE_FACTOR (performance before precision: NVENC is larger at equal quality).
+   */
   bytes: number;
+  /** The bytes the encoder really wrote, extrapolated over the full duration. Equal to `bytes` for a CPU encode. */
+  measuredBytes: number;
+  /** Which encoder made the samples: the CPU encoders, or NVENC on the GPU. */
+  encoder: "cpu" | "nvenc";
   /** Pooled VMAF mean over the samples. */
   vmaf: number;
   /** 10th percentile of the SSIMULACRA2 scores of the still-frame guard. */
@@ -60,8 +69,11 @@ export interface CandidateResult {
   estimate: true;
   /** Always false: the encodes drop audio, and the audio saving is attributed separately. */
   audio: boolean;
-  /** The AV1 encoder the candidate was made with (AV1 and animated AVIF only): SVT-AV1, or libaom when SVT is not built in. */
-  encoder?: "libsvtav1" | "libaom-av1";
+  /**
+   * The CPU AV1 encoder the candidate's recipe names (AV1 and animated AVIF only): SVT-AV1, or libaom when SVT is not built
+   * in. Set for NVENC candidates too, since their recipe is the CPU one.
+   */
+  av1Encoder?: "libsvtav1" | "libaom-av1";
 }
 
 export interface SearchOptions {
@@ -72,6 +84,11 @@ export interface SearchOptions {
   /** Epoch ms by which the search must end for this asset. */
   deadline: number;
   caps: FfmpegCaps;
+  /**
+   * The GPU index to encode on with NVENC (caps must already say which NVENC encoders work there, see withNvenc). Undefined:
+   * the CPU encoders only. A width under NVENC_MIN_WIDTH, or an NVENC failure, is encoded on the CPU for that candidate.
+   */
+  gpu?: number;
   /** The SSIMULACRA2 scorer (makeScorer("ssimulacra2")). */
   score: Scorer;
   /** Per-run scratch directory. Candidate files are removed as they are scored; the caller removes the directory. */
@@ -154,6 +171,18 @@ export const STILL_GUARD_FLOOR = 20;
 export function effectiveStillBar(requested: number, ceiling: number): number {
   return Math.max(STILL_GUARD_FLOOR, Math.min(requested, ceiling - STILL_GUARD_DELTA));
 }
+/**
+ * Bytes of an NVENC encode are scaled by this to a CPU encode's bytes, at equal quality (an earlier spike measured NVENC at
+ * about 1.4 times the bytes). The reported `bytes` are measuredBytes / NVENC_BYTE_FACTOR; VMAF and the still guard are measured
+ * on the NVENC output itself, on the assumption that a CPU encode at 1/NVENC_BYTE_FACTOR of the bytes reaches the same quality.
+ */
+export const NVENC_BYTE_FACTOR = 1.4;
+/** The narrowest width NVENC encodes (it has a minimum frame size of about 136 px): narrower encodes use the CPU. */
+export const NVENC_MIN_WIDTH = 144;
+/** The bytes a candidate reports as a CPU encode would give them: an NVENC encode's bytes ÷ NVENC_BYTE_FACTOR. */
+export function cpuEquivalentBytes(measuredBytes: number, nvenc: boolean): number {
+  return nvenc ? measuredBytes / NVENC_BYTE_FACTOR : measuredBytes;
+}
 /** Longest single ffmpeg run, in ms; the asset deadline caps it further. */
 const RUN_CAP_MS = 60_000;
 const MAX_REDIRECTS = 3;
@@ -209,6 +238,45 @@ class StageError extends Error {
   }
 }
 
+/**
+ * An NVENC encode that failed (the encoder refused the frame size, the session limit was hit, or the device is gone). It is
+ * not an error of the search: the candidate is encoded again on the CPU (see withNvencFallback).
+ */
+export class NvencFailure extends Error {
+  constructor(detail: string) {
+    super(`nvenc failed: ${detail}`);
+    this.name = "NvencFailure";
+  }
+}
+
+/** Whether a candidate of this codec and width is encoded with NVENC on `gpu`: the codec has an NVENC encoder, the width is at least NVENC_MIN_WIDTH. */
+export function usesNvenc(codec: MediaCodec, width: number, caps: FfmpegCaps, gpu: number | undefined): boolean {
+  if (gpu === undefined || width < NVENC_MIN_WIDTH) return false;
+  switch (codec) {
+    case "av1-mp4":
+    case "animated-avif":
+      return caps.av1Nvenc;
+    case "h264-mp4":
+      return caps.h264Nvenc;
+    case "animated-webp":
+      return false;
+  }
+}
+
+/**
+ * Runs `run` with NVENC when `want` is set, and again on the CPU when NVENC fails. Returns the value and whether NVENC made it.
+ * A whole candidate falls back together, so one candidate never mixes encoders across its samples.
+ */
+export async function withNvencFallback<T>(want: boolean, run: (nvenc: boolean) => Promise<T>): Promise<{ value: T; nvenc: boolean }> {
+  if (!want) return { value: await run(false), nvenc: false };
+  try {
+    return { value: await run(true), nvenc: true };
+  } catch (err) {
+    if (!(err instanceof NvencFailure)) throw err;
+    return { value: await run(false), nvenc: false };
+  }
+}
+
 /** True for a timeout or a passed deadline: the search then ends with what it has. */
 function isDeadline(err: unknown): boolean {
   return err instanceof DeadlineHit || err instanceof FfmpegTimeout;
@@ -230,8 +298,9 @@ function ffrun(
   deadline: number,
   signal?: AbortSignal,
   stdin?: () => AsyncIterable<Uint8Array>,
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ code: number; stdout: Buffer; stderr: string }> {
-  return runFfmpeg(["-loglevel", "error", ...args], { timeoutMs: runBudget(deadline), signal, stdin });
+  return runFfmpeg(["-loglevel", "error", ...args], { timeoutMs: runBudget(deadline), signal, stdin, env });
 }
 
 /**
@@ -266,7 +335,7 @@ async function stage<T>(reason: StageError["reason"], work: () => Promise<T>): P
   try {
     return await work();
   } catch (err) {
-    if (isDeadline(err) || isAbortError(err) || err instanceof StageError || isTooLarge(err)) throw err;
+    if (isDeadline(err) || isAbortError(err) || err instanceof StageError || err instanceof NvencFailure || isTooLarge(err)) throw err;
     throw new StageError(reason);
   }
 }
@@ -666,43 +735,40 @@ function av1Args(caps: FfmpegCaps, crf: string): string[] {
     : ["-c:v", "libsvtav1", "-preset", "10", "-crf", crf, "-svtav1-params", "lp=2"];
 }
 
+/** The video encoder arguments of a codec at quality `q`: NVENC (cq) when `nvenc`, else the CPU encoder (CRF). */
+function videoEncoderArgs(codec: "av1-mp4" | "animated-avif" | "h264-mp4", q: number, caps: FfmpegCaps, nvenc: boolean): string[] {
+  if (nvenc) return ["-c:v", codec === "h264-mp4" ? "h264_nvenc" : "av1_nvenc", ...nvencOptions(q)];
+  if (codec === "h264-mp4") return ["-c:v", "libx264", "-preset", "veryfast", "-crf", String(q)];
+  return av1Args(caps, String(q));
+}
+
 /**
- * The encoder and container arguments for one codec at quality `q`. Every output drops audio.
+ * The encoder and container arguments for one codec at quality `q`. Every output drops audio. `nvenc` selects the NVENC
+ * encoder of the codec (the same options for AV1 and H.264, with `q` as the constant quality).
  *
  * animated-avif is measured as the same AV1 bitstream in an MP4 container, not as an AVIF file. The bitstream is the
  * same (same encoder, preset, CRF and pixel format). The AVIF container differs by about 150 bytes per 2-second clip.
  * ffmpeg cannot read an animated AVIF back for scoring, so the MP4 twin is also what gets scored. The bytes are an
  * estimate within that container difference.
  */
-function encoderArgs(codec: MediaCodec, q: number, caps: FfmpegCaps): string[] {
-  const quality = String(q);
+export function encoderArgs(codec: MediaCodec, q: number, caps: FfmpegCaps, nvenc = false): string[] {
   switch (codec) {
     case "av1-mp4":
-      return [...av1Args(caps, quality), "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", "-f", "mp4"];
+      return [...videoEncoderArgs("av1-mp4", q, caps, nvenc), "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", "-f", "mp4"];
     case "animated-avif":
-      return [...av1Args(caps, quality), "-pix_fmt", "yuv420p", "-an", "-f", "mp4"];
+      return [...videoEncoderArgs("animated-avif", q, caps, nvenc), "-pix_fmt", "yuv420p", "-an", "-f", "mp4"];
     case "h264-mp4":
-      return [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        quality,
-        "-an",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-f",
-        "mp4",
-      ];
+      return [...videoEncoderArgs("h264-mp4", q, caps, nvenc), "-an", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4"];
     case "animated-webp":
-      return ["-c:v", "libwebp_anim", "-q:v", quality, "-loop", "0", "-an", "-f", "webp"];
+      return ["-c:v", "libwebp_anim", "-q:v", String(q), "-loop", "0", "-an", "-f", "webp"];
   }
 }
 
-/** Encodes one sample at `width` (lanczos scale) and quality `q`. A failure is the encoder's: StageError no-encoder. */
+/**
+ * Encodes one sample at `width` (lanczos scale) and quality `q`. With `nvenc` the encode runs on the GPU `gpu` (its
+ * environment, see nvencEnv); an NVENC failure is an NvencFailure, which the caller answers with the CPU encode. A CPU
+ * failure is the encoder's: StageError no-encoder.
+ */
 async function encodeClip(
   sample: string,
   codec: MediaCodec,
@@ -712,26 +778,35 @@ async function encodeClip(
   caps: FfmpegCaps,
   deadline: number,
   signal?: AbortSignal,
+  nvenc = false,
+  gpu?: number,
 ): Promise<void> {
-  await stage("no-encoder", async () => {
-    const result = await ffrun(
-      [
-        ...inputOptions(sample),
-        "-i",
-        sample,
-        "-vf",
-        `scale=${width}:-2:flags=lanczos`,
-        "-threads",
-        String(FFMPEG_THREADS),
-        ...encoderArgs(codec, q, caps),
-        "-y",
-        out,
-      ],
-      deadline,
-      signal,
-    );
-    if (result.code !== 0) throw new Error(lastLine(result.stderr));
-  });
+  const run = (): Promise<void> =>
+    stage("no-encoder", async () => {
+      const result = await ffrun(
+        [
+          ...inputOptions(sample),
+          "-i",
+          sample,
+          "-vf",
+          `scale=${width}:-2:flags=lanczos`,
+          "-threads",
+          String(FFMPEG_THREADS),
+          ...encoderArgs(codec, q, caps, nvenc),
+          "-y",
+          out,
+        ],
+        deadline,
+        signal,
+        undefined,
+        nvenc && gpu !== undefined ? nvencEnv(gpu) : undefined,
+      );
+      if (result.code !== 0) {
+        if (nvenc) throw new NvencFailure(lastLine(result.stderr));
+        throw new Error(lastLine(result.stderr));
+      }
+    });
+  await run();
 }
 
 /**
@@ -893,10 +968,10 @@ interface SampleRead {
  * animated WebP's samples run one at a time, see readAll). A frame that cannot be read (a candidate with fewer frames than
  * the reference, for example) gives null, which scores 0 for every guard frame of that sample: the candidate fails closed.
  */
-async function readSample(ctx: Ctx, q: number, dir: string, i: number): Promise<SampleRead> {
+async function readSample(ctx: Ctx, q: number, dir: string, i: number, nvenc: boolean): Promise<SampleRead> {
   const { codec, width, opts } = ctx;
   const out = join(dir, `s${i}.${SPECS[codec].ext}`);
-  await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline, opts.signal);
+  await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline, opts.signal, nvenc, opts.gpu);
   const bytes = (await stat(out)).size;
   const cand = codec === "animated-webp"
     ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, ctx.seconds[i]))
@@ -916,10 +991,10 @@ async function readSample(ctx: Ctx, q: number, dir: string, i: number): Promise<
  * The samples of one quality, read. An animated WebP's samples are read one after another: each decodes its own timeline,
  * so running them together would hold several decoded timelines at once. Other codecs run their samples in parallel.
  */
-async function readAll(ctx: Ctx, q: number, dir: string): Promise<SampleRead[]> {
-  if (ctx.codec !== "animated-webp") return settleAll(ctx.samples.map((_, i) => readSample(ctx, q, dir, i)));
+async function readAll(ctx: Ctx, q: number, dir: string, nvenc: boolean): Promise<SampleRead[]> {
+  if (ctx.codec !== "animated-webp") return settleAll(ctx.samples.map((_, i) => readSample(ctx, q, dir, i, nvenc)));
   const reads: SampleRead[] = [];
-  for (let i = 0; i < ctx.samples.length; i++) reads.push(await readSample(ctx, q, dir, i));
+  for (let i = 0; i < ctx.samples.length; i++) reads.push(await readSample(ctx, q, dir, i, nvenc));
   return reads;
 }
 
@@ -978,7 +1053,7 @@ async function evaluate(ctx: Ctx, q: number, strict = false): Promise<Scored> {
   const dir = join(opts.workDir, `cand-${codec}-${width}-${q}`);
   await mkdir(dir, { recursive: true });
   try {
-    const reads = await readAll(ctx, q, dir);
+    const { value: reads, nvenc } = await withNvencFallback(usesNvenc(codec, width, opts.caps, opts.gpu), (n) => readAll(ctx, q, dir, n));
     const scores: number[] = [];
     let failed = false;
     for (let i = 0; i < reads.length && !failed; i++) {
@@ -993,18 +1068,21 @@ async function evaluate(ctx: Ctx, q: number, strict = false): Promise<Scored> {
     }
     const sampleBytes = reads.reduce((acc, r) => acc + r.bytes, 0);
     const sampleSeconds = ctx.seconds.reduce((acc, s) => acc + s, 0);
+    const measuredBytes = extrapolate(sampleBytes, sampleSeconds, ctx.probe.durationS);
     return {
       codec,
       width,
       quality: q,
       sampleBytes,
       sampleSeconds,
-      bytes: extrapolate(sampleBytes, sampleSeconds, ctx.probe.durationS),
-      vmaf: mean(reads.map((r) => r.vmaf)),
-      still: tenthPercentile(scores),
+      bytes: cpuEquivalentBytes(measuredBytes, nvenc),
+      measuredBytes,
+      encoder: nvenc ? "nvenc" : "cpu",
       estimate: true,
       audio: false,
-      ...(codec === "av1-mp4" || codec === "animated-avif" ? { encoder: ctx.opts.caps.av1 } : {}),
+      vmaf: mean(reads.map((r) => r.vmaf)),
+      still: tenthPercentile(scores),
+      ...(codec === "av1-mp4" || codec === "animated-avif" ? { av1Encoder: ctx.opts.caps.av1 } : {}),
     };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1107,7 +1185,7 @@ export async function searchQuality(
   if (opts.signal?.aborted) return { ok: false, reason: "aborted" };
   if (!caps.ffmpeg) return { ok: false, reason: "no-ffmpeg" };
   if (!caps.vmaf) return { ok: false, reason: "no-vmaf" };
-  if (!hasEncoder(caps, codec)) return { ok: false, reason: "no-encoder" };
+  if (!usesNvenc(codec, width, caps, opts.gpu) && !hasEncoder(caps, codec)) return { ok: false, reason: "no-encoder" };
   // An oversized frame is refused before any decode or encode (ffmpeg would allocate frames of several GB).
   if (probe.width * probe.height > MAX_INPUT_PIXELS_FFMPEG) return { ok: false, reason: "too-large" };
   // Without a length the bytes cannot be extrapolated, so there is nothing to report.
@@ -1211,19 +1289,24 @@ export async function compareToReference(
   const referenceSamples = await cutSamples(reference, probe, join(opts.workDir, "reference"), opts.deadline, undefined, opts.signal);
   const candidateSamples = await cutSamples(candidate, probe, join(opts.workDir, "candidate"), opts.deadline, undefined, opts.signal);
   const scored = await scoreSamples(candidateSamples, referenceSamples, probe, width, opts, { webp: false, strict: false });
-  const ceilingCodec: MediaCodec | undefined = hasEncoder(opts.caps, codec) ? codec : opts.caps.av1 !== undefined ? "av1-mp4" : undefined;
+  const encodable = (c: MediaCodec): boolean => usesNvenc(c, width, opts.caps, opts.gpu) || hasEncoder(opts.caps, c);
+  const ceilingCodec: MediaCodec | undefined = encodable(codec) ? codec : encodable("av1-mp4") ? "av1-mp4" : undefined;
   let ceiling: number | undefined;
   if (ceilingCodec !== undefined) {
     const dir = join(opts.workDir, "ceiling");
     await mkdir(dir, { recursive: true });
     const spec = SPECS[ceilingCodec];
     const bound = ceilingCodec === "animated-webp" ? spec.hi : spec.lo;
-    const encoded: string[] = [];
-    for (let i = 0; i < referenceSamples.length; i++) {
-      const out = join(dir, `s${i}.${spec.ext}`);
-      await encodeClip(referenceSamples[i], ceilingCodec, width, bound, out, opts.caps, opts.deadline, opts.signal);
-      encoded.push(out);
-    }
+    // The ceiling is encoded as the search encodes (NVENC when it is used for this codec and width), so the bar is judged by it.
+    const { value: encoded } = await withNvencFallback(usesNvenc(ceilingCodec, width, opts.caps, opts.gpu), async (nvenc) => {
+      const files: string[] = [];
+      for (let i = 0; i < referenceSamples.length; i++) {
+        const out = join(dir, `s${i}.${spec.ext}`);
+        await encodeClip(referenceSamples[i], ceilingCodec, width, bound, out, opts.caps, opts.deadline, opts.signal, nvenc, opts.gpu);
+        files.push(out);
+      }
+      return files;
+    });
     ceiling = (await scoreSamples(encoded, referenceSamples, probe, width, opts, { webp: ceilingCodec === "animated-webp", strict: true })).still;
   }
   return { vmaf: scored.vmaf, still: scored.still, ceiling, ceilingCodec, samples: referenceSamples.length };

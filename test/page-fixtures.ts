@@ -48,6 +48,8 @@ export function candidateOf(over: Partial<CandidateResult> & { vmafBar?: number 
     quality: 32,
     sampleBytes: 1000,
     sampleSeconds: 2,
+    measuredBytes: 0,
+    encoder: "cpu",
     bytes: 412 * 1024,
     vmaf: 95.2,
     still: 72,

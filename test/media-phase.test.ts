@@ -47,7 +47,7 @@ afterAll(async () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-const caps: FfmpegCaps = { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true };
+const caps: FfmpegCaps = { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true, av1Nvenc: false, h264Nvenc: false };
 /** A VP9 source, so both AV1 and the H.264 fallback are encoded. */
 const probe: MediaProbe = { durationS: 8, width: 1280, height: 720, fps: 30, videoCodec: "vp9" };
 
@@ -63,7 +63,7 @@ const video = (url: string, perView: number, widths = [640], page = "http://127.
 });
 
 function candidate(codec: CandidateResult["codec"], width: number, bytes: number): CandidateResult {
-  return { codec, width, quality: 40, sampleBytes: bytes / 4, sampleSeconds: 6, bytes, vmaf: 95, still: 80, stillBar: 65, vmafBar: 93, estimate: true, audio: false };
+  return { codec, width, quality: 40, sampleBytes: bytes / 4, sampleSeconds: 6, bytes, vmaf: 95, still: 80, stillBar: 65, vmafBar: 93, estimate: true, audio: false, measuredBytes: bytes, encoder: "cpu" as const };
 }
 
 /** Options for a phase run with a fresh work folder; the cache and the proxy are off unless a case sets them. */
