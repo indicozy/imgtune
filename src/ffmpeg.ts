@@ -2,7 +2,7 @@
 // the installed build can do, and every call here is bounded by a timeout and can be aborted, so one heavy file cannot
 // hold a scan.
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute } from "node:path";
 
 /**
@@ -82,10 +82,53 @@ interface RunOptions {
 }
 
 /**
- * Runs a binary to completion. Resolves with the exit code for any exit (a non-zero code is the caller's to judge);
- * rejects on a timeout (FfmpegTimeout), on an abort, on stdout past its cap (FfmpegOutputTooLarge), or when the binary
- * cannot be started. The process is killed with SIGKILL on a timeout, an abort or an oversized stdout, so a stuck or
- * runaway encode releases its CPU at once.
+ * The most ffmpeg and ffprobe processes this process runs at once. 4 jobs × FFMPEG_THREADS (2) = 8 threads, which is the
+ * CPU budget the encodes are given. Every run waits for a slot, FIFO, across the whole process, so parallel searches
+ * cannot oversubscribe the CPUs.
+ */
+export const FFMPEG_MAX_PROCS = 4;
+
+/** Processes holding a slot right now. */
+let slotsInUse = 0;
+/** Runs waiting for a slot, in arrival order. */
+const slotQueue: (() => void)[] = [];
+
+/**
+ * Starts `run` now when a slot is free, else queues it. Returns a function that removes the run from the queue if it is
+ * still waiting (used when its timeout or abort fires first). A run that starts holds its slot until releaseSlot.
+ */
+function requestSlot(run: () => void): () => void {
+  if (slotsInUse < FFMPEG_MAX_PROCS) {
+    slotsInUse++;
+    run();
+    return () => {};
+  }
+  slotQueue.push(run);
+  return () => {
+    const index = slotQueue.indexOf(run);
+    if (index >= 0) slotQueue.splice(index, 1);
+  };
+}
+
+/** Gives a slot back. The next queued run takes it at once, so the count never exceeds FFMPEG_MAX_PROCS. */
+function releaseSlot(): void {
+  slotsInUse--;
+  const next = slotQueue.shift();
+  if (next) {
+    slotsInUse++;
+    next();
+  }
+}
+
+/**
+ * Runs a binary to completion, once it holds a slot (see FFMPEG_MAX_PROCS). Resolves with the exit code for any exit (a
+ * non-zero code is the caller's to judge); rejects on a timeout (FfmpegTimeout), on an abort, on stdout past its cap
+ * (FfmpegOutputTooLarge), or when the binary cannot be started.
+ *
+ * The timeout starts when the call is made, so it covers the wait for a slot: a run still queued when its timeout fires
+ * is removed from the queue and never starts. The per-asset deadline in media-encode is computed at call time too, so it
+ * covers the queueing as well. The process is killed with SIGKILL on a timeout, an abort or an oversized stdout, and its
+ * slot is released then, so a stuck or runaway encode gives its CPU back at once.
  */
 function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunResult> {
   const maxStdoutBytes = opts.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES;
@@ -94,7 +137,9 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
       reject(abortError());
       return;
     }
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let child: ChildProcess | undefined;
+    let holdsSlot = false;
+    let cancelQueued: () => void = () => {};
     const stdout: Buffer[] = [];
     let stdoutBytes = 0;
     // Stderr is kept as bytes and decoded once at close, so a multi-byte character is never split by a chunk edge.
@@ -108,45 +153,64 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
       settled = true;
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
+      if (holdsSlot) {
+        holdsSlot = false;
+        releaseSlot();
+      } else {
+        cancelQueued();
+      }
       settle();
     };
+    const kill = (): void => {
+      child?.kill("SIGKILL");
+    };
     const onAbort = (): void => {
-      child.kill("SIGKILL");
+      kill();
       finish(() => reject(abortError()));
     };
 
     timer = setTimeout(() => {
-      child.kill("SIGKILL");
+      kill();
       finish(() => reject(new FfmpegTimeout(opts.timeoutMs)));
     }, opts.timeoutMs);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (settled) return;
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > maxStdoutBytes) {
-        child.kill("SIGKILL");
-        finish(() => reject(new FfmpegOutputTooLarge(maxStdoutBytes)));
+    const start = (): void => {
+      holdsSlot = true;
+      try {
+        child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      } catch (err) {
+        finish(() => reject(err instanceof Error ? err : new Error(String(err))));
         return;
       }
-      stdout.push(chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr.push(chunk);
-      stderrBytes += chunk.length;
-      if (stderrBytes > STDERR_CAP) {
-        // Compact to the tail, so memory stays bounded even for a chatty run.
-        const tail = Buffer.concat(stderr).subarray(-STDERR_CAP);
-        stderr = [tail];
-        stderrBytes = tail.length;
-      }
-    });
-    child.on("error", (err) => finish(() => reject(err)));
-    child.on("close", (code) => {
-      finish(() =>
-        resolve({ code: code ?? -1, stdout: Buffer.concat(stdout), stderr: decodeStderr(Buffer.concat(stderr)) }),
-      );
-    });
+      child.stdout!.on("data", (chunk: Buffer) => {
+        if (settled) return;
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > maxStdoutBytes) {
+          kill();
+          finish(() => reject(new FfmpegOutputTooLarge(maxStdoutBytes)));
+          return;
+        }
+        stdout.push(chunk);
+      });
+      child.stderr!.on("data", (chunk: Buffer) => {
+        stderr.push(chunk);
+        stderrBytes += chunk.length;
+        if (stderrBytes > STDERR_CAP) {
+          // Compact to the tail, so memory stays bounded even for a chatty run.
+          const tail = Buffer.concat(stderr).subarray(-STDERR_CAP);
+          stderr = [tail];
+          stderrBytes = tail.length;
+        }
+      });
+      child.on("error", (err) => finish(() => reject(err)));
+      child.on("close", (code) => {
+        finish(() =>
+          resolve({ code: code ?? -1, stdout: Buffer.concat(stdout), stderr: decodeStderr(Buffer.concat(stderr)) }),
+        );
+      });
+    };
+    cancelQueued = requestSlot(start);
   });
 }
 

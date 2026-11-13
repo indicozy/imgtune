@@ -1,8 +1,9 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
+  FFMPEG_MAX_PROCS,
   FfmpegOutputTooLarge,
   FfmpegTimeout,
   inputOptions,
@@ -238,5 +239,63 @@ describe("runFfmpeg", () => {
     setTimeout(() => controller.abort(), 200);
     await expect(pending).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe("process slots", () => {
+  /** A fake ffmpeg that logs its start and end to `log` and sleeps `seconds` in between. */
+  function fakeBinary(name: string, seconds: string, log: string): string {
+    const bin = join(scratch, name);
+    writeFileSync(bin, `#!/bin/sh\necho start >> "${log}"\nsleep ${seconds}\necho end >> "${log}"\n`);
+    chmodSync(bin, 0o755);
+    return bin;
+  }
+
+  /** The most runs alive at once, from a log of start and end lines in the order they happened. */
+  function maxAlive(log: string): { max: number; starts: number } {
+    let alive = 0;
+    let max = 0;
+    let starts = 0;
+    for (const line of readFileSync(log, "utf8").split("\n")) {
+      if (line === "start") {
+        starts++;
+        alive++;
+        max = Math.max(max, alive);
+      } else if (line === "end") {
+        alive--;
+      }
+    }
+    return { max, starts };
+  }
+
+  it("never runs more than FFMPEG_MAX_PROCS processes at once, and does run that many", async () => {
+    const log = join(scratch, "slots-six.log");
+    writeFileSync(log, "");
+    setEnv({ IMGTUNE_FFMPEG: fakeBinary("slots-six.sh", "0.3", log) });
+    const runs = Array.from({ length: 6 }, () => runFfmpeg(["-version"], { timeoutMs: 20_000 }));
+    const results = await Promise.all(runs);
+    expect(results.every((r) => r.code === 0)).toBe(true);
+    const { max, starts } = maxAlive(log);
+    expect(starts).toBe(6);
+    expect(FFMPEG_MAX_PROCS).toBe(4);
+    expect(max).toBe(FFMPEG_MAX_PROCS);
+  });
+
+  it("counts the timeout from the call, so a run queued past its timeout rejects and never starts", async () => {
+    const log = join(scratch, "slots-queued.log");
+    writeFileSync(log, "");
+    setEnv({ IMGTUNE_FFMPEG: fakeBinary("slots-blockers.sh", "1", log) });
+    const blockers = Array.from({ length: FFMPEG_MAX_PROCS }, () => runFfmpeg(["-version"], { timeoutMs: 20_000 }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const started = Date.now();
+    const queued = await runFfmpeg(["-version"], { timeoutMs: 200 }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(queued).toBeInstanceOf(FfmpegTimeout);
+    expect(Date.now() - started).toBeLessThan(900);
+    await Promise.all(blockers);
+    // Only the blockers ever started: the queued run was removed from the queue when its timeout fired.
+    expect(maxAlive(log).starts).toBe(FFMPEG_MAX_PROCS);
   });
 });

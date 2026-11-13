@@ -224,6 +224,19 @@ function ffrun(args: string[], deadline: number): Promise<{ code: number; stderr
   return runFfmpeg(["-loglevel", "error", ...args], { timeoutMs: runBudget(deadline) });
 }
 
+/**
+ * The results of parallel work, or the first failure once every piece has settled. Promise.all would reject at the
+ * first failure while the siblings still run, and a caller that then removes the shared directory would race them.
+ * Waiting for all of them first means nothing is still writing when the failure reaches the caller.
+ */
+async function settleAll<T>(work: Promise<T>[]): Promise<T[]> {
+  const settled = await Promise.allSettled(work);
+  for (const result of settled) {
+    if (result.status === "rejected") throw result.reason;
+  }
+  return settled.map((result) => (result as PromiseFulfilledResult<T>).value);
+}
+
 /** Last non-empty line of ffmpeg's stderr: the error, since ffmpeg prints it last. */
 function lastLine(stderr: string): string {
   const lines = stderr.trim().split("\n");
@@ -265,7 +278,7 @@ export async function cutSamples(
   const options = inputOptions(input, proxy);
   await mkdir(workDir, { recursive: true });
   const rate = probe.fps > 0 ? ["-r", String(probe.fps), "-fps_mode", "cfr"] : [];
-  return Promise.all(
+  return settleAll(
     sampleOffsets(probe.durationS).map(async (offset, i) => {
       const out = join(workDir, `sample-${i}.mkv`);
       const result = await ffrun(
@@ -470,7 +483,7 @@ export function stillestFrames(metadata: string, count: number): number[] {
     .sort((a, b) => a - b);
 }
 
-/** The 10th percentile by the lower nearest rank: for up to 11 values, the minimum. 0 for no values. */
+/** The 10th percentile by the lower nearest rank: for up to 10 values, the minimum. 0 for no values. */
 export function tenthPercentile(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -794,7 +807,7 @@ interface Ctx {
   cache: Map<number, Scored>;
   /**
    * The still bar once it is known (after the ceiling). A candidate with a guard score below it has failed: the p10 of up
-   * to 11 frames is their minimum, so the search stops scoring it at that frame.
+   * to 10 frames is their minimum, so the search stops scoring it at that frame.
    */
   failBelow?: number;
 }
@@ -890,7 +903,7 @@ function mean(values: number[]): number {
  * Encodes every sample at quality `q`, scores it, and returns the result (pass or fail). Removes its files after.
  *
  * Two phases. First the samples are read in parallel (encode, VMAF, guard frames). Then the guard is scored in order,
- * and a candidate stops at its first score below ctx.failBelow: the p10 of up to 11 frames is their minimum, so one
+ * and a candidate stops at its first score below ctx.failBelow: the p10 of up to 10 frames is their minimum, so one
  * frame below the bar already decides the result. The reported `still` is then the minimum so far, which is still
  * below the bar.
  */
@@ -899,7 +912,7 @@ async function evaluate(ctx: Ctx, q: number): Promise<Scored> {
   const dir = join(opts.workDir, `cand-${codec}-${width}-${q}`);
   await mkdir(dir, { recursive: true });
   try {
-    const reads = await Promise.all(ctx.samples.map((_, i) => readSample(ctx, q, dir, i)));
+    const reads = await settleAll(ctx.samples.map((_, i) => readSample(ctx, q, dir, i)));
     const scores: number[] = [];
     let failed = false;
     for (let i = 0; i < reads.length && !failed; i++) {
@@ -1008,6 +1021,9 @@ function clipSeconds(durationS: number, count: number): number[] {
  * then removes its files. The deadline is checked before every encode and run: when it passes, the best passing
  * quality so far is returned, or time-limit when none passed. Encoder and VMAF failures are reported as no-encoder and
  * no-vmaf, and a failure to prepare the reference is probe-failed.
+ *
+ * The bisection has 1-CRF resolution: it stops after the codec's steps, so the result can sit one CRF (or one WebP q
+ * step) below the true cheapest passing quality. Accepted for performance (see the performance round in the report).
  */
 export async function searchQuality(
   samples: string[],
