@@ -48,6 +48,8 @@ export interface CandidateResult {
    * Reports show it next to `still`, since a source whose best encode scores low gets a lower bar, not a failing result.
    */
   stillBar: number;
+  /** The VMAF bar this result was judged against (the requested bar; VMAF is not relativised). */
+  vmafBar: number;
   estimate: true;
   /** Always false: the encodes drop audio, and the audio saving is attributed separately. */
   audio: boolean;
@@ -109,6 +111,18 @@ export const GIF_GUARD_SIGMA = 1;
  * source whose ceiling is low. Same rule as imgtune's image bar (max(70, served − delta)), taken the other way round.
  */
 export const STILL_GUARD_DELTA = 10;
+/**
+ * The lowest still bar a source can get. Below this a guard score says nothing: a bar at or under 0 would pass any encode.
+ */
+export const STILL_GUARD_FLOOR = 20;
+
+/**
+ * The still bar for one source: the requested bar, or the source's ceiling minus STILL_GUARD_DELTA when that is lower,
+ * but never below STILL_GUARD_FLOOR. A ceiling of 5 gives STILL_GUARD_FLOOR, not −5.
+ */
+export function effectiveStillBar(requested: number, ceiling: number): number {
+  return Math.max(STILL_GUARD_FLOOR, Math.min(requested, ceiling - STILL_GUARD_DELTA));
+}
 /** Longest single ffmpeg run, in ms; the asset deadline caps it further. */
 const RUN_CAP_MS = 60_000;
 /** Pixels a decoded image may have, the same limit as the image pipeline. */
@@ -719,7 +733,7 @@ interface Ctx {
 }
 
 /** A scored quality, before the search attaches the still bar it was judged against. */
-type Scored = Omit<CandidateResult, "stillBar">;
+type Scored = Omit<CandidateResult, "stillBar" | "vmafBar">;
 
 /**
  * evaluate, memoised per search: a quality already encoded is returned from the cache. The deadline is checked before a
@@ -923,14 +937,14 @@ export async function searchQuality(
     const bound = codec === "animated-webp" ? spec.hi : spec.lo;
     const ceiling = await evaluateCached(ctx, bound);
     if (ceiling.vmaf < opts.vmafBar) return { ok: false, reason: "no-passing-quality" };
-    const stillBar = Math.min(opts.stillBar, ceiling.still - STILL_GUARD_DELTA);
+    const stillBar = effectiveStillBar(opts.stillBar, ceiling.still);
     let lo = spec.lo;
     let hi = spec.hi;
     for (let step = 0; step < spec.steps && lo <= hi; step++) {
       const q = Math.floor((lo + hi) / 2);
       const result = await evaluateCached(ctx, q);
       const pass = result.vmaf >= opts.vmafBar && result.still >= stillBar;
-      if (pass && (best === undefined || result.bytes < best.bytes)) best = { ...result, stillBar };
+      if (pass && (best === undefined || result.bytes < best.bytes)) best = { ...result, stillBar, vmafBar: opts.vmafBar };
       // The cheaper side is the one to search next: up for a CRF, down for a WebP q.
       if (spec.fewerBytesAt === "high") {
         if (pass) lo = q + 1;

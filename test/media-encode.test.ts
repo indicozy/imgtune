@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFfmpeg, probeMedia, type MediaProbe } from "../src/ffmpeg.js";
 import {
+  STILL_GUARD_FLOOR,
   blurFrame,
+  effectiveStillBar,
   cfrIndices,
   cutSamples,
   guardOf,
@@ -139,6 +141,10 @@ describe("searchQuality", () => {
     expect(outcome.best.stillBar).toBeLessThanOrEqual(65);
     expect(outcome.best.estimate).toBe(true);
     expect(outcome.best.audio).toBe(false);
+    // Regression: at 640 px the bisection passes CRF 37, 46, 51, 53 and 54 (VMAF 95.3, guard 68.6), so the search picks
+    // 54. A search that stopped at the first passing probe, or read the wrong width, would pick a lower CRF.
+    expect(outcome.best.quality).toBeGreaterThanOrEqual(50);
+    expect(outcome.best.vmafBar).toBe(93);
   }, 120_000);
 
   it("finds a passing animated WebP quality for a GIF", async () => {
@@ -303,6 +309,15 @@ describe("still-frame guard on a degraded candidate", () => {
     }
     expect(Math.min(...scores)).toBeLessThan(65);
   }, 120_000);
+});
+
+describe("effective still bar", () => {
+  it("is the requested bar when the ceiling is high, the ceiling minus 10 when that is lower, and the floor below that", () => {
+    expect(effectiveStillBar(65, 85)).toBe(65);
+    expect(effectiveStillBar(65, 40)).toBe(30);
+    expect(effectiveStillBar(65, 5)).toBe(STILL_GUARD_FLOOR);
+    expect(effectiveStillBar(65, 5)).toBe(20);
+  });
 });
 
 describe("pure helpers", () => {
