@@ -9,7 +9,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { mapLimit } from "./concurrency.js";
 import { animationOf } from "./animated.js";
-import { FFMPEG_JOBS, probeFfmpeg, probeMedia, withNvenc, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
+import { FFMPEG_JOBS, probeFfmpeg, probeMedia, withGpu, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
 import { prepareMedia } from "./media-prepare.js";
 import {
   cutSamples,
@@ -92,7 +92,7 @@ export interface MediaOptions {
   scorerId?: string;
   /**
    * The GPU index the sample encodes run on, with NVENC (see media-encode's usesNvenc). Undefined: the CPU encoders. The
-   * device is tested once (withNvenc); without a working NVENC encoder the phase encodes on the CPU, and the cache keeps the
+   * device is tested once (withGpu); without a working NVENC encoder the phase encodes on the CPU, and the cache keeps the
    * two apart.
    */
   gpu?: number;
@@ -599,7 +599,7 @@ export async function runMediaPhase(assets: MediaAsset[], opts: MediaOptions, de
   try {
     // The NVENC encoders are proven on the device before any encode. Without a working one the phase encodes on the CPU.
     const probed = deps.caps ?? (await probeFfmpeg());
-    const caps = await withNvenc(probed, opts.gpu);
+    const caps = await withGpu(probed, opts.gpu);
     if (opts.gpu !== undefined && !caps.av1Nvenc && !caps.h264Nvenc) opts = { ...opts, gpu: undefined };
     if (opts.gpu !== undefined) opts.log(`media: encoding on the GPU ${opts.gpu} with NVENC (${caps.av1Nvenc ? "AV1" : ""}${caps.av1Nvenc && caps.h264Nvenc ? ", " : ""}${caps.h264Nvenc ? "H.264" : ""})`);
     const unique = [...new Map(assets.map((a) => [a.key, a])).values()];

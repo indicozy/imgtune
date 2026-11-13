@@ -17,6 +17,8 @@ import {
   openedDeviceLine,
   parseGpuDevice,
   startGpuScorer,
+  gpuSettingOf,
+  gpuSettingOne,
 } from "../src/gpu.js";
 import { clearScoreCache, makeScorer, score } from "../src/metric.js";
 import type { RawImage } from "../src/ssim.js";
@@ -435,19 +437,19 @@ describe("startGpuScorer", () => {
 describe("option parsing", () => {
   it("reads --gpu and --gpu-device on scan; --gpu-device implies --gpu", () => {
     expect(parseScanArgs(["https://example.com"]).gpu).toBeUndefined();
-    expect(parseScanArgs(["https://example.com", "--gpu"]).gpu).toEqual({ device: 0 });
-    expect(parseScanArgs(["https://example.com", "--gpu-device", "1"]).gpu).toEqual({ device: 1 });
-    expect(parseScanArgs(["https://example.com", "--gpu-device", "1", "--gpu"]).gpu).toEqual({ device: 1 });
+    expect(parseScanArgs(["https://example.com", "--gpu"]).gpu).toEqual({ device: 0, devices: [0] });
+    expect(parseScanArgs(["https://example.com", "--gpu-device", "1"]).gpu).toEqual({ device: 1, devices: [1] });
+    expect(parseScanArgs(["https://example.com", "--gpu-device", "1", "--gpu"]).gpu).toEqual({ device: 1, devices: [1] });
     expect(() => parseScanArgs(["https://example.com", "--gpu-device", "x"])).toThrow(/--gpu-device/);
     expect(() => parseScanArgs(["https://example.com", "--gpu-device"])).toThrow(/needs a value/);
   });
 
   it("reads --gpu and --gpu-device on recheck and image", () => {
     expect(parseRecheckArgs(["--recheck", "scan.json"]).gpu).toBeUndefined();
-    expect(parseRecheckArgs(["--recheck", "scan.json", "--gpu"]).gpu).toEqual({ device: 0 });
-    expect(parseRecheckArgs(["--recheck", "scan.json", "--gpu-device", "1"]).gpu).toEqual({ device: 1 });
-    expect(parseImageArgs(["a.png", "--gpu"]).gpu).toEqual({ device: 0 });
-    expect(parseImageArgs(["a.png", "--gpu-device", "1"]).gpu).toEqual({ device: 1 });
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--gpu"]).gpu).toEqual({ device: 0, devices: [0] });
+    expect(parseRecheckArgs(["--recheck", "scan.json", "--gpu-device", "1"]).gpu).toEqual({ device: 1, devices: [1] });
+    expect(parseImageArgs(["a.png", "--gpu"]).gpu).toEqual({ device: 0, devices: [0] });
+    expect(parseImageArgs(["a.png", "--gpu-device", "1"]).gpu).toEqual({ device: 1, devices: [1] });
     expect(parseImageArgs(["a.png"]).gpu).toBeUndefined();
   });
 });
@@ -461,7 +463,7 @@ describe("scorer records", () => {
     const legacy: Partial<ScanRecordOptions> = { ...cpu };
     delete legacy.scorer;
     expect(sameRecordOptions(legacy as ScanRecordOptions, cpu)).toBe(true);
-    expect(sameRecordOptions(legacy as ScanRecordOptions, recordOptionsOf({ ...scanOptions, gpu: { device: 1 } }))).toBe(false);
+    expect(sameRecordOptions(legacy as ScanRecordOptions, recordOptionsOf({ ...scanOptions, gpu: gpuSettingOne(1) }))).toBe(false);
   });
 
   it("names the GPU on the output and in the summary when the GPU made the numbers", () => {
@@ -483,5 +485,18 @@ describe("scorer records", () => {
     );
     expect(scorerMismatch(before, before)).toBeUndefined();
     expect(scorerMismatch({ url: "x" } as PageResult, before)).toBeUndefined();
+  });
+});
+
+describe("--gpu-device lists", () => {
+  it("reads one GPU, or a comma list whose first GPU scores", () => {
+    expect(gpuSettingOf("1")).toEqual({ device: 1, devices: [1] });
+    expect(gpuSettingOf("0,1")).toEqual({ device: 0, devices: [0, 1] });
+    expect(gpuSettingOne(0)).toEqual({ device: 0, devices: [0] });
+  });
+
+  it("refuses a repeated or non-numeric GPU", () => {
+    expect(() => gpuSettingOf("0,0")).toThrow(/twice/);
+    expect(() => gpuSettingOf("0,x")).toThrow(/GPU index/);
   });
 });

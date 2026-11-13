@@ -47,7 +47,7 @@ afterAll(async () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-const caps: FfmpegCaps = { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true, av1Nvenc: false, h264Nvenc: false };
+const caps: FfmpegCaps = { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true, av1Nvenc: false, h264Nvenc: false, vmafCuda: false };
 /** A VP9 source, so both AV1 and the H.264 fallback are encoded. */
 const probe: MediaProbe = { durationS: 8, width: 1280, height: 720, fps: 30, videoCodec: "vp9" };
 

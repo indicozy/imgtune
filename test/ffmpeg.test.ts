@@ -4,18 +4,20 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   FFMPEG_MAX_PROCS,
+  GPU_MAX_PROCS,
   FfmpegOutputTooLarge,
   FfmpegTimeout,
   capsOf,
   inputOptions,
   nvencEnv,
   nvencOptions,
+  onGpuDevice,
   parseListing,
   probeFfmpeg,
   probeMedia,
   resetFfmpegProbe,
   runFfmpeg,
-  withNvenc,
+  withGpu,
 } from "../src/ffmpeg.js";
 
 const FIXTURES = join(import.meta.dirname, "fixtures", "media");
@@ -67,6 +69,7 @@ describe("probeFfmpeg", () => {
       avifMuxer: false,
       av1Nvenc: false,
       h264Nvenc: false,
+      vmafCuda: false,
     });
   });
 
@@ -318,6 +321,36 @@ describe("process slots", () => {
     expect(max).toBe(FFMPEG_MAX_PROCS);
   });
 
+  it("gives a GPU its own pool of GPU_MAX_PROCS, apart from the CPU pool, so both run at once", async () => {
+    const cpuLog = join(scratch, "slots-cpu.log");
+    const gpuLog = join(scratch, "slots-gpu.log");
+    writeFileSync(cpuLog, "");
+    writeFileSync(gpuLog, "");
+    setEnv({ IMGTUNE_FFMPEG: fakeBinary("slots-cpu.sh", "0.6", cpuLog) });
+    const cpu = Array.from({ length: FFMPEG_MAX_PROCS }, () => runFfmpeg(["-version"], { timeoutMs: 20_000 }));
+    setEnv({ IMGTUNE_FFMPEG: fakeBinary("slots-gpu.sh", "0.6", gpuLog) });
+    const gpu = Array.from({ length: 6 }, () => onGpuDevice(1, () => runFfmpeg(["-version"], { timeoutMs: 20_000 })));
+    const results = await Promise.all([...cpu, ...gpu]);
+    expect(results.every((r) => r.code === 0)).toBe(true);
+    expect(maxAlive(cpuLog)).toEqual({ max: FFMPEG_MAX_PROCS, starts: FFMPEG_MAX_PROCS });
+    expect(maxAlive(gpuLog)).toEqual({ max: GPU_MAX_PROCS, starts: 6 });
+    expect(GPU_MAX_PROCS).toBe(2);
+  });
+
+  it("keeps a separate pool per GPU: two devices run two processes each at once", async () => {
+    const log0 = join(scratch, "slots-gpu0.log");
+    const log1 = join(scratch, "slots-gpu1.log");
+    writeFileSync(log0, "");
+    writeFileSync(log1, "");
+    setEnv({ IMGTUNE_FFMPEG: fakeBinary("slots-gpu0.sh", "0.6", log0) });
+    const a = Array.from({ length: 4 }, () => onGpuDevice(0, () => runFfmpeg(["-version"], { timeoutMs: 20_000 })));
+    setEnv({ IMGTUNE_FFMPEG: fakeBinary("slots-gpu1.sh", "0.6", log1) });
+    const b = Array.from({ length: 4 }, () => onGpuDevice(1, () => runFfmpeg(["-version"], { timeoutMs: 20_000 })));
+    await Promise.all([...a, ...b]);
+    expect(maxAlive(log0)).toEqual({ max: GPU_MAX_PROCS, starts: 4 });
+    expect(maxAlive(log1)).toEqual({ max: GPU_MAX_PROCS, starts: 4 });
+  });
+
   it("counts the timeout from the call, so a run queued past its timeout rejects and never starts", async () => {
     const log = join(scratch, "slots-queued.log");
     writeFileSync(log, "");
@@ -368,11 +401,11 @@ describe("NVENC capabilities", () => {
 
   it("reports no NVENC when no device is given, without running a test encode", async () => {
     const caps = { ...capsOf({ encoders: parseListing(" V....D av1_nvenc x\n") }), ffmpeg: true };
-    expect(await withNvenc(caps, undefined)).toMatchObject({ av1Nvenc: false, h264Nvenc: false });
+    expect(await withGpu(caps, undefined)).toMatchObject({ av1Nvenc: false, h264Nvenc: false });
   });
 
   it("tests NVENC with a tiny encode on the device, and says no for an encoder the build does not list", async () => {
     const caps = { ...capsOf({ encoders: new Set<string>() }), ffmpeg: true };
-    expect(await withNvenc(caps, 0)).toMatchObject({ av1Nvenc: false, h264Nvenc: false });
+    expect(await withGpu(caps, 0)).toMatchObject({ av1Nvenc: false, h264Nvenc: false });
   });
 });

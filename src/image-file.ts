@@ -15,8 +15,8 @@ import sharp from "sharp";
 import { isLocalTarget } from "./address.js";
 import { encode, ENCODER_ID, loadReference } from "./encode.js";
 import { makeFetcher, MAX_IMAGE_BYTES } from "./fetch.js";
-import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
-import { probeFfmpeg, withNvenc } from "./ffmpeg.js";
+import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer, GpuSetting, gpuSettingOf, gpuSettingOne } from "./gpu.js";
+import { probeFfmpeg, withGpu } from "./ffmpeg.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import { cacheScope, CACHE_DIR, ResultCache } from "./result-cache.js";
@@ -48,7 +48,7 @@ export interface ImageArgs {
   minScore?: number;
   format: "text" | "json";
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
-  gpu?: { device: number };
+  gpu?: GpuSetting;
   /** --no-cache: the numbers are computed again, and none is kept in .imgtune/cache. */
   noCache?: boolean;
   /** --cpu-encode: the media is encoded on the CPU even with a GPU (the default with --gpu is NVENC). */
@@ -85,7 +85,7 @@ export function parseImageArgs(argv: string[]): ImageArgs {
       continue;
     }
     if (arg === "--gpu") {
-      args.gpu ??= { device: 0 };
+      args.gpu ??= gpuSettingOne(0);
       continue;
     }
     if (arg === "--no-cache") {
@@ -117,7 +117,7 @@ export function parseImageArgs(argv: string[]): ImageArgs {
       const score = Number(value);
       if (!/^\d+(\.\d+)?$/.test(value) || score <= 0 || score > 100) throw new Error(`--min-score needs a number above 0 and at most 100, not ${safeText(value)}`);
       args.minScore = score;
-    } else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
+    } else if (arg === "--gpu-device") args.gpu = gpuSettingOf(value);
     else if (arg === "--write") args.write = value;
     else if (arg === "--reference") {
       if (/^https?:\/\//i.test(value)) throw new Error(`--reference is a local file: media is not read from a URL here (local files only, not ${safeText(value)})`);
@@ -521,7 +521,7 @@ async function measureInputs(
     scratch ??= await mkdtemp(join(tmpdir(), "imgtune-media-file-"));
     // The NVENC encoders are proven on the GPU before any encode; --cpu-encode keeps the CPU encoders.
     const device = args.cpuEncode === true ? undefined : args.gpu?.device;
-    const caps = await withNvenc(await probeFfmpeg(), device);
+    const caps = await withGpu(await probeFfmpeg(), device);
     return {
       caps,
       gpu: caps.av1Nvenc || caps.h264Nvenc ? device : undefined,

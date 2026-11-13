@@ -85,7 +85,7 @@ export interface SearchOptions {
   deadline: number;
   caps: FfmpegCaps;
   /**
-   * The GPU index to encode on with NVENC (caps must already say which NVENC encoders work there, see withNvenc). Undefined:
+   * The GPU index to encode on with NVENC (caps must already say which NVENC encoders work there, see withGpu). Undefined:
    * the CPU encoders only. A width under NVENC_MIN_WIDTH, or an NVENC failure, is encoded on the CPU for that candidate.
    */
   gpu?: number;

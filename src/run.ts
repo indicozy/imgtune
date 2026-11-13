@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { writeFileAtomic } from "./atomic.js";
-import { parseGpuDevice } from "./gpu.js";
+import { parseGpuDevice, GpuSetting, gpuSettingOf, gpuSettingOne } from "./gpu.js";
 import { hintsCommand, parseQualities } from "./hints.js";
 import { locateCommand } from "./locate-only.js";
 import { surveyStop, withBroken, BROKEN_EXIT } from "./broken.js";
@@ -43,7 +43,7 @@ export interface RunArgs {
   samplePerPattern?: number;
   out?: string;
   deep: number;
-  gpu?: { device: number };
+  gpu?: GpuSetting;
   pageConcurrency?: number;
   idleTimeoutMs?: number;
   noCache: boolean;
@@ -89,11 +89,11 @@ export function parseRunArgs(argv: string[]): RunArgs {
     else if (arg === "--block-third-party") blockThirdParty = true;
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
     else if (arg === "--allow-third-party") continue;
-    else if (arg === "--gpu") args.gpu ??= { device: 0 };
+    else if (arg === "--gpu") args.gpu ??= gpuSettingOne(0);
     else if (arg === "--gpu-device") {
       const value = argValue(argv, i, arg);
       i++;
-      args.gpu = { device: parseGpuDevice(value) };
+      args.gpu = gpuSettingOf(value);
     } else if (
       arg === "--out" ||
       arg === "--urls-from" ||
@@ -428,7 +428,7 @@ function runFlags(args: RunArgs): { survey: string[]; deep: string[] } {
   if (args.thirdParty.block) common.push("--block-third-party");
   if (args.thirdParty.allowHosts.length > 0) common.push("--allow-host", shellWord(args.thirdParty.allowHosts.join(",")));
   const deep = [...common];
-  if (args.gpu !== undefined) deep.push("--gpu-device", String(args.gpu.device));
+  if (args.gpu !== undefined) deep.push("--gpu-device", args.gpu.devices.join(","));
   return { survey: common, deep };
 }
 

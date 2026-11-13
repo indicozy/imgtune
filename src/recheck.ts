@@ -8,7 +8,7 @@ import type { Browser } from "playwright";
 import { launchChromium } from "./browser.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { hasFix, type ImagePerViewport, type ImageRecord } from "./images.js";
-import { parseGpuDevice } from "./gpu.js";
+import { parseGpuDevice, GpuSetting, gpuSettingOf, gpuSettingOne } from "./gpu.js";
 import { parseViewports, safeText, scanOnce, scorerNote, type PageResult } from "./remote.js";
 import { settleLimit } from "./concurrency.js";
 import { cleanRecord } from "./locate-join.js";
@@ -23,7 +23,7 @@ export interface RecheckArgs {
   /** Recheck a page that robots.txt disallows (needed when the scan file says the page was scanned that way). */
   ignoreRobots: boolean;
   /** Score the recheck with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU. */
-  gpu?: { device: number };
+  gpu?: GpuSetting;
   /** --viewports: measure these instead of the viewports where the images rendered in the scan. */
   viewports?: string[];
   /** --no-cache: the numbers are computed again, and none is kept. */
@@ -51,7 +51,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
   const files: string[] = [];
   let ids: string[] | undefined;
   let ignoreRobots = false;
-  let gpu: { device: number } | undefined;
+  let gpu: GpuSetting | undefined;
   let viewports: string[] | undefined;
   let noCache = false;
   let blockThirdParty = false;
@@ -69,7 +69,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
     if (arg === "--allow-third-party") continue;
     if (arg === "--gpu") {
-      gpu ??= { device: 0 };
+      gpu ??= gpuSettingOne(0);
       continue;
     }
     if (arg === "--no-cache") {
@@ -81,7 +81,7 @@ export function parseRecheckArgs(argv: string[]): RecheckArgs {
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value (${USAGE})`);
       i++;
       if (arg === "--recheck") files.push(value);
-      else if (arg === "--gpu-device") gpu = { device: parseGpuDevice(value) };
+      else if (arg === "--gpu-device") gpu = gpuSettingOf(value);
       else if (arg === "--viewports") viewports = parseViewports(value);
       else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
       else {

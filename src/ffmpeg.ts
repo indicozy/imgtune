@@ -2,6 +2,7 @@
 // the installed build can do, and every call here is bounded by a timeout and can be aborted, so one heavy file cannot
 // hold a scan.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute } from "node:path";
 import type { Writable } from "node:stream";
@@ -20,11 +21,16 @@ export interface FfmpegCaps {
   webpAnim: boolean;
   avifMuxer: boolean;
   /**
-   * NVENC encoders, listed by the build and proven by a test encode on the chosen GPU (see withNvenc). Both are false
-   * until withNvenc runs for a device: the listing alone does not say the driver can open the card.
+   * NVENC encoders, listed by the build and proven by a test encode on the chosen GPU (see withGpu). Both are false
+   * until withGpu runs for a device: the listing alone does not say the driver can open the card.
    */
   av1Nvenc: boolean;
   h264Nvenc: boolean;
+  /**
+   * The libvmaf_cuda filter: VMAF on the GPU. Listed by the build, and proven on a device by withGpu. Both are false until
+   * withGpu runs for a device.
+   */
+  vmafCuda: boolean;
 }
 
 /** What one probed video or animated file is: its size, length, frame rate and codecs, read by ffprobe. */
@@ -91,45 +97,75 @@ interface RunOptions {
   stdin?: () => AsyncIterable<Uint8Array>;
   /** Stdout cap in bytes; a run past it is killed and rejects with FfmpegOutputTooLarge. */
   maxStdoutBytes?: number;
-  /** The environment of the process. Default: this process's. */
+  /** The environment of the process. Default: this process's, or the GPU's inside onGpuDevice. */
   env?: NodeJS.ProcessEnv;
 }
 
 /**
- * The most ffmpeg and ffprobe processes this process runs at once. 4 jobs × FFMPEG_THREADS (2) = 8 threads, which is the
- * CPU budget the encodes are given. Every run waits for a slot, FIFO, across the whole process, so parallel searches
- * cannot oversubscribe the CPUs.
+ * The most ffmpeg and ffprobe processes the CPU pool runs at once. 4 jobs × FFMPEG_THREADS (2) = 8 threads, which is the CPU
+ * budget the encodes are given. Every CPU run waits for a slot, FIFO, across the whole process.
  */
 export const FFMPEG_MAX_PROCS = 4;
+/**
+ * The most ffmpeg processes one GPU runs at once (its own pool, apart from the CPU pool). Two, so the card's NVENC sessions
+ * and its CUDA context are not oversubscribed by one worker pair.
+ */
+export const GPU_MAX_PROCS = 2;
 
-/** Processes holding a slot right now. */
-let slotsInUse = 0;
-/** Runs waiting for a slot, in arrival order. */
-const slotQueue: (() => void)[] = [];
+/** The GPU a run is bound to, inherited by every async step started inside onGpuDevice. */
+const gpuContext = new AsyncLocalStorage<{ device: number }>();
 
 /**
- * Starts `run` now when a slot is free, else queues it. Returns a function that removes the run from the queue if it is
- * still waiting (used when its timeout or abort fires first). A run that starts holds its slot until releaseSlot.
+ * Runs `run` with every ffmpeg and ffprobe process it starts bound to one GPU: they take that GPU's pool (GPU_MAX_PROCS) and
+ * run with CUDA_DEVICE_ORDER=PCI_BUS_ID and CUDA_VISIBLE_DEVICES=device, unless a call names its own environment. Runs outside
+ * it use the CPU pool (FFMPEG_MAX_PROCS).
  */
-function requestSlot(run: () => void): () => void {
-  if (slotsInUse < FFMPEG_MAX_PROCS) {
-    slotsInUse++;
+export function onGpuDevice<T>(device: number, run: () => Promise<T>): Promise<T> {
+  return gpuContext.run({ device }, run);
+}
+
+/** A slot pool: at most `limit` processes hold a slot at once, the rest wait in arrival order. */
+class SlotPool {
+  inUse = 0;
+  readonly queue: (() => void)[] = [];
+  constructor(readonly limit: number) {}
+}
+
+const cpuPool = new SlotPool(FFMPEG_MAX_PROCS);
+const gpuPools = new Map<number, SlotPool>();
+
+function gpuPool(device: number): SlotPool {
+  let pool = gpuPools.get(device);
+  if (pool === undefined) {
+    pool = new SlotPool(GPU_MAX_PROCS);
+    gpuPools.set(device, pool);
+  }
+  return pool;
+}
+
+/**
+ * Starts `run` now when a slot of the pool is free, else queues it. Returns a function that removes the run from the queue if
+ * it is still waiting (used when its timeout or abort fires first). A run that starts holds its slot until releaseSlot.
+ */
+function requestSlot(pool: SlotPool, run: () => void): () => void {
+  if (pool.inUse < pool.limit) {
+    pool.inUse++;
     run();
     return () => {};
   }
-  slotQueue.push(run);
+  pool.queue.push(run);
   return () => {
-    const index = slotQueue.indexOf(run);
-    if (index >= 0) slotQueue.splice(index, 1);
+    const index = pool.queue.indexOf(run);
+    if (index >= 0) pool.queue.splice(index, 1);
   };
 }
 
-/** Gives a slot back. The next queued run takes it at once, so the count never exceeds FFMPEG_MAX_PROCS. */
-function releaseSlot(): void {
-  slotsInUse--;
-  const next = slotQueue.shift();
+/** Gives a slot back. The next queued run of the pool takes it at once, so the count never exceeds the pool's limit. */
+function releaseSlot(pool: SlotPool): void {
+  pool.inUse--;
+  const next = pool.queue.shift();
   if (next) {
-    slotsInUse++;
+    pool.inUse++;
     next();
   }
 }
@@ -146,6 +182,10 @@ function releaseSlot(): void {
  */
 function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunResult> {
   const maxStdoutBytes = opts.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES;
+  // A run started inside onGpuDevice belongs to that GPU: its pool, and its CUDA environment unless the call names one.
+  const device = gpuContext.getStore()?.device;
+  const pool = device === undefined ? cpuPool : gpuPool(device);
+  const env = opts.env ?? (device === undefined ? undefined : nvencEnv(device));
   return new Promise<RunResult>((resolve, reject) => {
     if (opts.signal?.aborted) {
       reject(abortError());
@@ -169,7 +209,7 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
       opts.signal?.removeEventListener("abort", onAbort);
       if (holdsSlot) {
         holdsSlot = false;
-        releaseSlot();
+        releaseSlot(pool);
       } else {
         cancelQueued();
       }
@@ -192,7 +232,7 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
     const start = (): void => {
       holdsSlot = true;
       try {
-        child = spawn(bin, args, { stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"], env: opts.env });
+        child = spawn(bin, args, { stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"], env });
       } catch (err) {
         finish(() => reject(err instanceof Error ? err : new Error(String(err))));
         return;
@@ -225,7 +265,7 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
         );
       });
     };
-    cancelQueued = requestSlot(start);
+    cancelQueued = requestSlot(pool, start);
   });
 }
 
@@ -329,7 +369,7 @@ async function computeCaps(): Promise<FfmpegCaps> {
 /**
  * The capabilities a set of ffmpeg listings gives. A listing that is undefined (the command failed) reports its
  * capabilities as missing; `ffmpeg` is true only when the encoder listing could be read. The NVENC flags are only the
- * listing's: the device test (withNvenc) is what makes them usable.
+ * listing's: the device test (withGpu) is what makes them usable.
  */
 export function capsOf(lists: { encoders?: Set<string>; filters?: Set<string>; muxers?: Set<string>; ffprobe?: boolean }): FfmpegCaps {
   const encoderNames = lists.encoders ?? new Set<string>();
@@ -348,6 +388,7 @@ export function capsOf(lists: { encoders?: Set<string>; filters?: Set<string>; m
     avifMuxer: lists.muxers?.has("avif") ?? false,
     av1Nvenc: encoderNames.has("av1_nvenc"),
     h264Nvenc: encoderNames.has("h264_nvenc"),
+    vmafCuda: lists.filters?.has("libvmaf_cuda") ?? false,
   };
 }
 
@@ -368,22 +409,42 @@ export function nvencEnv(device: number, base: NodeJS.ProcessEnv = process.env):
 const NVENC_TEST_INPUT = ["-f", "lavfi", "-i", "testsrc2=s=256x144:d=0.2"];
 const NVENC_TEST_TIMEOUT_MS = 30_000;
 
-const nvencTests = new Map<number, Promise<{ av1: boolean; h264: boolean }>>();
+const gpuTests = new Map<number, Promise<{ av1: boolean; h264: boolean; vmafCuda: boolean }>>();
 
 /**
- * Runs a tiny NVENC encode for each NVENC encoder the build lists, on one GPU. The result is memoised per device, so a run
- * tests each card once. A failed encode means that encoder cannot run on that device: the probe returns false for it.
+ * Proves the GPU encoders and VMAF on one device: a tiny encode per NVENC encoder the build lists, and a tiny libvmaf_cuda run
+ * when the build lists it. Memoised per device, so a run tests each card once. A failed test means that encoder or filter
+ * cannot run on that device.
  */
-export function testNvenc(device: number, caps: FfmpegCaps): Promise<{ av1: boolean; h264: boolean }> {
-  let pending = nvencTests.get(device);
+export function testGpu(device: number, caps: FfmpegCaps): Promise<{ av1: boolean; h264: boolean; vmafCuda: boolean }> {
+  let pending = gpuTests.get(device);
   if (pending === undefined) {
     pending = Promise.all([
       caps.av1Nvenc ? encodesOn("av1_nvenc", device) : Promise.resolve(false),
       caps.h264Nvenc ? encodesOn("h264_nvenc", device) : Promise.resolve(false),
-    ]).then(([av1, h264]) => ({ av1, h264 }));
-    nvencTests.set(device, pending);
+      caps.vmafCuda ? vmafCudaOn(device) : Promise.resolve(false),
+    ]).then(([av1, h264, vmafCuda]) => ({ av1, h264, vmafCuda }));
+    gpuTests.set(device, pending);
   }
   return pending;
+}
+
+/** Whether libvmaf_cuda scores two frames on `device` (exit code 0). Never throws. */
+async function vmafCudaOn(device: number): Promise<boolean> {
+  try {
+    const result = await runFfmpeg(
+      [
+        "-f", "lavfi", "-i", "testsrc2=s=256x144:d=0.2",
+        "-f", "lavfi", "-i", "testsrc2=s=256x144:d=0.2",
+        "-filter_complex", "[0:v]format=yuv420p,hwupload_cuda[a];[1:v]format=yuv420p,hwupload_cuda[b];[a][b]libvmaf_cuda",
+        "-f", "null", "-",
+      ],
+      { timeoutMs: NVENC_TEST_TIMEOUT_MS, env: nvencEnv(device) },
+    );
+    return result.code === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `encoder` makes a frame on `device` (exit code 0 of a short encode to the null muxer). Never throws. */
@@ -400,13 +461,15 @@ async function encodesOn(encoder: string, device: number): Promise<boolean> {
 }
 
 /**
- * The capabilities with the NVENC encoders that passed the test encode on `device`. Without a device, or when the build
- * does not list NVENC, the caps come back with both NVENC flags false.
+ * The capabilities with the GPU encoders and VMAF that passed their tests on `device`. Without a device the caps come back
+ * with the NVENC and CUDA flags false.
  */
-export async function withNvenc(caps: FfmpegCaps, device: number | undefined): Promise<FfmpegCaps> {
-  if (device === undefined || (!caps.av1Nvenc && !caps.h264Nvenc)) return { ...caps, av1Nvenc: false, h264Nvenc: false };
-  const tested = await testNvenc(device, caps);
-  return { ...caps, av1Nvenc: tested.av1, h264Nvenc: tested.h264 };
+export async function withGpu(caps: FfmpegCaps, device: number | undefined): Promise<FfmpegCaps> {
+  if (device === undefined || (!caps.av1Nvenc && !caps.h264Nvenc && !caps.vmafCuda)) {
+    return { ...caps, av1Nvenc: false, h264Nvenc: false, vmafCuda: false };
+  }
+  const tested = await testGpu(device, caps);
+  return { ...caps, av1Nvenc: tested.av1, h264Nvenc: tested.h264, vmafCuda: tested.vmafCuda };
 }
 
 /**

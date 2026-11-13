@@ -50,7 +50,7 @@ import { sampleByPattern, urlsFromSource } from "./urls.js";
 import { groupRoutes, parseRouteMap } from "./routes.js";
 import { countDocumentNavigations, gotoParsed, NETWORK_IDLE_TIMEOUT_MS, settlePage, settleWithin, waitForLoadWithin, BODY_READ_TIMEOUT_MS } from "./measure.js";
 import { makeScorer, type Scorer } from "./metric.js";
-import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
+import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer, GpuSetting, gpuSettingOf, gpuSettingOne } from "./gpu.js";
 import { bisectQuality, confirmBisect, minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
@@ -492,7 +492,7 @@ export interface ScanArgs {
   /** A Playwright storage state file (cookies and local storage) applied to every context. */
   storageState?: string;
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
-  gpu?: { device: number };
+  gpu?: GpuSetting;
   /** --harness: the pages are harness routes (Storybook, a temporary route): their records are measured-harness. */
   harness?: boolean;
   /** Third-party requests: allowed by default; --block-third-party turns blocking on, --allow-host keeps hosts while blocking. */
@@ -595,7 +595,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--no-quality") args.quality = false;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--resume") args.resume = true;
-    else if (arg === "--gpu") args.gpu ??= { device: 0 };
+    else if (arg === "--gpu") args.gpu ??= gpuSettingOne(0);
     else if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--cpu-encode") args.cpuEncode = true;
     else if (arg === "--harness") args.harness = true;
@@ -625,7 +625,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--sample-per-pattern") args.samplePerPattern = parseLimit(arg, value);
       else if (arg === "--route-map") args.routeMap = value;
       else if (arg === "--storage-state") args.storageState = value;
-      else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
+      else if (arg === "--gpu-device") args.gpu = gpuSettingOf(value);
       else if (arg === "--allow-host") allowHosts = parseAllowHosts(value);
       else args.failOver = parseFailOver(value);
     } else if (arg.startsWith("--")) {
@@ -3391,7 +3391,7 @@ export interface ScanOptions {
   /** Only the images for which this is true get the quality and format search (see AnalysisContext). */
   qualityFor?: (inst: Instance) => boolean;
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
-  gpu?: { device: number };
+  gpu?: GpuSetting;
   /** --cpu-encode: the media is encoded on the CPU even with a GPU (see the media phase). */
   cpuEncode?: boolean;
   /** Pages in flight at once on the shared browser (--page-concurrency). Default 1: one page at a time. */

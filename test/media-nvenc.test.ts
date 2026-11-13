@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { probeFfmpeg, probeMedia, withNvenc, type FfmpegCaps } from "../src/ffmpeg.js";
+import { probeFfmpeg, probeMedia, withGpu, type FfmpegCaps } from "../src/ffmpeg.js";
 import {
   NVENC_BYTE_FACTOR,
   NVENC_MIN_WIDTH,
@@ -39,6 +39,7 @@ const caps: FfmpegCaps = {
   avifMuxer: true,
   av1Nvenc: true,
   h264Nvenc: true,
+  vmafCuda: false,
 };
 
 describe("NVENC arguments", () => {
@@ -136,7 +137,7 @@ describe("the CPU fallback of one candidate", () => {
 });
 
 /** Real NVENC runs. Skipped unless the build lists NVENC and the test encode works on the GPU. */
-const nvencCaps = await withNvenc(await probeFfmpeg(), GPU);
+const nvencCaps = await withGpu(await probeFfmpeg(), GPU);
 const score = makeScorer("ssimulacra2");
 
 describe.skipIf(!nvencCaps.av1Nvenc)("NVENC search on clip.mp4 (GPU " + GPU + ")", () => {

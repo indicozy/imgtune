@@ -44,6 +44,28 @@ export function parseGpuDevice(text: string): number {
   return Number(text);
 }
 
+/**
+ * The GPUs a run uses: `devices` in the order given (`--gpu-device 0,1`), and `device`, the first of them, which is the
+ * SSIMULACRA2 scorer's GPU. Each device gets its own encode workers (see media-phase).
+ */
+export interface GpuSetting {
+  device: number;
+  devices: number[];
+}
+
+/** One GPU, as `--gpu` and the scorer's default use it. */
+export function gpuSettingOne(device: number): GpuSetting {
+  return { device, devices: [device] };
+}
+
+/** A comma list of GPU indexes, as `--gpu-device` takes it: `0` or `0,1`. Each is validated, and a repeat is an error. */
+export function gpuSettingOf(text: string): GpuSetting {
+  const parts = text.split(",");
+  const devices = parts.map((part) => parseGpuDevice(part.trim()));
+  if (new Set(devices).size !== devices.length) throw new Error(`--gpu-device lists a GPU twice: ${JSON.stringify(text.slice(0, 40))}`);
+  return { device: devices[0], devices };
+}
+
 /** Text that came from a program or a file: printable, one line, short. */
 function plain(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 80);

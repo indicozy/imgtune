@@ -7,7 +7,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { writeFileAtomic } from "./atomic.js";
-import { parseGpuDevice } from "./gpu.js";
+import { GpuSetting, gpuSettingOf, gpuSettingOne } from "./gpu.js";
 import { parseQualities } from "./hints.js";
 import { BROKEN_EXIT, surveyStop, type SurveyStop } from "./broken.js";
 import { DEFAULT_THIRD_PARTY, parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
@@ -43,7 +43,7 @@ export interface CheckSettings {
   routeMap?: string;
   /** At most this many URLs per route type in the survey. Undefined: DEFAULT_CHECK_SAMPLE. */
   samplePerPattern?: number;
-  gpu?: { device: number };
+  gpu?: GpuSetting;
   pageConcurrency?: number;
   /** The framework's allowed qualities (--qualities): targets are snapped up to them. */
   qualities?: number[];
@@ -84,9 +84,9 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
     else if (arg === "--block-third-party") blockThirdParty = true;
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
     else if (arg === "--allow-third-party") continue;
-    else if (arg === "--gpu") args.gpu ??= { device: 0 };
+    else if (arg === "--gpu") args.gpu ??= gpuSettingOne(0);
     else if (arg === "--gpu-device") {
-      args.gpu = { device: parseGpuDevice(valueOf(argv, i, arg)) };
+      args.gpu = gpuSettingOf(valueOf(argv, i, arg));
       i++;
     } else if (
       arg === "--urls-from" ||
@@ -298,7 +298,7 @@ export async function scanCheckPages(input: {
     const expected = new Map<string, number>();
     for (const page of survey) if (page.status === "ok") expected.set(page.url, page.counts.images);
     const flags = [
-      ...(settings.gpu !== undefined ? ["--gpu-device", String(settings.gpu.device)] : []),
+      ...(settings.gpu !== undefined ? ["--gpu-device", settings.gpu.devices.join(",")] : []),
       ...(settings.thirdParty.block ? ["--block-third-party"] : []),
       ...(settings.thirdParty.allowHosts.length > 0 ? ["--allow-host", shellWord(settings.thirdParty.allowHosts.join(","))] : []),
       ...(settings.noCache ? ["--no-cache"] : []),
