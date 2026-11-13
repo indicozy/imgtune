@@ -19,6 +19,7 @@ import {
   type SearchOutcome,
 } from "./media-encode.js";
 import type { Scorer } from "./metric.js";
+import { reasonText } from "./media-model.js";
 import { pixelSize, safeText } from "./remote.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
@@ -336,7 +337,7 @@ export function renderAnimated(result: AnimatedFileResult): string {
       lines.push(candidateLine(codec, outcome.best));
       if (best === undefined || outcome.best.bytes < best.bytes) best = { codec, bytes: outcome.best.bytes };
     } else {
-      const why = outcome.reason === "too-large" ? "too large to score" : outcome.reason;
+      const why = reasonText(outcome.reason);
       lines.push(`  ${codec.padEnd(14)} no quality meets the bars (${why})`);
     }
   }

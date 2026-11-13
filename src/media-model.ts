@@ -4,6 +4,27 @@
  * fit the encode budget. No I/O and no ffmpeg here, so every rule can be tested without a browser or an encoder.
  */
 
+/**
+ * How a not-encoded reason code reads in a report. Codes that a report prints as words (the agent reads them): a code with
+ * no entry passes through unchanged, as it is already a sentence (for example "ffmpeg not found").
+ */
+const REASON_TEXT: Record<string, string> = {
+  "time-limit": "time limit reached",
+  "no-passing-quality": "no setting passed the quality bar",
+  "too-large": "too large to score",
+  "no-encoder": "ffmpeg has no encoder for this codec",
+  "no-vmaf": "ffmpeg has no libvmaf",
+  "no-ffmpeg": "ffmpeg not found",
+  "probe-failed": "ffprobe could not read the file",
+  "score-failed": "the quality scorer failed",
+  aborted: "aborted",
+};
+
+/** The text of a not-encoded reason (see REASON_TEXT). */
+export function reasonText(reason: string): string {
+  return REASON_TEXT[reason] ?? reason;
+}
+
 /** Widths a video rendition can be snapped to. Few buckets keep the encode count and the cache keys small. */
 export const WIDTH_BUCKETS = [320, 480, 640, 720, 854, 960, 1080, 1280, 1440, 1920, 2560, 3840] as const;
 

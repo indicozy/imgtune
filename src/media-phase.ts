@@ -238,6 +238,12 @@ export function refineAssetLength(asset: MediaAsset, length: number | undefined)
   return { ...asset, perView: bytes.perView, perPlay: bytes.perPlay };
 }
 
+/** The device width an animated image needs: the largest any viewport needs (0 when none is known). */
+export function animatedNeedOf(record: ImageRecord): number {
+  const needs = record.perViewport.map((p) => p.neededPx).filter((n) => n > 0);
+  return needs.length === 0 ? 0 : Math.max(...needs);
+}
+
 /**
  * The asset of an animated image record, or undefined when the record has no URL or no needed width. The one width is the
  * largest device width any viewport needs, snapped to a bucket, never above the file's own width.
@@ -245,9 +251,8 @@ export function refineAssetLength(asset: MediaAsset, length: number | undefined)
 export function animatedAssetOf(record: ImageRecord, fix: AnimatedFix): MediaAsset | undefined {
   const url = record.current.src;
   if (url === undefined) return undefined;
-  const needs = record.perViewport.map((p) => p.neededPx).filter((n) => n > 0);
-  if (needs.length === 0) return undefined;
-  const need = Math.max(...needs);
+  const need = animatedNeedOf(record);
+  if (need === 0) return undefined;
   const widths = [snapWidth(need, record.current.naturalWidth ?? need)];
   return {
     key: mediaKeyOf("animated", fix.context, url, widths),
@@ -679,10 +684,12 @@ export function attachMediaResults(result: PageResult, results: MediaResults, ar
     if (entry === undefined) {
       return fallback === undefined ? image : { ...image, fix: { ...image.fix, animated: { ...animated, notEncoded: fallback } } };
     }
+    // The need and the file's width travel with the estimate, so a hint can say when the width was capped at the file's own.
+    const sizing = { need: animatedNeedOf(image), ...(image.current.naturalWidth !== undefined ? { sourceWidth: image.current.naturalWidth } : {}) };
     const next: AnimatedFix =
       entry.candidates.length > 0
-        ? { ...animated, estimate: entry.candidates }
-        : { ...animated, notEncoded: entry.notEncoded ?? "no passing quality" };
+        ? { ...animated, estimate: entry.candidates, ...sizing }
+        : { ...animated, notEncoded: entry.notEncoded ?? "no passing quality", ...sizing };
     return { ...image, fix: { ...image.fix, animated: next } };
   });
   const hasAssets = mediaAssetsOf(result).length > 0;

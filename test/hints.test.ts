@@ -25,10 +25,13 @@ import {
   videoLines,
   onePerFile,
   videoTotalsLine,
+  encoderRecipe,
+  sourceCapLine,
+  videoSourceCapLine,
 } from "../src/hints.js";
 import { renderMarkdown, renderPage, type PageResult } from "../src/remote.js";
 import { planQualityCap } from "../src/qualities-cap.js";
-import { clusterVideoWidths } from "../src/media-model.js";
+import { clusterVideoWidths, reasonText } from "../src/media-model.js";
 import type { AnimatedFix, VideoRecord } from "../src/video-analysis.js";
 import type { CandidateResult } from "../src/media-encode.js";
 import { candidateOf, okPage, otherPage, videoOf } from "./page-fixtures.js";
@@ -799,7 +802,7 @@ describe("animated hints (the image hints of an animated file)", () => {
     const [hint] = hintsOf(page([animatedRecord("g1", animated)]));
     const text = renderHint(hint, 1).join("\n");
     expect(text).toContain(
-      '   animated GIF 3.0 s, 30 frames: serve animated AVIF q45 at 960px (120 KB est.), animated WebP q70 (150 KB est.); fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est. (estimate from 2 s samples)',
+      '   animated GIF 3.0 s, 30 frames: serve animated AVIF CRF 45 at 960px (libsvtav1 -preset 10 -crf 45, -f avif): 120 KB est., animated WebP q70 at 960px (libwebp_anim -q:v 70 -loop 0): 150 KB est.; fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est. (estimate from 2 s samples)',
     );
     expect(text.split("(estimate from 2 s samples)")).toHaveLength(2);
   });
@@ -837,9 +840,9 @@ describe("animated hints (the image hints of an animated file)", () => {
     const [hint] = hintsOf(page([animatedRecord("g3", animated)]));
     const text = renderHint(hint, 1).join("\n");
     expect(text).toContain('   animated GIF 3.0 s, 30 frames: replace with <video autoplay muted loop playsinline poster="<first frame>">');
-    expect(text).toContain('     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> CRF 32, 960px, 412 KB est.');
+    expect(text).toContain('     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> AV1 MP4 (libsvtav1 -preset 10 -crf 32 -pix_fmt yuv420p -movflags +faststart), CRF 32, 960px, 412 KB est.');
     expect(text).toContain('     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028"> H.264 fallback, not measured: libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart -an at 960px wide');
-    expect(text).toContain("   alternative: animated AVIF q45 at 960px (900 KB est.), animated WebP q70 (1000 KB est.)");
+    expect(text).toContain("   alternative: animated AVIF CRF 45 at 960px (libsvtav1 -preset 10 -crf 45, -f avif): 900 KB est., animated WebP q70 at 960px (libwebp_anim -q:v 70 -loop 0): 1000 KB est.");
     expect(text).toContain("   saves 1388 KB/view est. (estimate from 2 s samples)");
   });
 
@@ -904,7 +907,7 @@ describe("video hints (levers, target, bytes, evidence)", () => {
       "   audio: drop the track (muted video): saves 100 KB/play est.",
       "   resolution: serve 960px: saves 500 KB/play est.",
       "   re-encode (av1 CRF 32): saves 1000 KB/play est.",
-      '     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> CRF 32, 960px, 400 KB est.',
+      '     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> AV1 MP4 (libsvtav1 -preset 10 -crf 32 -pix_fmt yuv420p -movflags +faststart), CRF 32, 960px, 400 KB est.',
       '     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028">',
       "   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)",
       "   saves 1600 KB/view est., 1600 KB/play est. (estimate from 2 s samples)",
@@ -1106,9 +1109,11 @@ describe("animated hints: the sizes line, the fallback from the candidates that 
     expect(renderHint(hint, 1)).toEqual([
       '1. s1  "Card"  https://shop.example/bags',
       "   owner unknown",
-      '   animated GIF 3.0 s, 30 frames: serve animated AVIF q45 at 960px (120 KB est.), animated WebP q70 (150 KB est.); fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est. (estimate from 2 s samples)',
+      '   animated GIF 3.0 s, 30 frames: serve animated AVIF CRF 45 at 960px (libsvtav1 -preset 10 -crf 45, -f avif): 120 KB est., animated WebP q70 at 960px (libwebp_anim -q:v 70 -loop 0): 150 KB est.; fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est. (estimate from 2 s samples)',
       "   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)",
-      "   saves 380 KB/view, +0 KB sharpness (separate)  rung measured-page",
+      "   browsers: animated AVIF: Chrome 85+, Firefox 113+, Safari 16.4+",
+      "   browsers: animated WebP: all current browsers",
+      "   saves 380 KB/view est., +0 KB sharpness (separate)  rung estimate",
     ]);
   });
 
@@ -1120,19 +1125,19 @@ describe("animated hints: the sizes line, the fallback from the candidates that 
   it("avif and webp: the picture names the AVIF file, and the WebP is an alternative", () => {
     const text = rendered(animatedRecord("f1", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf(), webpOf()], perViewBytes: 500 * 1024 }));
     expect(text).toContain('fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>');
-    expect(text).toContain("animated AVIF q45 at 960px (120 KB est.), animated WebP q70 (150 KB est.)");
+    expect(text).toContain("animated AVIF CRF 45 at 960px (libsvtav1 -preset 10 -crf 45, -f avif): 120 KB est., animated WebP q70 at 960px (libwebp_anim -q:v 70 -loop 0): 150 KB est.");
   });
 
   it("webp only: a plain src swap to the WebP, with no picture and no AVIF named", () => {
     const text = rendered(animatedRecord("f2", { info: gifInfo, context: "img", target: imageTarget, estimate: [webpOf()], perViewBytes: 500 * 1024 }));
-    expect(text).toContain("   animated GIF 3.0 s, 30 frames: serve animated WebP q70 (150 KB est.); plain src swap to the animated WebP (WebP animates in every browser that shows the image); saves 350 KB/view est. (estimate from 2 s samples)");
+    expect(text).toContain("   animated GIF 3.0 s, 30 frames: serve animated WebP q70 at 960px (libwebp_anim -q:v 70 -loop 0): 150 KB est.; plain src swap to the animated WebP (WebP animates in every browser that shows the image); saves 350 KB/view est. (estimate from 2 s samples)");
     expect(text).not.toContain("<picture");
     expect(text).not.toContain("AVIF");
   });
 
   it("avif only: the picture names the AVIF file, with the original as the img fallback", () => {
     const text = rendered(animatedRecord("f3", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf()], perViewBytes: 500 * 1024 }));
-    expect(text).toContain('serve animated AVIF q45 at 960px (120 KB est.); fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est.');
+    expect(text).toContain('serve animated AVIF CRF 45 at 960px (libsvtav1 -preset 10 -crf 45, -f avif): 120 KB est.; fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est.');
     expect(text).not.toContain("WebP");
   });
 
@@ -1210,6 +1215,74 @@ describe("animated saving is the encode alone (no double count with a sizes prop
     const text = renderHint(hint, 1).join("\n");
     expect(text).toContain("   sizes 33vw -> 50vw (measured-max)");
     expect(text).toContain("saves 380 KB/view est. (estimate from 2 s samples)");
-    expect(text).toContain("   saves 380 KB/view, +0 KB sharpness (separate)");
+    expect(text).toContain("   saves 380 KB/view est., +0 KB sharpness (separate)");
+  });
+});
+
+describe("the animated and video hints: source cap, alt text, recipes and reasons", () => {
+  const gifInfo = { format: "gif" as const, frames: 30, durationMs: 3000, loop: 0 };
+  const cand = (codec: CandidateResult["codec"], width: number, quality: number, extra: Partial<CandidateResult> = {}): CandidateResult =>
+    ({ codec, width, quality, sampleBytes: 1, sampleSeconds: 2, bytes: 100 * 1024, vmaf: 95, still: 72, stillBar: 70, vmafBar: 93, estimate: true, audio: false, ...extra }) as CandidateResult;
+
+  it("says the target is capped at the file's own width when the need is wider", () => {
+    expect(sourceCapLine(960, 480, 480)).toBe("   source is 480px wide; needed 960px: serve 480px (upscaling adds bytes, not detail)");
+    expect(sourceCapLine(480, 960, 480)).toBeUndefined();
+    expect(sourceCapLine(960, undefined, 480)).toBeUndefined();
+  });
+
+  it("prints the cap in an animated hint whose target is the file's width, and not when it is not capped", () => {
+    const capped = { info: gifInfo, context: "img" as const, target: { main: "animated-image" as const, alternatives: [] }, estimate: [cand("animated-avif", 480, 45)], perViewBytes: 500 * 1024, need: 960, sourceWidth: 480 };
+    expect(animatedLines(capped, "https://shop.example/a.gif").join("\n")).toContain("source is 480px wide; needed 960px: serve 480px");
+    expect(animatedLines({ ...capped, need: 400 }).join("\n")).not.toContain("source is");
+  });
+
+  it("keeps the alt text of an image replaced by a <video> as its aria-label, and says so", () => {
+    const video = {
+      info: gifInfo,
+      context: "img" as const,
+      target: { main: "video" as const, alternatives: [] },
+      estimate: [cand("av1-mp4", 960, 32, { encoder: "libsvtav1" }), cand("h264-mp4", 960, 23)],
+      perViewBytes: 2000 * 1024,
+    };
+    const text = animatedLines(video, "https://shop.example/a.gif", "animated card").join("\n");
+    expect(text).toContain('<video autoplay muted loop playsinline poster="<first frame>" role="img" aria-label="animated card">');
+    expect(text).toContain("the image's alt text is kept as the <video>'s aria-label");
+  });
+
+  it("gives an AV1 and an AVIF target the exact encoder, and a WebP target its own; the AV1 quality is a CRF", () => {
+    expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40 -pix_fmt yuv420p -movflags +faststart");
+    expect(encoderRecipe("animated-avif", cand("animated-avif", 960, 40, { encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40, -f avif");
+    expect(encoderRecipe("animated-webp", cand("animated-webp", 960, 61))).toBe("libwebp_anim -q:v 61 -loop 0");
+    expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { encoder: "libaom-av1" }))).toContain("libaom-av1 -cpu-used 8");
+  });
+
+  it("names each option's browsers, and the video's H.264 fallback without a claim", () => {
+    const text = animatedLines({
+      info: gifInfo,
+      context: "img",
+      target: { main: "video" as const, alternatives: [] },
+      estimate: [cand("av1-mp4", 960, 32, { encoder: "libsvtav1" }), cand("animated-webp", 960, 61)],
+      perViewBytes: 2000 * 1024,
+    }).join("\n");
+    expect(text).toContain("   browsers: AV1 video: Chrome, Firefox, Edge; Safari only on devices with AV1 hardware decode, so keep the H.264 fallback");
+    expect(text).toContain("   browsers: animated WebP: all current browsers");
+  });
+
+  it("reads a not-encoded reason as a sentence, and leaves a reason that is already one", () => {
+    expect(reasonText("time-limit")).toBe("time limit reached");
+    expect(reasonText("no-passing-quality")).toBe("no setting passed the quality bar");
+    expect(reasonText("too-large")).toBe("too large to score");
+    expect(reasonText("ffmpeg not found")).toBe("ffmpeg not found");
+    expect(animatedLines({ info: gifInfo, context: "img", perViewBytes: 1024, notEncoded: "too-large" }).join("\n")).toContain("not encoded: too large to score");
+  });
+
+  it("names a video's width cap when its file is narrower than the widths needed", () => {
+    const needs = [{ viewport: "desktop", viewportWidth: 1280, boxWidth: 1280, dpr: 1 }];
+    const video = encodedVideo({
+      widths: clusterVideoWidths(needs, 2, 480),
+      perViewport: [{ viewport: "desktop", boxWidth: 1280, dpr: 1, inFirstViewport: true }],
+      probe: { durationS: 8, width: 480, height: 270, fps: 30, videoCodec: "h264" },
+    });
+    expect(videoSourceCapLine(video)).toBe("   source is 480px wide; needed 1280px: serve 480px (upscaling adds bytes, not detail)");
   });
 });

@@ -12,7 +12,7 @@ import { DEFAULT_VIEWPORTS } from "./config.js";
 import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, type QualityCapPlan } from "./qualities-cap.js";
 import type { CandidateResult, MediaCodec } from "./media-encode.js";
-import type { WidthPlan } from "./media-model.js";
+import { reasonText, type WidthPlan } from "./media-model.js";
 import type { AnimatedFix, VideoRecord } from "./video-analysis.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
@@ -375,14 +375,16 @@ export function renderHint(hint: Hint, rank: number): string[] {
   if (hint.background === true) {
     lines.push("   css background: no sizes in CSS; serve a file at that width, or image-set() with the density or width variants");
   } else if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
-  if (hint.animated !== undefined) lines.push(...animatedLines(hint.animated, hint.src));
+  if (hint.animated !== undefined) lines.push(...animatedLines(hint.animated, hint.src, hint.alt));
   const parts: string[] = [];
   if (hint.quality) parts.push(`quality ${hint.quality.current}${qualityTarget(hint.quality)} (max of ${hint.quality.samples}, ${safeText(hint.quality.group)})`);
   if (hint.format) parts.push(`format ${hint.format.current ?? "?"}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${hint.format.best}` : ""}${hint.formatNote !== undefined ? ` (${safeText(hint.formatNote)})` : ""}`);
   if (parts.length > 0) lines.push(`   ${parts.join("  ")}`);
   if (hint.qualityNote !== undefined) lines.push(`   ${safeText(hint.qualityNote)}`);
+  // An animated hint's saving is an estimate from the sample encodes, and its rung is that estimate, not the image measurement.
+  const animated = hint.animated !== undefined;
   lines.push(
-    `   ${savesText(hint)}, +${kb(hint.bytes.addedForSharpness)} sharpness (separate)  rung ${hint.rung}`,
+    `   ${savesText(hint)}${animated ? " est." : ""}, +${kb(hint.bytes.addedForSharpness)} sharpness (separate)  rung ${animated ? "estimate" : hint.rung}`,
   );
   return lines;
 }
@@ -735,43 +737,87 @@ function imageFallbackOf(context: AnimatedFix["context"], targets: AnimatedTarge
   return "plain src swap to the animated WebP (WebP animates in every browser that shows the image)";
 }
 
+/** Browser coverage of each option, as the hint states it (the caniuse data is not in the repo: these are the stated facts). */
+const COVERAGE = {
+  webp: "animated WebP: all current browsers",
+  avif: "animated AVIF: Chrome 85+, Firefox 113+, Safari 16.4+",
+  av1: "AV1 video: Chrome, Firefox, Edge; Safari only on devices with AV1 hardware decode, so keep the H.264 fallback",
+} as const;
+
+/**
+ * The exact encoder settings of a candidate, as an agent runs them: the encoder, its preset and CRF (or q), and the pixel
+ * format and container options that follow. An AV1 CRF is a CRF, never a q (see the quality label in animatedLines).
+ */
+export function encoderRecipe(codec: MediaCodec, c: CandidateResult): string {
+  const av1 = c.encoder === "libaom-av1" ? `libaom-av1 -cpu-used 8 -row-mt 1 -crf ${c.quality} -b:v 0` : `libsvtav1 -preset 10 -crf ${c.quality}`;
+  switch (codec) {
+    case "av1-mp4":
+      return `${av1} -pix_fmt yuv420p -movflags +faststart`;
+    case "animated-avif":
+      return `${av1}, -f avif`;
+    case "animated-webp":
+      return `libwebp_anim -q:v ${c.quality} -loop 0`;
+    case "h264-mp4":
+      return `libx264 -preset veryfast -crf ${c.quality} -pix_fmt yuv420p -movflags +faststart -an`;
+  }
+}
+
+/**
+ * The line that says a target is capped at the file's own width: the device width needs more than the file has, so the
+ * target is the file's width and a wider one would add bytes, not detail. Undefined when the target is not capped.
+ */
+export function sourceCapLine(need: number | undefined, sourceWidth: number | undefined, served: number): string | undefined {
+  if (need === undefined || sourceWidth === undefined || !(need > sourceWidth) || served !== sourceWidth) return undefined;
+  return `   source is ${sourceWidth}px wide; needed ${need}px: serve ${sourceWidth}px (upscaling adds bytes, not detail)`;
+}
+
 /**
  * The lines of an animated image's hint. An image target (AVIF and/or WebP, with a fallback built from the candidates that
  * exist) when the encode offers one; the `<video>` replacement with its AV1 source and the H.264 recipe when the target is
- * video. With no encode, the bytes per view and the reason. `src` is the served file's URL, printed as a JSON string.
+ * video. With no encode, the bytes per view and the reason. `src` is the served file's URL, printed as a JSON string; `alt`
+ * is the image's alt text, which the `<video>` keeps as its accessible name.
  */
-export function animatedLines(animated: AnimatedFix, src?: string): string[] {
+export function animatedLines(animated: AnimatedFix, src?: string, alt?: string): string[] {
   const { info, perViewBytes } = animated;
   const head = `animated ${FORMAT_LABEL[info.format]} ${(info.durationMs / 1000).toFixed(1)} s, ${info.frames} frames`;
   const targets = animatedTargetsOf(animated);
   const { avif, webp, av1, h264, main } = targets;
   if (main === undefined) {
-    return [`   ${head}: ${kb(perViewBytes)}/view; not encoded: ${safeText(animated.notEncoded ?? "no passing quality")}`];
+    return [`   ${head}: ${kb(perViewBytes)}/view; not encoded: ${safeText(reasonText(animated.notEncoded ?? "no passing quality"))}`];
   }
   const saves = animatedSavingOf(animated);
   const offered = [
-    avif !== undefined ? `animated AVIF q${avif.quality} at ${avif.width}px (${kb(avif.bytes)} est.)` : undefined,
-    webp !== undefined ? `animated WebP q${webp.quality} (${kb(webp.bytes)} est.)` : undefined,
+    avif !== undefined ? `animated AVIF CRF ${avif.quality} at ${avif.width}px (${encoderRecipe("animated-avif", avif)}): ${kb(avif.bytes)} est.` : undefined,
+    webp !== undefined ? `animated WebP q${webp.quality} at ${webp.width}px (${encoderRecipe("animated-webp", webp)}): ${kb(webp.bytes)} est.` : undefined,
   ].filter((part): part is string => part !== undefined);
+  const coverage: string[] = [];
+  if (avif !== undefined) coverage.push(COVERAGE.avif);
+  if (webp !== undefined) coverage.push(COVERAGE.webp);
+  const cap = sourceCapLine(animated.need, animated.sourceWidth, main.width);
   if (targets.video && av1 !== undefined) {
-    const lines = [`   ${head}: replace with <video autoplay muted loop playsinline poster="<first frame>">`];
-    lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> CRF ${av1.quality}, ${av1.width}px, ${kb(av1.bytes)} est.`);
+    const altPart = alt !== undefined ? ` role="img" aria-label=${JSON.stringify(safeText(alt))}` : "";
+    const lines = [`   ${head}: replace with <video autoplay muted loop playsinline poster="<first frame>"${altPart}>`];
+    if (alt !== undefined) lines.push("     the image's alt text is kept as the <video>'s aria-label (role=\"img\"): the accessible name does not change");
+    lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> AV1 MP4 (${encoderRecipe("av1-mp4", av1)}), CRF ${av1.quality}, ${av1.width}px, ${kb(av1.bytes)} est.`);
     lines.push(
       h264 !== undefined
-        ? `     <source src="…-${h264.width}.h264.mp4" type="${H264_TYPE}"> CRF ${h264.quality}, ${h264.width}px, ${kb(h264.bytes)} est.`
+        ? `     <source src="…-${h264.width}.h264.mp4" type="${H264_TYPE}"> H.264 MP4 (${encoderRecipe("h264-mp4", h264)}), ${h264.width}px, ${kb(h264.bytes)} est.`
         : `     <source src="…-${av1.width}.h264.mp4" type="${H264_TYPE}"> H.264 fallback, not measured: ${H264_RECIPE} at ${av1.width}px wide`,
     );
+    if (cap !== undefined) lines.push(cap);
     lines.push(`   evidence: ${evidenceOf(av1)}`);
+    lines.push(`   browsers: ${COVERAGE.av1}`);
     if (offered.length > 0) lines.push(`   alternative: ${offered.join(", ")}`);
+    if (offered.length > 0) lines.push(...coverage.map((line) => `   browsers: ${line}`));
     lines.push(`   saves ${kb(saves)}/view est. ${SAMPLE_NOTE}`);
     return lines;
   }
-  const best = main;
   const fallback = imageFallbackOf(animated.context, targets, src);
-  return [
-    `   ${head}: serve ${offered.join(", ")}; ${fallback}; saves ${kb(saves)}/view est. ${SAMPLE_NOTE}`,
-    `   evidence: ${evidenceOf(best)}`,
-  ];
+  const lines = [`   ${head}: serve ${offered.join(", ")}; ${fallback}; saves ${kb(saves)}/view est. ${SAMPLE_NOTE}`];
+  if (cap !== undefined) lines.push(cap);
+  lines.push(`   evidence: ${evidenceOf(main)}`);
+  lines.push(...coverage.map((line) => `   browsers: ${line}`));
+  return lines;
 }
 
 /** The name a video records by: where it is in the page, a file or component, else its selector. */
@@ -822,7 +868,7 @@ export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
 /** A video's encode in one phrase: the encode at its width with its bytes, or why it was not encoded. */
 export function videoStatusOf(video: VideoRecord): string {
   const e = video.estimate;
-  if (e === undefined) return `not encoded: ${safeText(video.notEncoded ?? "no passing quality")}`;
+  if (e === undefined) return `not encoded: ${safeText(reasonText(video.notEncoded ?? "no passing quality"))}`;
   return `${codecName(e.codec)} CRF ${e.quality}, ${e.width}px, ${kb(e.bytes)} est.`;
 }
 
@@ -847,7 +893,7 @@ function viewBasisOf(video: VideoRecord): string {
 function bytesAtPlan(video: VideoRecord, plan: WidthPlan): string {
   const est = video.estimate;
   if (est === undefined || video.bytes.perPlay <= 0) {
-    return `not encoded${video.notEncoded !== undefined ? `: ${safeText(video.notEncoded)}` : ""}`;
+    return `not encoded${video.notEncoded !== undefined ? `: ${safeText(reasonText(video.notEncoded))}` : ""}`;
   }
   if (plan.perViewport.length === 0) return "-";
   const ratio = video.bytes.perView / video.bytes.perPlay;
@@ -866,6 +912,20 @@ function widthOptionLines(options: WidthPlan[]): string[] {
   return lines;
 }
 
+/**
+ * The line that says a video's served width is capped at its file's own: a viewport needs more than the file has, and the
+ * plan serves the file's width. Undefined when no viewport is capped (or the file's width is not known).
+ */
+export function videoSourceCapLine(video: VideoRecord): string | undefined {
+  const source = video.probe?.width;
+  const plan = video.widths;
+  if (plan === undefined || source === undefined || !(source > 0)) return undefined;
+  // The plan's needs are already capped at the file's width, so the need is taken from the boxes: what the page shows.
+  const need = Math.max(0, ...video.perViewport.filter((v) => v.boxWidth > 0).map((v) => Math.ceil(v.boxWidth * v.dpr)));
+  if (!(need > source) || !plan.perViewport.some((row) => row.width === source)) return undefined;
+  return sourceCapLine(need, source, source);
+}
+
 /** Scan: the `<source>` list of the planned widths, AV1 then H.264 for each, with the encode's CRF and bytes at its width. */
 function targetLines(video: VideoRecord, plan: WidthPlan): string[] {
   if (plan.containerDriven) {
@@ -881,7 +941,8 @@ function targetLines(video: VideoRecord, plan: WidthPlan): string[] {
     const media = source.media !== undefined ? `media="${source.media}" ` : "";
     for (const kind of ["av1", "h264"] as const) {
       const codec = kind === "av1" ? "av1-mp4" : "h264-mp4";
-      const at = est !== undefined && est.codec === codec && est.width === source.width ? ` CRF ${est.quality}, ${est.width}px, ${kb(est.bytes)} est.` : "";
+      const measured = est !== undefined && est.codec === codec && est.width === source.width;
+      const at = measured ? ` ${kind === "av1" ? "AV1" : "H.264"} MP4 (${encoderRecipe(codec, est)}), CRF ${est.quality}, ${est.width}px, ${kb(est.bytes)} est.` : "";
       lines.push(`     <source ${media}src="…-${source.width}.${kind}.mp4" type="${kind === "av1" ? AV1_TYPE : H264_TYPE}">${at}`);
     }
   }
@@ -924,9 +985,11 @@ export function videoLines(video: VideoRecord, rank = 1): string[] {
     }
   } else if (video.widths !== undefined) {
     lines.push(...targetLines(video, video.widths));
+    const cap = videoSourceCapLine(video);
+    if (cap !== undefined) lines.push(cap);
   }
   if (est !== undefined) lines.push(`   evidence: ${evidenceOf(est)}`);
-  else if (video.notEncoded !== undefined) lines.push(`   not encoded: ${safeText(video.notEncoded)}`);
+  else if (video.notEncoded !== undefined) lines.push(`   not encoded: ${safeText(reasonText(video.notEncoded))}`);
   if (est !== undefined && video.steps !== undefined) {
     const s = videoSavingOf(video);
     lines.push(`   saves ${kb(s.view)}/view est., ${kb(s.play)}/play est. ${SAMPLE_NOTE}`);

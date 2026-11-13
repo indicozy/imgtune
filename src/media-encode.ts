@@ -53,6 +53,8 @@ export interface CandidateResult {
   estimate: true;
   /** Always false: the encodes drop audio, and the audio saving is attributed separately. */
   audio: boolean;
+  /** The AV1 encoder the candidate was made with (AV1 and animated AVIF only): SVT-AV1, or libaom when SVT is not built in. */
+  encoder?: "libsvtav1" | "libaom-av1";
 }
 
 export interface SearchOptions {
@@ -1043,6 +1045,7 @@ async function evaluate(ctx: Ctx, q: number, strict = false): Promise<Scored> {
       still: tenthPercentile(scores),
       estimate: true,
       audio: false,
+      ...(codec === "av1-mp4" || codec === "animated-avif" ? { encoder: ctx.opts.caps.av1 } : {}),
     };
   } finally {
     await rm(dir, { recursive: true, force: true });

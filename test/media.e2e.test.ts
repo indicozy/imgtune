@@ -132,14 +132,11 @@ describe("imgtune scan of the media fixture page", () => {
     expect(clip.bytes.perPlay).toBe(fixtureSize("clip.mp4"));
     expect(clip.levers.audio?.bytes ?? 0).toBeGreaterThan(0);
     expect(clip.levers.codec).toEqual({ missing: "av1" });
-    // The AV1 encode at the target width is the expected outcome. Under four parallel encodes on this machine the 1280 px
-    // search can run past the per-asset cap, so the reason is then "time-limit" (see the report).
-    if (clip.estimate !== undefined) {
-      expect(clip.estimate.codec).toBe("av1-mp4");
-      expect(clip.estimate.bytes).toBeGreaterThan(0);
-    } else {
-      expect(["time-limit", "no-passing-quality"]).toContain(clip.notEncoded);
-    }
+    // The autoplay hero's AV1 estimate is required. The 1280 px search now takes about 20 s (the perf round), so a time
+    // limit or a missing AV1 estimate is a regression of the main video hint, not an outcome the test accepts.
+    expect(clip.notEncoded, clip.notEncoded).toBeUndefined();
+    expect(clip.estimate?.codec).toBe("av1-mp4");
+    expect(clip.estimate?.bytes).toBeGreaterThan(0);
   });
 
   it("gives a preload=none video no per-view bytes and the full file per play", () => {

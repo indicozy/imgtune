@@ -44,6 +44,10 @@ export interface AnimatedFix {
   notEncoded?: string;
   /** Bytes the image costs per page view: the average over the viewports, as the image savings are. */
   perViewBytes: number;
+  /** The device width the image needs (the largest of its viewports), set with the encode (see attachMediaResults). */
+  need?: number;
+  /** The file's own width, set with the encode. A target above it is capped there (see the hint). */
+  sourceWidth?: number;
 }
 
 /** One `<video>` element of the page, with its bytes, widths and the levers it has. */
