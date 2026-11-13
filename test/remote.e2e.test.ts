@@ -153,7 +153,8 @@ beforeAll(async () => {
 
   // The Next.js fixture, in a temp copy: installed, given one deliberately oversized image, built and started.
   nextDir = join(work, "next-app");
-  await cp(FIXTURE, nextDir, { recursive: true });
+  // The fixture's own node_modules (a local install) is left out: pnpm installs the copy, and a copied store breaks next build.
+  await cp(FIXTURE, nextDir, { recursive: true, filter: (src) => !src.split("/").includes("node_modules") });
   execFileSync("pnpm", ["install", "--prefer-offline", "--frozen-lockfile", "--network-concurrency=4"], {
     cwd: nextDir,
     stdio: "pipe",
