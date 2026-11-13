@@ -1181,3 +1181,24 @@ describe("animated hints: the sizes line, the fallback from the candidates that 
     expect(out).toContain("1. video:abc");
   });
 });
+
+describe("animated saving is the encode alone (no double count with a sizes proposal)", () => {
+  it("an animated record with a sizes fix and an estimate saves the encoded part only, and shows its sizes as information", () => {
+    const rec = animatedRecord("d1", {
+      info: { format: "gif" as const, frames: 30, durationMs: 3000, loop: 0 },
+      context: "img",
+      target: { main: "animated-image", alternatives: [] },
+      estimate: [candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 })],
+      perViewBytes: 500 * 1024,
+    });
+    rec.fix.bytes = { saved: 90 * 1024, addedForSharpness: 0, sizes: 90 * 1024, quality: 0 };
+    rec.fix.sizes = { value: "50vw", basis: "measured", rung: "measured-page", branches: [] };
+    const [hint] = hintsOf(page([rec]));
+    expect(hint.bytes.saved).toBe(380 * 1024);
+    expect(hint.bytes.sizes).toBeUndefined();
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain("   sizes 33vw -> 50vw (measured)");
+    expect(text).toContain("saves 380 KB/view est. (estimate from 2 s samples)");
+    expect(text).toContain("   saves 380 KB/view, +0 KB sharpness (separate)");
+  });
+});

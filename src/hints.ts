@@ -286,16 +286,11 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
     if (record.fix.animated !== undefined) {
       hint.animated = record.fix.animated;
       if (record.current.src !== undefined) hint.src = record.current.src;
-      // The animated saving is the encode's (est.), so it ranks the hint like an image's saving. The record's own sizes part
-      // stays; its quality estimate is replaced by the encode (the animated file is not re-encoded by the image pipeline).
+      // The animated saving is the encode's alone (est.): the target is encoded at the needed width, so perViewBytes less the
+      // target's bytes already holds the width change. Adding the record's sizes part would count it twice. A real sizes
+      // proposal is still printed as information (renderHint), but it adds nothing to the saving.
       const encoded = animatedSavingOf(record.fix.animated);
-      const sizesPart = record.fix.bytes.sizes;
-      hint.bytes = {
-        saved: (sizesPart ?? 0) + encoded,
-        addedForSharpness: record.fix.bytes.addedForSharpness,
-        ...(sizesPart !== undefined ? { sizes: sizesPart } : {}),
-        quality: encoded,
-      };
+      hint.bytes = { saved: encoded, addedForSharpness: record.fix.bytes.addedForSharpness, quality: encoded };
     }
     return hint;
   });
