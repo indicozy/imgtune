@@ -3,19 +3,26 @@
 // (SSIMULACRA2 90 by default, visually lossless; --min-score sets another). The lowest quality per format that meets the
 // bar is reported. With --width the file is also measured at the width it is needed at (width x dpr). Files are read,
 // never written, unless --write names a directory for optimised copies.
+//
+// Media (animated GIF, WebP and APNG, MP4, MOV and WebM) is read from local files only (media-file.ts): an animated file
+// gets the candidates of the animated codecs, and `--reference <original>` checks a candidate against the original with
+// the video bars (VMAF and the still-frame guard), exiting 0 on pass and 1 on fail.
 
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import sharp from "sharp";
 import { isLocalTarget } from "./address.js";
 import { encode, ENCODER_ID, loadReference } from "./encode.js";
 import { makeFetcher, MAX_IMAGE_BYTES } from "./fetch.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
+import { probeFfmpeg } from "./ffmpeg.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import { cacheScope, CACHE_DIR, ResultCache } from "./result-cache.js";
 import type { RawImage } from "./ssim.js";
-import { decodeRaw, pixelSize, safeText, SCAN_TOLERANCE, scorerOf, type PageScorer } from "./remote.js";
+import { compareReferenceFile, describeVideo, measureAnimated, mediaKindOf, renderAnimated, renderReference, renderVideo, type MediaContext, type MediaFileResult, type ReferenceFileResult } from "./media-file.js";
+import { DEFAULT_VIDEO_BAR, DEFAULT_VIDEO_STILL_BAR, decodeRaw, pixelSize, safeText, SCAN_TOLERANCE, scorerOf, type PageScorer } from "./remote.js";
 import { IMGTUNE_VERSION } from "./version.js";
 
 export type ImageFormat = "avif" | "webp" | "jpeg";
@@ -44,13 +51,25 @@ export interface ImageArgs {
   gpu?: { device: number };
   /** --no-cache: the numbers are computed again, and none is kept in .imgtune/cache. */
   noCache?: boolean;
+  /** --reference: the original a media candidate is compared with. A local file (media is never read from a URL here). */
+  reference?: string;
+  /** --video-bar: the minimum VMAF of a video or animated encode, 0 to 100 (default DEFAULT_VIDEO_BAR). */
+  videoBar?: number;
+  /** --video-still-bar: the still-frame guard's bar before it is made relative to the reference (default DEFAULT_VIDEO_STILL_BAR). */
+  videoStillBar?: number;
 }
 
 const USAGE =
-  "usage: imgtune image <file|url|glob> [...] [--width <css px>] [--dpr 1,2] [--formats avif,webp,jpeg] [--min-score <n>] [--write <dir>] [--format text|json] [--gpu] [--gpu-device <n>]";
+  "usage: imgtune image <file|url|glob> [...] [--width <css px>] [--dpr 1,2] [--formats avif,webp,jpeg] [--min-score <n>] [--write <dir>] [--format text|json|--json] [--gpu] [--gpu-device <n>] [--reference <original file>] [--video-bar <n>] [--video-still-bar <n>]";
 
 function positiveNumber(name: string, text: string): number {
   if (!/^\d+(\.\d+)?$/.test(text) || Number(text) <= 0) throw new Error(`${name} needs a number above 0, not ${safeText(text)}`);
+  return Number(text);
+}
+
+/** A bar from 0 to 100 (a VMAF or still-guard bar). Throws with the message the CLI prints. */
+function barNumber(name: string, text: string): number {
+  if (!/^\d+(\.\d+)?$/.test(text) || Number(text) > 100) throw new Error(`${name} needs a number from 0 to 100, not ${safeText(text)}`);
   return Number(text);
 }
 
@@ -69,6 +88,10 @@ export function parseImageArgs(argv: string[]): ImageArgs {
     }
     if (arg === "--no-cache") {
       args.noCache = true;
+      continue;
+    }
+    if (arg === "--json") {
+      args.format = "json";
       continue;
     }
     const value = argv[i + 1];
@@ -90,6 +113,11 @@ export function parseImageArgs(argv: string[]): ImageArgs {
       args.minScore = score;
     } else if (arg === "--gpu-device") args.gpu = { device: parseGpuDevice(value) };
     else if (arg === "--write") args.write = value;
+    else if (arg === "--reference") {
+      if (/^https?:\/\//i.test(value)) throw new Error(`--reference is a local file: media is not read from a URL here (local files only, not ${safeText(value)})`);
+      args.reference = value;
+    } else if (arg === "--video-bar") args.videoBar = barNumber(arg, value);
+    else if (arg === "--video-still-bar") args.videoStillBar = barNumber(arg, value);
     else if (arg === "--format") {
       if (value !== "text" && value !== "json") throw new Error(`--format is text or json, not ${safeText(value)}`);
       args.format = value;
@@ -203,6 +231,7 @@ async function readInput(input: ImageInput, cwd: string, userAgent: string): Pro
     const fetcher = makeFetcher({ userAgent });
     const body = await fetcher.get(input.url, { maxBytes: MAX_IMAGE_BYTES, allowPrivate: isLocalTarget(input.url) });
     if (body === undefined) throw new Error(`${safeText(input.url)} was not fetched (blocked, failed, or larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB)`);
+    if (mediaKindOf(body) !== undefined) throw new Error(`${safeText(input.url)} is a video or animated file: media is local files only (download it and pass the file)`);
     return body;
   }
   const path = resolve(cwd, input.path as string);
@@ -345,8 +374,9 @@ export async function measureFile(
   };
   const placeholder = { bar, sizes: [] };
   if (!info) return { ...base, width: { source: args.width ? "user" : "file", css: args.width }, ...placeholder, error: "not a decodable image" };
-  if (info.format === "svg" || info.format === "gif") {
-    return { ...base, width: { source: args.width ? "user" : "file", css: args.width }, ...placeholder, error: `${info.format} is not measured (not a raster format the encoders take)` };
+  // A static GIF is a raster image like a PNG (sharp reads its first frame). An animated one never reaches here: it is media.
+  if (info.format === "svg") {
+    return { ...base, width: { source: args.width ? "user" : "file", css: args.width }, ...placeholder, error: "svg is not measured (not a raster format the encoders take)" };
   }
   const targets: { px: number; dpr?: number }[] =
     args.width === undefined ? [{ px: info.width }] : args.dprs.map((dpr) => ({ px: Math.min(Math.ceil(args.width! * dpr), info.width), dpr }));
@@ -471,37 +501,113 @@ async function measureInputs(
 ): Promise<{ output: string; exitCode: number }> {
   const inputs = await resolveInputs(args.inputs, cwd);
   const score = makeScorer("ssimulacra2", { projectDir: cwd, gpu });
+  const scorer: PageScorer = gpu !== undefined ? scorerOf(gpu, gpu.fallbackScores) : { name: "cpu" };
+  if (args.reference !== undefined) return compareMode(args, inputs, cwd, score, scorer);
+
   const results: FileResult[] = [];
+  const media: MediaFileResult[] = [];
   const buffers = new Map<string, Buffer>();
-  for (const input of inputs) {
-    let buffer: Buffer;
-    try {
-      buffer = await readInput(input, cwd, userAgent);
-    } catch (err) {
-      results.push({
-        label: input.label,
-        evidence: "file-mode",
-        imgtuneVersion: IMGTUNE_VERSION,
-        current: { width: 0, height: 0, bytes: 0 },
-        width: { source: args.width ? "user" : "file", css: args.width },
-        bar: barOf(args.minScore),
-        sizes: [],
-        error: (err as Error).message,
-      });
-      continue;
+  // Scratch for the media encodes of this run, removed when the run ends.
+  let scratch: string | undefined;
+  const mediaContext = async (): Promise<MediaContext> => {
+    scratch ??= await mkdtemp(join(tmpdir(), "imgtune-media-file-"));
+    return { caps: await probeFfmpeg(), score, dir: scratch, videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR, videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR };
+  };
+  try {
+    for (const input of inputs) {
+      let buffer: Buffer;
+      try {
+        buffer = await readInput(input, cwd, userAgent);
+      } catch (err) {
+        results.push({
+          label: input.label,
+          evidence: "file-mode",
+          imgtuneVersion: IMGTUNE_VERSION,
+          current: { width: 0, height: 0, bytes: 0 },
+          width: { source: args.width ? "user" : "file", css: args.width },
+          bar: barOf(args.minScore),
+          sizes: [],
+          error: (err as Error).message,
+        });
+        continue;
+      }
+      buffers.set(input.label, buffer);
+      const kind = mediaKindOf(buffer);
+      if (kind !== undefined && input.path !== undefined) {
+        const file = { label: input.label, path: resolve(cwd, input.path), buffer };
+        const ctx = await mediaContext();
+        const dir = join(ctx.dir, `file-${media.length}`);
+        media.push(kind === "animated" ? await measureAnimated(file, args.width, ctx, dir) : await describeVideo(file, ctx, dir));
+        continue;
+      }
+      results.push(await measureFile(input, buffer, args, score, cache && { ...cache, original: buffer }));
     }
-    buffers.set(input.label, buffer);
-    results.push(await measureFile(input, buffer, args, score, cache && { ...cache, original: buffer }));
+  } finally {
+    if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
   }
   const notes = args.write !== undefined ? await writeCopies(results, inputs, cwd, args.write, buffers) : [];
-  const failed = results.filter((r) => r.error !== undefined).length;
-  const scorer: PageScorer = gpu !== undefined ? scorerOf(gpu, gpu.fallbackScores) : { name: "cpu" };
+  const failed = results.filter((r) => r.error !== undefined).length + media.filter((m) => m.error !== undefined).length;
   if (args.format === "json") {
-    const body = { evidence: "file-mode", scorer, files: results, copies: notes };
+    const body = { evidence: "file-mode", scorer, files: results, media, copies: notes };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: failed > 0 ? 1 : 0 };
   }
   const head = gpu !== undefined ? `${gpuNote(gpu.device, gpu.deviceName, gpu.fallbackScores)}\n\n` : "";
   const text = results.map(renderFile).join("\n");
+  const mediaText = media.map((m) => (m.kind === "animated" ? renderAnimated(m) : renderVideo(m))).join("\n");
   const tail = notes.length > 0 ? `copies:\n${notes.map((n) => `  ${n}`).join("\n")}\n` : "";
-  return { output: `${head}${text}${tail}`, exitCode: failed > 0 ? 1 : 0 };
+  return { output: `${head}${text}${mediaText}${tail}`, exitCode: failed > 0 ? 1 : 0 };
+}
+
+/**
+ * `--reference <original>`: one candidate (a local media file) compared with the original. The verdict is the exit code:
+ * 0 on pass, 1 on fail or on any error. Input that cannot be compared is an error, not a fail verdict on the file.
+ */
+async function compareMode(
+  args: ImageArgs,
+  inputs: ImageInput[],
+  cwd: string,
+  score: Scorer,
+  scorer: PageScorer,
+): Promise<{ output: string; exitCode: number }> {
+  const reference = args.reference as string;
+  const fail = (message: string): { output: string; exitCode: number } => {
+    if (args.format === "json") return { output: `${JSON.stringify({ evidence: "media-reference", scorer, error: message }, null, 2)}\n`, exitCode: 1 };
+    return { output: `${safeText(message)}\n`, exitCode: 1 };
+  };
+  if (inputs.length !== 1) return fail(`--reference compares one file: give one candidate (${inputs.length} match)`);
+  const [candidate] = inputs;
+  if (candidate.url !== undefined) return fail("--reference takes local files only: the candidate is a URL, and media is not read from a URL here");
+  const refPath = resolve(cwd, reference);
+  const refInfo = await stat(refPath).catch(() => undefined);
+  if (!refInfo?.isFile()) return fail(`--reference ${safeText(reference)} is not a file`);
+  const refBuffer = await readFile(refPath);
+  if (mediaKindOf(refBuffer) === undefined) return fail(`--reference ${safeText(reference)} is not a video or animated file`);
+  const candBuffer = await readInput(candidate, cwd, "");
+  if (mediaKindOf(candBuffer) === undefined) return fail(`${safeText(candidate.label)} is not a video or animated file: --reference compares media`);
+  const caps = await probeFfmpeg();
+  if (!caps.ffmpeg) return fail("ffmpeg is not on PATH: --reference needs it (ffmpeg enables the full hints)");
+
+  const dir = await mkdtemp(join(tmpdir(), "imgtune-compare-"));
+  let result: ReferenceFileResult;
+  try {
+    const ctx: MediaContext = {
+      caps,
+      score,
+      dir,
+      videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR,
+      videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR,
+    };
+    result = await compareReferenceFile(
+      { label: candidate.label, path: resolve(cwd, candidate.path as string), buffer: candBuffer },
+      { label: relative(cwd, refPath) || reference, path: refPath, buffer: refBuffer },
+      args.width,
+      ctx,
+      dir,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const exitCode = result.error === undefined && result.pass ? 0 : 1;
+  if (args.format === "json") return { output: `${JSON.stringify(result, null, 2)}\n`, exitCode };
+  return { output: renderReference(result), exitCode };
 }

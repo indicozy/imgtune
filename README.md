@@ -155,6 +155,7 @@ the browser resolved, not from a guess.
 | `imgtune summary <run dir \| scan.json ...>` | the one-screen summary of a run directory (`run.json`) or of scan files |
 | `imgtune scan --recheck <scan.json> [--ids a,b,c]` | rescans only the named images at the viewports where they rendered; prints before and after; exits 1 on a failed check |
 | `imgtune image <file\|url\|glob>` | measures image files without a page: bytes now, the lowest quality per format that meets the bar, and at a `--width` the bytes at each needed width; `--min-score` sets the bar (default 90), `--write <dir>` writes optimised copies |
+| `imgtune image <animated.gif\|.webp\|.png\|video> --reference <original>` | checks a re-encoded video or animated file against the original: `VMAF … still p10 …: pass\|fail` with exit 0 or 1; `--video-bar` (default 93) and `--video-still-bar` (default 65) set the bars; without `--reference` an animated file gets its candidates (needs ffmpeg) |
 | `imgtune compare <before.json> <after.json>` | compares two scans of one page image by image: the bytes saved and the sharpness bytes added, as two numbers; drift (a changed layout, server variance, a view not loaded) is excluded and its totals printed; `--format json`, `--limit` |
 | `imgtune report` | a Markdown run report from the agent's ledger (`.imgtune/ledger.jsonl`); `--compare <file>` adds the bytes from `imgtune compare --format json`; `--out <file>` writes it |
 

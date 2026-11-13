@@ -641,11 +641,11 @@ function fileCandidate(out: string, dir: string, i: number, deadline: number): C
 }
 
 /**
- * An animated WebP candidate: every frame decoded, then laid out on the constant-rate timeline of the reference
- * (repeated where a frame lasts longer), so frame k of the candidate is frame k of the reference.
+ * The frames of an animated WebP on the constant-rate timeline at `fps`: every frame decoded (no ffmpeg can read an
+ * animated WebP), then laid out so frame k is the frame on screen at tick k (a frame that lasts longer repeats). Used by
+ * the candidates of a search and by the single-file mode, which writes the same frames to a lossless file.
  */
-async function webpCandidate(out: string, dir: string, i: number, fps: number): Promise<Candidate> {
-  const bytes = await readFile(out);
+export async function webpTimeline(bytes: Buffer, fps: number): Promise<{ frames: RawImage[]; width: number; height: number }> {
   const meta = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
   const { data, info } = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS })
     .ensureAlpha()
@@ -662,6 +662,17 @@ async function webpCandidate(out: string, dir: string, i: number, fps: number): 
   const total = delays.reduce((acc, d) => acc + d, 0);
   const ticks = Math.max(1, Math.round((total * fps) / 1000));
   const frames = cfrIndices(delays, fps, ticks).map((p) => pageFrames[Math.min(p, pageFrames.length - 1)]);
+  return { frames, width: info.width, height };
+}
+
+/**
+ * An animated WebP candidate: every frame decoded, then laid out on the constant-rate timeline of the reference
+ * (repeated where a frame lasts longer), so frame k of the candidate is frame k of the reference.
+ */
+async function webpCandidate(out: string, dir: string, i: number, fps: number): Promise<Candidate> {
+  const bytes = await readFile(out);
+  const { frames, width } = await webpTimeline(bytes, fps);
+  const height = frames[0]?.height ?? 0;
 
   const raw = join(dir, `s${i}.rgba`);
   await writeFile(raw, Buffer.concat(frames.map((f) => Buffer.from(f.data.buffer as ArrayBuffer, f.data.byteOffset, f.data.byteLength))));
@@ -672,7 +683,7 @@ async function webpCandidate(out: string, dir: string, i: number, fps: number): 
       "-pix_fmt",
       "rgba",
       "-video_size",
-      `${info.width}x${height}`,
+      `${width}x${height}`,
       "-framerate",
       String(fps),
       ...inputOptions(raw),
@@ -963,4 +974,92 @@ export async function searchQuality(
     return { ok: false, reason: isDeadline(err) ? "time-limit" : "probe-failed" };
   }
   return best ? { ok: true, best, tried: ctx.cache.size } : { ok: false, reason: "no-passing-quality" };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Compare with a reference (imgtune image --reference)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** What a candidate scores against its reference (see compareToReference). */
+export interface ReferenceScore {
+  /** Pooled VMAF mean over the samples. */
+  vmaf: number;
+  /** 10th percentile of the SSIMULACRA2 scores of the still-frame guard. */
+  still: number;
+  /**
+   * The still guard of the reference's own best encode: AV1 at CRF 20, the bottom of the search's AV1 range. The still bar
+   * is made relative with it (effectiveStillBar), as the search does. Undefined when no AV1 encoder is built in.
+   */
+  ceiling?: number;
+  /** Number of 2-second samples compared. */
+  samples: number;
+}
+
+/**
+ * Scores one encoded candidate against its reference, for `imgtune image --reference`. The reference is cut into the same
+ * 2-second samples the search uses, at the offsets of its probe; the candidate is cut at those same offsets, so both sides
+ * cover the same moments. Both are scaled to `width` and scored as searchQuality scores an encode (the VMAF mean, the
+ * 10th percentile of the still guard, the same prefilter for a GIF reference). Nothing is re-encoded except the
+ * reference's ceiling, which is one AV1 encode of each sample. Throws when a file cannot be cut or scored.
+ */
+export async function compareToReference(
+  candidate: string,
+  reference: string,
+  probe: MediaProbe,
+  width: number,
+  opts: SearchOptions,
+): Promise<ReferenceScore> {
+  const referenceSamples = await cutSamples(reference, probe, join(opts.workDir, "reference"), opts.deadline);
+  const candidateSamples = await cutSamples(candidate, probe, join(opts.workDir, "candidate"), opts.deadline);
+  const scored = await scoreSamples(candidateSamples, referenceSamples, probe, width, opts);
+  let ceiling: number | undefined;
+  if (opts.caps.av1 !== undefined) {
+    const dir = join(opts.workDir, "ceiling");
+    await mkdir(dir, { recursive: true });
+    const encoded: string[] = [];
+    for (let i = 0; i < referenceSamples.length; i++) {
+      const out = join(dir, `s${i}.mp4`);
+      await encodeClip(referenceSamples[i], "av1-mp4", width, SPECS["av1-mp4"].lo, out, opts.caps, opts.deadline);
+      encoded.push(out);
+    }
+    ceiling = (await scoreSamples(encoded, referenceSamples, probe, width, opts)).still;
+  }
+  return { vmaf: scored.vmaf, still: scored.still, ceiling, samples: referenceSamples.length };
+}
+
+/**
+ * The pooled VMAF mean and the still-guard 10th percentile of candidate samples against reference samples (the same
+ * cut offsets, one file per sample). The loop of an encode's score, without the encode: the search and the comparison
+ * both score this way.
+ */
+async function scoreSamples(
+  candidates: string[],
+  samples: string[],
+  probe: MediaProbe,
+  width: number,
+  opts: SearchOptions,
+): Promise<{ vmaf: number; still: number }> {
+  // The codec field only names the candidate kind for the cache of a search; scoring never reads it.
+  const ctx: Ctx = {
+    samples,
+    probe,
+    codec: "av1-mp4",
+    width,
+    fps: probe.fps > 0 ? probe.fps : DEFAULT_FPS,
+    seconds: clipSeconds(probe.durationS, samples.length),
+    opts,
+    guards: [],
+    blur: probe.videoCodec === "gif" ? GIF_GUARD_SIGMA : undefined,
+    cache: new Map(),
+  };
+  await mkdir(opts.workDir, { recursive: true });
+  ctx.guards = await prepareGuards(ctx);
+  const vmafs: number[] = [];
+  const scores: number[] = [];
+  for (let i = 0; i < samples.length; i++) {
+    const cand = fileCandidate(candidates[i], join(opts.workDir, "score"), i, opts.deadline);
+    vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline));
+    scores.push(...(await guardScores(ctx, i, cand)));
+  }
+  return { vmaf: mean(vmafs), still: tenthPercentile(scores) };
 }

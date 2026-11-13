@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import { gradientNoise } from "./image-fixtures.js";
+import { copyFile } from "node:fs/promises";
+import { runFfmpeg } from "../src/ffmpeg.js";
 import { expandGlob, imageCommand, parseImageArgs, renderFile, type FileResult } from "../src/image-file.js";
+
+const MEDIA = join(import.meta.dirname, "fixtures", "media");
 
 describe("parseImageArgs", () => {
   it("takes the inputs and the defaults", () => {
@@ -163,4 +167,110 @@ describe("imageCommand (real encodes on generated images)", () => {
     expect(exitCode).toBe(1);
     expect((JSON.parse(output) as { files: FileResult[] }).files[0].error).toBe("not a decodable image");
   }, 60_000);
+});
+
+describe("parseImageArgs for media (--reference, the video bars, --json)", () => {
+  it("reads --reference, --video-bar, --video-still-bar and --json", () => {
+    expect(parseImageArgs(["clip.mp4", "--reference", "orig.mp4", "--video-bar", "90", "--video-still-bar", "60", "--json"])).toMatchObject({
+      reference: "orig.mp4",
+      videoBar: 90,
+      videoStillBar: 60,
+      format: "json",
+    });
+  });
+
+  it("leaves the bars and the reference unset by default", () => {
+    const args = parseImageArgs(["a.gif"]);
+    expect(args.reference).toBeUndefined();
+    expect(args.videoBar).toBeUndefined();
+    expect(args.videoStillBar).toBeUndefined();
+  });
+
+  it("refuses a bar outside 0 to 100, a URL reference, and a missing reference", () => {
+    expect(() => parseImageArgs(["a.mp4", "--reference", "b.mp4", "--video-bar", "101"])).toThrow(/--video-bar needs a number from 0 to 100/);
+    expect(() => parseImageArgs(["a.mp4", "--reference", "b.mp4", "--video-still-bar", "-1"])).toThrow(/--video-still-bar needs a number from 0 to 100/);
+    expect(() => parseImageArgs(["a.mp4", "--reference", "https://example.com/b.mp4"])).toThrow(/local files only/);
+    expect(() => parseImageArgs(["a.mp4", "--reference"])).toThrow(/--reference needs a value/);
+  });
+});
+
+describe("imageCommand on media (real encodes)", () => {
+  let dir = "";
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "imgtune-media-file-"));
+    await copyFile(join(MEDIA, "clip.mp4"), join(dir, "clip.mp4"));
+    await copyFile(join(MEDIA, "anim.gif"), join(dir, "anim.gif"));
+    await copyFile(join(MEDIA, "anim.webp"), join(dir, "anim.webp"));
+    await copyFile(join(MEDIA, "still.gif"), join(dir, "still.gif"));
+    // The candidates: the same clip re-encoded at CRF 51 (far too small) and CRF 23 (a normal build; CRF 28 scores VMAF
+    // 91.5 on this clip, below the 93 bar), at the clip's width.
+    for (const crf of [51, 23]) {
+      const result = await runFfmpeg(
+        ["-loglevel", "error", "-i", join(dir, "clip.mp4"), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", String(crf), "-pix_fmt", "yuv420p", "-y", join(dir, `clip-crf${crf}.mp4`)],
+        { timeoutMs: 120_000 },
+      );
+      expect(result.code).toBe(0);
+    }
+  }, 180_000);
+  afterAll(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("a static GIF is measured like a PNG: a file result with a bar and sizes, not an error", async () => {
+    const { output, exitCode } = await imageCommand(["still.gif", "--formats", "webp", "--format", "json", "--no-cache"], dir);
+    expect(exitCode).toBe(0);
+    const [file] = (JSON.parse(output) as { files: FileResult[] }).files;
+    expect(file.error).toBeUndefined();
+    expect(file.current.format).toBe("gif");
+    expect(file.sizes).toHaveLength(1);
+  }, 120_000);
+
+  it("an animated GIF without --reference prints the candidates of the animated codecs", async () => {
+    const { output, exitCode } = await imageCommand(["anim.gif", "--no-cache"], dir);
+    expect(exitCode).toBe(0);
+    expect(output).toMatch(/animated-avif/);
+    expect(output).toMatch(/animated-webp/);
+    expect(output).toMatch(/av1-mp4/);
+  }, 300_000);
+
+  it("an animated WebP without --reference is decoded and searched like a GIF", async () => {
+    const { output, exitCode } = await imageCommand(["anim.webp", "--no-cache"], dir);
+    expect(exitCode).toBe(0);
+    expect(output).toMatch(/animated-avif/);
+  }, 300_000);
+
+  it("--reference of a re-encode at CRF 51 fails the bars: exit 1, and the verdict line says fail", async () => {
+    const { output, exitCode } = await imageCommand(["clip-crf51.mp4", "--reference", "clip.mp4", "--no-cache"], dir);
+    expect(exitCode).toBe(1);
+    expect(output).toMatch(/^VMAF \d+\.\d \(bar 93\) still p10 -?\d+\.\d \(bar \d+(\.\d)?\): fail$/m);
+  }, 300_000);
+
+  it("--reference of a re-encode at CRF 23 passes the bars: exit 0, and the verdict line says pass", async () => {
+    const { output, exitCode } = await imageCommand(["clip-crf23.mp4", "--reference", "clip.mp4", "--no-cache"], dir);
+    expect(exitCode).toBe(0);
+    expect(output).toMatch(/^VMAF \d+\.\d \(bar 93\) still p10 -?\d+\.\d \(bar \d+(\.\d)?\): pass$/m);
+  }, 300_000);
+
+  it("--json of a --reference check has the same fields as the text line", async () => {
+    const { output, exitCode } = await imageCommand(["clip-crf23.mp4", "--reference", "clip.mp4", "--json", "--no-cache"], dir);
+    expect(exitCode).toBe(0);
+    const body = JSON.parse(output) as { evidence: string; vmaf: number; vmafBar: number; still: number; stillBar: number; pass: boolean };
+    expect(body.evidence).toBe("media-reference");
+    expect(body.vmafBar).toBe(93);
+    expect(body.vmaf).toBeGreaterThanOrEqual(93);
+    expect(body.still).toBeGreaterThanOrEqual(body.stillBar);
+    expect(body.pass).toBe(true);
+  }, 300_000);
+
+  it("refuses --reference with a URL candidate before fetching it: exit 1 and the local-files message", async () => {
+    const { output, exitCode } = await imageCommand(["https://example.invalid/clip.mp4", "--reference", "clip.mp4", "--no-cache"], dir);
+    expect(exitCode).toBe(1);
+    expect(output).toMatch(/local files only/);
+  });
+
+  it("refuses --reference with more than one candidate", async () => {
+    const { output, exitCode } = await imageCommand(["clip-crf23.mp4", "clip-crf51.mp4", "--reference", "clip.mp4", "--no-cache"], dir);
+    expect(exitCode).toBe(1);
+    expect(output).toMatch(/--reference compares one file/);
+  });
 });

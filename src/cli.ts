@@ -328,13 +328,23 @@ against the file itself: 90 (visually lossless) unless --min-score sets another.
 --write names a folder for optimised copies (existing names are never overwritten).
 Evidence is "file-mode". Globs: ** walks folders (node_modules and dot folders are skipped).
 
+Media: an animated GIF, animated WebP or APNG gets the candidates of animated AVIF, animated WebP and AV1 MP4 at --width
+(the file's own width by default), each the lowest-bytes quality that meets the video bars. A video (MP4, MOV, WebM) is
+described; with --reference <original> a candidate is checked against the original: VMAF and the still-frame guard, one
+verdict line "VMAF <v> (bar <b>) still p10 <s> (bar <sb>): pass|fail", exit 0 on pass and 1 on fail. Media is local files
+only. The encodes need ffmpeg on PATH; without it the sizes are still measured.
+
 Options:
-  --width <css px>      the CSS width the image is shown at (the width is then the user's, not the file's)
+  --width <css px>      the CSS width the image is shown at (the width is then the user's, not the file's); for media, the width
+                        compared or searched at (the candidate's own width with --reference)
   --dpr <list>          device pixel ratios for --width (default 1,2)
   --formats <list>      avif, webp, jpeg (default all three)
   --min-score <n>       the SSIMULACRA2 bar, above 0 and at most 100 (default 90)
   --write <dir>         write optimised copies (best format, at the largest needed width) into this folder
-  --format <text|json>  text (default) or JSON
+  --reference <file>    compare one media candidate with this original (local file): the verdict line and the exit code
+  --video-bar <n>       the minimum VMAF of a media encode or check, 0 to 100 (default 93)
+  --video-still-bar <n> the still-frame guard's bar, 0 to 100 (default 65), lowered for a source whose own best encode scores low
+  --format <text|json>  text (default) or JSON (--json is the same)
   --gpu                 score with the GPU scorer (opt-in; falls back to the CPU with a warning)
   --gpu-device <n>      the GPU to score on, by CUDA index (implies --gpu; default 0). CUDA numbers the GPUs fastest first
                         unless CUDA_DEVICE_ORDER=PCI_BUS_ID; with CUDA_VISIBLE_DEVICES set, n indexes the devices it lists.
