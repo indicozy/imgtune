@@ -28,6 +28,13 @@ export interface FetchOptions {
    * The crawl uses it: a redirect to a sibling subdomain is not followed.
    */
   sameOriginAs?: string;
+  /**
+   * Checked on every redirect hop before it is requested (a media fetch's third-party policy): a hop it refuses is never
+   * requested, and the fetch ends with undefined. `allowHopKey` names the check in the run memo, since its answer depends on
+   * the page that asked; requests with another check are not shared.
+   */
+  allowHop?: (hop: string) => boolean;
+  allowHopKey?: string;
 }
 
 /** The body of an answer, and the URL it was finally read from (after the redirects that were followed). */
@@ -128,7 +135,14 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
   };
 
   /** Each hop is checked at connect time (guardedLookup); redirects are followed here, not by the client. */
-  const fetchChecked = async (start: string, maxBytes: number, allowPrivate: boolean, sameSiteAs?: string, sameOriginAs?: string): Promise<Fetched | undefined> => {
+  const fetchChecked = async (
+    start: string,
+    maxBytes: number,
+    allowPrivate: boolean,
+    sameSiteAs?: string,
+    sameOriginAs?: string,
+    allowHop?: (hop: string) => boolean,
+  ): Promise<Fetched | undefined> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRA_FETCH_TIMEOUT_MS);
     try {
@@ -154,7 +168,10 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
         if (status >= 300 && status < 400 && location) {
           res.resume();
           if (hop >= MAX_REDIRECTS) return undefined;
-          current = new URL(location, url).toString();
+          const next = new URL(location, url).toString();
+          // A hop the policy refuses is not requested: the fetch ends here, as a failed one does.
+          if (allowHop !== undefined && !allowHop(next)) return undefined;
+          current = next;
           continue;
         }
         if (status < 200 || status >= 300) {
@@ -192,7 +209,8 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
     const maxBytes = fetchOpts.maxBytes ?? MAX_IMAGE_BYTES;
     const allowPrivate = fetchOpts.allowPrivate ?? false;
     // The request headers are part of the key: a response can depend on them (the user agent and Accept are fixed per run).
-    const key = JSON.stringify([url, maxBytes, allowPrivate, fetchOpts.sameSiteAs ?? "", fetchOpts.sameOriginAs ?? "", opts.userAgent, IMAGE_ACCEPT]);
+    const hopKey = fetchOpts.allowHop === undefined ? "" : `hop:${fetchOpts.allowHopKey ?? ""}`;
+    const key = JSON.stringify([url, maxBytes, allowPrivate, fetchOpts.sameSiteAs ?? "", fetchOpts.sameOriginAs ?? "", opts.userAgent, IMAGE_ACCEPT, hopKey]);
     const known = memo.get(key);
     if (known) {
       count("fetch memo hits");
@@ -200,7 +218,7 @@ export function makeFetcher(opts: { userAgent: string; resolver?: Resolver; conn
     }
     count("fetch requests");
     const fetched = measure("fetch: network", () =>
-      withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs, fetchOpts.sameOriginAs)),
+      withSlot(() => fetchChecked(url, maxBytes, allowPrivate, fetchOpts.sameSiteAs, fetchOpts.sameOriginAs, fetchOpts.allowHop)),
     ).catch(() => undefined);
     const pending: Promise<Fetched | undefined> = fetched.then((answer) => {
       // Settled: a failure or a no-store body is not kept for the next page (its callers above already have it).

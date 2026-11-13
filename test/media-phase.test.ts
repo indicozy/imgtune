@@ -207,6 +207,27 @@ describe("runMediaPhase with a server that has no Range support", () => {
     expect([...results.byKey.values()][0].notEncoded).toBeUndefined();
   });
 
+  it("a redirect of the fallback fetch to a blocked host is refused per hop: the video is third-party blocked", async () => {
+    const url = "http://pub.example/norange.mp4";
+    const steps = fakeSteps();
+    const deps = {
+      ...steps.deps,
+      hasRange: async () => ({ range: false, length: 300_000 }),
+      // The fetch reaches a redirect hop on a third-party host: the phase's check refuses it, and the fetch ends.
+      fetch: async (_u: string, _maxBytes?: number, hop?: { page: string; allowHop: (next: string) => boolean }) => {
+        if (hop !== undefined && !hop.allowHop("http://tracker.example/clip.mp4")) return undefined;
+        return Buffer.from("reached");
+      },
+    };
+    const results = await runMediaPhase(
+      [video(url, 100, [640], "http://pub.example/")],
+      options({ thirdParty: { block: true, allowHosts: [] } }),
+      deps,
+    );
+    expect([...results.byKey.values()][0].notEncoded).toBe("third-party blocked");
+    expect(steps.searches).toEqual([]);
+  });
+
   it("gives 'server has no Range support' for a video over 50 MB, and does not download it", async () => {
     const url = "http://127.0.0.1:1/huge.mp4";
     let fetched = 0;

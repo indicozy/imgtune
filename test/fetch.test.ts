@@ -22,6 +22,12 @@ beforeAll(async () => {
       } else if (url === "/private") {
         res.writeHead(200, { "cache-control": "public, no-store" });
         res.end("secret");
+      } else if (url === "/redirect-to-blocked") {
+        res.writeHead(302, { location: `${base}/blocked-target` });
+        res.end();
+      } else if (url === "/blocked-target") {
+        res.writeHead(200, { "content-type": "video/mp4" });
+        res.end("reached");
       } else if (url === "/flaky") {
         flakyCalls++;
         if (flakyCalls === 1) {
@@ -53,6 +59,27 @@ describe("hasNoStore", () => {
     expect(hasNoStore("no-storex")).toBe(false);
     expect(hasNoStore("public, max-age=14400, must-revalidate")).toBe(false);
     expect(hasNoStore(undefined)).toBe(false);
+  });
+});
+
+describe("makeFetcher redirect policy", () => {
+  it("refuses a redirect hop the policy blocks: the hop is never requested, and the fetch ends with no body", async () => {
+    hits.length = 0;
+    const fetcher = makeFetcher({ userAgent: "ua" });
+    const body = await fetcher.get(`${base}/redirect-to-blocked`, {
+      allowPrivate: true,
+      allowHop: (hop) => !hop.endsWith("/blocked-target"),
+      allowHopKey: "page-a",
+    });
+    expect(body).toBeUndefined();
+    expect(hits).toContain("/redirect-to-blocked");
+    expect(hits).not.toContain("/blocked-target");
+  });
+
+  it("follows the same redirect when the policy allows every hop", async () => {
+    const fetcher = makeFetcher({ userAgent: "ua" });
+    const body = await fetcher.get(`${base}/redirect-to-blocked`, { allowPrivate: true, allowHop: () => true, allowHopKey: "page-b" });
+    expect(body?.toString()).toBe("reached");
   });
 });
 

@@ -168,7 +168,7 @@ export interface MediaDeps {
    * The bytes of a file, fetched with the run's guarded fetcher, up to `maxBytes`. Undefined when it cannot be read. Used
    * for an animated image, and for a video whose server has no Range support.
    */
-  fetch?: (url: string, maxBytes?: number) => Promise<Buffer | undefined>;
+  fetch?: (url: string, maxBytes?: number, hop?: HopCheck) => Promise<Buffer | undefined>;
 }
 
 /** The flags attachMediaResults reads when a page has no entry for one of its assets. */
@@ -199,6 +199,12 @@ export function videoAssetOf(record: VideoRecord): MediaAsset {
     perPlay: record.bytes.perPlay,
     perViewBasis: record.bytes.perViewBasis,
   };
+}
+
+/** A redirect check for a media fetch: the page the asset is on (which names the check) and the policy's answer per hop. */
+export interface HopCheck {
+  page: string;
+  allowHop: (hop: string) => boolean;
 }
 
 /** The redirect-hop check of a video's page: the third-party policy as the browser's route guard applies it. */
@@ -336,7 +342,7 @@ interface Env {
   cut: typeof cutSamples;
   probe: typeof probeMedia;
   hasRange: typeof hasRange;
-  fetch?: (url: string, maxBytes?: number) => Promise<Buffer | undefined>;
+  fetch?: (url: string, maxBytes?: number, hop?: HopCheck) => Promise<Buffer | undefined>;
 }
 
 /** What the result cache keeps for one job: a passing candidate, or the "no passing quality" outcome. */
@@ -483,7 +489,14 @@ async function encodeVideo(asset: MediaAsset, env: Env, deadline: number): Promi
   const dir = join(resolve(env.opts.workDir), digest(asset.key));
   const jobsOf = (probe: MediaProbe): Job[] => videoJobs(asset.widths, probe);
   if (!range.range) {
-    const buffer = env.fetch ? await env.fetch(asset.url, NO_RANGE_MAX_BYTES) : undefined;
+    // The fallback fetch follows redirects itself, so each hop gets the same policy check as the Range probe.
+    let refused = false;
+    const allowHop = hopCheckOf(asset.page, env.opts.thirdParty);
+    const hop: HopCheck | undefined = allowHop === undefined
+      ? undefined
+      : { page: asset.page, allowHop: (next) => { const ok = allowHop(next); if (!ok) refused = true; return ok; } };
+    const buffer = env.fetch ? await env.fetch(asset.url, NO_RANGE_MAX_BYTES, hop) : undefined;
+    if (refused) return { candidates: [], notEncoded: THIRD_PARTY_BLOCKED };
     if (buffer === undefined) return { candidates: [], notEncoded: "could not read the video" };
     const file = await writeSource(dir, buffer);
     return encodeFile(file, `${asset.url}|${contentHash(buffer)}`, jobsOf, env, deadline, dir, undefined, "could not read the video");

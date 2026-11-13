@@ -3898,7 +3898,10 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         signal: opts.signal,
         thirdParty: run.thirdParty,
       },
-      { fetch: (url, maxBytes) => run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate }) },
+      {
+        fetch: (url, maxBytes, hop) =>
+          run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate, allowHop: hop?.allowHop, allowHopKey: hop?.page }),
+      },
     ).then((results) => ({ ...results, lengths }));
   } catch (err) {
     const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
