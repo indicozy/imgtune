@@ -6,7 +6,8 @@
 # ffmpeg; this script is how they were made. Each file is kept under 300 KB, except clip.mp4 and clip-noaudio.mp4,
 # which are kept under 600 KB.
 #
-#   anim.gif       320x180, 3 s, 10 fps (30 frames, 100 ms each), loop forever. testsrc2 content.
+#   anim.gif       320x180, 3 s, 10 fps (30 frames, 100 ms each), loop forever. testsrc2 content, adaptive palette
+#                  with sierra2_4a dithering (a real GIF encoder's output, not ffmpeg's fixed rgb8 default).
 #   still.gif      one frame of the same source (a static GIF; animationOf must return undefined).
 #   anim.webp      the same 3 s animation as animated WebP (libwebp_anim, loop forever).
 #   anim.png       the same 3 s animation as APNG (-f apng -plays 0).
@@ -34,7 +35,12 @@ mkdir -p "$OUT"
 ff() { "$FFMPEG" -hide_banner -loglevel error -y "$@"; }
 
 # Animated GIF, APNG, WebP: the same 3 s testsrc2 source.
-ff -f lavfi -i "testsrc2=size=320x180:rate=10:duration=3" -loop 0 "$OUT/anim.gif"
+# GIF with an adaptive palette (split, palettegen, paletteuse with sierra2_4a dithering), as real GIF encoders
+# (ezgif, Photoshop, gifski, screen recorders) write them. ffmpeg's default GIF output is a fixed rgb8 palette with
+# crude dithering, which the still guard then reads as loss.
+ff -f lavfi -i "testsrc2=size=320x180:rate=10:duration=3" \
+  -filter_complex "[0:v]split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" \
+  -loop 0 "$OUT/anim.gif"
 ff -f lavfi -i "testsrc2=size=320x180:rate=10:duration=3" -c:v libwebp_anim -loop 0 -an "$OUT/anim.webp"
 ff -f lavfi -i "testsrc2=size=320x180:rate=10:duration=3" -f apng -plays 0 "$OUT/anim.png"
 
