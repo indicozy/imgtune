@@ -8,13 +8,15 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetFfmpegProbe, type FfmpegCaps, type MediaProbe } from "../src/ffmpeg.js";
+import { probeFfmpeg, resetFfmpegProbe, type FfmpegCaps, type MediaProbe } from "../src/ffmpeg.js";
 import type { CandidateResult, SearchOutcome } from "../src/media-encode.js";
 import {
   attachMediaResults,
+  blockedKeyOf,
   MEDIA_NOTE,
   mediaAssetsOf,
   mediaKeyOf,
+  partitionByPolicy,
   runMediaPhase,
   skippedMedia,
   type MediaAsset,
@@ -22,7 +24,6 @@ import {
 } from "../src/media-phase.js";
 import { ResultCache } from "../src/result-cache.js";
 import { parseScanArgs } from "../src/remote.js";
-import { probeFfmpeg } from "../src/ffmpeg.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { systemResolver } from "../src/address.js";
 import { makeScorer } from "../src/metric.js";
@@ -46,9 +47,10 @@ const caps: FfmpegCaps = { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvt
 /** A VP9 source, so both AV1 and the H.264 fallback are encoded. */
 const probe: MediaProbe = { durationS: 8, width: 1280, height: 720, fps: 30, videoCodec: "vp9" };
 
-const video = (url: string, perView: number, widths = [640]): MediaAsset => ({
+const video = (url: string, perView: number, widths = [640], page = "http://127.0.0.1:1/"): MediaAsset => ({
   key: mediaKeyOf("video", "video", url, widths),
   url,
+  page,
   kind: "video",
   context: "video",
   widths,
@@ -224,6 +226,61 @@ describe("parseScanArgs: media flags", () => {
   });
 });
 
+describe("third-party policy and cache identity", () => {
+  const page = "https://site.example/";
+  const cdn = "https://cdn.other.example/clip.mp4";
+  const own = "https://site.example/own.mp4";
+
+  it("blocks a third-party asset from its page, keeps a first-party one, and keeps an allowed host", () => {
+    const blockAll = { block: true, allowHosts: [] };
+    const cdnAsset = video(cdn, 100, [640], page);
+    const ownAsset = video(own, 100, [640], page);
+    const split = partitionByPolicy([cdnAsset, ownAsset], blockAll);
+    expect(split.allowed.map((a) => a.url)).toEqual([own]);
+    expect([...split.blocked]).toEqual([blockedKeyOf(page, cdnAsset.key)]);
+    const allowedHost = partitionByPolicy([cdnAsset], { block: true, allowHosts: ["cdn.other.example"] });
+    expect(allowedHost.allowed).toHaveLength(1);
+    expect(allowedHost.blocked.size).toBe(0);
+    expect(partitionByPolicy([cdnAsset], { block: false, allowHosts: [] }).allowed).toHaveLength(1);
+  });
+
+  it("a blocked asset gets 'third-party blocked' on its page, and the same file on an allowed page keeps its candidates", () => {
+    const other = "https://other.example/";
+    const asset = video(cdn, 100, [640], page);
+    const allowedAsset = video(cdn, 100, [640], other);
+    const probeOnly = { ...probe, width: 1280 };
+    const av1 = candidate("av1-mp4", 640, 200_000);
+    const results = {
+      byKey: new Map([[asset.key, { probe: probeOnly, candidates: [av1] }]]),
+      blocked: new Set([blockedKeyOf(page, asset.key)]),
+    };
+    const pageOn = (pageUrl: string, record: VideoRecord) => ({ url: pageUrl, videos: [record] }) as unknown as PageResult;
+    const mk = (src: string, pageUrl: string) =>
+      ({ src, page: pageUrl, bytes: { perView: 1, perPlay: 1, perViewBasis: "full-file", browserDependent: false, fullBytesKnown: true }, widths: { widths: [640] }, attributes: { muted: true }, levers: { info: [] } }) as unknown as VideoRecord;
+    const blockedOut = attachMediaResults(pageOn(page, mk(cdn, page)), results, { quality: true, survey: false });
+    expect((blockedOut.videos?.[0] as VideoRecord).notEncoded).toBe("third-party blocked");
+    expect((blockedOut.videos?.[0] as VideoRecord).estimate).toBeUndefined();
+    const allowedOut = attachMediaResults(pageOn(other, mk(cdn, other)), results, { quality: true, survey: false });
+    expect((allowedOut.videos?.[0] as VideoRecord).estimate).toEqual(av1);
+    expect(allowedAsset.key).toBe(asset.key);
+  });
+
+  it("a candidate found under another scorer is not reused: the scorer is part of the cache identity", async () => {
+    const dir = await mkdtemp(join(scratch, "scorer-"));
+    const cache = new ResultCache(dir);
+    const url = "http://127.0.0.1:1/scorer.mp4";
+    const cpu = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache, scorerId: "cpu" }), cpu.deps);
+    const gpu = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache, scorerId: "gpu:RTX 4060" }), gpu.deps);
+    const again = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache, scorerId: "cpu" }), again.deps);
+    expect(cpu.searches.length).toBeGreaterThan(0);
+    expect(gpu.searches.length).toBe(cpu.searches.length);
+    expect(again.searches).toEqual([]);
+  });
+});
+
 describe("mediaAssetsOf and skippedMedia", () => {
   it("collects the videos and the animated images of a page, and marks skipped ones", () => {
     const record = {
@@ -267,11 +324,12 @@ describe("attachMediaResults", () => {
     expect(v.bytes.perPlay).toBe(800_000);
     expect(v.levers.codec).toEqual({ missing: "av1" });
     expect(v.steps).toBeDefined();
-    // The chain: no audio 672 000; resized (672 000 x (640/1280)^2 = 168 000) is the lowest stage, so the steps sum to
-    // start - 168 000 (attributeLevers never lets a stage grow the file).
+    // The chain: start 800 000, audio 128 000, no audio 672 000. The scaled resize (672 000 x (640/1280)^2 = 168 000) is
+    // below the estimate, so it is clamped up to it (200 000). The re-encode is one step, so quality is 0, and the four
+    // steps sum to start - final exactly.
     const s = v.steps!;
-    expect(s.audio).toBe(128_000);
-    expect(s.audio + s.resolution + s.codec + s.quality).toBe(800_000 - 168_000);
+    expect(s).toEqual({ audio: 128_000, resolution: 472_000, codec: 0, quality: 0 });
+    expect(s.audio + s.resolution + s.codec + s.quality).toBe(800_000 - av1.bytes);
   });
 
   it("leads with AV1 at the target width: the H.264 fallback is the estimate only when AV1 has none", () => {
@@ -424,38 +482,43 @@ describe("runScan media phase", () => {
 
     const page = results[0];
     expect(page.status).toBe("ok");
-    // A machine with the encoders gets the estimates; one without gets the reason (and the cheap levers stay).
+    // This machine has the encoders, so each asset's outcome is asserted, not just its presence. clip.webm: AV1 fails the
+    // bar on this content, the H.264 fallback passes, so the estimate is a passing H.264 encode. clip.mp4 passes, with its
+    // audio lever. text.gif passes its animated encodes. anim.gif fails the bar on its content (no-passing-quality).
     const caps = await probeFfmpeg();
     const encoders = caps.ffmpeg && caps.vmaf && caps.av1 !== undefined;
-    // clip.webm does not pass the bar at any width on this content (its search ends no-passing-quality), so its reason is
-    // the answer; clip.mp4 passes, so it must carry the estimate and the audio lever of its muted track.
     const webm = page.videos?.find((v) => v.src.endsWith("/clip.webm"));
-    expect(webm).toBeDefined();
-    expect(webm!.estimate ?? webm!.notEncoded).toBeDefined();
-    if (webm!.estimate === undefined) expect(webm!.notEncoded).toMatch(/^(no-passing-quality|no-encoder|no-vmaf|time-limit|score-failed|probe-failed|could not read the video)$/);
     const video = page.videos?.find((v) => v.src.endsWith("/clip.mp4"));
+    expect(webm).toBeDefined();
     expect(video).toBeDefined();
-    if (encoders) expect(video!.estimate, video!.notEncoded).toBeDefined();
-    else expect(video!.notEncoded).toBeTypeOf("string");
-    expect(video!.estimate ?? video!.notEncoded).toBeDefined();
-    if (video!.estimate !== undefined) {
-      expect(video!.estimate.bytes).toBeLessThan(video!.bytes.perPlay);
+    if (encoders) {
+      expect(webm!.estimate, webm!.notEncoded).toBeDefined();
+      expect(webm!.estimate!.bytes).toBeGreaterThan(0);
+      expect(webm!.estimate!.width).toBe(320);
+      expect(video!.estimate, video!.notEncoded).toBeDefined();
+      expect(video!.estimate!.bytes).toBeGreaterThan(0);
+      expect(video!.estimate!.bytes).toBeLessThan(video!.bytes.perPlay);
       expect(video!.levers.audio?.bytes).toBeGreaterThan(0);
+    } else {
+      expect(webm!.notEncoded).toMatch(/^(no-encoder|no-vmaf|no-ffmpeg|ffmpeg not found)$/);
+      expect(video!.notEncoded).toMatch(/^(no-encoder|no-vmaf|no-ffmpeg|ffmpeg not found)$/);
     }
 
-    // text.gif passes the bar (the GIF encode tests use it), so it must carry the animated estimate. anim.gif may not pass
-    // the bar on its content, and then its reason is the answer.
     const animated = page.images?.filter((image) => image.fix.animated !== undefined) ?? [];
     expect(animated).toHaveLength(2);
     const textRecord = animated.find((image) => image.current.src?.endsWith("/text.gif"));
     const animRecord = animated.find((image) => image.current.src?.endsWith("/anim.gif"));
     expect(textRecord, "text.gif record").toBeDefined();
     expect(animRecord, "anim.gif record").toBeDefined();
-    if (encoders) expect(textRecord!.fix.animated!.estimate, textRecord!.fix.animated!.notEncoded).toBeDefined();
-    expect(textRecord!.fix.animated!.estimate ?? textRecord!.fix.animated!.notEncoded).toBeDefined();
-    expect(animRecord!.fix.animated!.estimate ?? animRecord!.fix.animated!.notEncoded).toBeDefined();
-    const gifRecord = textRecord!;
-    process.stderr.write(`runScan media: mp4 ${video!.estimate ? `est ${video!.estimate.bytes} B at ${video!.estimate.width}px` : `not encoded: ${video!.notEncoded}`}; webm ${webm!.estimate ? `est ${webm!.estimate.bytes} B` : `not encoded: ${webm!.notEncoded}`}; gif ${gifRecord!.fix.animated!.estimate ? `est ${gifRecord!.fix.animated!.estimate.length} candidates` : `not encoded: ${gifRecord!.fix.animated!.notEncoded}`}\n`);
+    if (encoders) {
+      const candidates = textRecord!.fix.animated!.estimate ?? [];
+      expect(candidates.length).toBeGreaterThan(0);
+      expect(candidates.every((c) => c.bytes > 0)).toBe(true);
+      expect(animRecord!.fix.animated!.estimate).toBeUndefined();
+      expect(animRecord!.fix.animated!.notEncoded).toBe("no-passing-quality");
+    } else {
+      expect(textRecord!.fix.animated!.notEncoded).toMatch(/^(no-encoder|no-vmaf|no-ffmpeg|ffmpeg not found)$/);
+    }
 
     // The image bytes are the GIFs alone: the videos' bytes are not in the image totals.
     const imageBytes = page.perViewport.desktop.imageBytes;

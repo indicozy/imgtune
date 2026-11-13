@@ -19,6 +19,7 @@ import {
 } from "./media-encode.js";
 import { attributeLevers, rankForBudget, snapWidth, type LeverSteps } from "./media-model.js";
 import { makeScorer, type Scorer } from "./metric.js";
+import { isThirdPartyBlocked, type ThirdPartyPolicy } from "./third-party.js";
 import { CACHE_VERSION, contentHash, type ResultCache } from "./result-cache.js";
 import type { ImageRecord } from "./images.js";
 import type { PageResult } from "./remote.js";
@@ -35,6 +36,8 @@ const RANGE_TIMEOUT_MS = 15_000;
 const PROBE_TIMEOUT_MS = 30_000;
 /** A video the server cannot seek in is not downloaded above this size: the encode would read all of it. */
 const NO_RANGE_MAX_BYTES = 50_000_000;
+/** The notEncoded reason of an asset the third-party policy blocks on its page. */
+export const THIRD_PARTY_BLOCKED = "third-party blocked";
 /** Longest error text kept in a notEncoded reason. */
 const MAX_ERROR_CHARS = 200;
 
@@ -43,6 +46,8 @@ export interface MediaAsset {
   /** Identity for dedupe and results: see mediaKeyOf. */
   key: string;
   url: string;
+  /** The page the asset was found on: the third-party policy is applied to each asset from its page. */
+  page: string;
   kind: "video" | "animated";
   /** Where the file is used: "video" for a `<video>`, else the animated image's own context. */
   context: "img" | "css-background" | "video";
@@ -72,6 +77,8 @@ export interface MediaOptions {
   log: (line: string) => void;
   /** The egress proxy a video URL goes through. Required when a video is encoded. */
   proxy?: string;
+  /** Names the scorer in the cache identity: "cpu", or the GPU that scores the run. Defaults to "cpu". */
+  scorerId?: string;
   /** The SSIMULACRA2 scorer. The CPU one when absent. */
   score?: Scorer;
 }
@@ -91,6 +98,32 @@ export interface MediaResults {
   byKey: Map<string, MediaEntry>;
   /** A note for the whole run, such as the missing-ffmpeg note. */
   note?: string;
+  /**
+   * The assets the third-party policy blocked, by blockedKeyOf (their page and key). They were never fetched or read, and
+   * their records say "third-party blocked".
+   */
+  blocked?: Set<string>;
+}
+
+/** The identity of an asset blocked on one page: the same file may be allowed on another page. */
+export function blockedKeyOf(page: string, key: string): string {
+  return `${page}\n${key}`;
+}
+
+/**
+ * Splits the assets by the third-party policy, each checked from the page it was found on, as the browser route guard checks
+ * a request. A blocked asset is never fetched, read or proxied: its blockedKeyOf goes into `blocked`. A video is a media
+ * request and an animated image an image request, so the policy's kept types decide.
+ */
+export function partitionByPolicy(assets: MediaAsset[], policy: ThirdPartyPolicy): { allowed: MediaAsset[]; blocked: Set<string> } {
+  const blocked = new Set<string>();
+  const allowed: MediaAsset[] = [];
+  for (const asset of assets) {
+    const facts = { pageUrl: asset.page, requestUrl: asset.url, resourceType: asset.kind === "video" ? "media" : "image", subFrame: false };
+    if (isThirdPartyBlocked(policy, facts)) blocked.add(blockedKeyOf(asset.page, asset.key));
+    else allowed.push(asset);
+  }
+  return { allowed, blocked };
 }
 
 /**
@@ -130,6 +163,7 @@ export function videoAssetOf(record: VideoRecord): MediaAsset {
   return {
     key: mediaKeyOf("video", "video", record.src, widths),
     url: record.src,
+    page: record.page,
     kind: "video",
     context: "video",
     widths,
@@ -152,6 +186,7 @@ export function animatedAssetOf(record: ImageRecord, fix: AnimatedFix): MediaAss
   return {
     key: mediaKeyOf("animated", fix.context, url, widths),
     url,
+    page: record.page,
     kind: "animated",
     context: fix.context,
     widths,
@@ -271,7 +306,7 @@ async function runJobs(
   const reasons: string[] = [];
   let samples: Promise<string[]> | undefined;
   for (const job of jobs) {
-    const cacheKey = `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
+    const cacheKey = `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
     const cached = await opts.cache?.getJson<unknown>(cacheKey);
     let outcome: SearchOutcome;
     if (isCachedOutcome(cached)) {
@@ -453,26 +488,22 @@ function finish(byKey: Map<string, MediaEntry>, started: number, opts: MediaOpti
 }
 
 /**
- * The steps of the lever chain for a video, from its full bytes: audio, then resolution, codec and quality (see
- * attributeLevers). The resolution stage scales the bytes without audio by the pixel ratio (an estimate); the codec
- * stage is the AV1 candidate at the target width (or the estimate when there is none), and the final stage is the
- * estimate.
+ * The steps of the lever chain for a video, from its full bytes: audio, then resolution, then the re-encode (see
+ * attributeLevers). The search returns only the best passing quality, so the quality stage is zero by design and the codec
+ * stage carries the whole re-encode (codec and quality together). Task 8 labels that step "re-encode". The resolution stage
+ * is the no-audio bytes scaled by the pixel ratio (an estimate), clamped into [final, no-audio]; the steps then sum to
+ * start − final exactly. An encode larger than the no-audio bytes has no lever (a negative saving), so no steps are given.
  */
-function stepsOf(
-  record: VideoRecord,
-  estimate: CandidateResult,
-  av1AtTarget: CandidateResult | undefined,
-  target: number,
-  probe: MediaProbe | undefined,
-): LeverSteps | undefined {
+function stepsOf(record: VideoRecord, estimate: CandidateResult, target: number, probe: MediaProbe | undefined): LeverSteps | undefined {
   const start = record.bytes.perPlay;
   const audio = record.levers.audio?.bytes ?? 0;
   const noAudio = start - audio;
+  const final = estimate.bytes;
   const source = probe?.width ?? target;
-  if (!(source > 0)) return undefined;
-  const resized = Math.round(noAudio * (target / source) ** 2);
-  const recoded = av1AtTarget?.bytes ?? estimate.bytes;
-  return attributeLevers({ start, noAudio, resized, recoded, final: estimate.bytes });
+  if (!(source > 0) || final > noAudio) return undefined;
+  const scaled = Math.round(noAudio * (target / source) ** 2);
+  const resized = Math.min(noAudio, Math.max(final, scaled));
+  return attributeLevers({ start, noAudio, resized, recoded: final, final });
 }
 
 /** The lowest-bytes candidate, or undefined when there is none. The first of equal bytes wins. */
@@ -515,14 +546,13 @@ function attachVideo(record: VideoRecord, entry: MediaEntry | undefined, fallbac
   const target = Math.max(0, ...(record.widths?.widths ?? []));
   const atTarget = entry.candidates.filter((c) => c.width === target);
   // AV1 is the main hint; the H.264 fallback is the estimate only when no AV1 encode passed at the target width.
-  const av1 = smallest(atTarget.filter((c) => c.codec === "av1-mp4"));
-  const estimate = av1 ?? smallest(atTarget);
+  const estimate = smallest(atTarget.filter((c) => c.codec === "av1-mp4")) ?? smallest(atTarget);
   if (estimate === undefined) {
     out.notEncoded = entry.notEncoded ?? "no passing quality";
     return out;
   }
   out.estimate = estimate;
-  const steps = stepsOf(out, estimate, av1, target, entry.probe);
+  const steps = stepsOf(out, estimate, target, entry.probe);
   if (steps !== undefined) out.steps = steps;
   return out;
 }
@@ -535,11 +565,19 @@ function attachVideo(record: VideoRecord, entry: MediaEntry | undefined, fallbac
  */
 export function attachMediaResults(result: PageResult, results: MediaResults, args: MediaAttachArgs): PageResult {
   const fallback = args.survey ? "survey" : args.quality ? undefined : "quality off";
-  const videos = result.videos?.map((record) => attachVideo(record, results.byKey.get(videoAssetOf(record).key), fallback));
+  const isBlocked = (page: string, key: string): boolean => results.blocked?.has(blockedKeyOf(page, key)) === true;
+  const videos = result.videos?.map((record) => {
+    const key = videoAssetOf(record).key;
+    if (isBlocked(record.page, key)) return { ...record, notEncoded: THIRD_PARTY_BLOCKED };
+    return attachVideo(record, results.byKey.get(key), fallback);
+  });
   const images = result.images?.map((image) => {
     const animated = image.fix.animated;
     if (animated === undefined) return image;
     const asset = animatedAssetOf(image, animated);
+    if (asset !== undefined && isBlocked(image.page, asset.key)) {
+      return { ...image, fix: { ...image.fix, animated: { ...animated, notEncoded: THIRD_PARTY_BLOCKED } } };
+    }
     const entry = asset === undefined ? undefined : results.byKey.get(asset.key);
     if (entry === undefined) {
       return fallback === undefined ? image : { ...image, fix: { ...image.fix, animated: { ...animated, notEncoded: fallback } } };

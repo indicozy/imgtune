@@ -54,7 +54,7 @@ import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.j
 import { bisectQuality, confirmBisect, minPassingQuality } from "./search.js";
 import { SURVEY_IDLE_TIMEOUT_MS, SURVEY_PAGE_CONCURRENCY, SURVEY_VIEWPORTS, surveyNote } from "./survey.js";
 import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeScope } from "./result-cache.js";
-import { attachMediaResults, mediaAssetsOf, runMediaPhase, skippedMedia, type MediaAsset, type MediaResults } from "./media-phase.js";
+import { attachMediaResults, mediaAssetsOf, partitionByPolicy, runMediaPhase, skippedMedia, type MediaAsset, type MediaResults } from "./media-phase.js";
 import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
 import { EstimateRegistry, hashOf, withEstimates, type EstimateStore } from "./estimate-jobs.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
@@ -3707,11 +3707,22 @@ export function progressLine(done: PageResult[], total: number): string {
 }
 
 /**
- * The media phase of a run (see media-phase.ts), run once after every page is measured. The videos are read through an
- * egress proxy started for the phase, which allows private destinations only when every scanned URL is local. A survey
- * or a scan with quality off encodes nothing, and each asset says so. Never throws.
+ * The media phase of a run (see media-phase.ts), run once after every page is measured. Each asset is first checked against
+ * the third-party policy from the page it was found on: a blocked one is never fetched, read or proxied. The rest go to
+ * runMediaPhase (see mediaPhaseFor).
  */
 async function runMediaFor(assets: MediaAsset[], run: PageRun, opts: ScanOptions, urls: string[]): Promise<MediaResults> {
+  const { allowed, blocked } = partitionByPolicy(assets, run.thirdParty);
+  const results = await mediaPhaseFor(allowed, run, opts, urls);
+  return blocked.size > 0 ? { ...results, blocked } : results;
+}
+
+/**
+ * The media phase for the assets the policy allows. The videos are read through an egress proxy started for the phase,
+ * which allows private destinations only when every scanned URL is local. A survey or a scan with quality off encodes
+ * nothing, and each asset says so. Never throws.
+ */
+async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptions, urls: string[]): Promise<MediaResults> {
   if (assets.length === 0) return { byKey: new Map() };
   if (opts.quality !== true || opts.survey === true) return skippedMedia(assets, opts.survey === true ? "survey" : "quality off");
   const allowPrivate = urls.length > 0 && urls.every((url) => isLocalTarget(url));
@@ -3733,6 +3744,7 @@ async function runMediaFor(assets: MediaAsset[], run: PageRun, opts: ScanOptions
         log: opts.log,
         proxy: proxy?.url,
         score: run.deps.score,
+        scorerId: run.deps.scorerId,
       },
       { fetch: (url, maxBytes) => run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate }) },
     );
