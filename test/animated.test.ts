@@ -15,6 +15,21 @@ describe("animationOf", () => {
     expect(animationOf(fixture("text.gif"))).toEqual({ format: "gif", frames: 20, durationMs: 2000, loop: 0 });
   });
 
+  it("shows a frame delay of 0 or 1 cs as 100 ms, as browsers do, so the length is not understated", () => {
+    // A minimal 1x1 GIF with one frame per delay: a graphic control block with the delay, then an image of one byte.
+    const gif = (delays: number[]): Buffer => {
+      const parts = [Buffer.from("GIF89a"), Buffer.from([1, 0, 1, 0, 0, 0, 0])];
+      for (const d of delays) {
+        parts.push(Buffer.from([0x21, 0xf9, 0x04, 0x00, d & 0xff, d >> 8, 0x00, 0x00]));
+        parts.push(Buffer.from([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0x00, 0x02, 0x01, 0x44, 0x00]));
+      }
+      parts.push(Buffer.from([0x3b]));
+      return Buffer.concat(parts);
+    };
+    expect(animationOf(gif([0, 1, 5]))?.durationMs).toBe(100 + 100 + 50);
+    expect(animationOf(gif([0, 0]))?.durationMs).toBe(200);
+  });
+
   it("returns undefined for a single-frame GIF", () => {
     expect(animationOf(fixture("still.gif"))).toBeUndefined();
   });

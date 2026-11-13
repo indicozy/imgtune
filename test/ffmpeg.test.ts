@@ -240,6 +240,36 @@ describe("runFfmpeg", () => {
     await expect(pending).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(5000);
   });
+
+  it("streams the stdin chunks in order and reads them as a pipe, without holding them all", async () => {
+    // Two 4x2 gray frames, fed one chunk each, come out unchanged: the process reads its input as it arrives.
+    const chunks = [Buffer.alloc(8, 1), Buffer.alloc(8, 2)];
+    const result = await runFfmpeg(["-f", "rawvideo", "-pix_fmt", "gray", "-s", "4x2", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "gray", "-"], {
+      timeoutMs: 20_000,
+      stdin: async function* () {
+        for (const chunk of chunks) yield chunk;
+      },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toEqual(Buffer.concat(chunks));
+  });
+
+  it("rejects with AbortError when the signal aborts a run that reads stdin", async () => {
+    const controller = new AbortController();
+    const pending = runFfmpeg(["-f", "rawvideo", "-pix_fmt", "gray", "-s", "4x2", "-i", "pipe:0", "-f", "null", "-"], {
+      timeoutMs: 60_000,
+      signal: controller.signal,
+      stdin: async function* () {
+        // Never ends: the run is stopped by the signal, not by its input.
+        for (;;) {
+          yield Buffer.alloc(8, 3);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      },
+    });
+    setTimeout(() => controller.abort(), 300);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
 });
 
 describe("process slots", () => {

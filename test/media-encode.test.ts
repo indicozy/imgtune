@@ -12,6 +12,7 @@ import {
   cfrIndices,
   cutSamples,
   guardOf,
+  guardScores,
   hasRange,
   searchQuality,
   stillestFrames,
@@ -338,5 +339,30 @@ describe("pure helpers", () => {
   it("takes the lower-nearest-rank 10th percentile", () => {
     expect(tenthPercentile([90, 70, 80, 60, 100, 75, 85, 65, 95])).toBe(60);
     expect(tenthPercentile([42])).toBe(42);
+  });
+});
+
+describe("the ceiling fails closed on an unreadable frame (guardScores)", () => {
+  // A context with one sample whose two guard frames are known. The candidate's frames cannot be read.
+  const frame = { data: new Uint8ClampedArray(4 * 4 * 4), width: 4, height: 4 };
+  const ctx = {
+    samples: ["/unused/sample-0.mkv"],
+    probe: { durationS: 2, width: 4, height: 4, fps: 30, videoCodec: "vp9" },
+    codec: "av1-mp4",
+    width: 4,
+    fps: 30,
+    seconds: [2],
+    opts: { score: async () => 90 },
+    guards: [{ indices: [0, 1], frames: [frame, frame] }],
+    cache: new Map(),
+  } as unknown as Parameters<typeof guardScores>[0];
+  const unreadable = { input: [], frames: async () => Promise.reject(new Error("no frame")) };
+
+  it("scores an unreadable candidate frame as 0 for a candidate (it fails closed)", async () => {
+    expect(await guardScores(ctx, 0, unreadable)).toEqual([0, 0]);
+  });
+
+  it("is score-failed for a ceiling, never a 0 that would lower the still bar to its floor", async () => {
+    await expect(guardScores(ctx, 0, unreadable, true)).rejects.toMatchObject({ reason: "score-failed" });
   });
 });

@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFfmpeg, probeMedia } from "../src/ffmpeg.js";
-import { prepareMedia, renderAnimated, renderReference, type AnimatedFileResult, type ReferenceFileResult } from "../src/media-file.js";
-import { cutSamples, searchQuality, TimelineTooLarge, TIMELINE_CAP_BYTES, webpTimeline, type CandidateResult } from "../src/media-encode.js";
+import { candidateCodecOf, prepareMedia, renderAnimated, renderReference, type AnimatedFileResult, type ReferenceFileResult } from "../src/media-file.js";
+import { cutSamples, searchQuality, TimelineTooLarge, TIMELINE_CAP_BYTES, webpPages, type CandidateResult } from "../src/media-encode.js";
 import { makeScorer } from "../src/metric.js";
 
 const FIXTURES = fileURLToPath(new URL("./fixtures/media/", import.meta.url));
@@ -30,7 +30,7 @@ describe("the animated WebP timeline cap", () => {
 
   it("refuses a timeline over the cap before any frame is built, with the size in the message", async () => {
     const buffer = await readFile(fixture("anim.webp"));
-    const error = await webpTimeline(buffer, 30, TINY_CAP).then(
+    const error = await webpPages(buffer, 30, TINY_CAP).then(
       () => undefined,
       (err: unknown) => err,
     );
@@ -38,12 +38,53 @@ describe("the animated WebP timeline cap", () => {
     expect((error as Error).message).toMatch(/^too large to score: the frames of this animated WebP would take \d+ MB decoded/);
   });
 
-  it("builds the frames of the same file under the default cap", async () => {
+  it("decodes the pages of the same file once under the default cap, and maps every tick to a page", async () => {
     const buffer = await readFile(fixture("anim.webp"));
-    const { frames, width, height } = await webpTimeline(buffer, 30);
-    expect(frames.length).toBeGreaterThan(0);
+    const { pages, width, height, tickPages } = await webpPages(buffer, 30);
+    expect(pages.length).toBeGreaterThan(0);
     expect(width).toBe(320);
     expect(height).toBe(180);
+    expect(tickPages.length).toBeGreaterThanOrEqual(pages.length);
+    expect(tickPages.every((p) => p >= 0 && p < pages.length)).toBe(true);
+  });
+
+  it("caps the decoded pages per file: exactly pages × width × height × 4 fits, one byte less is refused", async () => {
+    const buffer = await readFile(fixture("anim.webp"));
+    const { pages, width, height } = await webpPages(buffer, 30);
+    const exact = pages.length * width * height * 4;
+    await expect(webpPages(buffer, 30, exact)).resolves.toBeDefined();
+    await expect(webpPages(buffer, 30, exact - 1)).rejects.toBeInstanceOf(TimelineTooLarge);
+  });
+
+  it("refuses a frame over 40 Mpx before any decode, as too large to score", async () => {
+    // A 9000 x 5000 frame is 45 Mpx: refused from the probe, with no sample read and no encode.
+    const probe = { durationS: 2, width: 9000, height: 5000, fps: 30, videoCodec: "gif" as const };
+    const outcome = await searchQuality([], probe, "animated-avif", 9000, {
+      vmafBar: 93,
+      stillBar: 65,
+      deadline: Date.now() + 60_000,
+      caps: { ffmpeg: true, ffprobe: true, vmaf: true, av1: "libsvtav1", x264: true, webpAnim: true, avifMuxer: true },
+      score: makeScorer("ssimulacra2"),
+      workDir: join(scratch, "pixels"),
+    });
+    expect(outcome).toEqual({ ok: false, reason: "too-large" });
+  });
+
+  it("returns aborted at once when the run's signal is already aborted, and writes nothing", async () => {
+    const caps = await probeFfmpeg();
+    const probe = (await probeMedia(fixture("anim.gif"), 10_000))!;
+    const controller = new AbortController();
+    controller.abort();
+    const outcome = await searchQuality([], probe, "animated-avif", probe.width, {
+      vmafBar: 93,
+      stillBar: 65,
+      deadline: Date.now() + 120_000,
+      caps,
+      score: makeScorer("ssimulacra2"),
+      workDir: join(scratch, "aborted"),
+      signal: controller.signal,
+    });
+    expect(outcome).toEqual({ ok: false, reason: "aborted" });
   });
 
   it("makes the single-file mode print the error for a file over the cap (prepareMedia)", async () => {
@@ -134,11 +175,24 @@ describe("renderReference: the ceiling is named for a candidate of another codec
     pass: true,
   });
 
-  it("names the AV1 CRF 20 ceiling for an H.264 candidate", () => {
-    expect(renderReference(reference("h264"))).toMatch(/still bar ceiling: the reference's AV1 CRF 20 encode, whatever the candidate's codec \(h264\)/);
+  it("names the AV1 CRF 20 ceiling for a candidate whose codec has no ceiling of its own", () => {
+    expect(renderReference(reference("h264"))).toMatch(/still bar ceiling: the reference's best AV1 CRF 20 encode \(candidate h264\)/);
   });
 
-  it("does not name it for an AV1 candidate", () => {
-    expect(renderReference(reference("av1"))).not.toMatch(/still bar ceiling/);
+  it("names the ceiling of the candidate's own codec, at its best quality", () => {
+    const h264 = { ...reference("h264"), ceilingCodec: "h264-mp4" as const };
+    expect(renderReference(h264)).toMatch(/still bar ceiling: the reference's best H\.264 CRF 18 encode \(candidate h264\)/);
+    const webp = { ...reference("webp"), ceilingCodec: "animated-webp" as const };
+    expect(renderReference(webp)).toMatch(/still bar ceiling: the reference's best WebP q 90 encode/);
+  });
+});
+
+describe("candidateCodecOf: a candidate is judged in its own codec", () => {
+  const probe = (videoCodec: string) => ({ durationS: 2, width: 320, height: 180, fps: 30, videoCodec });
+  it("takes an animated WebP, H.264 and AV1 as their own codec, and anything else as AV1", () => {
+    expect(candidateCodecOf({ animation: { format: "webp", frames: 3, durationMs: 300, loop: 0 }, probe: probe("ffv1") })).toBe("animated-webp");
+    expect(candidateCodecOf({ probe: probe("h264") })).toBe("h264-mp4");
+    expect(candidateCodecOf({ probe: probe("av1") })).toBe("av1-mp4");
+    expect(candidateCodecOf({ probe: probe("vp9") })).toBe("av1-mp4");
   });
 });

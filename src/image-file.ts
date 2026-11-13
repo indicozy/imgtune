@@ -476,6 +476,7 @@ export async function imageCommand(
   cwd: string,
   userAgent = `imgtune/${IMGTUNE_VERSION}`,
   log: (message: string) => void = (message) => process.stderr.write(`imgtune: ${message}\n`),
+  signal?: AbortSignal,
 ): Promise<{ output: string; exitCode: number }> {
   const args = parseImageArgs(argv);
   const gpu = args.gpu !== undefined ? await startGpuScorer(args.gpu.device, log) : undefined;
@@ -486,7 +487,7 @@ export async function imageCommand(
       ? undefined
       : { store, scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu", cpuScored: gpu ? () => gpu.cpuScores : undefined };
   try {
-    return await measureInputs(args, cwd, userAgent, gpu, cache);
+    return await measureInputs(args, cwd, userAgent, gpu, cache, signal);
   } finally {
     gpu?.close();
   }
@@ -498,11 +499,12 @@ async function measureInputs(
   userAgent: string,
   gpu: GpuScorer | undefined,
   cache?: { store: ResultCache; scorerId: string },
+  signal?: AbortSignal,
 ): Promise<{ output: string; exitCode: number }> {
   const inputs = await resolveInputs(args.inputs, cwd);
   const score = makeScorer("ssimulacra2", { projectDir: cwd, gpu });
   const scorer: PageScorer = gpu !== undefined ? scorerOf(gpu, gpu.fallbackScores) : { name: "cpu" };
-  if (args.reference !== undefined) return compareMode(args, inputs, cwd, score, scorer);
+  if (args.reference !== undefined) return compareMode(args, inputs, cwd, score, scorer, signal);
 
   const results: FileResult[] = [];
   const media: MediaFileResult[] = [];
@@ -511,7 +513,7 @@ async function measureInputs(
   let scratch: string | undefined;
   const mediaContext = async (): Promise<MediaContext> => {
     scratch ??= await mkdtemp(join(tmpdir(), "imgtune-media-file-"));
-    return { caps: await probeFfmpeg(), score, dir: scratch, videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR, videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR };
+    return { caps: await probeFfmpeg(), score, dir: scratch, videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR, videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR, signal };
   };
   try {
     for (const input of inputs) {
@@ -568,6 +570,7 @@ async function compareMode(
   cwd: string,
   score: Scorer,
   scorer: PageScorer,
+  signal?: AbortSignal,
 ): Promise<{ output: string; exitCode: number }> {
   const reference = args.reference as string;
   const fail = (message: string): { output: string; exitCode: number } => {
@@ -597,6 +600,7 @@ async function compareMode(
       dir,
       videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR,
       videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR,
+      signal,
     };
     result = await compareReferenceFile(
       { label: candidate.label, path: resolve(cwd, candidate.path as string), buffer: candBuffer },

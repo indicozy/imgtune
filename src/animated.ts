@@ -105,7 +105,8 @@ function parseGif(b: Buffer): AnimationInfo | undefined {
       if (packed & 0x80) p += colourTableBytes(packed);
       p += 1; // LZW minimum code size
       frames += 1;
-      durationMs += pendingDelayCs * 10;
+      // A delay of 0 or 1 cs is shown as 10 cs (100 ms), as browsers show it, so the length is not understated.
+      durationMs += (pendingDelayCs <= 1 ? 10 : pendingDelayCs) * 10;
       pendingDelayCs = 0;
       pos = skipSubBlocks(b, p);
     } else {

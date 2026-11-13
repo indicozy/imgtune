@@ -399,6 +399,23 @@ Options:
   -h, --help          show this help
 `;
 
+/** The exit code of a run stopped by SIGINT or SIGTERM (128 + 2). */
+const INTERRUPTED_EXIT = 130;
+
+/**
+ * Aborted on the first SIGINT or SIGTERM: a running ffmpeg is killed, the media phase and the image command stop, and their
+ * scratch folders are removed. A second signal exits at once.
+ */
+const interrupt = new AbortController();
+let interrupts = 0;
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    interrupts++;
+    if (interrupts > 1) process.exit(INTERRUPTED_EXIT);
+    interrupt.abort();
+  });
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version")) {
@@ -456,9 +473,9 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] === "image") {
-    const outcome = await imageCommand(argv.slice(1), process.cwd());
+    const outcome = await imageCommand(argv.slice(1), process.cwd(), undefined, undefined, interrupt.signal);
     process.stdout.write(outcome.output);
-    process.exitCode = outcome.exitCode;
+    process.exitCode = interrupt.signal.aborted ? INTERRUPTED_EXIT : outcome.exitCode;
     return;
   }
 
@@ -502,9 +519,9 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const outcome = await scanCommand(argv.slice(1), process.cwd(), progress);
+  const outcome = await scanCommand(argv.slice(1), process.cwd(), progress, interrupt.signal);
   process.stdout.write(outcome.output);
-  process.exitCode = outcome.exitCode;
+  process.exitCode = interrupt.signal.aborted ? INTERRUPTED_EXIT : outcome.exitCode;
 }
 
 main().catch((err: unknown) => {

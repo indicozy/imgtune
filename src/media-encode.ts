@@ -6,7 +6,7 @@
 // Performance comes first: the encodes run on the CPU with FFMPEG_THREADS threads per job, and every ffmpeg call is
 // bounded by the asset's deadline, so one heavy file cannot hold a scan.
 
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
@@ -69,6 +69,11 @@ export interface SearchOptions {
   workDir: string;
   /** Largest decoded animated-WebP timeline this search may build (default TIMELINE_CAP_BYTES). */
   maxTimelineBytes?: number;
+  /**
+   * Aborts the search: a running ffmpeg is killed, and the search returns "aborted" (see searchQuality). Set by the CLI on
+   * SIGINT and SIGTERM, so a stopped run leaves no encode behind.
+   */
+  signal?: AbortSignal;
 }
 
 export type SearchOutcome =
@@ -84,7 +89,8 @@ export type SearchOutcome =
         | "probe-failed"
         | "no-passing-quality"
         | "too-large"
-        | "score-failed";
+        | "score-failed"
+        | "aborted";
     };
 
 /** What hasRange learned about a URL. `range` is true only when a byte range was actually served (a 206). */
@@ -188,6 +194,32 @@ export class TimelineTooLarge extends Error {
   }
 }
 
+/**
+ * The most pixels a frame may have before ffmpeg is asked to read it (8K is about 33 Mpx): above this the input is refused
+ * before any decode or encode, since ffmpeg would allocate frames of several GB. Reported as "too-large".
+ */
+export const MAX_INPUT_PIXELS_FFMPEG = 40_000_000;
+
+/** A frame over MAX_INPUT_PIXELS_FFMPEG: refused before any decode or encode. Its message starts "too large to score". */
+export class PixelsTooLarge extends Error {
+  readonly width: number;
+  readonly height: number;
+
+  constructor(width: number, height: number) {
+    super(
+      `too large to score: a frame of ${width}x${height} has ${(width * height / 1_000_000).toFixed(1)} Mpx, above the ${MAX_INPUT_PIXELS_FFMPEG / 1_000_000} Mpx limit`,
+    );
+    this.name = "PixelsTooLarge";
+    this.width = width;
+    this.height = height;
+  }
+}
+
+/** True for an abort (the run's signal fired): the search stops and reports "aborted". */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
 /** The deadline passed before a step could start. */
 class DeadlineHit extends Error {
   constructor() {
@@ -219,9 +251,17 @@ function runBudget(deadline: number): number {
   return Math.min(left, RUN_CAP_MS);
 }
 
-/** One ffmpeg run, bounded by the deadline. The caller judges the exit code. */
-function ffrun(args: string[], deadline: number): Promise<{ code: number; stderr: string }> {
-  return runFfmpeg(["-loglevel", "error", ...args], { timeoutMs: runBudget(deadline) });
+/**
+ * One ffmpeg run, bounded by the deadline and stopped by the signal. `stdin` feeds the input from a pipe (see RunOptions).
+ * The caller judges the exit code.
+ */
+function ffrun(
+  args: string[],
+  deadline: number,
+  signal?: AbortSignal,
+  stdin?: () => AsyncIterable<Uint8Array>,
+): Promise<{ code: number; stderr: string }> {
+  return runFfmpeg(["-loglevel", "error", ...args], { timeoutMs: runBudget(deadline), signal, stdin });
 }
 
 /**
@@ -256,7 +296,7 @@ async function stage<T>(reason: StageError["reason"], work: () => Promise<T>): P
   try {
     return await work();
   } catch (err) {
-    if (isDeadline(err) || err instanceof StageError || err instanceof TimelineTooLarge) throw err;
+    if (isDeadline(err) || isAbortError(err) || err instanceof StageError || err instanceof TimelineTooLarge || err instanceof PixelsTooLarge) throw err;
     throw new StageError(reason);
   }
 }
@@ -273,6 +313,7 @@ export async function cutSamples(
   workDir: string,
   deadline: number,
   proxy?: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   // Refuses a bad input before any file is written.
   const options = inputOptions(input, proxy);
@@ -302,6 +343,7 @@ export async function cutSamples(
           out,
         ],
         deadline,
+        signal,
       );
       if (result.code !== 0) throw new Error(`ffmpeg could not cut sample ${i}: ${lastLine(result.stderr)}`);
       return out;
@@ -539,7 +581,7 @@ async function decodeRgba(bytes: Buffer): Promise<RawImage> {
 }
 
 /** The indices of the stillest frames of one sample, from signalstats' YDIF (see stillestFrames). */
-async function stillestOf(sample: string, metadataFile: string, deadline: number): Promise<number[]> {
+async function stillestOf(sample: string, metadataFile: string, deadline: number, signal?: AbortSignal): Promise<number[]> {
   const result = await ffrun(
     [
       ...inputOptions(sample),
@@ -552,6 +594,7 @@ async function stillestOf(sample: string, metadataFile: string, deadline: number
       "-",
     ],
     deadline,
+    signal,
   );
   if (result.code !== 0) throw new Error(`ffmpeg could not measure frame differences: ${lastLine(result.stderr)}`);
   return stillestFrames(await readFile(metadataFile, "utf8"), GUARD_FRAMES);
@@ -567,6 +610,7 @@ async function framesAt(
   indices: number[],
   dir: string,
   deadline: number,
+  signal?: AbortSignal,
 ): Promise<RawImage[]> {
   if (indices.length === 0) return [];
   await mkdir(dir, { recursive: true });
@@ -587,6 +631,7 @@ async function framesAt(
       join(dir, "f-%d.png"),
     ],
     deadline,
+    signal,
   );
   if (result.code !== 0) throw new Error(`ffmpeg could not read frames: ${lastLine(result.stderr)}`);
   const frames: RawImage[] = [];
@@ -652,6 +697,7 @@ async function encodeClip(
   out: string,
   caps: FfmpegCaps,
   deadline: number,
+  signal?: AbortSignal,
 ): Promise<void> {
   await stage("no-encoder", async () => {
     const result = await ffrun(
@@ -668,59 +714,86 @@ async function encodeClip(
         out,
       ],
       deadline,
+      signal,
     );
     if (result.code !== 0) throw new Error(lastLine(result.stderr));
   });
 }
 
 /**
- * The candidate of one sample, as ffmpeg reads it: the input for libvmaf, and its frames at given indices. An animated
- * WebP cannot be read by ffmpeg, so it is decoded in-process and written as raw RGBA for libvmaf.
+ * The candidate of one sample, as ffmpeg reads it: the input for libvmaf, the bytes it reads from stdin (when the input is
+ * a pipe), and its frames at given indices. An animated WebP cannot be read by ffmpeg, so it is decoded in-process and
+ * streamed as raw RGBA.
  */
-interface Candidate {
+export interface Candidate {
   input: string[];
+  stdin?: () => AsyncIterable<Uint8Array>;
   frames(indices: number[]): Promise<RawImage[]>;
 }
 
 /** A candidate that ffmpeg reads from its file. */
-function fileCandidate(out: string, dir: string, i: number, deadline: number): Candidate {
+function fileCandidate(out: string, dir: string, i: number, deadline: number, signal?: AbortSignal): Candidate {
   return {
     input: [...inputOptions(out), "-i", out],
-    frames: (indices) => framesAt(out, [], indices, join(dir, `g-${i}`), deadline),
+    frames: (indices) => framesAt(out, [], indices, join(dir, `g-${i}`), deadline, signal),
   };
 }
 
 /**
- * The frames of an animated WebP on the constant-rate timeline at `fps`: every frame decoded (no ffmpeg can read an
- * animated WebP), then laid out so frame k is the frame on screen at tick k (a frame that lasts longer repeats). Used by
- * the candidates of a search and by the single-file mode, which writes the same frames to a lossless file.
+ * The decoded pages of an animated WebP, once per file, and the page on screen at each constant-rate tick at `fps`. ffmpeg
+ * cannot read an animated WebP, so it is decoded here. The timeline is never built: `tickPages` holds one index per tick,
+ * and the raw stream (timelineChunks) writes each page as many times as its ticks need.
  */
-export async function webpTimeline(
-  bytes: Buffer,
-  fps: number,
-  capBytes = TIMELINE_CAP_BYTES,
-): Promise<{ frames: RawImage[]; width: number; height: number }> {
+export interface WebpPages {
+  pages: RawImage[];
+  width: number;
+  height: number;
+  /** The page index on each constant-rate tick. */
+  tickPages: number[];
+}
+
+/**
+ * Decodes an animated WebP's pages, once. The size is checked from the metadata before any frame is decoded: the decoded
+ * pages (pages × width × height × 4 bytes) must fit `capBytes` (TimelineTooLarge), and one frame must fit
+ * MAX_INPUT_PIXELS_FFMPEG (PixelsTooLarge). The cap is per file, not per sample.
+ */
+export async function webpPages(bytes: Buffer, fps: number, capBytes = TIMELINE_CAP_BYTES): Promise<WebpPages> {
   const meta = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
-  // The size of the timeline is known from the metadata, so it is checked before any frame is decoded or repeated.
-  const pagesOf = meta.pages ?? 1;
+  const metaWidth = meta.width ?? 0;
   const metaHeight = meta.pageHeight ?? meta.height ?? 0;
-  const metaDelays = meta.delay ?? Array.from({ length: pagesOf }, () => 1000 / fps);
-  const timelineBytes = ticksOf(metaDelays, fps) * (meta.width ?? 0) * metaHeight * 4;
-  if (timelineBytes > capBytes) throw new TimelineTooLarge(timelineBytes, capBytes);
+  if (metaWidth * metaHeight > MAX_INPUT_PIXELS_FFMPEG) throw new PixelsTooLarge(metaWidth, metaHeight);
+  const decodedBytes = (meta.pages ?? 1) * metaWidth * metaHeight * 4;
+  if (decodedBytes > capBytes) throw new TimelineTooLarge(decodedBytes, capBytes);
   const { data, info } = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS })
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  const pages = info.pages ?? 1;
+  const count = info.pages ?? 1;
   const height = info.pageHeight ?? info.height;
   const pageBytes = info.width * height * 4;
-  const pageFrames: RawImage[] = Array.from({ length: pages }, (_, p) => {
+  const pages: RawImage[] = Array.from({ length: count }, (_, p) => {
     const part = data.subarray(p * pageBytes, (p + 1) * pageBytes);
     return { data: new Uint8ClampedArray(part.buffer, part.byteOffset, part.byteLength), width: info.width, height };
   });
-  const delays = meta.delay ?? pageFrames.map(() => 1000 / fps);
-  const frames = cfrIndices(delays, fps, ticksOf(delays, fps)).map((p) => pageFrames[Math.min(p, pageFrames.length - 1)]);
-  return { frames, width: info.width, height };
+  const delays = meta.delay ?? pages.map(() => 1000 / fps);
+  const tickPages = cfrIndices(delays, fps, ticksOf(delays, fps)).map((p) => Math.min(p, count - 1));
+  return { pages, width: info.width, height, tickPages };
+}
+
+/**
+ * The raw RGBA of an animated WebP's constant-rate timeline, page after page, each page as many times as its ticks need. It
+ * is streamed to ffmpeg's stdin, so the repeated timeline is never built in memory.
+ */
+export async function* timelineChunks(webp: WebpPages): AsyncGenerator<Uint8Array> {
+  for (const p of webp.tickPages) {
+    const page = webp.pages[p];
+    yield Buffer.from(page.data.buffer as ArrayBuffer, page.data.byteOffset, page.data.byteLength);
+  }
+}
+
+/** The ffmpeg input options of a raw timeline read from stdin (see timelineChunks), at its size and rate. */
+export function rawTimelineInput(webp: WebpPages, fps: number): string[] {
+  return ["-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${webp.width}x${webp.height}`, "-framerate", String(fps), "-i", "pipe:0"];
 }
 
 /** The constant-rate ticks a sequence of frame delays (ms) spans at `fps`: at least one. */
@@ -730,31 +803,15 @@ function ticksOf(delaysMs: number[], fps: number): number {
 }
 
 /**
- * An animated WebP candidate: every frame decoded, then laid out on the constant-rate timeline of the reference
- * (repeated where a frame lasts longer), so frame k of the candidate is frame k of the reference.
+ * An animated WebP candidate: decoded once (see webpPages) and laid out on the reference's constant-rate timeline by its
+ * tick indices, so frame k of the candidate is frame k of the reference. Its frames come from the same decoded pages.
  */
-async function webpCandidate(out: string, dir: string, i: number, fps: number, capBytes?: number): Promise<Candidate> {
-  const bytes = await readFile(out);
-  const { frames, width } = await webpTimeline(bytes, fps, capBytes);
-  const height = frames[0]?.height ?? 0;
-
-  const raw = join(dir, `s${i}.rgba`);
-  await writeFile(raw, Buffer.concat(frames.map((f) => Buffer.from(f.data.buffer as ArrayBuffer, f.data.byteOffset, f.data.byteLength))));
+async function webpCandidate(out: string, fps: number, capBytes?: number): Promise<Candidate> {
+  const webp = await webpPages(await readFile(out), fps, capBytes);
   return {
-    input: [
-      "-f",
-      "rawvideo",
-      "-pix_fmt",
-      "rgba",
-      "-video_size",
-      `${width}x${height}`,
-      "-framerate",
-      String(fps),
-      ...inputOptions(raw),
-      "-i",
-      raw,
-    ],
-    frames: async (indices) => indices.map((n) => frames[Math.min(n, frames.length - 1)]),
+    input: rawTimelineInput(webp, fps),
+    stdin: () => timelineChunks(webp),
+    frames: async (indices) => indices.map((n) => webp.pages[webp.tickPages[Math.min(n, webp.tickPages.length - 1)]]),
   };
 }
 
@@ -771,6 +828,8 @@ async function vmafOf(
   fps: number,
   log: string,
   deadline: number,
+  signal?: AbortSignal,
+  stdin?: () => AsyncIterable<Uint8Array>,
 ): Promise<number> {
   return stage("no-vmaf", async () => {
     const retime = `settb=AVTB,setpts=N/${fps}/TB`;
@@ -781,6 +840,8 @@ async function vmafOf(
     const result = await ffrun(
       [...distorted, ...inputOptions(reference), "-i", reference, "-lavfi", graph, "-f", "null", "-"],
       deadline,
+      signal,
+      stdin,
     );
     if (result.code !== 0) throw new Error(lastLine(result.stderr));
     const json = JSON.parse(await readFile(log, "utf8")) as { pooled_metrics?: { vmaf?: { mean?: unknown } } };
@@ -791,7 +852,7 @@ async function vmafOf(
 }
 
 /** Everything one search needs, so the steps do not take it as separate arguments. */
-interface Ctx {
+export interface Ctx {
   samples: string[];
   probe: MediaProbe;
   codec: MediaCodec;
@@ -817,13 +878,13 @@ type Scored = Omit<CandidateResult, "stillBar" | "vmafBar">;
 
 /**
  * evaluate, memoised per search: a quality already encoded is returned from the cache. The deadline is checked before a
- * new encode, so the ceiling encode and the bisection both stop at the deadline.
+ * new encode, so the ceiling encode and the bisection both stop at the deadline. `strict` is for the ceiling (see evaluate).
  */
-async function evaluateCached(ctx: Ctx, q: number): Promise<Scored> {
+async function evaluateCached(ctx: Ctx, q: number, strict = false): Promise<Scored> {
   const known = ctx.cache.get(q);
   if (known) return known;
   if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
-  const result = await evaluate(ctx, q);
+  const result = await evaluate(ctx, q, strict);
   ctx.cache.set(q, result);
   return result;
 }
@@ -837,40 +898,53 @@ interface SampleRead {
 
 /**
  * Encodes one sample at quality `q` and reads what the search needs from it: the bytes, the VMAF, and the frames at the
- * guard's indices. These are child processes (or a short decode), so the samples of a candidate run in parallel.
- * A frame that cannot be read (a candidate with fewer frames than the reference, for example) gives null, which scores
- * 0 for every guard frame of that sample: the candidate fails closed.
+ * guard's indices. These are child processes (or a short decode), so the samples of a candidate run in parallel (an
+ * animated WebP's samples run one at a time, see readAll). A frame that cannot be read (a candidate with fewer frames than
+ * the reference, for example) gives null, which scores 0 for every guard frame of that sample: the candidate fails closed.
  */
 async function readSample(ctx: Ctx, q: number, dir: string, i: number): Promise<SampleRead> {
   const { codec, width, opts } = ctx;
   const out = join(dir, `s${i}.${SPECS[codec].ext}`);
-  await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline);
+  await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline, opts.signal);
   const bytes = (await stat(out)).size;
   const cand = codec === "animated-webp"
-    ? await stage("no-encoder", () => webpCandidate(out, dir, i, ctx.fps, opts.maxTimelineBytes))
-    : fileCandidate(out, dir, i, opts.deadline);
-  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline);
+    ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, opts.maxTimelineBytes))
+    : fileCandidate(out, dir, i, opts.deadline, opts.signal);
+  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin);
   let frames: RawImage[] | null;
   try {
     frames = await cand.frames(ctx.guards[i].indices);
   } catch (err) {
-    if (isDeadline(err)) throw err;
+    if (isDeadline(err) || isAbortError(err)) throw err;
     frames = null;
   }
   return { bytes, vmaf, frames };
 }
 
 /**
- * The guard scores of one sample, all of them (no early exit). A frame that cannot be read scores 0 (fails closed).
- * Used by the reference check in searchQuality's sibling, where the bar is not known in advance.
+ * The samples of one quality, read. An animated WebP's samples are read one after another: each decodes its own timeline,
+ * so running them together would hold several decoded timelines at once. Other codecs run their samples in parallel.
  */
-async function guardScores(ctx: Ctx, i: number, cand: Candidate): Promise<number[]> {
+async function readAll(ctx: Ctx, q: number, dir: string): Promise<SampleRead[]> {
+  if (ctx.codec !== "animated-webp") return settleAll(ctx.samples.map((_, i) => readSample(ctx, q, dir, i)));
+  const reads: SampleRead[] = [];
+  for (let i = 0; i < ctx.samples.length; i++) reads.push(await readSample(ctx, q, dir, i));
+  return reads;
+}
+
+/**
+ * The guard scores of one sample, all of them (no early exit). A frame that cannot be read scores 0 (fails closed), or,
+ * when `strict` (a ceiling, whose bar the source is judged by), is score-failed: a ceiling of 0 would lower the bar of
+ * every candidate of the source.
+ */
+export async function guardScores(ctx: Ctx, i: number, cand: Candidate, strict = false): Promise<number[]> {
   const ref = ctx.guards[i];
   let frames: RawImage[];
   try {
     frames = await cand.frames(ref.indices);
   } catch (err) {
-    if (isDeadline(err)) throw err;
+    if (isDeadline(err) || isAbortError(err)) throw err;
+    if (strict) throw new StageError("score-failed");
     return ref.indices.map(() => 0);
   }
   const out: number[] = [];
@@ -902,22 +976,24 @@ function mean(values: number[]): number {
 /**
  * Encodes every sample at quality `q`, scores it, and returns the result (pass or fail). Removes its files after.
  *
- * Two phases. First the samples are read in parallel (encode, VMAF, guard frames). Then the guard is scored in order,
- * and a candidate stops at its first score below ctx.failBelow: the p10 of up to 10 frames is their minimum, so one
- * frame below the bar already decides the result. The reported `still` is then the minimum so far, which is still
- * below the bar.
+ * Two phases. First the samples are read (encode, VMAF, guard frames). Then the guard is scored in order, and a candidate
+ * stops at its first score below ctx.failBelow: the p10 of up to 10 frames is their minimum, so one frame below the bar
+ * already decides the result. The reported `still` is then the minimum so far, which is still below the bar.
+ *
+ * `strict` (the ceiling): an unreadable guard frame is score-failed, never a 0 score (see guardScores).
  */
-async function evaluate(ctx: Ctx, q: number): Promise<Scored> {
+async function evaluate(ctx: Ctx, q: number, strict = false): Promise<Scored> {
   const { codec, width, opts } = ctx;
   const dir = join(opts.workDir, `cand-${codec}-${width}-${q}`);
   await mkdir(dir, { recursive: true });
   try {
-    const reads = await settleAll(ctx.samples.map((_, i) => readSample(ctx, q, dir, i)));
+    const reads = await readAll(ctx, q, dir);
     const scores: number[] = [];
     let failed = false;
     for (let i = 0; i < reads.length && !failed; i++) {
       const ref = ctx.guards[i];
       const frames = reads[i].frames;
+      if (frames === null && strict) throw new StageError("score-failed");
       for (let k = 0; k < ref.indices.length && !failed; k++) {
         const value = frames === null ? 0 : await scoreFrame(ctx, ref.frames[k], frames[k]);
         scores.push(value);
@@ -968,9 +1044,10 @@ export async function guardOf(
   dir: string,
   deadline: number,
   blurSigma?: number,
+  signal?: AbortSignal,
 ): Promise<GuardRef> {
-  const indices = await stillestOf(sample, metadataFile, deadline);
-  const raw = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, dir, deadline);
+  const indices = await stillestOf(sample, metadataFile, deadline, signal);
+  const raw = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, dir, deadline, signal);
   const frames = blurSigma === undefined ? raw : await Promise.all(raw.map((f) => blurFrame(f, blurSigma)));
   return { indices, frames };
 }
@@ -987,6 +1064,7 @@ async function prepareGuards(ctx: Ctx): Promise<GuardRef[]> {
         join(ctx.opts.workDir, `ref-${ctx.width}-${i}`),
         ctx.opts.deadline,
         ctx.blur,
+        ctx.opts.signal,
       ),
     );
   }
@@ -1033,9 +1111,12 @@ export async function searchQuality(
   opts: SearchOptions,
 ): Promise<SearchOutcome> {
   const { caps } = opts;
+  if (opts.signal?.aborted) return { ok: false, reason: "aborted" };
   if (!caps.ffmpeg) return { ok: false, reason: "no-ffmpeg" };
   if (!caps.vmaf) return { ok: false, reason: "no-vmaf" };
   if (!hasEncoder(caps, codec)) return { ok: false, reason: "no-encoder" };
+  // An oversized frame is refused before any decode or encode (ffmpeg would allocate frames of several GB).
+  if (probe.width * probe.height > MAX_INPUT_PIXELS_FFMPEG) return { ok: false, reason: "too-large" };
   // Without a length the bytes cannot be extrapolated, so there is nothing to report.
   if (samples.length === 0 || !(probe.durationS > 0)) return { ok: false, reason: "probe-failed" };
   if (Date.now() >= opts.deadline) return { ok: false, reason: "time-limit" };
@@ -1061,7 +1142,7 @@ export async function searchQuality(
     // The ceiling: the codec's best-quality encode. Its guard score sets the still bar for this source. A ceiling that
     // misses the VMAF bar means no quality can pass, so the search ends there.
     const bound = codec === "animated-webp" ? spec.hi : spec.lo;
-    const ceiling = await evaluateCached(ctx, bound);
+    const ceiling = await evaluateCached(ctx, bound, true);
     if (ceiling.vmaf < opts.vmafBar) return { ok: false, reason: "no-passing-quality" };
     const stillBar = effectiveStillBar(opts.stillBar, ceiling.still);
     ctx.failBelow = stillBar;
@@ -1083,8 +1164,10 @@ export async function searchQuality(
       }
     }
   } catch (err) {
-    // A timeline over the cap is refused as a whole: no quality of this codec can be scored.
-    if (err instanceof TimelineTooLarge) return { ok: false, reason: "too-large" };
+    // An aborted run stops at once, and its partial result is not kept: the caller reports it as interrupted.
+    if (opts.signal?.aborted || isAbortError(err)) return { ok: false, reason: "aborted" };
+    // A timeline over the cap, or a frame over the pixel limit, is refused as a whole: no quality of this codec can be scored.
+    if (err instanceof TimelineTooLarge || err instanceof PixelsTooLarge) return { ok: false, reason: "too-large" };
     // A broken scorer is reported even when an earlier quality passed: the passes before it were not checked by it.
     if (err instanceof StageError && err.reason === "score-failed") return { ok: false, reason: "score-failed" };
     if (best) return { ok: true, best, tried: ctx.cache.size };
@@ -1105,10 +1188,12 @@ export interface ReferenceScore {
   /** 10th percentile of the SSIMULACRA2 scores of the still-frame guard. */
   still: number;
   /**
-   * The still guard of the reference's own best encode: AV1 at CRF 20, the bottom of the search's AV1 range. The still bar
-   * is made relative with it (effectiveStillBar), as the search does. Undefined when no AV1 encoder is built in.
+   * The still guard of the reference's own best encode, in the candidate's codec at its best quality (see compareToReference).
+   * The still bar is made relative with it (effectiveStillBar), as the search does. Undefined when no encoder is built in.
    */
   ceiling?: number;
+  /** The codec the ceiling was encoded with (the candidate's, or AV1 when that codec has no encoder). */
+  ceilingCodec?: MediaCodec;
   /** Number of 2-second samples compared. */
   samples: number;
 }
@@ -1118,7 +1203,9 @@ export interface ReferenceScore {
  * 2-second samples the search uses, at the offsets of its probe; the candidate is cut at those same offsets, so both sides
  * cover the same moments. Both are scaled to `width` and scored as searchQuality scores an encode (the VMAF mean, the
  * 10th percentile of the still guard, the same prefilter for a GIF reference). Nothing is re-encoded except the
- * reference's ceiling, which is one AV1 encode of each sample. Throws when a file cannot be cut or scored.
+ * reference's ceiling: one encode of each sample at the best quality of the candidate's own codec (`codec`: AV1 CRF 20, H.264
+ * CRF 18, WebP q 90), so a candidate is judged against the bar its codec can reach. AV1 stands in when that codec has no
+ * encoder. Throws when a file cannot be cut or scored, and when the ceiling's own frames cannot be read (score-failed).
  */
 export async function compareToReference(
   candidate: string,
@@ -1126,29 +1213,34 @@ export async function compareToReference(
   probe: MediaProbe,
   width: number,
   opts: SearchOptions,
+  codec: MediaCodec = "av1-mp4",
 ): Promise<ReferenceScore> {
-  const referenceSamples = await cutSamples(reference, probe, join(opts.workDir, "reference"), opts.deadline);
-  const candidateSamples = await cutSamples(candidate, probe, join(opts.workDir, "candidate"), opts.deadline);
-  const scored = await scoreSamples(candidateSamples, referenceSamples, probe, width, opts);
+  const referenceSamples = await cutSamples(reference, probe, join(opts.workDir, "reference"), opts.deadline, undefined, opts.signal);
+  const candidateSamples = await cutSamples(candidate, probe, join(opts.workDir, "candidate"), opts.deadline, undefined, opts.signal);
+  const scored = await scoreSamples(candidateSamples, referenceSamples, probe, width, opts, { webp: false, strict: false });
+  const ceilingCodec: MediaCodec | undefined = hasEncoder(opts.caps, codec) ? codec : opts.caps.av1 !== undefined ? "av1-mp4" : undefined;
   let ceiling: number | undefined;
-  if (opts.caps.av1 !== undefined) {
+  if (ceilingCodec !== undefined) {
     const dir = join(opts.workDir, "ceiling");
     await mkdir(dir, { recursive: true });
+    const spec = SPECS[ceilingCodec];
+    const bound = ceilingCodec === "animated-webp" ? spec.hi : spec.lo;
     const encoded: string[] = [];
     for (let i = 0; i < referenceSamples.length; i++) {
-      const out = join(dir, `s${i}.mp4`);
-      await encodeClip(referenceSamples[i], "av1-mp4", width, SPECS["av1-mp4"].lo, out, opts.caps, opts.deadline);
+      const out = join(dir, `s${i}.${spec.ext}`);
+      await encodeClip(referenceSamples[i], ceilingCodec, width, bound, out, opts.caps, opts.deadline, opts.signal);
       encoded.push(out);
     }
-    ceiling = (await scoreSamples(encoded, referenceSamples, probe, width, opts)).still;
+    ceiling = (await scoreSamples(encoded, referenceSamples, probe, width, opts, { webp: ceilingCodec === "animated-webp", strict: true })).still;
   }
-  return { vmaf: scored.vmaf, still: scored.still, ceiling, samples: referenceSamples.length };
+  return { vmaf: scored.vmaf, still: scored.still, ceiling, ceilingCodec, samples: referenceSamples.length };
 }
 
 /**
  * The pooled VMAF mean and the still-guard 10th percentile of candidate samples against reference samples (the same
  * cut offsets, one file per sample). The loop of an encode's score, without the encode: the search and the comparison
- * both score this way.
+ * both score this way. `kind.webp`: the candidates are animated WebP files (decoded, not read by ffmpeg); `kind.strict`:
+ * an unreadable guard frame is score-failed (see guardScores).
  */
 async function scoreSamples(
   candidates: string[],
@@ -1156,12 +1248,13 @@ async function scoreSamples(
   probe: MediaProbe,
   width: number,
   opts: SearchOptions,
+  kind: { webp: boolean; strict: boolean },
 ): Promise<{ vmaf: number; still: number }> {
   // The codec field only names the candidate kind for the cache of a search; scoring never reads it.
   const ctx: Ctx = {
     samples,
     probe,
-    codec: "av1-mp4",
+    codec: kind.webp ? "animated-webp" : "av1-mp4",
     width,
     fps: probe.fps > 0 ? probe.fps : DEFAULT_FPS,
     seconds: clipSeconds(probe.durationS, samples.length),
@@ -1175,9 +1268,11 @@ async function scoreSamples(
   const vmafs: number[] = [];
   const scores: number[] = [];
   for (let i = 0; i < samples.length; i++) {
-    const cand = fileCandidate(candidates[i], join(opts.workDir, "score"), i, opts.deadline);
-    vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline));
-    scores.push(...(await guardScores(ctx, i, cand)));
+    const cand = kind.webp
+      ? await webpCandidate(candidates[i], ctx.fps, opts.maxTimelineBytes)
+      : fileCandidate(candidates[i], join(opts.workDir, "score"), i, opts.deadline, opts.signal);
+    vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin));
+    scores.push(...(await guardScores(ctx, i, cand, kind.strict)));
   }
   return { vmaf: mean(vmafs), still: tenthPercentile(scores) };
 }

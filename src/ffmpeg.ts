@@ -4,6 +4,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute } from "node:path";
+import type { Writable } from "node:stream";
 
 /**
  * What the installed ffmpeg can do. `av1` is the AV1 encoder to use (SVT-AV1 preferred, libaom as the fallback), or
@@ -77,6 +78,11 @@ interface RunResult {
 interface RunOptions {
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Bytes written to the process's stdin, chunk by chunk, then closed (read as `-i pipe:0`). A raw timeline is streamed this
+   * way, a page at a time, so it is never built in memory. A write that fails because the process is gone is not an error.
+   */
+  stdin?: () => AsyncIterable<Uint8Array>;
   /** Stdout cap in bytes; a run past it is killed and rejects with FfmpegOutputTooLarge. */
   maxStdoutBytes?: number;
 }
@@ -178,11 +184,12 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
     const start = (): void => {
       holdsSlot = true;
       try {
-        child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+        child = spawn(bin, args, { stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
       } catch (err) {
         finish(() => reject(err instanceof Error ? err : new Error(String(err))));
         return;
       }
+      if (opts.stdin && child.stdin) feedStdin(child.stdin, opts.stdin(), () => settled);
       child.stdout!.on("data", (chunk: Buffer) => {
         if (settled) return;
         stdoutBytes += chunk.length;
@@ -222,6 +229,34 @@ function decodeStderr(bytes: Buffer): string {
   let start = 0;
   while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
   return bytes.subarray(start).toString("utf8");
+}
+
+/**
+ * Writes the chunks to a process's stdin, honouring backpressure, then ends it. Stops when the run has settled (a killed
+ * process closes its stdin, and a write to it then fails: the error is the run's outcome, not this one).
+ */
+async function feedStdin(stdin: Writable, chunks: AsyncIterable<Uint8Array>, settled: () => boolean): Promise<void> {
+  stdin.on("error", () => undefined);
+  try {
+    for await (const chunk of chunks) {
+      if (settled() || stdin.destroyed) break;
+      if (!stdin.write(chunk)) {
+        await new Promise<void>((resolve) => {
+          const done = (): void => {
+            stdin.off("drain", done);
+            stdin.off("close", done);
+            resolve();
+          };
+          stdin.once("drain", done);
+          stdin.once("close", done);
+        });
+      }
+    }
+  } catch {
+    // The producer failed: the process sees its input end early and the run reports that.
+  } finally {
+    if (!stdin.destroyed) stdin.end();
+  }
 }
 
 function abortError(): Error {

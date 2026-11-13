@@ -3338,6 +3338,8 @@ export interface ScanOptions {
   /** The media phase's budget, time limit and bars (see ScanArgs; defaults above). */
   mediaBudget?: number;
   mediaTime?: number;
+  /** Aborts the media phase (the CLI sets it on SIGINT and SIGTERM): a running ffmpeg is killed. */
+  signal?: AbortSignal;
   videoBar?: number;
   videoStillBar?: number;
   /** The most widths a video is served at (see video-analysis.ts). Undefined: SCAN_MAX_VIDEO_WIDTHS. */
@@ -3857,6 +3859,7 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         proxy: proxy?.url,
         score: run.deps.score,
         scorerId: run.deps.scorerId,
+        signal: opts.signal,
       },
       { fetch: (url, maxBytes) => run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate }) },
     ).then((results) => ({ ...results, lengths }));
@@ -4406,7 +4409,12 @@ export async function rootOf(root: string | undefined, cwd: string): Promise<str
 }
 
 /** `imgtune scan`: the arguments after `scan`. The JSON files are written to --out; --markdown and --summary-json too. */
-export async function scanCommand(argv: string[], cwd: string, log: (message: string) => void): Promise<ScanCommandResult> {
+export async function scanCommand(
+  argv: string[],
+  cwd: string,
+  log: (message: string) => void,
+  signal?: AbortSignal,
+): Promise<ScanCommandResult> {
   const args = parseScanArgs(argv);
   const plan = scanPlan(args);
   const viewports = DEFAULT_VIEWPORTS.filter((v) => !plan.viewports || plan.viewports.includes(v.name)).map((v) => ({ ...v }));
@@ -4432,6 +4440,7 @@ export async function scanCommand(argv: string[], cwd: string, log: (message: st
     outDir: resolve(cwd, args.out),
     cwd,
     root,
+    signal,
     aggressive: args.aggressive,
     quality: plan.quality,
     viewports,

@@ -8,10 +8,14 @@ import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { mapLimit } from "./concurrency.js";
+import { animationOf } from "./animated.js";
 import { FFMPEG_JOBS, probeFfmpeg, probeMedia, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
+import { prepareMedia } from "./media-prepare.js";
 import {
   cutSamples,
   hasRange,
+  isAbortError,
+  MAX_INPUT_PIXELS_FFMPEG,
   searchQuality,
   type CandidateResult,
   type MediaCodec,
@@ -87,6 +91,8 @@ export interface MediaOptions {
   scorerId?: string;
   /** The SSIMULACRA2 scorer. The CPU one when absent. */
   score?: Scorer;
+  /** Aborts the phase (SIGINT, SIGTERM): a running ffmpeg is killed, and every unfinished asset says "aborted". */
+  signal?: AbortSignal;
 }
 
 /** The phase's outcome for one asset key. */
@@ -358,6 +364,7 @@ async function runJobs(
     if (isCachedOutcome(cached)) {
       outcome = cached.ok ? { ok: true, best: cached.best, tried: 0 } : { ok: false, reason: "no-passing-quality" };
     } else {
+      if (opts.signal?.aborted) return { probe, candidates, notEncoded: "aborted" };
       if (Date.now() >= deadline) return { probe, candidates, notEncoded: "time-limit" };
       samples ??= samplesOf();
       let cut: string[];
@@ -373,6 +380,7 @@ async function runJobs(
         caps: env.caps,
         score: env.score,
         workDir: join(dir, `${job.codec}-${job.width}`),
+        signal: opts.signal,
       });
       if (outcome.ok) await opts.cache?.putJson(cacheKey, { ok: true, best: outcome.best } satisfies CachedOutcome);
       else if (outcome.reason === "no-passing-quality") await opts.cache?.putJson(cacheKey, { ok: false, reason: "no-passing-quality" } satisfies CachedOutcome);
@@ -398,10 +406,20 @@ async function encodeFile(
   dir: string,
   proxy: string | undefined,
   readError: string,
+  known?: MediaProbe,
 ): Promise<MediaEntry> {
-  const probe = await env.probe(input, PROBE_TIMEOUT_MS, { proxy });
+  const probe = known ?? (await env.probe(input, PROBE_TIMEOUT_MS, { proxy }));
   if (probe === undefined) return { candidates: [], notEncoded: readError };
-  return runJobs(jobsOf(probe), identity, probe, () => env.cut(input, probe, dir, deadline, proxy), dir, deadline, env, readError);
+  // A frame over the pixel limit is refused before any sample is cut or encoded (see MAX_INPUT_PIXELS_FFMPEG).
+  if (probe.width * probe.height > MAX_INPUT_PIXELS_FFMPEG) return { probe, candidates: [], notEncoded: "too-large" };
+  return runJobs(jobsOf(probe), identity, probe, () => env.cut(input, probe, dir, deadline, proxy, env.opts.signal), dir, deadline, env, readError);
+}
+
+/** The notEncoded reason of a failure while preparing a file: too large to score, aborted, or the read error. */
+function prepareReasonOf(err: unknown, readError: string): string {
+  if (isAbortError(err)) return "aborted";
+  if (err instanceof Error && err.message.startsWith("too large to score")) return "too-large";
+  return readError;
 }
 
 /** Writes a file's bytes into the asset's folder and returns the local path. */
@@ -438,28 +456,35 @@ async function encodeVideo(asset: MediaAsset, env: Env, deadline: number): Promi
 
 /** An animated image: its bytes, written to the work folder so ffmpeg reads a local file, then its sample encodes. */
 async function encodeAnimated(asset: MediaAsset, env: Env, deadline: number): Promise<MediaEntry> {
+  const readError = "could not read the image";
   const buffer = asset.buffer ?? (env.fetch ? await env.fetch(asset.url) : undefined);
-  if (buffer === undefined) return { candidates: [], notEncoded: "could not read the image" };
+  if (buffer === undefined) return { candidates: [], notEncoded: readError };
   const dir = join(resolve(env.opts.workDir), digest(asset.key));
+  const jobsOf = (): Job[] => animatedJobs(asset.widths, asset.context);
+  const identity = `${asset.url}|${contentHash(buffer)}`;
+  if (animationOf(buffer)?.format === "webp") {
+    // ffmpeg cannot read an animated WebP: it is decoded once into an FFV1 file (the samples are cut from that), and the
+    // probe of that file is known. Refused before any decode when it is too large to score.
+    let prepared: Awaited<ReturnType<typeof prepareMedia>>;
+    try {
+      prepared = await prepareMedia(join(dir, "source.webp"), buffer, join(dir, "prepared"), undefined, env.opts.signal);
+    } catch (err) {
+      return { candidates: [], notEncoded: prepareReasonOf(err, readError) };
+    }
+    return encodeFile(prepared.path, identity, jobsOf, env, deadline, dir, undefined, readError, prepared.probe);
+  }
   const file = await writeSource(dir, buffer);
-  return encodeFile(
-    file,
-    `${asset.url}|${contentHash(buffer)}`,
-    () => animatedJobs(asset.widths, asset.context),
-    env,
-    deadline,
-    dir,
-    undefined,
-    "could not read the image",
-  );
+  return encodeFile(file, identity, jobsOf, env, deadline, dir, undefined, readError);
 }
 
 /** One asset's entry. A passed deadline is a time limit, checked before any work. */
 async function encodeOne(asset: MediaAsset, env: Env, deadline: number): Promise<MediaEntry> {
+  if (env.opts.signal?.aborted) return { candidates: [], notEncoded: "aborted" };
   if (Date.now() >= deadline) return { candidates: [], notEncoded: "time-limit" };
   try {
     return asset.kind === "video" ? await encodeVideo(asset, env, deadline) : await encodeAnimated(asset, env, deadline);
   } catch (err) {
+    if (isAbortError(err)) return { candidates: [], notEncoded: "aborted" };
     return { candidates: [], notEncoded: `media error: ${errorText(err)}` };
   }
 }

@@ -648,3 +648,34 @@ describe("runScan without ffmpeg: a click-to-play video", () => {
     expect(video.notEncoded).toBe("ffmpeg not found");
   }, 120_000);
 });
+
+describe("animated WebP and the abort in the media phase", () => {
+  it("encodes an animated WebP of the scan: decoded once into FFV1, probed at its size, and given candidates", async () => {
+    const buffer = readFileSync(join(FIXTURES, "anim.webp"));
+    const url = "http://127.0.0.1:1/anim.webp";
+    const asset: MediaAsset = {
+      key: mediaKeyOf("animated", "img", url, [320]),
+      url,
+      page: "http://127.0.0.1:1/",
+      kind: "animated",
+      context: "img",
+      widths: [320],
+      perView: 100_000,
+      perPlay: 100_000,
+      buffer,
+    };
+    const results = await runMediaPhase([asset], options(), {});
+    const entry = results.byKey.get(asset.key);
+    expect(entry?.notEncoded, entry?.notEncoded).not.toBe("could not read the image");
+    expect(entry?.probe?.width).toBe(320);
+    expect(entry?.candidates.length, entry?.notEncoded).toBeGreaterThan(0);
+  }, 300_000);
+
+  it("gives every unfinished asset 'aborted' when the run's signal is already aborted, and encodes nothing", async () => {
+    const url = "http://127.0.0.1:1/clip.mp4";
+    const controller = new AbortController();
+    controller.abort();
+    const results = await runMediaPhase([video(url, 1000)], options({ signal: controller.signal }), fakeSteps().deps);
+    expect(results.byKey.get(mediaKeyOf("video", "video", url, [640]))?.notEncoded).toBe("aborted");
+  });
+});

@@ -5,16 +5,15 @@
 // Both measure from 2-second samples, so every byte figure is an estimate. The files are read, never written, except the
 // lossless copy of an animated WebP (ffmpeg cannot read one) in a scratch folder the caller removes.
 
-import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { animationOf, type AnimationInfo } from "./animated.js";
-import { probeMedia, runFfmpeg, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
+import type { FfmpegCaps, MediaProbe } from "./ffmpeg.js";
+import { prepareMedia, type PreparedMedia } from "./media-prepare.js";
 import {
   compareToReference,
   cutSamples,
   effectiveStillBar,
   searchQuality,
-  webpTimeline,
   type CandidateResult,
   type MediaCodec,
   type SearchOutcome,
@@ -25,16 +24,12 @@ import { IMGTUNE_VERSION } from "./version.js";
 
 /** The animated codecs a single animated file is searched for, in report order. */
 export const ANIMATED_CODECS: MediaCodec[] = ["animated-avif", "animated-webp", "av1-mp4"];
-/** Longest a probe of one file may take, in ms. */
-const PROBE_MS = 30_000;
 /** Time one codec's search may take, in ms. */
 export const CODEC_BUDGET_MS = 180_000;
 /** Time a reference check may take, in ms. */
 export const REFERENCE_BUDGET_MS = 300_000;
 /** A candidate may end this much before the reference and still be compared (encoders trim a fraction of a second). */
 const LENGTH_TOLERANCE_S = 0.5;
-/** Frame rate of the lossless copy made from an animated WebP. */
-const WEBP_FPS = 30;
 /** The note printed when ffmpeg is missing: the bytes are still measured, the encodes are not made. */
 export const NO_FFMPEG_NOTE = "ffmpeg is not on PATH: the candidates and the reference check need it (ffmpeg enables the full hints)";
 
@@ -42,6 +37,8 @@ export const NO_FFMPEG_NOTE = "ffmpeg is not on PATH: the candidates and the ref
 const STILL_BRANDS = new Set(["avif", "avis", "heic", "heix", "heim", "heis", "mif1", "msf1"]);
 
 export type MediaKind = "video" | "animated";
+
+export { prepareMedia, type PreparedMedia };
 
 /** Whether an MP4, MOV or WebM (or Matroska) file: an ISO box file with a video brand, or an EBML header. */
 export function isVideoContainer(buffer: Buffer): boolean {
@@ -56,41 +53,6 @@ export function mediaKindOf(buffer: Buffer): MediaKind | undefined {
   return undefined;
 }
 
-/** A file as ffmpeg reads it: the path to read, and its probe (length, size, frame rate). */
-export interface PreparedMedia {
-  path: string;
-  probe: MediaProbe;
-  animation?: AnimationInfo;
-}
-
-/**
- * Makes a file readable by ffmpeg and probes it. An animated WebP cannot be read by ffmpeg, so its frames are decoded and
- * written as a lossless FFV1 file at WEBP_FPS in `dir`. An APNG reports no length to ffprobe, so its animation length
- * stands in. Throws with the reason when the file cannot be read.
- */
-export async function prepareMedia(path: string, buffer: Buffer, dir: string, capBytes?: number): Promise<PreparedMedia> {
-  const animation = animationOf(buffer);
-  if (animation?.format === "webp") {
-    const { frames, width, height } = await webpTimeline(buffer, WEBP_FPS, capBytes);
-    await mkdir(dir, { recursive: true });
-    const raw = join(dir, "webp-frames.rgba");
-    const out = join(dir, "webp-frames.mkv");
-    await writeFile(raw, Buffer.concat(frames.map((f) => Buffer.from(f.data.buffer as ArrayBuffer, f.data.byteOffset, f.data.byteLength))));
-    const result = await runFfmpeg(
-      ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${width}x${height}`, "-framerate", String(WEBP_FPS), "-i", raw, "-an", "-c:v", "ffv1", "-pix_fmt", "yuv420p", "-y", out],
-      { timeoutMs: 4 * PROBE_MS },
-    );
-    if (result.code !== 0) throw new Error("ffmpeg could not write the frames of this animated WebP");
-    const probe = await probeMedia(out, PROBE_MS);
-    if (!probe) throw new Error("ffprobe could not read the frames of this animated WebP");
-    return { path: out, probe, animation };
-  }
-  const probe = await probeMedia(path, PROBE_MS);
-  if (!probe) throw new Error("ffprobe could not read this file");
-  const sized = animation && !(probe.durationS > 0) ? { ...probe, durationS: animation.durationMs / 1000 } : probe;
-  return { path, probe: sized, animation };
-}
-
 /** What the run needs for every media file: the capabilities, the scorer, the bars, and the scratch folder of the run. */
 export interface MediaContext {
   caps: FfmpegCaps;
@@ -101,6 +63,8 @@ export interface MediaContext {
   videoBar: number;
   /** --video-still-bar: the still-guard bar before it is made relative to the reference's ceiling. */
   videoStillBar: number;
+  /** Aborts the run (SIGINT, SIGTERM): a running ffmpeg is killed and the file reports the interruption. */
+  signal?: AbortSignal;
 }
 
 /** The file as it is now: its format, size and, where it is known, its width, length and frames. */
@@ -160,8 +124,10 @@ export interface ReferenceFileResult {
   /** The still bar that applied: the requested one, or lower when the reference's own ceiling is lower. */
   stillBar: number;
   stillBarRequested: number;
-  /** The reference's own best still-guard score (AV1 at CRF 20). Absent without an AV1 encoder (the bar is absolute). */
+  /** The reference's own best still-guard score, in the candidate's codec at its best quality. Absent without an encoder. */
   ceiling?: number;
+  /** The codec of that ceiling: the candidate's own, or AV1 when the candidate's has no encoder. */
+  ceilingCodec?: MediaCodec;
   samples: number;
   pass: boolean;
   error?: string;
@@ -209,12 +175,12 @@ export async function measureAnimated(
   } as AnimatedFileResult);
   if (!ctx.caps.ffmpeg) return result({ note: NO_FFMPEG_NOTE });
   try {
-    const prepared = await prepareMedia(input.path, input.buffer, join(dir, "prepared"));
+    const prepared = await prepareMedia(input.path, input.buffer, join(dir, "prepared"), undefined, ctx.signal);
     current.format = formatOf(animation, prepared.probe);
     current.width = prepared.probe.width;
     current.height = prepared.probe.height;
     const px = width ?? prepared.probe.width;
-    const samples = await cutSamples(prepared.path, prepared.probe, join(dir, "samples"), Date.now() + CODEC_BUDGET_MS);
+    const samples = await cutSamples(prepared.path, prepared.probe, join(dir, "samples"), Date.now() + CODEC_BUDGET_MS, undefined, ctx.signal);
     const candidates: AnimatedFileResult["candidates"] = [];
     for (const codec of ANIMATED_CODECS) {
       const outcome = await searchQuality(samples, prepared.probe, codec, px, {
@@ -224,6 +190,7 @@ export async function measureAnimated(
         caps: ctx.caps,
         score: ctx.score,
         workDir: join(dir, codec),
+        signal: ctx.signal,
       });
       candidates.push({ codec, outcome });
     }
@@ -238,11 +205,21 @@ export async function describeVideo(input: { label: string; path: string; buffer
   const note = "a video: give --reference <original> to check a re-encode of it against the bars";
   if (!ctx.caps.ffmpeg) return { ...base(input.label, "video"), current: await currentOf(input.buffer, "video"), note: NO_FFMPEG_NOTE };
   try {
-    const prepared = await prepareMedia(input.path, input.buffer, join(dir, "prepared"));
+    const prepared = await prepareMedia(input.path, input.buffer, join(dir, "prepared"), undefined, ctx.signal);
     return { ...base(input.label, "video"), current: await currentOf(input.buffer, formatOf(undefined, prepared.probe), undefined, prepared.probe), note };
   } catch (err) {
     return { ...base(input.label, "video"), current: await currentOf(input.buffer, "video"), error: (err as Error).message };
   }
+}
+
+/**
+ * The codec a candidate is judged in: its own (animated WebP, H.264 or AV1), so its still ceiling is the best its codec can
+ * reach. Any other format is judged against AV1, as the search does.
+ */
+export function candidateCodecOf(cand: { animation?: AnimationInfo; probe: MediaProbe }): MediaCodec {
+  if (cand.animation?.format === "webp") return "animated-webp";
+  if (cand.probe.videoCodec === "h264") return "h264-mp4";
+  return "av1-mp4";
 }
 
 /**
@@ -276,21 +253,29 @@ export async function compareReferenceFile(
     ...extra,
   });
   try {
-    const cand = await prepareMedia(candidate.path, candidate.buffer, join(dir, "candidate"));
-    const ref = await prepareMedia(reference.path, reference.buffer, join(dir, "reference"));
+    const cand = await prepareMedia(candidate.path, candidate.buffer, join(dir, "candidate"), undefined, ctx.signal);
+    const ref = await prepareMedia(reference.path, reference.buffer, join(dir, "reference"), undefined, ctx.signal);
     // The samples are cut at the reference's moments, so a candidate that ends before the reference cannot be compared.
     if (cand.probe.durationS + LENGTH_TOLERANCE_S < ref.probe.durationS) {
       return fail(`the candidate is ${cand.probe.durationS.toFixed(1)} s but the reference is ${ref.probe.durationS.toFixed(1)} s: give a candidate of the same length (the samples are cut at the same moments)`);
     }
     const px = width ?? cand.probe.width;
-    const score = await compareToReference(cand.path, ref.path, ref.probe, px, {
-      vmafBar: ctx.videoBar,
-      stillBar: requested,
-      deadline: Date.now() + REFERENCE_BUDGET_MS,
-      caps: ctx.caps,
-      score: ctx.score,
-      workDir: join(dir, "compare"),
-    });
+    const score = await compareToReference(
+      cand.path,
+      ref.path,
+      ref.probe,
+      px,
+      {
+        vmafBar: ctx.videoBar,
+        stillBar: requested,
+        deadline: Date.now() + REFERENCE_BUDGET_MS,
+        caps: ctx.caps,
+        score: ctx.score,
+        workDir: join(dir, "compare"),
+        signal: ctx.signal,
+      },
+      candidateCodecOf(cand),
+    );
     const stillBar = score.ceiling === undefined ? requested : effectiveStillBar(requested, score.ceiling);
     const current = await currentOf(candidate.buffer, formatOf(cand.animation, cand.probe), cand.animation, cand.probe);
     return {
@@ -306,6 +291,7 @@ export async function compareReferenceFile(
       stillBar,
       stillBarRequested: requested,
       ...(score.ceiling !== undefined ? { ceiling: score.ceiling } : {}),
+      ...(score.ceilingCodec !== undefined ? { ceilingCodec: score.ceilingCodec } : {}),
       samples: score.samples,
       pass: score.vmaf >= ctx.videoBar && score.still >= stillBar,
     };
@@ -362,6 +348,14 @@ export function renderAnimated(result: AnimatedFileResult): string {
   return `${lines.join("\n")}\n`;
 }
 
+/** How each codec's best-quality ceiling is named in a report. */
+const CEILING_NAME: Record<MediaCodec, string> = {
+  "av1-mp4": "AV1 CRF 20",
+  "animated-avif": "AVIF CRF 20",
+  "h264-mp4": "H.264 CRF 18",
+  "animated-webp": "WebP q 90",
+};
+
 /** The text of one video file without a reference. */
 export function renderVideo(result: VideoFileResult): string {
   const c = result.current;
@@ -388,8 +382,8 @@ export function renderReference(result: ReferenceFileResult): string {
     if (result.stillBar < result.stillBarRequested) {
       lines.push(`  still bar lowered from ${result.stillBarRequested} to ${result.stillBar.toFixed(1)}: the reference's own best encode scores ${result.ceiling.toFixed(1)}`);
     }
-    // The ceiling is always the reference's AV1 CRF 20 encode, so say so for a candidate of another codec.
-    if (c.format !== "av1") lines.push(`  still bar ceiling: the reference's AV1 CRF 20 encode, whatever the candidate's codec (${safeText(c.format)})`);
+    // The ceiling is the reference's best encode in the candidate's codec (AV1 when that codec has no encoder), named here.
+    lines.push(`  still bar ceiling: the reference's best ${CEILING_NAME[result.ceilingCodec ?? "av1-mp4"]} encode (candidate ${safeText(c.format)})`);
   }
   const verdict = `VMAF ${result.vmaf.toFixed(1)} (bar ${result.vmafBar}) still p10 ${result.still.toFixed(1)} (bar ${result.stillBar.toFixed(1)}): ${result.pass ? "pass" : "fail"}`;
   lines.push(verdict);
