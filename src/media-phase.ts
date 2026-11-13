@@ -373,6 +373,29 @@ function isCachedOutcome(value: unknown): value is CachedOutcome {
   );
 }
 
+/** The result-cache key of one job of an asset: its identity, codec and width, the bars, the scorer and the versions. */
+function cacheKeyOf(identity: string, job: Job, opts: MediaOptions): string {
+  return `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
+}
+
+/**
+ * The entry of an asset whose every job is already in the result cache, read without the file: no probe and no frame. Undefined
+ * when one job is not cached, and then the caller reads the file and runJobs does the rest.
+ */
+async function cachedEntry(jobs: Job[], identity: string, opts: MediaOptions): Promise<MediaEntry | undefined> {
+  if (opts.cache === undefined || jobs.length === 0) return undefined;
+  const candidates: CandidateResult[] = [];
+  const failed: { codec: MediaCodec; width: number; reason: string }[] = [];
+  for (const job of jobs) {
+    const cached = await opts.cache.getJson<unknown>(cacheKeyOf(identity, job, opts));
+    if (!isCachedOutcome(cached)) return undefined;
+    if (cached.ok) candidates.push(cached.best);
+    else failed.push({ codec: job.codec, width: job.width, reason: "no-passing-quality" });
+  }
+  if (candidates.length > 0) return { candidates, failed };
+  return { candidates, notEncoded: failed[0]?.reason, failed };
+}
+
 /**
  * Runs the jobs of one asset in order, each through the cache first. The samples are cut once, on the first job that
  * misses the cache. Returns the candidates that passed; when none did, the first reason.
@@ -393,7 +416,7 @@ async function runJobs(
   const failed: { codec: MediaCodec; width: number; reason: string }[] = [];
   let samples: Promise<string[]> | undefined;
   for (const job of jobs) {
-    const cacheKey = `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
+    const cacheKey = cacheKeyOf(identity, job, opts);
     const cached = await opts.cache?.getJson<unknown>(cacheKey);
     let outcome: SearchOutcome;
     if (isCachedOutcome(cached)) {
@@ -523,6 +546,9 @@ async function encodeAnimated(asset: MediaAsset, env: Env, deadline: number): Pr
   const jobsOf = (): Job[] => animatedJobs(asset.widths, asset.context);
   const identity = `${asset.url}|${contentHash(buffer)}`;
   if (animationOf(buffer)?.format === "webp") {
+    // The result cache is asked before the file is read: an asset whose every job is cached needs neither its probe nor its frames.
+    const cachedAll = await cachedEntry(jobsOf(), identity, env.opts);
+    if (cachedAll !== undefined) return cachedAll;
     // ffmpeg cannot read an animated WebP: it is decoded once into an FFV1 file (the samples are cut from that), and the
     // probe of that file is known. Refused before any decode when it is too large to score.
     let prepared: Awaited<ReturnType<typeof prepareMedia>>;

@@ -290,6 +290,34 @@ describe("third-party policy and cache identity", () => {
     expect(allowedAsset.key).toBe(asset.key);
   });
 
+  it("an animated WebP whose every job is cached is answered from the cache: no probe, no cut, no search", async () => {
+    const buffer = readFileSync(join(FIXTURES, "anim.webp"));
+    const url = "http://pub.example/anim.webp";
+    const asset: MediaAsset = {
+      key: mediaKeyOf("animated", "img", url, [320]),
+      url,
+      page: "http://pub.example/",
+      kind: "animated",
+      context: "img",
+      widths: [320],
+      perView: 1000,
+      perPlay: 1000,
+      buffer,
+    };
+    const dir = await mkdtemp(join(scratch, "webp-cache-"));
+    const cache = new ResultCache(dir);
+    const first = fakeSteps();
+    const a = await runMediaPhase([asset], options({ cache }), first.deps);
+    expect(first.searches.length).toBeGreaterThan(0);
+    const refuse = async (): Promise<never> => {
+      throw new Error("the cache should answer before the file is read");
+    };
+    const second = { ...fakeSteps().deps, probe: refuse, cut: refuse, search: refuse };
+    const b = await runMediaPhase([asset], options({ cache }), second);
+    expect(b.byKey.get(asset.key)?.candidates).toEqual(a.byKey.get(asset.key)?.candidates);
+    expect(b.byKey.get(asset.key)?.notEncoded).toBeUndefined();
+  });
+
   it("same URL, different ETag: no cache hit, so a changed file is encoded again", async () => {
     const dir = await mkdtemp(join(scratch, "etag-"));
     const cache = new ResultCache(dir);
