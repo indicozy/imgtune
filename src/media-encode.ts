@@ -91,6 +91,13 @@ const SAMPLE_SECONDS = 2;
 const DEFAULT_FPS = 30;
 /** Stillest frames per sample that the SSIMULACRA2 guard scores. */
 const GUARD_FRAMES = 3;
+/**
+ * Gaussian sigma of the still-frame guard's prefilter for GIF sources. A dithered GIF has per-pixel dither patterns that
+ * an encoder smooths, and SSIMULACRA2 scores that as loss even when VMAF passes (anim.gif: VMAF 93 at CRF 40, guard
+ * about 19). Blurring the reference and the candidate guard frames alike compares the picture, not the dither. VMAF is
+ * not blurred.
+ */
+export const GIF_GUARD_SIGMA = 1;
 /** Longest single ffmpeg run, in ms; the asset deadline caps it further. */
 const RUN_CAP_MS = 60_000;
 /** Pixels a decoded image may have, the same limit as the image pipeline. */
@@ -694,6 +701,8 @@ interface Ctx {
   seconds: number[];
   opts: SearchOptions;
   guards: GuardRef[];
+  /** The guard prefilter sigma: GIF_GUARD_SIGMA for a GIF source, undefined otherwise. */
+  blur?: number;
 }
 
 /**
@@ -716,7 +725,9 @@ async function guardScores(ctx: Ctx, i: number, cand: Candidate): Promise<number
     if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
     const want = ref.frames[k];
     try {
-      out.push(await ctx.opts.score(want, await fitTo(frames[k], want.width, want.height)));
+      let got = await fitTo(frames[k], want.width, want.height);
+      if (ctx.blur !== undefined) got = await blurFrame(got, ctx.blur);
+      out.push(await ctx.opts.score(want, got));
     } catch (err) {
       if (isDeadline(err)) throw err;
       throw new StageError("score-failed");
@@ -767,8 +778,22 @@ async function evaluate(ctx: Ctx, q: number): Promise<CandidateResult> {
 }
 
 /**
- * The reference's stillest frames of one sample, at `width`: the frame indices, and the reference pixels there. The
- * candidate is later read at the same indices (see guardScores). `metadataFile` and `dir` are scratch paths.
+ * A gaussian blur of one frame (sharp's gaussian, sigma as given). Used as the guard prefilter; the same call is made on
+ * the reference and on the candidate, so both sides are compared through the same filter.
+ */
+export async function blurFrame(img: RawImage, sigma: number): Promise<RawImage> {
+  const bytes = Buffer.from(img.data.buffer as ArrayBuffer, img.data.byteOffset, img.data.byteLength);
+  const { data, info } = await sharp(bytes, { raw: { width: img.width, height: img.height, channels: 4 } })
+    .blur(sigma)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), width: info.width, height: info.height };
+}
+
+/**
+ * The reference's stillest frames of one sample, at `width`: the frame indices, and the reference pixels there (blurred
+ * by `blurSigma` when given). The candidate is later read at the same indices (see guardScores). `metadataFile` and
+ * `dir` are scratch paths.
  */
 export async function guardOf(
   sample: string,
@@ -776,9 +801,11 @@ export async function guardOf(
   metadataFile: string,
   dir: string,
   deadline: number,
+  blurSigma?: number,
 ): Promise<GuardRef> {
   const indices = await stillestOf(sample, metadataFile, deadline);
-  const frames = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, dir, deadline);
+  const raw = await framesAt(sample, [`scale=${width}:-2:flags=lanczos`], indices, dir, deadline);
+  const frames = blurSigma === undefined ? raw : await Promise.all(raw.map((f) => blurFrame(f, blurSigma)));
   return { indices, frames };
 }
 
@@ -793,6 +820,7 @@ async function prepareGuards(ctx: Ctx): Promise<GuardRef[]> {
         join(ctx.opts.workDir, `ydif-${i}.txt`),
         join(ctx.opts.workDir, `ref-${ctx.width}-${i}`),
         ctx.opts.deadline,
+        ctx.blur,
       ),
     );
   }
@@ -853,6 +881,7 @@ export async function searchQuality(
     seconds: clipSeconds(probe.durationS, samples.length),
     opts,
     guards: [],
+    blur: probe.videoCodec === "gif" ? GIF_GUARD_SIGMA : undefined,
   };
 
   let best: CandidateResult | undefined;

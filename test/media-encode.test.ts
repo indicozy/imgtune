@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFfmpeg, probeMedia, type MediaProbe } from "../src/ffmpeg.js";
-import { cfrIndices, cutSamples, guardOf, hasRange, searchQuality, stillestFrames, tenthPercentile } from "../src/media-encode.js";
+import {
+  blurFrame,
+  cfrIndices,
+  cutSamples,
+  guardOf,
+  hasRange,
+  searchQuality,
+  stillestFrames,
+  tenthPercentile,
+} from "../src/media-encode.js";
 import { makeScorer, type Scorer } from "../src/metric.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { systemResolver } from "../src/address.js";
@@ -170,6 +179,25 @@ describe("searchQuality", () => {
     expect(outcome).toEqual({ ok: false, reason: "score-failed" });
   }, 120_000);
 
+  it("passes the dithered anim.gif at its own width with the real bars, through the GIF guard prefilter", async () => {
+    const caps = await probeFfmpeg();
+    const probe = (await probeMedia(fixture("anim.gif"), 10_000))!;
+    const dir = join(scratch, "search-anim-gif");
+    const samples = await cutSamples(fixture("anim.gif"), probe, dir, Date.now() + 120_000);
+    const outcome = await searchQuality(samples, probe, "av1-mp4", probe.width, {
+      vmafBar: 93,
+      stillBar: 65,
+      deadline: Date.now() + 120_000,
+      caps,
+      score,
+      workDir: join(dir, "work"),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.best.vmaf).toBeGreaterThanOrEqual(93);
+    expect(outcome.best.still).toBeGreaterThanOrEqual(65);
+  }, 120_000);
+
   it("returns time-limit when the deadline has already passed", async () => {
     const caps = await probeFfmpeg();
     const probe = (await probeMedia(fixture("clip.mp4"), 10_000))!;
@@ -253,6 +281,24 @@ describe("still-frame guard", () => {
     for (const frame of guard.frames) {
       expect(await score(frame, frame)).toBeGreaterThanOrEqual(99);
     }
+  }, 120_000);
+});
+
+describe("still-frame guard on a degraded candidate", () => {
+  it("rejects a heavily blurred text.gif candidate: the guard is below the bar", async () => {
+    const probe = (await probeMedia(fixture("text.gif"), 10_000))!;
+    const dir = join(scratch, "guard-degraded");
+    const samples = await cutSamples(fixture("text.gif"), probe, dir, Date.now() + 120_000);
+    // The reference frames as the search reads them: raw stillest frames, then the GIF prefilter (sigma 1).
+    const raw = await guardOf(samples[0], probe.width, join(dir, "ydif.txt"), join(dir, "ref"), Date.now() + 120_000);
+    // The candidate: the same frames blurred hard (sigma 3) before the same prefilter, so only the candidate is degraded.
+    const scores: number[] = [];
+    for (const frame of raw.frames) {
+      const ref = await blurFrame(frame, 1);
+      const cand = await blurFrame(await blurFrame(frame, 3), 1);
+      scores.push(await score(ref, cand));
+    }
+    expect(Math.min(...scores)).toBeLessThan(65);
   }, 120_000);
 });
 
