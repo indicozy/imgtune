@@ -60,18 +60,21 @@ export interface SearchOptions {
   score: Scorer;
   /** Per-run scratch directory. Candidate files are removed as they are scored; the caller removes the directory. */
   workDir: string;
-  /**
-   * The HTTP proxy for URL inputs. The search reads only the local sample files, so it does not use this; it is here
-   * for callers that pass the same options to cutSamples and probeMedia.
-   */
-  proxy?: string;
 }
 
 export type SearchOutcome =
   | { ok: true; best: CandidateResult; tried: number }
   | {
       ok: false;
-      reason: "no-ffmpeg" | "no-vmaf" | "no-encoder" | "time-limit" | "no-range" | "probe-failed" | "no-passing-quality";
+      reason:
+        | "no-ffmpeg"
+        | "no-vmaf"
+        | "no-encoder"
+        | "time-limit"
+        | "no-range"
+        | "probe-failed"
+        | "no-passing-quality"
+        | "score-failed";
     };
 
 /** What hasRange learned about a URL. `range` is true only when a byte range was actually served (a 206). */
@@ -126,9 +129,9 @@ class DeadlineHit extends Error {
 
 /** A step failed in a way that names the outcome: the encoder or the VMAF filter does not work. */
 class StageError extends Error {
-  readonly reason: "no-encoder" | "no-vmaf";
+  readonly reason: "no-encoder" | "no-vmaf" | "score-failed";
 
-  constructor(reason: "no-encoder" | "no-vmaf") {
+  constructor(reason: "no-encoder" | "no-vmaf" | "score-failed") {
     super(reason);
     this.name = "StageError";
     this.reason = reason;
@@ -525,8 +528,10 @@ function av1Args(caps: FfmpegCaps, crf: string): string[] {
 /**
  * The encoder and container arguments for one codec at quality `q`. Every output drops audio.
  *
- * animated-avif is encoded as the same AV1 bitstream in MP4: ffmpeg cannot read an animated AVIF back, so it could not
- * be scored, and the MP4 container is within about 150 bytes of the AVIF file for a 2-second clip.
+ * animated-avif is measured as the same AV1 bitstream in an MP4 container, not as an AVIF file. The bitstream is the
+ * same (same encoder, preset, CRF and pixel format). The AVIF container differs by about 150 bytes per 2-second clip.
+ * ffmpeg cannot read an animated AVIF back for scoring, so the MP4 twin is also what gets scored. The bytes are an
+ * estimate within that container difference.
  */
 function encoderArgs(codec: MediaCodec, q: number, caps: FfmpegCaps): string[] {
   const quality = String(q);
@@ -692,24 +697,32 @@ interface Ctx {
 }
 
 /**
- * The SSIMULACRA2 scores of the still-frame guard for one sample. A guard that cannot be read scores 0, so the candidate
- * fails its bar rather than passing on a missing check. A deadline still ends the search.
+ * The SSIMULACRA2 scores of the still-frame guard for one sample. Two failures are told apart. A frame that cannot be
+ * read (a candidate with fewer frames than the reference, for example) scores 0 for that frame, so the candidate fails
+ * its bar: it fails closed. A scorer that throws is a broken scorer, not a failing candidate, so it surfaces as
+ * score-failed. A deadline ends the search either way.
  */
 async function guardScores(ctx: Ctx, i: number, cand: Candidate): Promise<number[]> {
   const ref = ctx.guards[i];
+  let frames: RawImage[];
   try {
-    const frames = await cand.frames(ref.indices);
-    const out: number[] = [];
-    for (let k = 0; k < frames.length; k++) {
-      if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
-      const want = ref.frames[k];
-      out.push(await ctx.opts.score(want, await fitTo(frames[k], want.width, want.height)));
-    }
-    return out;
+    frames = await cand.frames(ref.indices);
   } catch (err) {
     if (isDeadline(err)) throw err;
     return ref.indices.map(() => 0);
   }
+  const out: number[] = [];
+  for (let k = 0; k < frames.length; k++) {
+    if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
+    const want = ref.frames[k];
+    try {
+      out.push(await ctx.opts.score(want, await fitTo(frames[k], want.width, want.height)));
+    } catch (err) {
+      if (isDeadline(err)) throw err;
+      throw new StageError("score-failed");
+    }
+  }
+  return out;
 }
 
 function mean(values: number[]): number {
@@ -866,6 +879,8 @@ export async function searchQuality(
       }
     }
   } catch (err) {
+    // A broken scorer is reported even when an earlier quality passed: the passes before it were not checked by it.
+    if (err instanceof StageError && err.reason === "score-failed") return { ok: false, reason: "score-failed" };
     if (best) return { ok: true, best, tried };
     if (err instanceof StageError) return { ok: false, reason: err.reason };
     return { ok: false, reason: isDeadline(err) ? "time-limit" : "probe-failed" };

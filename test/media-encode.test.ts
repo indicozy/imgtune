@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFfmpeg, probeMedia, type MediaProbe } from "../src/ffmpeg.js";
 import { cfrIndices, cutSamples, guardOf, hasRange, searchQuality, stillestFrames, tenthPercentile } from "../src/media-encode.js";
-import { makeScorer } from "../src/metric.js";
+import { makeScorer, type Scorer } from "../src/metric.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { systemResolver } from "../src/address.js";
 
@@ -145,6 +145,29 @@ describe("searchQuality", () => {
       workDir: join(dir, "work"),
     });
     expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.best.bytes).toBeGreaterThan(0);
+    expect(outcome.best.vmaf).toBeGreaterThanOrEqual(93);
+    expect(outcome.best.still).toBeGreaterThanOrEqual(65);
+  }, 120_000);
+
+  it("reports score-failed, not a failing quality, when the scorer throws", async () => {
+    const caps = await probeFfmpeg();
+    const probe = (await probeMedia(fixture("text.gif"), 10_000))!;
+    const dir = join(scratch, "search-broken-scorer");
+    const samples = await cutSamples(fixture("text.gif"), probe, dir, Date.now() + 120_000);
+    const broken: Scorer = () => {
+      throw new Error("scorer is broken");
+    };
+    const outcome = await searchQuality(samples, probe, "animated-webp", probe.width, {
+      vmafBar: 93,
+      stillBar: 65,
+      deadline: Date.now() + 120_000,
+      caps,
+      score: broken,
+      workDir: join(dir, "work"),
+    });
+    expect(outcome).toEqual({ ok: false, reason: "score-failed" });
   }, 120_000);
 
   it("returns time-limit when the deadline has already passed", async () => {
