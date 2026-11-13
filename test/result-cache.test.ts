@@ -132,3 +132,14 @@ describe("ResultCache JSON entries", () => {
     expect(await cache.getJson("k".repeat(5000))).toBeUndefined();
   });
 });
+
+describe("ResultCache keys of any length", () => {
+  it("stores a long signed URL's encode by the key's hash, and reads it back under the same key only", async () => {
+    const cache = new ResultCache(await freshDir());
+    // A signed CDN URL: longer than an entry can hold (1 KB) as a key, so the entry carries its hash.
+    const longKey = `media|video|https://cdn.example/clip.mp4?sig=${"a".repeat(2000)}`;
+    await cache.putJson(longKey, { ok: true, best: { bytes: 4321, vmaf: 94 } });
+    expect(await cache.getJson(longKey)).toEqual({ ok: true, best: { bytes: 4321, vmaf: 94 } });
+    expect(await cache.getJson(`${longKey}x`)).toBeUndefined();
+  });
+});

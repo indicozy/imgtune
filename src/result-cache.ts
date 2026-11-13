@@ -24,8 +24,18 @@ const ENTRY_NAME = /^[0-9a-f]{64}\.json$/;
 const MAX_ENTRY_BYTES = 1024;
 /** Keys are short and built here; a longer one is refused rather than hashed or written. */
 const MAX_KEY_LENGTH = 4096;
+/**
+ * A key longer than this is stored by its hash, `sha256:<hex>`, in the entry's `k` field (its file name is the hash already).
+ * Signed and CDN video URLs are often longer than an entry can hold, and their encodes must still be cached.
+ */
+const LONG_KEY = 512;
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
+
+/** The `k` an entry of `key` carries: the key itself, or its hash when the key is long (see LONG_KEY). */
+function keyTagOf(key: string): string {
+  return key.length > LONG_KEY ? `sha256:${sha256(key)}` : key;
+}
 
 /** The scope every key of one reference and scorer carries: its original's content hash, width, scorer, encoder and tool. */
 export function cacheScope(original: Buffer, width: number, scorerId: string, encoderId: string): string {
@@ -66,7 +76,7 @@ export class ResultCache {
       if (!info.isFile() || info.size > MAX_ENTRY_BYTES) return undefined;
       const parsed = JSON.parse(await readFile(file, "utf8")) as { k?: unknown; v?: unknown } | null;
       if (parsed === null || typeof parsed !== "object") return undefined;
-      if (parsed.k !== key || typeof parsed.v !== "number" || !Number.isFinite(parsed.v)) return undefined;
+      if (parsed.k !== keyTagOf(key) || typeof parsed.v !== "number" || !Number.isFinite(parsed.v)) return undefined;
       return parsed.v;
     } catch {
       return undefined;
@@ -81,7 +91,7 @@ export class ResultCache {
         await mkdir(this.dir, { recursive: true });
         this.dirReady = true;
       }
-      await writeFileAtomic(this.fileOf(key), JSON.stringify({ k: key, v: value }), { root: this.dir });
+      await writeFileAtomic(this.fileOf(key), JSON.stringify({ k: keyTagOf(key), v: value }), { root: this.dir });
     } catch {
       // Ignored: the number is recomputed the next time.
     }
@@ -99,7 +109,7 @@ export class ResultCache {
       if (!info.isFile() || info.size > MAX_ENTRY_BYTES) return undefined;
       const parsed = JSON.parse(await readFile(file, "utf8")) as { k?: unknown; j?: unknown } | null;
       if (parsed === null || typeof parsed !== "object") return undefined;
-      if (parsed.k !== key || parsed.j === undefined || parsed.j === null) return undefined;
+      if (parsed.k !== keyTagOf(key) || parsed.j === undefined || parsed.j === null) return undefined;
       return parsed.j as T;
     } catch {
       return undefined;
@@ -112,7 +122,7 @@ export class ResultCache {
    */
   async putJson(key: string, value: unknown): Promise<void> {
     if (key.length > MAX_KEY_LENGTH || value === undefined) return;
-    const text = JSON.stringify({ k: key, j: value });
+    const text = JSON.stringify({ k: keyTagOf(key), j: value });
     if (text === undefined || Buffer.byteLength(text, "utf8") > MAX_ENTRY_BYTES) return;
     try {
       if (!this.dirReady) {

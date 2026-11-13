@@ -55,6 +55,11 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>videos</ti
 <script>document.getElementById("blob").src = URL.createObjectURL(new Blob([new Uint8Array(64)], { type: "video/webm" }));</script>
 </body></html>`;
 
+// A src attribute wins over <source> children: the browser ignores them, so the scan reads the src and no source at all.
+const SRC_WINS_PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+<video id="both" autoplay muted width="320" height="180" src="/missing.webm"><source src="/clip.webm" type="video/webm"><source src="/clip.mp4" type="video/mp4"></video>
+</body></html>`;
+
 /** Serves a file with Range support, as Chromium requests video: 206 with Content-Range for a range request. */
 function serveRanged(req: IncomingMessage, res: ServerResponse, body: Buffer, type: string): void {
   res.setHeader("content-type", type);
@@ -217,6 +222,9 @@ describe("videos and media responses of a page", () => {
       } else if (path === "/unsupported.html") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(UNSUPPORTED_PAGE);
+      } else if (path === "/src-wins.html") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(SRC_WINS_PAGE);
       } else if (path === "/clip.webm") {
         serveRanged(req, res, webm, "video/webm");
       } else if (path === "/clip.mp4") {
@@ -294,6 +302,16 @@ describe("videos and media responses of a page", () => {
     const hidden = (await observe()).videos?.find((v) => v.index === 3);
     expect(hidden?.hidden).toBe(true);
     expect(hidden?.preload).toBe("none");
+  }, 90_000);
+
+  it("reads the src attribute of a video and none of its <source> children, which the browser ignores", async () => {
+    const [outcome] = await observeLoads(browser as Browser, `${base}/src-wins.html`, [desktop], guard);
+    if (!outcome.ok) throw outcome.error;
+    const video = outcome.value.videos?.[0];
+    expect(video?.currentSrc.endsWith("/missing.webm")).toBe(true);
+    expect(video?.sources).toEqual([]);
+    // The children are never fetched: no media response for their files.
+    expect(outcome.value.media?.has(`${base}/clip.webm`)).toBe(false);
   }, 90_000);
 
   it("keeps a video whose sources were all refused, with the first in-scope source as its current source and no bytes", async () => {

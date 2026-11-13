@@ -92,6 +92,18 @@ describe("joinUrl and the record's join key", () => {
 });
 
 describe("joinLocate", () => {
+  it("never joins a video's poster to an <img> of the dev page, though they share the URL", () => {
+    // The poster and the <img> have one URL and alt; the dev page has one <img> with that URL. The poster is skipped, so the
+    // <img> record alone takes the dev element, and the poster never gets its file:line.
+    const img = measured("img", { domIndex: 2, file: undefined });
+    const poster = { ...measured("poster", { domIndex: 2 }), poster: true } as ImageRecord;
+    const records = [poster, img];
+    const join = joinLocate(records, "iphone-15", [dev(2, { file: "src/Hero.tsx", line: 9 })], always);
+    expect(join.pairs.has(poster)).toBe(false);
+    expect(join.pairs.get(img)?.dev.index).toBe(2);
+    expect(isFlagged(poster)).toBe(false);
+  });
+
   it("joins elements of one URL and alt in document order, not in record order", () => {
     // Records are listed in the order the scan first met them, which need not be the document order.
     const records = [measured("r-second", { domIndex: 7 }), measured("r-first", { domIndex: 3 })];

@@ -78,6 +78,7 @@ import { count, measure, renderTiming, resetTiming, TIMING_ENABLED } from "./tim
 import { mapLimit, settleLimit } from "./concurrency.js";
 import { getBlob, putBlob, readStagedJson, removeStage, stageDirOf, writeStagedJson } from "./stage.js";
 import { loadGroups } from "./loads.js";
+import { probeFfmpeg } from "./ffmpeg.js";
 
 export { ipv6Bytes, isBlockedAddress, isLocalTarget, isPrivateAddress, refusedAddress, guardedLookup, type Resolver } from "./address.js";
 export { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -1528,11 +1529,13 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         const OUT_OF_SCOPE = (src: string): boolean => src.trim() === "" || /^(blob|mediastream):/i.test(src) || /\.(m3u8|mpd)(?:[?#]|$)/i.test(src);
         const shortUrl = (url: string): string => (url.startsWith("data:") ? "data:" : url);
         document.querySelectorAll("video").forEach((video, index) => {
-          const sourceEls = Array.from(video.querySelectorAll("source"));
-          // The source the browser plays. When it chose none (every <source> refused, e.g. an unsupported type, so
-          // currentSrc is ""), the first in-scope <source>, else the src attribute. Dropped only when none is in scope.
+          // A src attribute wins: the browser ignores the <source> children then, so they are not read at all.
+          const hasSrcAttribute = (video.getAttribute("src") ?? "").trim() !== "";
+          const sourceEls = hasSrcAttribute ? [] : Array.from(video.querySelectorAll("source"));
+          // The source the browser plays. When it chose none (every source refused, so currentSrc is ""), the src attribute,
+          // else the first in-scope <source>. Dropped only when none is in scope.
           const inScope = sourceEls.map((source) => source.src).filter((src) => !OUT_OF_SCOPE(src));
-          const playing = video.currentSrc !== "" ? video.currentSrc : (inScope[0] ?? video.src);
+          const playing = video.currentSrc !== "" ? video.currentSrc : hasSrcAttribute ? video.src : (inScope[0] ?? video.src);
           if (OUT_OF_SCOPE(playing)) return;
           const cs = getComputedStyle(video);
           const rect = video.getBoundingClientRect();
@@ -2972,6 +2975,16 @@ export interface ScanRecordOptions {
   survey?: true;
   /** Third-party requests: "allowed" (the default) or "blocked" (--block-third-party). Scans from before blocking had a default have none: they count as allowed. */
   thirdParty: "blocked" | "allowed";
+  /**
+   * The media settings, recorded when the encodes can run (see recordOptionsOf). Absent otherwise, so older pages still
+   * resume. `ffmpeg` is whether ffmpeg was found: a page scanned without it has no encodes.
+   */
+  mediaBudget?: number;
+  mediaTime?: number;
+  videoBar?: number;
+  videoStillBar?: number;
+  maxVideoWidths?: number;
+  ffmpeg?: boolean;
   /** The hosts kept while blocking (--allow-host), sorted. Absent when there are none. */
   allowHosts?: string[];
   /**
@@ -2983,10 +2996,28 @@ export interface ScanRecordOptions {
 
 /** The options of one page's output, for the completeness check of --resume. */
 export function recordOptionsOf(
-  opts: Pick<ScanOptions, "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "thirdParty" | "sharedLoads">,
+  opts: Pick<
+    ScanOptions,
+    "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "thirdParty" | "sharedLoads" | "mediaBudget" | "mediaTime" | "videoBar" | "videoStillBar" | "maxVideoWidths"
+  >,
+  ffmpeg?: boolean,
 ): ScanRecordOptions {
   const thirdParty = opts.thirdParty ?? DEFAULT_THIRD_PARTY;
+  // The media settings are recorded when encodes can run, so a page scanned under other settings (or without ffmpeg) is
+  // not reused by --resume. Without encodes they are left out, and the record keeps its shape.
+  const encodes = opts.quality === true && opts.survey !== true && ffmpeg !== undefined;
+  const media = encodes
+    ? {
+        mediaBudget: opts.mediaBudget ?? DEFAULT_MEDIA_BUDGET,
+        mediaTime: opts.mediaTime ?? DEFAULT_MEDIA_TIME,
+        videoBar: opts.videoBar ?? DEFAULT_VIDEO_BAR,
+        videoStillBar: opts.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR,
+        maxVideoWidths: opts.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS,
+        ffmpeg,
+      }
+    : {};
   return {
+    ...media,
     imgtuneVersion: IMGTUNE_VERSION,
     aggressive: opts.aggressive,
     quality: opts.quality,
@@ -3839,7 +3870,11 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
     let lengths = new Map<string, number>();
     if (videoUrls.length > 0) {
       proxy = await startEgressProxy({ resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress });
-      lengths = await probeLengths(videoUrls, proxy.url);
+      lengths = await probeLengths(
+        assets.filter((asset) => asset.kind === "video").map((asset) => ({ url: asset.url, page: asset.page })),
+        proxy.url,
+        { thirdParty: run.thirdParty },
+      );
     }
     const sized = assets.map((asset) => refineAssetLength(asset, lengths.get(asset.url)));
     if (opts.quality !== true || opts.survey === true) {
@@ -3860,6 +3895,7 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         score: run.deps.score,
         scorerId: run.deps.scorerId,
         signal: opts.signal,
+        thirdParty: run.thirdParty,
       },
       { fetch: (url, maxBytes) => run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate }) },
     ).then((results) => ({ ...results, lengths }));
@@ -3886,7 +3922,8 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
 export async function runScan(urls: string[], opts: ScanOptions): Promise<PageResult[]> {
   return withScanRun(opts, async (browser, run, robotsFor) => {
     await mkdir(opts.outDir, { recursive: true });
-    const options = recordOptionsOf(opts);
+    // Whether ffmpeg is installed decides whether the media encodes run, so it is part of the record (see recordOptionsOf).
+    const options = recordOptionsOf(opts, (await probeFfmpeg()).ffmpeg);
     run.stage = { dir: stageDirOf(opts.outDir), options };
     const results = new Array<PageResult | undefined>(urls.length);
     // The finished pages in finishing order: the progress line counts them.

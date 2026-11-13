@@ -570,11 +570,22 @@ describe("runMediaPhase log counts the target-width estimates", () => {
 describe("the length of a video, without ffmpeg", () => {
   it("probes every unique URL once, with the given probe, and keeps only the URLs with a length", async () => {
     const asked: string[] = [];
-    const lengths = await probeLengths(["http://h/a.mp4", "http://h/a.mp4", "http://h/b.webm", "http://h/none.mp4"], "proxy:1", async (url, timeout, proxy) => {
-      asked.push(`${url}|${timeout}|${proxy}`);
-      if (url === "http://h/none.mp4") throw new Error("refused");
-      return { range: false, length: url === "http://h/a.mp4" ? 2_000_000 : 0 };
-    });
+    const lengths = await probeLengths(
+      [
+        { url: "http://h/a.mp4", page: "http://h/" },
+        { url: "http://h/a.mp4", page: "http://h/other" },
+        { url: "http://h/b.webm", page: "http://h/" },
+        { url: "http://h/none.mp4", page: "http://h/" },
+      ],
+      "proxy:1",
+      {
+        probe: async (url, timeout, proxy) => {
+          asked.push(`${url}|${timeout}|${proxy}`);
+          if (url === "http://h/none.mp4") throw new Error("refused");
+          return { range: false, length: url === "http://h/a.mp4" ? 2_000_000 : 0 };
+        },
+      },
+    );
     expect(asked.sort()).toEqual(["http://h/a.mp4|10000|proxy:1", "http://h/b.webm|10000|proxy:1", "http://h/none.mp4|10000|proxy:1"]);
     expect([...lengths]).toEqual([["http://h/a.mp4", 2_000_000]]);
   });
@@ -678,4 +689,50 @@ describe("animated WebP and the abort in the media phase", () => {
     const results = await runMediaPhase([video(url, 1000)], options({ signal: controller.signal }), fakeSteps().deps);
     expect(results.byKey.get(mediaKeyOf("video", "video", url, [640]))?.notEncoded).toBe("aborted");
   });
+});
+
+describe("a third-party video the policy blocks is never fetched by the media phase", () => {
+  let server: Server;
+  let port = 0;
+  const videoHits: string[] = [];
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      const url = req.url ?? "";
+      if (url === "/") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end(
+          `<!doctype html><html><body><video autoplay muted width="320" height="180" src="http://localhost:${port}/clip.mp4"></video></body></html>`,
+        );
+      }
+      if (url === "/clip.mp4") {
+        videoHits.push(`${req.headers.host ?? ""}${url} ${req.method ?? ""}`);
+        res.writeHead(200, { "content-type": "video/mp4", "content-length": 2_000_000, "accept-ranges": "bytes" });
+        return res.end(Buffer.alloc(2_000_000, 1));
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "0.0.0.0", () => resolve()));
+    port = (server.address() as AddressInfo).port;
+    closers.push(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+  });
+
+  it("gives the video 'third-party blocked' and sends no request for its file, not even a Range probe", async () => {
+    const out = await mkdtemp(join(scratch, "blocked-"));
+    const desktop: Viewport = { name: "desktop", width: 1280, height: 800, dpr: 1, mobile: false };
+    const results = await runScan([`http://127.0.0.1:${port}/`], {
+      outDir: out,
+      cwd: out,
+      aggressive: false,
+      quality: true,
+      viewports: [desktop],
+      thirdParty: { block: true, allowHosts: [] },
+      log: () => undefined,
+    } as ScanOptions);
+    expect(results[0].status).toBe("ok");
+    const video = results[0].videos?.[0] as VideoRecord | undefined;
+    expect(video?.notEncoded).toBe("third-party blocked");
+    expect(videoHits).toEqual([]);
+  }, 120_000);
 });

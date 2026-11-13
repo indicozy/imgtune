@@ -93,6 +93,11 @@ export interface MediaOptions {
   score?: Scorer;
   /** Aborts the phase (SIGINT, SIGTERM): a running ffmpeg is killed, and every unfinished asset says "aborted". */
   signal?: AbortSignal;
+  /**
+   * The third-party policy, checked on every redirect hop of a video's Range probe (see hasRange): a hop the policy refuses
+   * is never requested, and the video is "third-party blocked".
+   */
+  thirdParty?: ThirdPartyPolicy;
 }
 
 /** The phase's outcome for one asset key. */
@@ -188,21 +193,30 @@ export function videoAssetOf(record: VideoRecord): MediaAsset {
   };
 }
 
+/** The redirect-hop check of a video's page: the third-party policy as the browser's route guard applies it. */
+export function hopCheckOf(page: string, policy: ThirdPartyPolicy | undefined): ((hop: string) => boolean) | undefined {
+  if (policy === undefined) return undefined;
+  return (hop) => !isThirdPartyBlocked(policy, { pageUrl: page, requestUrl: hop, resourceType: "media", subFrame: false });
+}
+
 /**
  * The full file length of each URL, from its Range probe (hasRange: a HEAD and a `bytes=0-0` GET through the proxy). Runs
- * for every unique URL, LENGTH_CONCURRENCY at a time, each with LENGTH_TIMEOUT_MS. A URL with no length is left out.
- * Never throws: a failed probe is just no length.
+ * for every unique URL, LENGTH_CONCURRENCY at a time, each with LENGTH_TIMEOUT_MS. A URL is probed from the page it was
+ * first found on, so its redirect hops are checked against that page's policy. A URL with no length is left out. Never
+ * throws: a failed probe is just no length.
  */
 export async function probeLengths(
-  urls: readonly string[],
+  targets: readonly { url: string; page: string }[],
   proxy: string,
-  probe: typeof hasRange = hasRange,
+  options: { probe?: typeof hasRange; thirdParty?: ThirdPartyPolicy } = {},
 ): Promise<Map<string, number>> {
   const lengths = new Map<string, number>();
-  const unique = [...new Set(urls)];
-  await mapLimit(unique, LENGTH_CONCURRENCY, async (url) => {
+  const firstPage = new Map<string, string>();
+  for (const target of targets) if (!firstPage.has(target.url)) firstPage.set(target.url, target.page);
+  const probe = options.probe ?? hasRange;
+  await mapLimit([...firstPage], LENGTH_CONCURRENCY, async ([url, page]) => {
     try {
-      const info = await probe(url, LENGTH_TIMEOUT_MS, proxy);
+      const info = await probe(url, LENGTH_TIMEOUT_MS, proxy, hopCheckOf(page, options.thirdParty));
       if (info.length !== undefined && info.length > 0) lengths.set(url, info.length);
     } catch {
       // No length: the record keeps its observed bytes.
@@ -437,8 +451,13 @@ async function writeSource(dir: string, buffer: Buffer): Promise<string> {
  */
 async function encodeVideo(asset: MediaAsset, env: Env, deadline: number): Promise<MediaEntry> {
   const proxy = env.opts.proxy;
-  const range = await env.hasRange(asset.url, RANGE_TIMEOUT_MS, proxy);
+  const range = await env.hasRange(asset.url, RANGE_TIMEOUT_MS, proxy, hopCheckOf(asset.page, env.opts.thirdParty));
+  if (range.blocked) return { candidates: [], notEncoded: THIRD_PARTY_BLOCKED };
   const length = range.length;
+  // ffmpeg reads the URL after its redirects, so it does not follow a chain the policy has already checked. The residual
+  // risk (a later, different redirect that ffmpeg follows by itself) is accepted: the egress proxy still blocks private
+  // addresses at connect time, and a third-party hop is never reached by the probe above.
+  const input = range.url ?? asset.url;
   if (!range.range && (length ?? 0) > NO_RANGE_MAX_BYTES) {
     return { candidates: [], notEncoded: "server has no Range support" };
   }
@@ -451,7 +470,7 @@ async function encodeVideo(asset: MediaAsset, env: Env, deadline: number): Promi
     return encodeFile(file, `${asset.url}|${contentHash(buffer)}`, jobsOf, env, deadline, dir, undefined, "could not read the video");
   }
   const identity = `${asset.url}|${range.etag ?? range.lastModified ?? ""}|${length ?? ""}`;
-  return encodeFile(asset.url, identity, jobsOf, env, deadline, dir, proxy, "could not read the video");
+  return encodeFile(input, identity, jobsOf, env, deadline, dir, proxy, "could not read the video");
 }
 
 /** An animated image: its bytes, written to the work folder so ffmpeg reads a local file, then its sample encodes. */

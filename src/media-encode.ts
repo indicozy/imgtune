@@ -99,6 +99,13 @@ export interface RangeInfo {
   length?: number;
   etag?: string;
   lastModified?: string;
+  /**
+   * The URL the file is read from, after the redirects: ffmpeg is given this one, so it does not follow the chain itself.
+   * Absent when no request got an answer.
+   */
+  url?: string;
+  /** True when a redirect hop was refused by the third-party policy: the file is not read (see hasRange). */
+  blocked?: boolean;
 }
 
 /** Length of each sample clip, in seconds. */
@@ -358,6 +365,16 @@ export async function cutSamples(
 interface Reply {
   status: number;
   headers: IncomingHttpHeaders;
+  /** The URL that answered (the last hop of the redirects). */
+  url?: string;
+}
+
+/** A redirect hop the third-party policy refuses: the request is not made. */
+class HopBlocked extends Error {
+  constructor(readonly hop: string) {
+    super("third-party redirect blocked");
+    this.name = "HopBlocked";
+  }
 }
 
 /**
@@ -367,7 +384,7 @@ interface Reply {
  * through `proxy` (the egress proxy, which checks each destination): an http target gets the absolute URL, and an https
  * target gets a CONNECT tunnel. Redirects are followed, at most 3. Rejects when no proxy is given.
  */
-export async function hasRange(url: string, timeoutMs: number, proxy?: string): Promise<RangeInfo> {
+export async function hasRange(url: string, timeoutMs: number, proxy?: string, allowHop?: (hop: string) => boolean): Promise<RangeInfo> {
   // A URL comes from a scanned page, so it only ever goes through the egress proxy.
   if (proxy === undefined) throw new Error("URL inputs require the egress proxy");
   let target: URL;
@@ -378,10 +395,19 @@ export async function hasRange(url: string, timeoutMs: number, proxy?: string): 
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let blocked = false;
+  const refused = (err: unknown): undefined => {
+    if (err instanceof HopBlocked) blocked = true;
+    return undefined;
+  };
   try {
-    const head = await exchange("HEAD", target, {}, proxy, controller.signal).catch(() => undefined);
-    const get = await exchange("GET", target, { Range: "bytes=0-0" }, proxy, controller.signal).catch(() => undefined);
+    const head = await exchange("HEAD", target, {}, proxy, controller.signal, 0, allowHop).catch(refused);
+    const get = await exchange("GET", target, { Range: "bytes=0-0" }, proxy, controller.signal, 0, allowHop).catch(refused);
+    // A file behind a refused hop is not read at all: its length and range are not taken from the allowed part of the chain.
+    if (blocked) return { range: false, blocked: true };
     const info: RangeInfo = { range: get?.status === 206 };
+    const answered = get?.url ?? head?.url;
+    if (answered !== undefined) info.url = answered;
     const length = get?.status === 206
       ? totalOf(headerText(get.headers["content-range"]))
       : head && head.status >= 200 && head.status < 300
@@ -406,15 +432,19 @@ async function exchange(
   proxy: string,
   signal: AbortSignal,
   hops = 0,
+  allowHop?: (hop: string) => boolean,
 ): Promise<Reply> {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("not an http(s) URL");
   const reply = await send(method, url, headers, proxy, signal);
   const location = headerText(reply.headers.location);
   if (REDIRECT_STATUSES.has(reply.status) && location !== undefined) {
     if (hops >= MAX_REDIRECTS) throw new Error("too many redirects");
-    return exchange(method, new URL(location, url), headers, proxy, signal, hops + 1);
+    const next = new URL(location, url);
+    // The policy is checked on every hop, as the browser's route guard checks each request. A refused hop is not requested.
+    if (allowHop !== undefined && !allowHop(next.href)) throw new HopBlocked(next.href);
+    return exchange(method, next, headers, proxy, signal, hops + 1, allowHop);
   }
-  return reply;
+  return { ...reply, url: url.href };
 }
 
 /** One request to one URL, through the egress proxy. The response body is discarded after the headers. */

@@ -366,3 +366,52 @@ describe("the ceiling fails closed on an unreadable frame (guardScores)", () => 
     await expect(guardScores(ctx, 0, unreadable, true)).rejects.toMatchObject({ reason: "score-failed" });
   });
 });
+
+describe("hasRange and the third-party policy on each redirect hop", () => {
+  let server: Server;
+  let port = 0;
+  const seen: string[] = [];
+  let proxy: EgressProxy;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      seen.push(`${req.headers.host ?? ""}${req.url ?? ""}`);
+      if (req.url === "/start.mp4") {
+        // A redirect from the page's own host to another host (127.0.0.2 is the same machine under another name).
+        res.writeHead(302, { location: `http://127.0.0.2:${port}/clip.mp4` });
+        return res.end();
+      }
+      if (req.url === "/clip.mp4") {
+        res.writeHead(200, { "content-type": "video/mp4", "content-length": 5000, "accept-ranges": "bytes" });
+        return res.end(Buffer.alloc(5000));
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "0.0.0.0", () => resolve()));
+    port = (server.address() as AddressInfo).port;
+    proxy = await startEgressProxy({ resolver: systemResolver, allowPrivate: true });
+  });
+
+  afterAll(async () => {
+    await proxy?.close();
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  it("reads the final URL of an allowed redirect, which is the URL ffmpeg is given", async () => {
+    seen.length = 0;
+    const info = await hasRange(`http://127.0.0.1:${port}/start.mp4`, 10_000, proxy.url);
+    expect(info.blocked).toBeUndefined();
+    expect(info.url).toBe(`http://127.0.0.2:${port}/clip.mp4`);
+    expect(info.length).toBe(5000);
+  });
+
+  it("refuses a redirect hop the policy blocks: the hop is never requested, and the file is blocked", async () => {
+    seen.length = 0;
+    const allowHop = (hop: string): boolean => !hop.startsWith("http://127.0.0.2:");
+    const info = await hasRange(`http://127.0.0.1:${port}/start.mp4`, 10_000, proxy.url, allowHop);
+    expect(info).toEqual({ range: false, blocked: true });
+    expect(seen.some((line) => line.startsWith("127.0.0.2:"))).toBe(false);
+  });
+});

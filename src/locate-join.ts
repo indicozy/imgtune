@@ -87,6 +87,8 @@ export interface LocateJoin {
 export function isFlagged(record: ImageRecord): boolean {
   // A CSS background is not an <img>: the dev page's images cannot join it, so it is never located.
   if (record.kind === "css-background") return false;
+  // A poster is a video's image: no <img> of the dev page is its element, so it is never located (its evidence names the video).
+  if (record.poster === true) return false;
   return record.fix.bytes.saved > 0 || record.fix.bytes.addedForSharpness > 0;
 }
 
@@ -286,6 +288,8 @@ export function joinLocate(
   const notMeasured: ImageRecord[] = [];
   let noOrder = 0;
   for (const record of records) {
+    // A poster never joins an <img> (see isFlagged): skipped, so it can never take another element's file:line.
+    if (record.poster === true) continue;
     const entry: ImagePerViewport | undefined = record.perViewport.find((p) => p.viewport === viewport);
     if (!entry) {
       if (flagged(record)) notMeasured.push(record);

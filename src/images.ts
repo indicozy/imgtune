@@ -215,6 +215,11 @@ export interface ImageRecord {
   lcpViewports?: string[];
   /** Set when the element's source was read from a dev page by `scan --locate-only` (see locate-join.ts). */
   locate?: { viewport: string; by: "alt-order" | "url-unique"; devIndex: number };
+  /**
+   * The record of a video's poster. Its locator is the video's, not an <img>'s, so it is never joined to an <img> of the dev
+   * page (locate-join.ts): the poster's evidence names the video.
+   */
+  poster?: true;
   perViewport: ImagePerViewport[];
   layoutChain?: {
     viewport: string;
@@ -462,6 +467,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const record: ImageRecord = {
       id: sha1(`${pageUrl}\n${key}`).slice(0, 12),
       page: pageUrl,
+      ...(member.img.posterOf !== undefined ? { poster: true as const } : {}),
       locator,
       tunable: tunableOf(member, pageUrl, locator.loader),
       current: {

@@ -41,6 +41,21 @@ describe("the recorded options and --idle-timeout", () => {
     expect(recordOptionsOf({ ...base, idleTimeoutMs: 3000 }).idleTimeoutMs).toBe(3000);
     expect(recordOptionsOf({ ...base, idleTimeoutMs: 0 }).idleTimeoutMs).toBe(0);
   });
+
+  it("records the media settings and ffmpeg when encodes can run, so --resume never reuses a page scanned otherwise", () => {
+    const encoding = { ...base, quality: true, mediaBudget: 20, mediaTime: 600, videoBar: 93, videoStillBar: 65, maxVideoWidths: 2 };
+    const recorded = recordOptionsOf(encoding, true);
+    expect(recorded).toMatchObject({ mediaBudget: 20, mediaTime: 600, videoBar: 93, videoStillBar: 65, maxVideoWidths: 2, ffmpeg: true });
+    // A page scanned without ffmpeg does not match one scanned with it (the encodes were never made).
+    expect(recordOptionsOf(encoding, false)).not.toEqual(recorded);
+    expect(recordOptionsOf({ ...encoding, mediaBudget: 5 }, true).mediaBudget).toBe(5);
+    expect(recordOptionsOf({ ...encoding, videoBar: 90 }, true).videoBar).toBe(90);
+    expect(recordOptionsOf({ ...encoding, maxVideoWidths: 1 }, true).maxVideoWidths).toBe(1);
+    // Without encodes the record keeps its shape, so older pages still resume.
+    expect(recordOptionsOf({ ...base, quality: false }, true)).not.toHaveProperty("mediaBudget");
+    expect(recordOptionsOf({ ...encoding, survey: true }, true)).not.toHaveProperty("mediaBudget");
+    expect(recordOptionsOf(base)).not.toHaveProperty("ffmpeg");
+  });
 });
 
 describe("scan of a page whose network never goes idle", () => {
