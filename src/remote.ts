@@ -1043,6 +1043,48 @@ export interface ObservedLocator {
 }
 
 /**
+ * One <video> element at one viewport. Only the page's own file sources are kept: a blob, media-stream or adaptive (HLS,
+ * DASH) source, or an empty one, is dropped in the browser (see isOutOfScopeVideo), so it never reaches Node.
+ */
+export interface ObservedVideo {
+  /** Position among all <video> elements of the page, in document order (the dropped ones keep their place). */
+  index: number;
+  currentSrc: string;
+  /** The <source> children, in order. A data: URI is shown as "data:". */
+  sources: { src: string; type?: string; media?: string }[];
+  autoplay: boolean;
+  muted: boolean;
+  loop: boolean;
+  playsinline: boolean;
+  controls: boolean;
+  /** The preload attribute, or "" when absent. */
+  preload: string;
+  /** The poster URL (a data: URI is shown as "data:"). */
+  poster?: string;
+  paused: boolean;
+  /** The MediaError code when the element failed (4: the source is not supported or cannot be decoded). Absent when none. */
+  errorCode?: number;
+  renderedWidth: number;
+  renderedHeight: number;
+  inFirstViewport: boolean;
+  /** Not displayed: display none, visibility hidden, or no box. */
+  hidden: boolean;
+  locator: ObservedLocator;
+}
+
+/**
+ * The bytes of one media URL, summed over its responses (a range request is one response of several). Taken from the
+ * headers: the body is never read, since a video can be far too big to buffer.
+ */
+export interface MediaRecord {
+  url: string;
+  contentType?: string;
+  bytes: number;
+  /** The status of the last response for the URL. */
+  status: number;
+}
+
+/**
  * The page's largest contentful paint, as the page stood before its first scroll: an image (its index among the page's
  * <img> elements, the same index as ObservedImage.index), another element, or none (no LCP entry).
  */
@@ -1082,6 +1124,10 @@ export interface ViewportObservation {
   images: ObservedImage[];
   /** The elements with a CSS background image (none in a light read). */
   backgrounds?: ObservedBackground[];
+  /** The page's <video> elements with a file source, in document order (none in a light read). */
+  videos?: ObservedVideo[];
+  /** The media responses of the page load, by URL (see MediaRecord). Video bodies are never read. */
+  media?: Map<string, MediaRecord>;
   /** Stylesheets the page links that the server refused or the browser could not load (their styles are not applied): zero on a sound page. */
   stylesheetsFailed?: number;
   /** The hosts of those stylesheets (distinct, no paths or query strings). */
@@ -1114,7 +1160,7 @@ function isNavigationError(err: unknown): boolean {
 }
 
 interface PageView {
-  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[] };
+  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[]; videos: ObservedVideo[] };
   html: string;
   /** The LCP read before the scroll (fresh loads only). */
   lcp?: LcpObservation;
@@ -1127,6 +1173,27 @@ export type StorageState = NonNullable<BrowserContextOptions["storageState"]>;
 export const LAYOUT_DEPTH = 15;
 /** React owners read per image, nearest first. */
 export const MAX_OWNERS = 8;
+
+/**
+ * Whether a <video> source is out of scope: a blob or media-stream URL (made by the page, not a file), an adaptive stream
+ * (HLS .m3u8 or DASH .mpd, with or without a query string), or no source at all. readView applies the same rule in the
+ * browser, before a video leaves the page, so the rule is written there too.
+ */
+export function isOutOfScopeVideo(src: string): boolean {
+  return src.trim() === "" || /^(blob|mediastream):/i.test(src) || /\.(m3u8|mpd)(?:[?#]|$)/i.test(src);
+}
+
+/**
+ * The bytes a media response carries, from its headers: Content-Length, else the span of Content-Range (`bytes a-b/total`
+ * is b - a + 1). Undefined when neither gives a length. The body is never read.
+ */
+export function mediaBytesOf(headers: Record<string, string>): number | undefined {
+  const length = headers["content-length"];
+  if (length !== undefined && /^\d+$/.test(length.trim())) return Number(length);
+  const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i.exec((headers["content-range"] ?? "").trim());
+  if (range && Number(range[2]) >= Number(range[1])) return Number(range[2]) - Number(range[1]) + 1;
+  return undefined;
+}
 
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
 async function readView(page: Page, light = false): Promise<PageView> {
@@ -1324,7 +1391,47 @@ async function readView(page: Page, light = false): Promise<PageView> {
           });
         }
       }
-      return { nextjs, images, backgrounds };
+      // <video> elements with a file source. Blob, media-stream and adaptive sources, and an empty src, are dropped here
+      // (the rule of isOutOfScopeVideo, written out because this function cannot import it). A data: URI is replaced
+      // before it leaves the browser. Light reads take none. Only the top document is read: a video in an iframe is not.
+      const videos: ObservedVideo[] = [];
+      if (!light) {
+        const OUT_OF_SCOPE = (src: string): boolean => src.trim() === "" || /^(blob|mediastream):/i.test(src) || /\.(m3u8|mpd)(?:[?#]|$)/i.test(src);
+        const shortUrl = (url: string): string => (url.startsWith("data:") ? "data:" : url);
+        document.querySelectorAll("video").forEach((video, index) => {
+          if (OUT_OF_SCOPE(video.currentSrc)) return;
+          const cs = getComputedStyle(video);
+          const rect = video.getBoundingClientRect();
+          videos.push({
+            index,
+            currentSrc: shortUrl(video.currentSrc),
+            sources: Array.from(video.querySelectorAll("source"), (source) => ({
+              src: shortUrl(source.src),
+              type: source.getAttribute("type") ?? undefined,
+              media: source.getAttribute("media") ?? undefined,
+            })),
+            autoplay: video.autoplay,
+            muted: video.muted,
+            loop: video.loop,
+            playsinline: video.hasAttribute("playsinline"),
+            controls: video.controls,
+            preload: video.getAttribute("preload") ?? "",
+            poster: video.poster ? shortUrl(video.poster) : undefined,
+            paused: video.paused,
+            ...(video.error ? { errorCode: video.error.code } : {}),
+            renderedWidth: rect.width,
+            renderedHeight: rect.height,
+            inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
+            hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
+            locator: {
+              testid: video.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
+              selector: cssPath(video),
+              owners: ownersOf(fiberOf(video)),
+            },
+          });
+        });
+      }
+      return { nextjs, images, backgrounds, videos };
     },
     { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light },
   );
@@ -1644,6 +1751,8 @@ async function readGroup(
   let fresh: Viewport[] = [];
   // Every image response of the document, by URL (the latest one for a URL fetched twice).
   const fetched = new Map<string, ResponseRecord>();
+  // Every media (video) response of the page load, by URL: its bytes from the headers, never from the body.
+  const media = new Map<string, MediaRecord>();
   const bodyReads: Promise<void>[] = [];
   let blockedRequests = 0;
   let thirdPartyBlocked = 0;
@@ -1727,6 +1836,18 @@ async function readGroup(
         // A stylesheet the server refused is not applied (Chromium still makes an empty sheet for it): counted for the scan's warning.
         if (response.request().resourceType() === "stylesheet" && response.status() >= 400) failedSheets.add(response.url());
         const contentType = response.headers()["content-type"];
+        // A media response is recorded from its headers and its body is never read: a video can be far too big to buffer.
+        if (response.request().resourceType() === "media" || (contentType ?? "").toLowerCase().startsWith("video/")) {
+          const url = response.url();
+          const prev = media.get(url);
+          media.set(url, {
+            url,
+            contentType: contentType ?? prev?.contentType,
+            bytes: (prev?.bytes ?? 0) + (mediaBytesOf(response.headers()) ?? 0),
+            status: response.status(),
+          });
+          return;
+        }
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
         if (!isImage) return;
         const record: ResponseRecord = { url: response.url(), contentType, bytes: 0 };
@@ -1833,6 +1954,9 @@ async function readGroup(
               nextjs: seen.nextjs,
               images: seen.images,
               backgrounds: seen.backgrounds,
+              videos: seen.videos,
+              // A copy: the page load's records keep growing for the viewports after this one.
+              media: new Map(media),
               stylesheetsFailed: failedSheets.size,
               stylesheetHosts: hostsOf(failedSheets),
               responses,
