@@ -47,6 +47,8 @@ export interface RunArgs {
   pageConcurrency?: number;
   idleTimeoutMs?: number;
   noCache: boolean;
+  /** --cpu-encode: the media is encoded on the CPU even with a GPU. */
+  cpuEncode?: boolean;
   /** --dev: the origin of the dev server; the deep pages are located at the same paths on it. */
   dev?: string;
   /** --qualities: the framework's allowed qualities, passed to hints. */
@@ -82,6 +84,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--no-cache") args.noCache = true;
+    else if (arg === "--cpu-encode") args.cpuEncode = true;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--block-third-party") blockThirdParty = true;
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
@@ -419,6 +422,7 @@ function runFlags(args: RunArgs): { survey: string[]; deep: string[] } {
   if (args.storageState !== undefined) common.push("--storage-state", shellWord(args.storageState));
   if (args.ignoreRobots) common.push("--ignore-robots");
   if (args.noCache) common.push("--no-cache");
+  if (args.cpuEncode) common.push("--cpu-encode");
   if (args.pageConcurrency !== undefined) common.push("--page-concurrency", String(args.pageConcurrency));
   if (args.idleTimeoutMs !== undefined) common.push("--idle-timeout", String(args.idleTimeoutMs));
   if (args.thirdParty.block) common.push("--block-third-party");

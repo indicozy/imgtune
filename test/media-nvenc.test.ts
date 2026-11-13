@@ -15,6 +15,11 @@ import {
   withNvencFallback,
 } from "../src/media-encode.js";
 import { makeScorer } from "../src/metric.js";
+import { estLabel, qualityApprox, videoStatusOf } from "../src/hints.js";
+import { parseImageArgs } from "../src/image-file.js";
+import { parseScanArgs } from "../src/remote.js";
+import type { CandidateResult } from "../src/media-encode.js";
+import type { VideoRecord } from "../src/video-analysis.js";
 
 const FIXTURES = join(import.meta.dirname, "fixtures", "media");
 const fixture = (name: string): string => join(FIXTURES, name);
@@ -195,4 +200,47 @@ describe.skipIf(!nvencCaps.av1Nvenc)("NVENC search on clip.mp4 (GPU " + GPU + ")
     if (outcome.ok) expect(outcome.best.encoder).toBe("cpu");
     else expect(["no-passing-quality", "time-limit"]).toContain(outcome.reason);
   }, 300_000);
+});
+
+describe("hint labels of an NVENC candidate", () => {
+  const cpu: CandidateResult = {
+    codec: "av1-mp4",
+    width: 640,
+    quality: 40,
+    sampleBytes: 1000,
+    sampleSeconds: 2,
+    bytes: 2000,
+    measuredBytes: 2000,
+    encoder: "cpu",
+    vmaf: 95,
+    still: 70,
+    stillBar: 65,
+    vmafBar: 93,
+    estimate: true,
+    audio: false,
+  };
+  const nvenc: CandidateResult = { ...cpu, encoder: "nvenc", quality: 30, measuredBytes: 2800, bytes: 2000 };
+
+  it("labels an NVENC estimate as GPU-encoded and scaled, and a CPU estimate as plain", () => {
+    expect(estLabel(nvenc)).toBe("est. (GPU-encoded, scaled to a CPU encode ÷1.4)");
+    expect(estLabel(cpu)).toBe("est.");
+  });
+
+  it("marks an NVENC quality as approximate, and a CPU quality not", () => {
+    expect(qualityApprox(nvenc)).toBe(" (approx.)");
+    expect(qualityApprox(cpu)).toBe("");
+  });
+
+  it("renders the video status with both marks", () => {
+    expect(videoStatusOf({ estimate: nvenc } as unknown as VideoRecord)).toBe("av1 CRF 30 (approx.), 640px, 2 KB est. (GPU-encoded, scaled to a CPU encode ÷1.4)");
+  });
+});
+
+describe("--cpu-encode", () => {
+  it("is read by the scan and the image command, and is off by default", () => {
+    expect(parseScanArgs(["https://example.com"]).cpuEncode).toBeUndefined();
+    expect(parseScanArgs(["https://example.com", "--cpu-encode"]).cpuEncode).toBe(true);
+    expect(parseImageArgs(["a.gif"]).cpuEncode).toBeUndefined();
+    expect(parseImageArgs(["a.gif", "--cpu-encode"]).cpuEncode).toBe(true);
+  });
 });

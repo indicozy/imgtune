@@ -9,7 +9,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { mapLimit } from "./concurrency.js";
 import { animationOf } from "./animated.js";
-import { FFMPEG_JOBS, probeFfmpeg, probeMedia, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
+import { FFMPEG_JOBS, probeFfmpeg, probeMedia, withNvenc, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
 import { prepareMedia } from "./media-prepare.js";
 import {
   cutSamples,
@@ -90,6 +90,12 @@ export interface MediaOptions {
   proxy?: string;
   /** Names the scorer in the cache identity: "cpu", or the GPU that scores the run. Defaults to "cpu". */
   scorerId?: string;
+  /**
+   * The GPU index the sample encodes run on, with NVENC (see media-encode's usesNvenc). Undefined: the CPU encoders. The
+   * device is tested once (withNvenc); without a working NVENC encoder the phase encodes on the CPU, and the cache keeps the
+   * two apart.
+   */
+  gpu?: number;
   /** The SSIMULACRA2 scorer. The CPU one when absent. */
   score?: Scorer;
   /** Aborts the phase (SIGINT, SIGTERM): a running ffmpeg is killed, and every unfinished asset says "aborted". */
@@ -373,9 +379,13 @@ function isCachedOutcome(value: unknown): value is CachedOutcome {
   );
 }
 
-/** The result-cache key of one job of an asset: its identity, codec and width, the bars, the scorer and the versions. */
+/**
+ * The result-cache key of one job of an asset: its identity, codec and width, the bars, the scorer, the encoder (NVENC on a
+ * GPU, or the CPU) and the versions.
+ */
 function cacheKeyOf(identity: string, job: Job, opts: MediaOptions): string {
-  return `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
+  const encoder = opts.gpu !== undefined ? `nvenc gpu${opts.gpu}` : "cpu";
+  return `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|encoder ${encoder}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
 }
 
 /**
@@ -436,6 +446,7 @@ async function runJobs(
         stillBar: opts.stillBar,
         deadline,
         caps: env.caps,
+        gpu: opts.gpu,
         score: env.score,
         workDir: join(dir, `${job.codec}-${job.width}`),
         signal: opts.signal,
@@ -586,7 +597,11 @@ export async function runMediaPhase(assets: MediaAsset[], opts: MediaOptions, de
   const started = Date.now();
   const phaseEnd = started + Math.max(0, opts.timeS) * 1000;
   try {
-    const caps = deps.caps ?? (await probeFfmpeg());
+    // The NVENC encoders are proven on the device before any encode. Without a working one the phase encodes on the CPU.
+    const probed = deps.caps ?? (await probeFfmpeg());
+    const caps = await withNvenc(probed, opts.gpu);
+    if (opts.gpu !== undefined && !caps.av1Nvenc && !caps.h264Nvenc) opts = { ...opts, gpu: undefined };
+    if (opts.gpu !== undefined) opts.log(`media: encoding on the GPU ${opts.gpu} with NVENC (${caps.av1Nvenc ? "AV1" : ""}${caps.av1Nvenc && caps.h264Nvenc ? ", " : ""}${caps.h264Nvenc ? "H.264" : ""})`);
     const unique = [...new Map(assets.map((a) => [a.key, a])).values()];
     const ranked = rankForBudget(unique, opts.budget);
     const running = !opts.survey && caps.ffmpeg;

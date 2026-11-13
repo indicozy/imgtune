@@ -57,6 +57,8 @@ export function mediaKindOf(buffer: Buffer): MediaKind | undefined {
 /** What the run needs for every media file: the capabilities, the scorer, the bars, and the scratch folder of the run. */
 export interface MediaContext {
   caps: FfmpegCaps;
+  /** The GPU index the encodes run on with NVENC (caps must already say NVENC works there). Undefined: the CPU encoders. */
+  gpu?: number;
   score: Scorer;
   /** Scratch folder of the run: each file gets a subfolder, and the caller removes the whole folder. */
   dir: string;
@@ -189,6 +191,7 @@ export async function measureAnimated(
         stillBar: ctx.videoStillBar,
         deadline: Date.now() + CODEC_BUDGET_MS,
         caps: ctx.caps,
+        gpu: ctx.gpu,
         score: ctx.score,
         workDir: join(dir, codec),
         signal: ctx.signal,
@@ -271,6 +274,7 @@ export async function compareReferenceFile(
         stillBar: requested,
         deadline: Date.now() + REFERENCE_BUDGET_MS,
         caps: ctx.caps,
+        gpu: ctx.gpu,
         score: ctx.score,
         workDir: join(dir, "compare"),
         signal: ctx.signal,

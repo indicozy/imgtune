@@ -49,6 +49,8 @@ export interface CheckSettings {
   qualities?: number[];
   idleTimeoutMs?: number;
   noCache: boolean;
+  /** --cpu-encode: the media is encoded on the CPU even with a GPU. */
+  cpuEncode?: boolean;
   ignoreRobots: boolean;
   thirdParty: ThirdPartyPolicy;
 }
@@ -77,6 +79,7 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--no-cache") args.noCache = true;
+    else if (arg === "--cpu-encode") args.cpuEncode = true;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--block-third-party") blockThirdParty = true;
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
@@ -264,6 +267,7 @@ export async function scanCheckPages(input: {
       shellWord(surveyDir),
       ...(settings.thirdParty.block ? ["--block-third-party"] : []),
       ...(settings.noCache ? ["--no-cache"] : []),
+      ...(settings.cpuEncode ? ["--cpu-encode"] : []),
     ].join(" "),
   });
   log(`survey: ${urls.length} URL(s), ${routes.types.length} route type(s)`);
@@ -298,6 +302,7 @@ export async function scanCheckPages(input: {
       ...(settings.thirdParty.block ? ["--block-third-party"] : []),
       ...(settings.thirdParty.allowHosts.length > 0 ? ["--allow-host", shellWord(settings.thirdParty.allowHosts.join(","))] : []),
       ...(settings.noCache ? ["--no-cache"] : []),
+      ...(settings.cpuEncode ? ["--cpu-encode"] : []),
       ...(settings.ignoreRobots ? ["--ignore-robots"] : []),
       ...(settings.pageConcurrency !== undefined ? ["--page-concurrency", String(settings.pageConcurrency)] : []),
       ...(settings.idleTimeoutMs !== undefined ? ["--idle-timeout", String(settings.idleTimeoutMs)] : []),

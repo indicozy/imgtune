@@ -23,6 +23,10 @@ const progress = (message: string) => {
 const OPTION_HELP = {
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
   noCache: ["--no-cache", "do not read or write the result cache in .imgtune/cache (the numbers are computed again)"],
+  cpuEncode: [
+    "--cpu-encode",
+    "encode the videos and animated images on the CPU even with a GPU (the default with --gpu is NVENC, bytes scaled to a CPU encode)",
+  ],
   root: [
     "--root <dir>",
     "folder project source files are read from (default: the nearest folder above the cwd that holds the file, else the nearest with a package.json or .git)",
@@ -152,6 +156,7 @@ const SCAN_HELP = commandHelp(
     "out",
     "root",
     "noCache",
+    "cpuEncode",
     "aggressive",
     "viewports",
     "survey",
@@ -349,6 +354,7 @@ Options:
   --gpu-device <n>      the GPU to score on, by CUDA index (implies --gpu; default 0). CUDA numbers the GPUs fastest first
                         unless CUDA_DEVICE_ORDER=PCI_BUS_ID; with CUDA_VISIBLE_DEVICES set, n indexes the devices it lists.
                         The scorer prints the name of the GPU it opened: check it.
+  --cpu-encode          encode the videos and animated images on the CPU even with a GPU (the default with --gpu is NVENC)
   --no-cache            do not read or write the result cache in .imgtune/cache
   -h, --help            show this help
 `;

@@ -16,7 +16,7 @@ import { isLocalTarget } from "./address.js";
 import { encode, ENCODER_ID, loadReference } from "./encode.js";
 import { makeFetcher, MAX_IMAGE_BYTES } from "./fetch.js";
 import { gpuNote, parseGpuDevice, startGpuScorer, type GpuScorer } from "./gpu.js";
-import { probeFfmpeg } from "./ffmpeg.js";
+import { probeFfmpeg, withNvenc } from "./ffmpeg.js";
 import { makeScorer, type Scorer } from "./metric.js";
 import { minPassingQuality } from "./search.js";
 import { cacheScope, CACHE_DIR, ResultCache } from "./result-cache.js";
@@ -51,6 +51,8 @@ export interface ImageArgs {
   gpu?: { device: number };
   /** --no-cache: the numbers are computed again, and none is kept in .imgtune/cache. */
   noCache?: boolean;
+  /** --cpu-encode: the media is encoded on the CPU even with a GPU (the default with --gpu is NVENC). */
+  cpuEncode?: boolean;
   /** --reference: the original a media candidate is compared with. A local file (media is never read from a URL here). */
   reference?: string;
   /** --video-bar: the minimum VMAF of a video or animated encode, 0 to 100 (default DEFAULT_VIDEO_BAR). */
@@ -88,6 +90,10 @@ export function parseImageArgs(argv: string[]): ImageArgs {
     }
     if (arg === "--no-cache") {
       args.noCache = true;
+      continue;
+    }
+    if (arg === "--cpu-encode") {
+      args.cpuEncode = true;
       continue;
     }
     if (arg === "--json") {
@@ -513,7 +519,18 @@ async function measureInputs(
   let scratch: string | undefined;
   const mediaContext = async (): Promise<MediaContext> => {
     scratch ??= await mkdtemp(join(tmpdir(), "imgtune-media-file-"));
-    return { caps: await probeFfmpeg(), score, dir: scratch, videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR, videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR, signal };
+    // The NVENC encoders are proven on the GPU before any encode; --cpu-encode keeps the CPU encoders.
+    const device = args.cpuEncode === true ? undefined : args.gpu?.device;
+    const caps = await withNvenc(await probeFfmpeg(), device);
+    return {
+      caps,
+      gpu: caps.av1Nvenc || caps.h264Nvenc ? device : undefined,
+      score,
+      dir: scratch,
+      videoBar: args.videoBar ?? DEFAULT_VIDEO_BAR,
+      videoStillBar: args.videoStillBar ?? DEFAULT_VIDEO_STILL_BAR,
+      signal,
+    };
   };
   try {
     for (const input of inputs) {

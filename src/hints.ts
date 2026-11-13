@@ -667,6 +667,22 @@ const H264_TYPE = 'video/mp4; codecs=avc1.640028';
 const H264_RECIPE = "libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart -an";
 const FORMAT_LABEL: Record<AnimatedFix["info"]["format"], string> = { gif: "GIF", webp: "WebP", apng: "APNG" };
 
+/**
+ * The label of a candidate's bytes. An NVENC candidate's bytes are its GPU encode scaled to a CPU encode (÷1.4), so the label
+ * says so: performance before precision, but the number is never presented as a measured CPU encode.
+ */
+export function estLabel(c: CandidateResult): string {
+  return c.encoder === "nvenc" ? "est. (GPU-encoded, scaled to a CPU encode ÷1.4)" : "est.";
+}
+
+/**
+ * The quality mark of a candidate: an NVENC candidate's cq is read as the CPU CRF (the same number, a fixed offset of 0), so
+ * the recipe's CRF is approximate. Empty for a CPU encode.
+ */
+export function qualityApprox(c: CandidateResult): string {
+  return c.encoder === "nvenc" ? " (approx.)" : "";
+}
+
 /** The smallest candidate of one codec, or undefined. The first of equal bytes wins. */
 export function smallestCandidate(candidates: CandidateResult[] | undefined, codec: MediaCodec): CandidateResult | undefined {
   let best: CandidateResult | undefined;
@@ -787,8 +803,8 @@ export function animatedLines(animated: AnimatedFix, src?: string, alt?: string)
   }
   const saves = animatedSavingOf(animated);
   const offered = [
-    avif !== undefined ? `animated AVIF CRF ${avif.quality} at ${avif.width}px (${encoderRecipe("animated-avif", avif)}): ${kb(avif.bytes)} est.` : undefined,
-    webp !== undefined ? `animated WebP q${webp.quality} at ${webp.width}px (${encoderRecipe("animated-webp", webp)}): ${kb(webp.bytes)} est.` : undefined,
+    avif !== undefined ? `animated AVIF CRF ${avif.quality}${qualityApprox(avif)} at ${avif.width}px (${encoderRecipe("animated-avif", avif)}): ${kb(avif.bytes)} ${estLabel(avif)}` : undefined,
+    webp !== undefined ? `animated WebP q${webp.quality} at ${webp.width}px (${encoderRecipe("animated-webp", webp)}): ${kb(webp.bytes)} ${estLabel(webp)}` : undefined,
   ].filter((part): part is string => part !== undefined);
   const coverage: string[] = [];
   if (avif !== undefined) coverage.push(COVERAGE.avif);
@@ -806,10 +822,10 @@ export function animatedLines(animated: AnimatedFix, src?: string, alt?: string)
     const lines = [`   ${head}: replace with <video autoplay muted loop playsinline poster="<first frame>"${altPart}>`];
     if (decorative) lines.push('     the image is decorative (alt=""): the <video> is aria-hidden, with no label');
     else if (alt !== undefined) lines.push("     the image's alt text is kept as the <video>'s aria-label (role=\"img\"): the accessible name does not change");
-    lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> AV1 MP4 (${encoderRecipe("av1-mp4", av1)}), CRF ${av1.quality}, ${av1.width}px, ${kb(av1.bytes)} est.`);
+    lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> AV1 MP4 (${encoderRecipe("av1-mp4", av1)}), CRF ${av1.quality}${qualityApprox(av1)}, ${av1.width}px, ${kb(av1.bytes)} ${estLabel(av1)}`);
     lines.push(
       h264 !== undefined
-        ? `     <source src="…-${h264.width}.h264.mp4" type="${H264_TYPE}"> H.264 MP4 (${encoderRecipe("h264-mp4", h264)}), ${h264.width}px, ${kb(h264.bytes)} est.`
+        ? `     <source src="…-${h264.width}.h264.mp4" type="${H264_TYPE}"> H.264 MP4 (${encoderRecipe("h264-mp4", h264)}), ${h264.width}px, ${kb(h264.bytes)} ${estLabel(h264)}`
         : `     <source src="…-${av1.width}.h264.mp4" type="${H264_TYPE}"> H.264 fallback, not measured: ${H264_RECIPE} at ${av1.width}px wide`,
     );
     if (cap !== undefined) lines.push(cap);
@@ -877,7 +893,7 @@ export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
 export function videoStatusOf(video: VideoRecord): string {
   const e = video.estimate;
   if (e === undefined) return `not encoded: ${safeText(reasonText(video.notEncoded ?? "no passing quality"))}`;
-  return `${codecName(e.codec)} CRF ${e.quality}, ${e.width}px, ${kb(e.bytes)} est.`;
+  return `${codecName(e.codec)} CRF ${e.quality}${qualityApprox(e)}, ${e.width}px, ${kb(e.bytes)} ${estLabel(e)}`;
 }
 
 /** One video as a row of a page's Video section: its place (quoted by the caller), its bytes, and its encode or reason. */
@@ -955,9 +971,9 @@ function targetLines(video: VideoRecord, plan: WidthPlan): string[] {
       const same = est !== undefined && est.codec === codec ? est : undefined;
       let at: string;
       if (same !== undefined && same.width === source.width) {
-        at = ` ${label} MP4 (${encoderRecipe(codec, same)}), CRF ${same.quality}, ${same.width}px, ${kb(same.bytes)} est.`;
+        at = ` ${label} MP4 (${encoderRecipe(codec, same)}), CRF ${same.quality}${qualityApprox(same)}, ${same.width}px, ${kb(same.bytes)} ${estLabel(same)}`;
       } else if (same !== undefined) {
-        at = ` ${label} MP4 (${encoderRecipe(codec, same)}), CRF ${same.quality}, ${source.width}px: same settings, not measured at this width`;
+        at = ` ${label} MP4 (${encoderRecipe(codec, same)}), CRF ${same.quality}${qualityApprox(same)}, ${source.width}px: same settings, not measured at this width`;
       } else if (kind === "h264") {
         at = ` H.264 MP4 (${H264_RECIPE}), ${source.width}px: not measured (no H.264 encode for this video)`;
       } else {
