@@ -109,7 +109,10 @@ const OPTION_HELP = {
     "--gpu",
     "score with the GPU scorer (imgtune-ssimu2-gpu, see the docs); opt-in. Falls back to the CPU with a warning",
   ],
-  gpuDevice: ["--gpu-device <n>", "the GPU to score on, by CUDA index (implies --gpu; default 0; see the GPU notes)"],
+  gpuDevice: [
+    "--gpu-device <n[,n]>",
+    "the GPU to score on, by CUDA index (implies --gpu; default 0; see the GPU notes). A comma list (0,1) gives each GPU its own encode workers with --gpu-encode; the first scores",
+  ],
   locateOnly: [
     "--locate-only",
     "read the source of the flagged images from a dev page (React owner data) or a built page with source maps (prod-sourcemap); not a measurement (needs --from)",
@@ -217,6 +220,7 @@ Options:
   --out <dir>                     the check directory (default ${DEFAULT_CHECK_DIR}/<timestamp>)
   --qualities <list>              the framework's allowed qualities, e.g. 75,85,100: targets are snapped up to them
   --gpu, --gpu-device <n>         score the deep pages with the GPU scorer (see the GPU notes; not the survey)
+  --gpu-encode                    EXPERIMENTAL: encode the deep pages' videos and animated images on the GPU (see scan --help)
   --page-concurrency <N>          pages at once in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait in the deep phase (default 10000)
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
@@ -253,6 +257,7 @@ Options:
   --qualities <list>              the allowed qualities (default: images.qualities of next.config, else Next's [75])
   --out <dir>                     the audit directory (default ${DEFAULT_AUDIT_DIR}/<timestamp>)
   --gpu, --gpu-device <n>         score the deep pages with the GPU scorer (see the GPU notes; not the survey)
+  --gpu-encode                    EXPERIMENTAL: encode the deep pages' videos and animated images on the GPU (see scan --help)
   --page-concurrency <N>          pages at once in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait in the deep phase (default 10000)
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
@@ -284,6 +289,7 @@ Options:
   --dev <origin>                  locate the deep pages at the same paths on this dev server (a running dev server)
   --qualities <list>              the framework's allowed qualities, e.g. 75,85,100 (passed to hints)
   --gpu, --gpu-device <n>         score the deep pages with the GPU scorer (see the GPU notes; not the survey)
+  --gpu-encode                    EXPERIMENTAL: encode the deep pages' videos and animated images on the GPU (see scan --help)
   --page-concurrency <N>          pages at once in the survey (default 4) and in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait (default 3000 in the survey, 10000 in the deep phase)
   --no-cache                      do not read or write the result cache
@@ -351,7 +357,8 @@ Options:
   --video-still-bar <n> the still-frame guard's bar, 0 to 100 (default 65), lowered for a source whose own best encode scores low
   --format <text|json>  text (default) or JSON (--json is the same)
   --gpu                 score with the GPU scorer (opt-in; falls back to the CPU with a warning)
-  --gpu-device <n>      the GPU to score on, by CUDA index (implies --gpu; default 0). CUDA numbers the GPUs fastest first
+  --gpu-device <n>      the GPU to score on, by CUDA index (implies --gpu; default 0). A comma list is accepted: the first GPU
+                        scores. CUDA numbers the GPUs fastest first
                         unless CUDA_DEVICE_ORDER=PCI_BUS_ID; with CUDA_VISIBLE_DEVICES set, n indexes the devices it lists.
                         The scorer prints the name of the GPU it opened: check it.
   --gpu-encode          EXPERIMENTAL: encode the videos and animated images on the GPU (NVENC, CUDA VMAF), off by default
