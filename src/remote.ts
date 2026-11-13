@@ -1931,7 +1931,9 @@ async function readGroup(
         // A media response is sized once it has finished, from the browser's count of its body (sizes): the body is never
         // read, since a video can be far too big to buffer. Chunked answers have no Content-Length, so the headers are the
         // fallback only: when sizes fails or reports 0, or when the response is still streaming at the settle (see below).
+        // A light read reads no media at all: it waits on none of it.
         if (response.request().resourceType() === "media" || (contentType ?? "").toLowerCase().startsWith("video/")) {
+          if (light) return;
           const url = response.url();
           const status = response.status();
           const headerBytes = mediaBytesOf(response.headers()) ?? 0;
@@ -1944,8 +1946,8 @@ async function readGroup(
           bodyReads.push(
             (async () => {
               try {
-                const error = await response.finished();
-                if (error !== null) return count(headerBytes);
+                // An aborted range request also finishes (with an error): its sizes still count what was received.
+                await response.finished();
                 const { responseBodySize } = await response.request().sizes();
                 count(responseBodySize > 0 ? responseBodySize : headerBytes);
               } catch {

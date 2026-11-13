@@ -280,7 +280,7 @@ describe("videos and media responses of a page", () => {
     expect(Math.abs((record?.bytes ?? 0) - fileBytes)).toBeLessThan(fileBytes * 0.01);
   }, 90_000);
 
-  it("records the media responses by URL with the bytes from the headers", async () => {
+  it("records the media responses by URL, with the bytes the browser counted for each", async () => {
     const obs = await observe();
     const webm = obs.media?.get(`${base}/clip.webm`);
     expect(webm?.bytes).toBeGreaterThan(0);
@@ -292,8 +292,13 @@ describe("videos and media responses of a page", () => {
     expect(obs.media?.has(`${base}/still.png`)).toBe(false);
   }, 90_000);
 
-  it("collects no videos on a light read", async () => {
+  it("collects no videos and no media on a light read, which waits on no media response", async () => {
+    const started = Date.now();
     const obs = await observe(true);
+    const elapsed = Date.now() - started;
     expect(obs.videos).toEqual([]);
+    expect(obs.media?.size ?? 0).toBe(0);
+    // A light read is one load and a settle: it does not wait for the videos to stream (the cap is 5 s of body reads).
+    expect(elapsed).toBeLessThan(15_000);
   }, 90_000);
 });
