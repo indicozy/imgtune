@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { callSitesFromJson, labelOf, MAX_SUMMARY_LINES, parseManifest, renderSummary, showPath, summaryCommand, type CallSite, type SummaryInput } from "../src/summary.js";
+import { callSitesFromJson, labelOf, MAX_SUMMARY_LINES, parseManifest, readPages, renderSummary, showPath, summaryCommand, type CallSite, type SummaryInput } from "../src/summary.js";
 import { candidateOf, okPage, otherPage, videoOf } from "./page-fixtures.js";
 
 const site = (i: number): CallSite => ({
@@ -302,3 +302,19 @@ describe("renderSummary: the video line per page and the media note", () => {
     expect(renderSummary(input())).not.toContain("video");
   });
 });
+
+describe("readPages: an interrupted run's pages", () => {
+  it("skips a page without the completeness marker (written before the media phase) and reads the complete ones", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-readpages-"));
+    try {
+      const page = (url: string, complete: boolean) => JSON.stringify({ url, images: [], ...(complete ? { complete: true } : {}) });
+      await writeFile(join(dir, "a.json"), page("https://a.example/", true));
+      await writeFile(join(dir, "b.json"), page("https://b.example/", false));
+      const pages = await readPages(dir);
+      expect(pages.map((p) => p.url)).toEqual(["https://a.example/"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+

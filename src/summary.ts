@@ -214,7 +214,11 @@ export async function readPages(dir: string): Promise<PageResult[]> {
     return [];
   }
   const pages: PageResult[] = [];
-  for (const name of names) pages.push(await readPageFile(join(dir, name)));
+  for (const name of names) {
+    const page = await readPageFile(join(dir, name));
+    // A page without the completeness marker is an interrupted run's: its media results are not in yet (see remote.ts).
+    if (page.complete === true) pages.push(page);
+  }
   return pages;
 }
 

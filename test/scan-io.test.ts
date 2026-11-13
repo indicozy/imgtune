@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -203,3 +204,56 @@ describe("runScan: resume, limits and the completeness marker (real pages on a l
     expect(logged.some((m) => m.startsWith("scanning "))).toBe(true);
   }, 120_000);
 });
+
+describe("runScan: a measured page is written before the media phase", () => {
+  let server: Server | undefined;
+  let base = "";
+
+  beforeAll(async () => {
+    const started = await new Promise<{ server: Server; port: number }>((resolve) => {
+      const s = createServer((req, res) => {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end(`<!doctype html><html><body><img src="/img.png" width="64" height="64" alt=""></body></html>`);
+      });
+      s.listen(0, "127.0.0.1", () => resolve({ server: s, port: (s.address() as AddressInfo).port }));
+    });
+    server = started.server;
+    base = `http://127.0.0.1:${started.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  it("has every page's JSON on disk, without the completeness marker, when the estimates end and before the media phase starts", async () => {
+    const out = await mkdtemp(join(tmpdir(), "imgtune-provisional-"));
+    // The log line "estimates:" comes right before the media phase, so the pages on disk then are the provisional ones. The
+    // snapshot is read synchronously there: an asynchronous read could see the final writes.
+    const seen: { complete: unknown }[][] = [];
+    const snapshot = (): { complete: unknown }[] =>
+      readdirSync(out)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => JSON.parse(readFileSync(join(out, name), "utf8")) as { complete: unknown });
+    try {
+      await runScan([`${base}/p1`, `${base}/p2`], {
+        outDir: out,
+        cwd: out,
+        aggressive: false,
+        quality: true,
+        viewports: DEFAULT_VIEWPORTS.filter((v) => v.name === "iphone-15").map((v) => ({ ...v })),
+        log: (line) => {
+          if (line.startsWith("estimates:") && seen.length === 0) seen.push(snapshot());
+        },
+      });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toHaveLength(2);
+      expect(seen[0].every((page) => page.complete === undefined)).toBe(true);
+      const finals = snapshot();
+      expect(finals).toHaveLength(2);
+      expect(finals.every((page) => page.complete === true)).toBe(true);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 180_000);
+});
+

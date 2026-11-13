@@ -3945,6 +3945,12 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const writePage = async (url: string, result: PageResult): Promise<void> => {
       await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, { root: opts.outDir });
     };
+    // A measured page's image analysis, written before the media phase: a crash or Ctrl-C during that phase keeps it. It has
+    // no media results and no completeness marker, so --resume scans the page again and readers skip it; the final write
+    // below replaces it.
+    const writeProvisional = async (url: string, analysed: PageResult): Promise<void> => {
+      await writePage(url, withBroken({ ...analysed, options, scorer: scorerOf(run.gpu) }, opts.expectImages?.(url)));
+    };
     await mapLimit(urls, opts.pageConcurrency ?? 1, async (url, index) => {
       // Synchronous up to the first await, so pages start in input order even with several in flight.
       if (limitReached()) return;
@@ -3961,7 +3967,9 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       // A page measured by an interrupted run: its estimates only. Its requests are collected as a measured page's are.
       const staged = opts.resume ? await resumeStaged(run, url) : undefined;
       if (staged !== undefined) {
-        mediaAssets.push(...mediaAssetsOf(await staged.page.analyse(collector)));
+        const stagedProvisional = await staged.page.analyse(collector);
+        mediaAssets.push(...mediaAssetsOf(stagedProvisional));
+        await writeProvisional(url, stagedProvisional);
         measured.push({ index, url, page: staged.page });
         images += staged.images;
         measuredCount++;
@@ -3984,6 +3992,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       await outcome.stage?.();
       const provisional = await outcome.analyse(collector);
       mediaAssets.push(...mediaAssetsOf(provisional));
+      await writeProvisional(url, provisional);
       await outcome.countImages?.(provisional.counts?.images ?? 0);
       measured.push({ index, url, page: outcome });
       images += provisional.counts?.images ?? 0;
