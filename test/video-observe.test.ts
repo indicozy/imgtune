@@ -10,7 +10,15 @@ import type { Browser } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { launchChromium } from "../src/browser.js";
 import { systemResolver } from "../src/address.js";
-import { isOutOfScopeVideo, mediaBytesOf, observeLoads, type RequestGuard, type ViewportObservation } from "../src/remote.js";
+import {
+  addMediaResponse,
+  isOutOfScopeVideo,
+  mediaBytesOf,
+  observeLoads,
+  type MediaRecord,
+  type RequestGuard,
+  type ViewportObservation,
+} from "../src/remote.js";
 import { DEFAULT_THIRD_PARTY } from "../src/third-party.js";
 import type { Viewport } from "../src/types.js";
 
@@ -18,6 +26,14 @@ const FIXTURES = fileURLToPath(new URL("./fixtures/media/", import.meta.url));
 
 // Two in-scope videos share clip.webm: the first autoplays, the one below the fold does not load (preload none).
 // broken.webm is not media: the browser reports MEDIA_ERR_SRC_NOT_SUPPORTED (errorCode 4).
+// `unsupported`: its only <source> is refused before any fetch (an unsupported type), so currentSrc is "". `filtered` plays
+// copy.webm, and its HLS <source> child is left out of `sources`.
+const UNSUPPORTED_PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+<video id="unsupported" autoplay muted width="320" height="180"><source src="/clip.webm" type="video/x-unsupported"></video>
+<video id="filtered" autoplay muted width="320" height="180"><source src="/copy.webm" type="video/webm"><source src="/stream.m3u8" type="video/webm"></video>
+<img alt="still" src="/still.png" width="40" height="40">
+</body></html>`;
+
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>videos</title></head><body>
 <video id="webm" autoplay muted loop playsinline width="320" height="180" src="/clip.webm"></video>
 <video id="mp4" autoplay muted loop playsinline width="320" height="180"><source src="/clip.mp4" type="video/mp4"></video>
@@ -100,6 +116,25 @@ describe("mediaBytesOf", () => {
   });
 });
 
+describe("addMediaResponse", () => {
+  it("sums the bytes of the range responses of one URL and keeps the last status", () => {
+    const media = new Map<string, MediaRecord>();
+    const url = "http://127.0.0.1:1/clip.webm";
+    addMediaResponse(media, { url, status: 206, contentType: "video/webm", headers: { "content-range": "bytes 0-99/1000" } });
+    addMediaResponse(media, { url, status: 206, headers: { "content-range": "bytes 100-299/1000" } });
+    expect(media.get(url)).toEqual({ url, contentType: "video/webm", bytes: 300, status: 206 });
+  });
+
+  it("counts a 200 as well as a 206, and keeps URLs apart", () => {
+    const media = new Map<string, MediaRecord>();
+    addMediaResponse(media, { url: "http://h/a.mp4", status: 206, headers: { "content-range": "bytes 0-9/100" } });
+    addMediaResponse(media, { url: "http://h/a.mp4", status: 200, contentType: "video/mp4", headers: { "content-length": "50" } });
+    addMediaResponse(media, { url: "http://h/b.mp4", status: 200, headers: {} });
+    expect(media.get("http://h/a.mp4")).toEqual({ url: "http://h/a.mp4", contentType: "video/mp4", bytes: 60, status: 200 });
+    expect(media.get("http://h/b.mp4")).toEqual({ url: "http://h/b.mp4", contentType: undefined, bytes: 0, status: 200 });
+  });
+});
+
 describe("videos and media responses of a page", () => {
   const desktop: Viewport = { name: "desktop", width: 1280, height: 800, dpr: 1, mobile: false };
   const guard: RequestGuard = {
@@ -120,6 +155,11 @@ describe("videos and media responses of a page", () => {
       if (path === "/page.html") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(PAGE);
+      } else if (path === "/copy.webm") {
+        serveRanged(req, res, webm, "video/webm");
+      } else if (path === "/unsupported.html") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(UNSUPPORTED_PAGE);
       } else if (path === "/clip.webm") {
         serveRanged(req, res, webm, "video/webm");
       } else if (path === "/clip.mp4") {
@@ -199,7 +239,22 @@ describe("videos and media responses of a page", () => {
     expect(hidden?.preload).toBe("none");
   }, 90_000);
 
-  it("records the media responses by URL with the bytes from the headers, and no body for a video", async () => {
+  it("keeps a video whose sources were all refused, with the first in-scope source as its current source and no bytes", async () => {
+    const [outcome] = await observeLoads(browser as Browser, `${base}/unsupported.html`, [desktop], guard);
+    if (!outcome.ok) throw outcome.error;
+    const obs = outcome.value;
+    expect((obs.videos ?? []).map((v) => v.index)).toEqual([0, 1]);
+    const video = obs.videos?.[0];
+    expect(video?.currentSrc).toBe(`${base}/clip.webm`);
+    expect(video?.sources).toEqual([{ src: `${base}/clip.webm`, type: "video/x-unsupported" }]);
+    // Nothing was fetched for it: no media response for its file.
+    expect(obs.media?.has(`${base}/clip.webm`)).toBe(false);
+    // The playing video's HLS <source> child is out of scope, so it is left out of `sources`.
+    expect(obs.videos?.[1]?.currentSrc).toBe(`${base}/copy.webm`);
+    expect(obs.videos?.[1]?.sources).toEqual([{ src: `${base}/copy.webm`, type: "video/webm" }]);
+  }, 90_000);
+
+  it("records the media responses by URL with the bytes from the headers", async () => {
     const obs = await observe();
     const webm = obs.media?.get(`${base}/clip.webm`);
     expect(webm?.bytes).toBeGreaterThan(0);

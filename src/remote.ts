@@ -1073,8 +1073,9 @@ export interface ObservedVideo {
 }
 
 /**
- * The bytes of one media URL, summed over its responses (a range request is one response of several). Taken from the
- * headers: the body is never read, since a video can be far too big to buffer.
+ * The bytes of one media URL, summed over all its media responses, 200s and 206s alike (a range request is one response
+ * of several). Taken from the headers: the body is never read, since a video can be far too big to buffer. A re-request
+ * of the same bytes adds again: the figure is the bytes the page moved, not the file size.
  */
 export interface MediaRecord {
   url: string;
@@ -1193,6 +1194,24 @@ export function mediaBytesOf(headers: Record<string, string>): number | undefine
   const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i.exec((headers["content-range"] ?? "").trim());
   if (range && Number(range[2]) >= Number(range[1])) return Number(range[2]) - Number(range[1]) + 1;
   return undefined;
+}
+
+/**
+ * Records one media response in the page load's map (see readGroup): its bytes are added to the URL's total, so the
+ * range responses of one URL add up, and the status is the last one seen. Every media response counts, a 200 as well as
+ * a 206 (a server that ignores Range sends the whole file once per request, and that is the bytes the page moved).
+ */
+export function addMediaResponse(
+  media: Map<string, MediaRecord>,
+  response: { url: string; status: number; contentType?: string; headers: Record<string, string> },
+): void {
+  const prev = media.get(response.url);
+  media.set(response.url, {
+    url: response.url,
+    contentType: response.contentType ?? prev?.contentType,
+    bytes: (prev?.bytes ?? 0) + (mediaBytesOf(response.headers) ?? 0),
+    status: response.status,
+  });
 }
 
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
@@ -1399,17 +1418,25 @@ async function readView(page: Page, light = false): Promise<PageView> {
         const OUT_OF_SCOPE = (src: string): boolean => src.trim() === "" || /^(blob|mediastream):/i.test(src) || /\.(m3u8|mpd)(?:[?#]|$)/i.test(src);
         const shortUrl = (url: string): string => (url.startsWith("data:") ? "data:" : url);
         document.querySelectorAll("video").forEach((video, index) => {
-          if (OUT_OF_SCOPE(video.currentSrc)) return;
+          const sourceEls = Array.from(video.querySelectorAll("source"));
+          // The source the browser plays. When it chose none (every <source> refused, e.g. an unsupported type, so
+          // currentSrc is ""), the first in-scope <source>, else the src attribute. Dropped only when none is in scope.
+          const inScope = sourceEls.map((source) => source.src).filter((src) => !OUT_OF_SCOPE(src));
+          const playing = video.currentSrc !== "" ? video.currentSrc : (inScope[0] ?? video.src);
+          if (OUT_OF_SCOPE(playing)) return;
           const cs = getComputedStyle(video);
           const rect = video.getBoundingClientRect();
           videos.push({
             index,
-            currentSrc: shortUrl(video.currentSrc),
-            sources: Array.from(video.querySelectorAll("source"), (source) => ({
-              src: shortUrl(source.src),
-              type: source.getAttribute("type") ?? undefined,
-              media: source.getAttribute("media") ?? undefined,
-            })),
+            currentSrc: shortUrl(playing),
+            // The out-of-scope <source> children are left out, as the video itself is when its source is out of scope.
+            sources: sourceEls
+              .filter((source) => !OUT_OF_SCOPE(source.src))
+              .map((source) => ({
+                src: shortUrl(source.src),
+                type: source.getAttribute("type") ?? undefined,
+                media: source.getAttribute("media") ?? undefined,
+              })),
             autoplay: video.autoplay,
             muted: video.muted,
             loop: video.loop,
@@ -1838,14 +1865,7 @@ async function readGroup(
         const contentType = response.headers()["content-type"];
         // A media response is recorded from its headers and its body is never read: a video can be far too big to buffer.
         if (response.request().resourceType() === "media" || (contentType ?? "").toLowerCase().startsWith("video/")) {
-          const url = response.url();
-          const prev = media.get(url);
-          media.set(url, {
-            url,
-            contentType: contentType ?? prev?.contentType,
-            bytes: (prev?.bytes ?? 0) + (mediaBytesOf(response.headers()) ?? 0),
-            status: response.status(),
-          });
+          addMediaResponse(media, { url: response.url(), status: response.status(), contentType, headers: response.headers() });
           return;
         }
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
