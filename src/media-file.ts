@@ -181,7 +181,7 @@ export async function measureAnimated(
     current.width = prepared.probe.width;
     current.height = prepared.probe.height;
     const px = width ?? prepared.probe.width;
-    const samples = await cutSamples(prepared.path, prepared.probe, join(dir, "samples"), Date.now() + CODEC_BUDGET_MS, undefined, ctx.signal);
+    const samples = await cutSamples(prepared.source, prepared.probe, join(dir, "samples"), Date.now() + CODEC_BUDGET_MS, undefined, ctx.signal);
     const candidates: AnimatedFileResult["candidates"] = [];
     for (const codec of ANIMATED_CODECS) {
       const outcome = await searchQuality(samples, prepared.probe, codec, px, {
@@ -262,8 +262,8 @@ export async function compareReferenceFile(
     }
     const px = width ?? cand.probe.width;
     const score = await compareToReference(
-      cand.path,
-      ref.path,
+      cand.source,
+      ref.source,
       ref.probe,
       px,
       {

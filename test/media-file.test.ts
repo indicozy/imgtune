@@ -7,13 +7,13 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFfmpeg, probeMedia } from "../src/ffmpeg.js";
 import { candidateCodecOf, prepareMedia, renderAnimated, renderReference, type AnimatedFileResult, type ReferenceFileResult } from "../src/media-file.js";
-import { cutSamples, searchQuality, TimelineTooLarge, TIMELINE_CAP_BYTES, webpPages, type CandidateResult } from "../src/media-encode.js";
+import { searchQuality, type CandidateResult } from "../src/media-encode.js";
 import { makeScorer } from "../src/metric.js";
 
 const FIXTURES = fileURLToPath(new URL("./fixtures/media/", import.meta.url));
 const fixture = (name: string): string => join(FIXTURES, name);
-/** A cap no real animated fixture fits in: the anim.webp timeline is about 20 MB decoded. */
-const TINY_CAP = 1024 * 1024;
+/** A per-frame pixel limit no frame of the animated fixtures fits in (anim.webp frames are 320x180). */
+const TINY_LIMIT = 1000;
 
 let scratch = "";
 beforeAll(async () => {
@@ -23,39 +23,7 @@ afterAll(async () => {
   if (scratch) await rm(scratch, { recursive: true, force: true });
 });
 
-describe("the animated WebP timeline cap", () => {
-  it("the default cap is 256 MiB of decoded timeline", () => {
-    expect(TIMELINE_CAP_BYTES).toBe(256 * 1024 * 1024);
-  });
-
-  it("refuses a timeline over the cap before any frame is built, with the size in the message", async () => {
-    const buffer = await readFile(fixture("anim.webp"));
-    const error = await webpPages(buffer, 30, TINY_CAP).then(
-      () => undefined,
-      (err: unknown) => err,
-    );
-    expect(error).toBeInstanceOf(TimelineTooLarge);
-    expect((error as Error).message).toMatch(/^too large to score: the frames of this animated WebP would take \d+ MB decoded/);
-  });
-
-  it("decodes the pages of the same file once under the default cap, and maps every tick to a page", async () => {
-    const buffer = await readFile(fixture("anim.webp"));
-    const { pages, width, height, tickPages } = await webpPages(buffer, 30);
-    expect(pages.length).toBeGreaterThan(0);
-    expect(width).toBe(320);
-    expect(height).toBe(180);
-    expect(tickPages.length).toBeGreaterThanOrEqual(pages.length);
-    expect(tickPages.every((p) => p >= 0 && p < pages.length)).toBe(true);
-  });
-
-  it("caps the decoded pages per file: exactly pages × width × height × 4 fits, one byte less is refused", async () => {
-    const buffer = await readFile(fixture("anim.webp"));
-    const { pages, width, height } = await webpPages(buffer, 30);
-    const exact = pages.length * width * height * 4;
-    await expect(webpPages(buffer, 30, exact)).resolves.toBeDefined();
-    await expect(webpPages(buffer, 30, exact - 1)).rejects.toBeInstanceOf(TimelineTooLarge);
-  });
-
+describe("animated WebP: the limits and the search", () => {
   it("refuses a frame over 40 Mpx before any decode, as too large to score", async () => {
     // A 9000 x 5000 frame is 45 Mpx: refused from the probe, with no sample read and no encode.
     const probe = { durationS: 2, width: 9000, height: 5000, fps: 30, videoCodec: "gif" as const };
@@ -87,27 +55,10 @@ describe("the animated WebP timeline cap", () => {
     expect(outcome).toEqual({ ok: false, reason: "aborted" });
   });
 
-  it("makes the single-file mode print the error for a file over the cap (prepareMedia)", async () => {
+  it("makes the single-file mode print the error for a frame over the per-frame limit (prepareMedia)", async () => {
     const buffer = await readFile(fixture("anim.webp"));
-    await expect(prepareMedia(fixture("anim.webp"), buffer, join(scratch, "prep-big"), TINY_CAP)).rejects.toThrow(/^too large to score/);
+    await expect(prepareMedia(fixture("anim.webp"), buffer, join(scratch, "prep-big"), TINY_LIMIT)).rejects.toThrow(/^too large to score/);
   });
-
-  it("makes the search return too-large for an animated-webp candidate over the cap, not an error", async () => {
-    const caps = await probeFfmpeg();
-    const probe = (await probeMedia(fixture("anim.gif"), 10_000))!;
-    const dir = join(scratch, "search-too-large");
-    const samples = await cutSamples(fixture("anim.gif"), probe, dir, Date.now() + 120_000);
-    const outcome = await searchQuality(samples, probe, "animated-webp", probe.width, {
-      vmafBar: 93,
-      stillBar: 65,
-      deadline: Date.now() + 120_000,
-      caps,
-      score: makeScorer("ssimulacra2"),
-      workDir: join(dir, "work"),
-      maxTimelineBytes: TINY_CAP / 1024,
-    });
-    expect(outcome).toEqual({ ok: false, reason: "too-large" });
-  }, 120_000);
 });
 
 /** One candidate result, with the fields the report prints. */

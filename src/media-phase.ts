@@ -14,6 +14,7 @@ import { prepareMedia } from "./media-prepare.js";
 import {
   cutSamples,
   hasRange,
+  type ClipSource,
   isAbortError,
   MAX_INPUT_PIXELS_FFMPEG,
   searchQuality,
@@ -93,6 +94,11 @@ export interface MediaOptions {
   score?: Scorer;
   /** Aborts the phase (SIGINT, SIGTERM): a running ffmpeg is killed, and every unfinished asset says "aborted". */
   signal?: AbortSignal;
+  /**
+   * The most pixels one frame of an animated WebP may have (default MAX_INPUT_PIXELS_FFMPEG). Only a test lowers it, to show
+   * that the limit applies per frame and not to the whole animation.
+   */
+  framePixelLimit?: number;
   /**
    * The third-party policy, checked on every redirect hop of a video's Range probe (see hasRange): a hop the policy refuses
    * is never requested, and the video is "third-party blocked".
@@ -424,7 +430,7 @@ async function runJobs(
  * (read through `proxy`). A file that cannot be probed is a read error.
  */
 async function encodeFile(
-  input: string,
+  input: ClipSource,
   identity: string,
   jobsOf: (probe: MediaProbe) => Job[],
   env: Env,
@@ -434,7 +440,8 @@ async function encodeFile(
   readError: string,
   known?: MediaProbe,
 ): Promise<MediaEntry> {
-  const probe = known ?? (await env.probe(input, PROBE_TIMEOUT_MS, { proxy }));
+  // A file is probed here; a WebP source always comes with its probe (see prepareMedia).
+  const probe = known ?? (await env.probe(input as string, PROBE_TIMEOUT_MS, { proxy }));
   if (probe === undefined) return { candidates: [], notEncoded: readError };
   // A frame over the pixel limit is refused before any sample is cut or encoded (see MAX_INPUT_PIXELS_FFMPEG).
   if (probe.width * probe.height > MAX_INPUT_PIXELS_FFMPEG) return { probe, candidates: [], notEncoded: "too-large" };
@@ -498,11 +505,11 @@ async function encodeAnimated(asset: MediaAsset, env: Env, deadline: number): Pr
     // probe of that file is known. Refused before any decode when it is too large to score.
     let prepared: Awaited<ReturnType<typeof prepareMedia>>;
     try {
-      prepared = await prepareMedia(join(dir, "source.webp"), buffer, join(dir, "prepared"), undefined, env.opts.signal);
+      prepared = await prepareMedia(join(dir, "source.webp"), buffer, join(dir, "prepared"), env.opts.framePixelLimit, env.opts.signal);
     } catch (err) {
       return { candidates: [], notEncoded: prepareReasonOf(err, readError) };
     }
-    return encodeFile(prepared.path, identity, jobsOf, env, deadline, dir, undefined, readError, prepared.probe);
+    return encodeFile(prepared.source, identity, jobsOf, env, deadline, dir, undefined, readError, prepared.probe);
   }
   const file = await writeSource(dir, buffer);
   return encodeFile(file, identity, jobsOf, env, deadline, dir, undefined, readError);

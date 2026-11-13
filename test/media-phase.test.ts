@@ -24,6 +24,7 @@ import {
   type MediaAsset,
   type MediaOptions,
 } from "../src/media-phase.js";
+import type { ClipSource } from "../src/media-encode.js";
 import { ResultCache } from "../src/result-cache.js";
 import { parseScanArgs } from "../src/remote.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
@@ -191,8 +192,8 @@ describe("runMediaPhase with a server that has no Range support", () => {
         seen.push({ url: u, maxBytes });
         return Buffer.from("not really a video");
       },
-      cut: async (input: string) => {
-        cuts.push(input);
+      cut: async (input: ClipSource) => {
+        cuts.push(String(input));
         return ["/unused/sample-0.mkv"];
       },
     };

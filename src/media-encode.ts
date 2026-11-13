@@ -22,8 +22,15 @@ import {
   type MediaProbe,
 } from "./ffmpeg.js";
 import { extrapolate, sampleOffsets } from "./media-model.js";
+import { isTooLarge, MAX_INPUT_PIXELS_FFMPEG, PixelsTooLarge, WindowTooLarge, MAX_WINDOW_FRAMES } from "./media-limits.js";
 import type { Scorer } from "./metric.js";
 import type { RawImage } from "./ssim.js";
+import { WebpAnimation, cfrIndices } from "./webp-animation.js";
+
+export { cfrIndices, MAX_INPUT_PIXELS_FFMPEG, PixelsTooLarge, WindowTooLarge };
+
+/** A clip's source for the cut: a file (its path or URL), or an animated WebP read frame by frame. */
+export type ClipSource = string | WebpAnimation;
 
 /** The encodes the search can produce. AVIF is measured as its AV1 bitstream in MP4 (see encoderArgs). */
 export type MediaCodec = "av1-mp4" | "h264-mp4" | "animated-avif" | "animated-webp";
@@ -69,8 +76,6 @@ export interface SearchOptions {
   score: Scorer;
   /** Per-run scratch directory. Candidate files are removed as they are scored; the caller removes the directory. */
   workDir: string;
-  /** Largest decoded animated-WebP timeline this search may build (default TIMELINE_CAP_BYTES). */
-  maxTimelineBytes?: number;
   /**
    * Aborts the search: a running ffmpeg is killed, and the search returns "aborted" (see searchQuality). Set by the CLI on
    * SIGINT and SIGTERM, so a stopped run leaves no encode behind.
@@ -182,48 +187,6 @@ const SPECS: Record<MediaCodec, CodecSpec> = {
   "animated-webp": { lo: 40, hi: 90, steps: 4, ext: "webp", fewerBytesAt: "low" },
 };
 
-/** Largest decoded timeline of an animated WebP: frames × width × height × 4 bytes, the repeated ticks included. */
-export const TIMELINE_CAP_BYTES = 256 * 1024 * 1024;
-
-/**
- * An animated WebP whose timeline would be larger than the cap. Raised before any frame is materialised, so a long file
- * at a large size is refused, not expanded. The message starts "too large to score", which is what the report prints.
- */
-export class TimelineTooLarge extends Error {
-  readonly bytes: number;
-  readonly capBytes: number;
-
-  constructor(bytes: number, capBytes: number) {
-    super(
-      `too large to score: the frames of this animated WebP would take ${Math.ceil(bytes / (1024 * 1024))} MB decoded (the cap is ${Math.floor(capBytes / (1024 * 1024))} MB)`,
-    );
-    this.name = "TimelineTooLarge";
-    this.bytes = bytes;
-    this.capBytes = capBytes;
-  }
-}
-
-/**
- * The most pixels a frame may have before ffmpeg is asked to read it (8K is about 33 Mpx): above this the input is refused
- * before any decode or encode, since ffmpeg would allocate frames of several GB. Reported as "too-large".
- */
-export const MAX_INPUT_PIXELS_FFMPEG = 40_000_000;
-
-/** A frame over MAX_INPUT_PIXELS_FFMPEG: refused before any decode or encode. Its message starts "too large to score". */
-export class PixelsTooLarge extends Error {
-  readonly width: number;
-  readonly height: number;
-
-  constructor(width: number, height: number) {
-    super(
-      `too large to score: a frame of ${width}x${height} has ${(width * height / 1_000_000).toFixed(1)} Mpx, above the ${MAX_INPUT_PIXELS_FFMPEG / 1_000_000} Mpx limit`,
-    );
-    this.name = "PixelsTooLarge";
-    this.width = width;
-    this.height = height;
-  }
-}
-
 /** True for an abort (the run's signal fired): the search stops and reports "aborted". */
 export function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
@@ -305,7 +268,7 @@ async function stage<T>(reason: StageError["reason"], work: () => Promise<T>): P
   try {
     return await work();
   } catch (err) {
-    if (isDeadline(err) || isAbortError(err) || err instanceof StageError || err instanceof TimelineTooLarge || err instanceof PixelsTooLarge) throw err;
+    if (isDeadline(err) || isAbortError(err) || err instanceof StageError || isTooLarge(err)) throw err;
     throw new StageError(reason);
   }
 }
@@ -317,13 +280,14 @@ async function stage<T>(reason: StageError["reason"], work: () => Promise<T>): P
  * timeline. Rejects when the input is refused, or when any cut fails (a 404 for example).
  */
 export async function cutSamples(
-  input: string,
+  input: ClipSource,
   probe: MediaProbe,
   workDir: string,
   deadline: number,
   proxy?: string,
   signal?: AbortSignal,
 ): Promise<string[]> {
+  if (typeof input !== "string") return cutWebpSamples(input, probe.durationS, workDir, deadline, signal);
   // Refuses a bad input before any file is written.
   const options = inputOptions(input, proxy);
   await mkdir(workDir, { recursive: true });
@@ -564,25 +528,6 @@ export function tenthPercentile(values: number[]): number {
   return sorted[Math.floor(0.1 * (sorted.length - 1))];
 }
 
-/**
- * The frame on screen at each constant-rate tick. Frame i covers [start, start + delay) in ms, and tick k is at
- * k × 1000 / fps. A frame that lasts several ticks repeats; the last frame holds to the end.
- */
-export function cfrIndices(delaysMs: number[], fps: number, ticks: number): number[] {
-  const out: number[] = [];
-  let frame = 0;
-  let start = 0;
-  for (let k = 0; k < ticks; k++) {
-    const at = (k * 1000) / fps;
-    while (frame < delaysMs.length - 1 && start + delaysMs[frame] <= at) {
-      start += delaysMs[frame];
-      frame++;
-    }
-    out.push(frame);
-  }
-  return out;
-}
-
 /** The stillest frames of a sample: their indices, and the reference pixels at the candidate width. */
 export interface GuardRef {
   indices: number[];
@@ -772,79 +717,51 @@ function fileCandidate(out: string, dir: string, i: number, deadline: number, si
 }
 
 /**
- * The decoded pages of an animated WebP, once per file, and the page on screen at each constant-rate tick at `fps`. ffmpeg
- * cannot read an animated WebP, so it is decoded here. The timeline is never built: `tickPages` holds one index per tick,
- * and the raw stream (timelineChunks) writes each page as many times as its ticks need.
+ * An animated WebP candidate, read frame by frame: its frames are composed in order (WebpAnimation), so the candidate's
+ * timeline is streamed to VMAF and its guard frames are decoded on demand. Two readers of the same file: one feeds ffmpeg, the
+ * other gives the guard frames, so each is read in order.
  */
-export interface WebpPages {
-  pages: RawImage[];
-  width: number;
-  height: number;
-  /** The page index on each constant-rate tick. */
-  tickPages: number[];
-}
-
-/**
- * Decodes an animated WebP's pages, once. The size is checked from the metadata before any frame is decoded: the decoded
- * pages (pages × width × height × 4 bytes) must fit `capBytes` (TimelineTooLarge), and one frame must fit
- * MAX_INPUT_PIXELS_FFMPEG (PixelsTooLarge). The cap is per file, not per sample.
- */
-export async function webpPages(bytes: Buffer, fps: number, capBytes = TIMELINE_CAP_BYTES): Promise<WebpPages> {
-  const meta = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
-  const metaWidth = meta.width ?? 0;
-  const metaHeight = meta.pageHeight ?? meta.height ?? 0;
-  if (metaWidth * metaHeight > MAX_INPUT_PIXELS_FFMPEG) throw new PixelsTooLarge(metaWidth, metaHeight);
-  const decodedBytes = (meta.pages ?? 1) * metaWidth * metaHeight * 4;
-  if (decodedBytes > capBytes) throw new TimelineTooLarge(decodedBytes, capBytes);
-  const { data, info } = await sharp(bytes, { animated: true, limitInputPixels: MAX_IMAGE_PIXELS })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const count = info.pages ?? 1;
-  const height = info.pageHeight ?? info.height;
-  const pageBytes = info.width * height * 4;
-  const pages: RawImage[] = Array.from({ length: count }, (_, p) => {
-    const part = data.subarray(p * pageBytes, (p + 1) * pageBytes);
-    return { data: new Uint8ClampedArray(part.buffer, part.byteOffset, part.byteLength), width: info.width, height };
-  });
-  const delays = meta.delay ?? pages.map(() => 1000 / fps);
-  const tickPages = cfrIndices(delays, fps, ticksOf(delays, fps)).map((p) => Math.min(p, count - 1));
-  return { pages, width: info.width, height, tickPages };
-}
-
-/**
- * The raw RGBA of an animated WebP's constant-rate timeline, page after page, each page as many times as its ticks need. It
- * is streamed to ffmpeg's stdin, so the repeated timeline is never built in memory.
- */
-export async function* timelineChunks(webp: WebpPages): AsyncGenerator<Uint8Array> {
-  for (const p of webp.tickPages) {
-    const page = webp.pages[p];
-    yield Buffer.from(page.data.buffer as ArrayBuffer, page.data.byteOffset, page.data.byteLength);
-  }
-}
-
-/** The ffmpeg input options of a raw timeline read from stdin (see timelineChunks), at its size and rate. */
-export function rawTimelineInput(webp: WebpPages, fps: number): string[] {
-  return ["-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${webp.width}x${webp.height}`, "-framerate", String(fps), "-i", "pipe:0"];
-}
-
-/** The constant-rate ticks a sequence of frame delays (ms) spans at `fps`: at least one. */
-function ticksOf(delaysMs: number[], fps: number): number {
-  const total = delaysMs.reduce((acc, d) => acc + d, 0);
-  return Math.max(1, Math.round((total * fps) / 1000));
-}
-
-/**
- * An animated WebP candidate: decoded once (see webpPages) and laid out on the reference's constant-rate timeline by its
- * tick indices, so frame k of the candidate is frame k of the reference. Its frames come from the same decoded pages.
- */
-async function webpCandidate(out: string, fps: number, capBytes?: number): Promise<Candidate> {
-  const webp = await webpPages(await readFile(out), fps, capBytes);
+async function webpCandidate(out: string, fps: number, seconds: number): Promise<Candidate> {
+  const bytes = await readFile(out);
+  // A still candidate (an encoder writes one when its frames are all alike) holds for the sample's length.
+  const feed = new WebpAnimation(bytes, fps, undefined, seconds * 1000);
+  const guard = new WebpAnimation(bytes, fps, undefined, seconds * 1000);
   return {
-    input: rawTimelineInput(webp, fps),
-    stdin: () => timelineChunks(webp),
-    frames: async (indices) => indices.map((n) => webp.pages[webp.tickPages[Math.min(n, webp.tickPages.length - 1)]]),
+    input: ["-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${feed.width}x${feed.height}`, "-framerate", String(fps), "-i", "pipe:0"],
+    stdin: () => feed.ticks(0, feed.tickPages.length),
+    frames: async (indices) => {
+      const frames: RawImage[] = [];
+      for (const n of indices) frames.push(await guard.page(guard.tickPages[Math.min(n, guard.tickPages.length - 1)]));
+      return frames;
+    },
   };
+}
+
+/**
+ * The 2-second sample windows of an animated WebP source, cut as lossless FFV1 like cutSamples' files: each window's frames
+ * are read from the animation and streamed to ffmpeg, so only the pages inside a window are decoded, and the whole animation
+ * is never materialised. Windows are cut in order, so the reader moves forward (see WebpAnimation.page).
+ */
+async function cutWebpSamples(animation: WebpAnimation, durationS: number, workDir: string, deadline: number, signal?: AbortSignal): Promise<string[]> {
+  await mkdir(workDir, { recursive: true });
+  const fps = animation.fps;
+  const total = animation.tickPages.length;
+  const samples: string[] = [];
+  for (const [i, offset] of sampleOffsets(durationS).entries()) {
+    const from = Math.min(total, Math.round(offset * fps));
+    const to = Math.min(total, from + SAMPLE_SECONDS * fps);
+    if (to - from > MAX_WINDOW_FRAMES) throw new WindowTooLarge(to - from);
+    const out = join(workDir, `sample-${i}.mkv`);
+    const result = await ffrun(
+      ["-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${animation.width}x${animation.height}`, "-framerate", String(fps), "-i", "pipe:0", "-an", "-c:v", "ffv1", "-pix_fmt", "yuv420p", "-threads", String(FFMPEG_THREADS), "-y", out],
+      deadline,
+      signal,
+      () => animation.ticks(from, to),
+    );
+    if (result.code !== 0) throw new Error(`ffmpeg could not write sample ${i} of this animated WebP: ${lastLine(result.stderr)}`);
+    samples.push(out);
+  }
+  return samples;
 }
 
 /**
@@ -940,7 +857,7 @@ async function readSample(ctx: Ctx, q: number, dir: string, i: number): Promise<
   await encodeClip(ctx.samples[i], codec, width, q, out, opts.caps, opts.deadline, opts.signal);
   const bytes = (await stat(out)).size;
   const cand = codec === "animated-webp"
-    ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, opts.maxTimelineBytes))
+    ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, ctx.seconds[i]))
     : fileCandidate(out, dir, i, opts.deadline, opts.signal);
   const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin);
   let frames: RawImage[] | null;
@@ -1200,7 +1117,7 @@ export async function searchQuality(
     // An aborted run stops at once, and its partial result is not kept: the caller reports it as interrupted.
     if (opts.signal?.aborted || isAbortError(err)) return { ok: false, reason: "aborted" };
     // A timeline over the cap, or a frame over the pixel limit, is refused as a whole: no quality of this codec can be scored.
-    if (err instanceof TimelineTooLarge || err instanceof PixelsTooLarge) return { ok: false, reason: "too-large" };
+    if (isTooLarge(err)) return { ok: false, reason: "too-large" };
     // A broken scorer is reported even when an earlier quality passed: the passes before it were not checked by it.
     if (err instanceof StageError && err.reason === "score-failed") return { ok: false, reason: "score-failed" };
     if (best) return { ok: true, best, tried: ctx.cache.size };
@@ -1241,8 +1158,8 @@ export interface ReferenceScore {
  * encoder. Throws when a file cannot be cut or scored, and when the ceiling's own frames cannot be read (score-failed).
  */
 export async function compareToReference(
-  candidate: string,
-  reference: string,
+  candidate: ClipSource,
+  reference: ClipSource,
   probe: MediaProbe,
   width: number,
   opts: SearchOptions,
@@ -1302,7 +1219,7 @@ async function scoreSamples(
   const scores: number[] = [];
   for (let i = 0; i < samples.length; i++) {
     const cand = kind.webp
-      ? await webpCandidate(candidates[i], ctx.fps, opts.maxTimelineBytes)
+      ? await webpCandidate(candidates[i], ctx.fps, ctx.seconds[i])
       : fileCandidate(candidates[i], join(opts.workDir, "score"), i, opts.deadline, opts.signal);
     vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin));
     scores.push(...(await guardScores(ctx, i, cand, kind.strict)));
