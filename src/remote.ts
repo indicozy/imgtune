@@ -1106,7 +1106,8 @@ export interface ObservedVideo {
 
 /**
  * The bytes of one media URL, summed over all its media responses, 200s and 206s alike (a range request is one response
- * of several). Taken from the headers: the body is never read, since a video can be far too big to buffer. A re-request
+ * of several). Each response counts the browser's encoded body size once it has finished (sizes), so chunked framing is
+ * included; the headers are the fallback. The body is never read, since a video can be far too big to buffer. A re-request
  * of the same bytes adds again: the figure is the bytes the page moved, not the file size.
  */
 export interface MediaRecord {
@@ -1229,19 +1230,19 @@ export function mediaBytesOf(headers: Record<string, string>): number | undefine
 }
 
 /**
- * Records one media response in the page load's map (see readGroup): its bytes are added to the URL's total, so the
- * range responses of one URL add up, and the status is the last one seen. Every media response counts, a 200 as well as
- * a 206 (a server that ignores Range sends the whole file once per request, and that is the bytes the page moved).
+ * Adds one media response's bytes to the page load's map (see readGroup): they add to the URL's total, so the range
+ * responses of one URL add up, and the status is the last one seen. Every media response counts, a 200 as well as a 206
+ * (a server that ignores Range sends the whole file once per request, and that is the bytes the page moved).
  */
 export function addMediaResponse(
   media: Map<string, MediaRecord>,
-  response: { url: string; status: number; contentType?: string; headers: Record<string, string> },
+  response: { url: string; status: number; contentType?: string; bytes: number },
 ): void {
   const prev = media.get(response.url);
   media.set(response.url, {
     url: response.url,
     contentType: response.contentType ?? prev?.contentType,
-    bytes: (prev?.bytes ?? 0) + (mediaBytesOf(response.headers) ?? 0),
+    bytes: (prev?.bytes ?? 0) + response.bytes,
     status: response.status,
   });
 }
@@ -1814,6 +1815,8 @@ async function readGroup(
   // Every media (video) response of the page load, by URL: its bytes from the headers, never from the body.
   const media = new Map<string, MediaRecord>();
   const bodyReads: Promise<void>[] = [];
+  // Per media response: counts its header bytes, for a response still streaming when the body reads settle (see readGroup).
+  const mediaFallbacks: (() => void)[] = [];
   let blockedRequests = 0;
   let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
@@ -1896,9 +1899,32 @@ async function readGroup(
         // A stylesheet the server refused is not applied (Chromium still makes an empty sheet for it): counted for the scan's warning.
         if (response.request().resourceType() === "stylesheet" && response.status() >= 400) failedSheets.add(response.url());
         const contentType = response.headers()["content-type"];
-        // A media response is recorded from its headers and its body is never read: a video can be far too big to buffer.
+        // A media response is sized once it has finished, from the browser's count of its body (sizes): the body is never
+        // read, since a video can be far too big to buffer. Chunked answers have no Content-Length, so the headers are the
+        // fallback only: when sizes fails or reports 0, or when the response is still streaming at the settle (see below).
         if (response.request().resourceType() === "media" || (contentType ?? "").toLowerCase().startsWith("video/")) {
-          addMediaResponse(media, { url: response.url(), status: response.status(), contentType, headers: response.headers() });
+          const url = response.url();
+          const status = response.status();
+          const headerBytes = mediaBytesOf(response.headers()) ?? 0;
+          let counted = false;
+          const count = (bytes: number): void => {
+            if (counted) return;
+            counted = true;
+            addMediaResponse(media, { url, status, contentType, bytes });
+          };
+          bodyReads.push(
+            (async () => {
+              try {
+                const error = await response.finished();
+                if (error !== null) return count(headerBytes);
+                const { responseBodySize } = await response.request().sizes();
+                count(responseBodySize > 0 ? responseBodySize : headerBytes);
+              } catch {
+                count(headerBytes);
+              }
+            })(),
+          );
+          mediaFallbacks.push(() => count(headerBytes));
           return;
         }
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
@@ -1985,6 +2011,8 @@ async function readGroup(
             await debug.session.detach().catch(() => undefined);
           }
           await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
+          // A media response still streaming at the settle counts its header bytes (or 0); it is not waited for.
+          for (const fallback of mediaFallbacks) fallback();
           const responses = step === 0 ? new Map(fetched) : responsesOfStep(fetched, answered, seen, viewport.dpr);
           count("image responses", responses.size);
           for (const record of responses.values()) {

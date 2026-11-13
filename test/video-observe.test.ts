@@ -34,6 +34,12 @@ const UNSUPPORTED_PAGE = `<!doctype html><html><head><meta charset="utf-8"></hea
 <img alt="still" src="/still.png" width="40" height="40">
 </body></html>`;
 
+// A video answered chunked: no Content-Length, and no Range support (the whole body in one 200).
+const CHUNKED_PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+<video id="chunked" autoplay muted width="320" height="180" src="/chunked.webm"></video>
+<img alt="still" src="/still.png" width="40" height="40">
+</body></html>`;
+
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>videos</title></head><body>
 <video id="webm" autoplay muted loop playsinline width="320" height="180" src="/clip.webm"></video>
 <video id="mp4" autoplay muted loop playsinline width="320" height="180"><source src="/clip.mp4" type="video/mp4"></video>
@@ -120,16 +126,16 @@ describe("addMediaResponse", () => {
   it("sums the bytes of the range responses of one URL and keeps the last status", () => {
     const media = new Map<string, MediaRecord>();
     const url = "http://127.0.0.1:1/clip.webm";
-    addMediaResponse(media, { url, status: 206, contentType: "video/webm", headers: { "content-range": "bytes 0-99/1000" } });
-    addMediaResponse(media, { url, status: 206, headers: { "content-range": "bytes 100-299/1000" } });
+    addMediaResponse(media, { url, status: 206, contentType: "video/webm", bytes: 100 });
+    addMediaResponse(media, { url, status: 206, bytes: 200 });
     expect(media.get(url)).toEqual({ url, contentType: "video/webm", bytes: 300, status: 206 });
   });
 
   it("counts a 200 as well as a 206, and keeps URLs apart", () => {
     const media = new Map<string, MediaRecord>();
-    addMediaResponse(media, { url: "http://h/a.mp4", status: 206, headers: { "content-range": "bytes 0-9/100" } });
-    addMediaResponse(media, { url: "http://h/a.mp4", status: 200, contentType: "video/mp4", headers: { "content-length": "50" } });
-    addMediaResponse(media, { url: "http://h/b.mp4", status: 200, headers: {} });
+    addMediaResponse(media, { url: "http://h/a.mp4", status: 206, bytes: 10 });
+    addMediaResponse(media, { url: "http://h/a.mp4", status: 200, contentType: "video/mp4", bytes: 50 });
+    addMediaResponse(media, { url: "http://h/b.mp4", status: 200, bytes: 0 });
     expect(media.get("http://h/a.mp4")).toEqual({ url: "http://h/a.mp4", contentType: "video/mp4", bytes: 60, status: 200 });
     expect(media.get("http://h/b.mp4")).toEqual({ url: "http://h/b.mp4", contentType: undefined, bytes: 0, status: 200 });
   });
@@ -155,6 +161,15 @@ describe("videos and media responses of a page", () => {
       if (path === "/page.html") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(PAGE);
+      } else if (path === "/chunked.html") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(CHUNKED_PAGE);
+      } else if (path === "/chunked.webm") {
+        // No Content-Length: Node sends the body chunked. Range is ignored, so this is one 200 for the whole file.
+        res.writeHead(200, { "content-type": "video/webm" });
+        const piece = Math.ceil(webm.length / 3);
+        for (let i = 0; i < webm.length; i += piece) res.write(webm.subarray(i, i + piece));
+        res.end();
       } else if (path === "/copy.webm") {
         serveRanged(req, res, webm, "video/webm");
       } else if (path === "/unsupported.html") {
@@ -252,6 +267,17 @@ describe("videos and media responses of a page", () => {
     // The playing video's HLS <source> child is out of scope, so it is left out of `sources`.
     expect(obs.videos?.[1]?.currentSrc).toBe(`${base}/copy.webm`);
     expect(obs.videos?.[1]?.sources).toEqual([{ src: `${base}/copy.webm`, type: "video/webm" }]);
+  }, 90_000);
+
+  it("sizes a chunked video (no Content-Length) by the browser's count of its body", async () => {
+    const [outcome] = await observeLoads(browser as Browser, `${base}/chunked.html`, [desktop], guard);
+    if (!outcome.ok) throw outcome.error;
+    const record = outcome.value.media?.get(`${base}/chunked.webm`);
+    const fileBytes = readFileSync(join(FIXTURES, "clip.webm")).length;
+    expect(record?.status).toBe(200);
+    expect(record?.bytes).toBeGreaterThan(0);
+    // The browser's count is the encoded body: the chunk framing (size lines and CRLFs) adds a few dozen bytes to the file.
+    expect(Math.abs((record?.bytes ?? 0) - fileBytes)).toBeLessThan(fileBytes * 0.01);
   }, 90_000);
 
   it("records the media responses by URL with the bytes from the headers", async () => {
