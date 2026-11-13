@@ -29,7 +29,7 @@ describe("parseRunArgs", () => {
     expect(args.deep).toBe(20);
     expect(args.urlsFrom).toBe("sitemap.xml");
     expect(args.samplePerPattern).toBe(2);
-    expect(args.gpu).toEqual({ device: 1 });
+    expect(args.gpu).toEqual({ device: 1, devices: [1] });
     expect(args.pageConcurrency).toBe(3);
   });
 
