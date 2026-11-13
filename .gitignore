@@ -10,3 +10,4 @@ docs/study/sites*.md
 docs/RUN-SUMMARY-*
 docs/acceptance-*
 !test/fixtures/prod-sourcemap/dist/
+/CLAUDE.md
