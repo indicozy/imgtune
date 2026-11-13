@@ -142,12 +142,19 @@ describe("runScan stages each measured page", () => {
       ).rejects.toThrow("interrupted");
 
       const results = await runScan([url], scanOptions(out, { resume: true }));
-      const alone = await scanOnce(url, scanOptions(out));
-      const videos = results.find((r) => r.url === url)?.videos;
-      expect(videos).toHaveLength(1);
-      // An autoplaying video costs its whole file per view, read from the staged media response.
-      expect(videos?.[0].bytes.perView).toBeGreaterThanOrEqual(180_084);
-      expect(videos?.[0].bytes).toEqual(alone.videos?.[0].bytes);
+      // The reference is an uninterrupted runScan in its own folder: scanOnce runs no media phase, so its record has no
+      // file length from the phase's Range probe, and the scan's record does.
+      const freshOut = await mkdtemp(join(tmpdir(), "imgtune-stage-media-fresh-"));
+      try {
+        const [alone] = await runScan([url], scanOptions(freshOut));
+        const videos = results.find((r) => r.url === url)?.videos;
+        expect(videos).toHaveLength(1);
+        // An autoplaying video costs its whole file per view, read from the staged media response.
+        expect(videos?.[0].bytes.perView).toBeGreaterThanOrEqual(180_084);
+        expect(videos?.[0].bytes).toEqual(alone.videos?.[0].bytes);
+      } finally {
+        await rm(freshOut, { recursive: true, force: true });
+      }
     } finally {
       await rm(out, { recursive: true, force: true });
     }

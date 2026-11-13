@@ -107,6 +107,8 @@ export interface MediaEntry {
   candidates: CandidateResult[];
   /** Why no candidate was encoded (a reason from media-encode.ts, or one of the phase's own). */
   notEncoded?: string;
+  /** The jobs that did not pass, with their reasons: a video's target width reports its own reason, not a generic one. */
+  failed?: { codec: MediaCodec; width: number; reason: string }[];
 }
 
 export interface MediaResults {
@@ -294,11 +296,12 @@ interface Job {
 
 /**
  * The jobs of a video: AV1 at each width, and the H.264 fallback at each width unless the served file already is H.264 at
- * that width.
+ * that width. The widest (the target, whose AV1 is the main hint) goes first, so it is not the job the asset's time limit
+ * cuts off.
  */
 function videoJobs(widths: readonly number[], probe: MediaProbe): Job[] {
   const jobs: Job[] = [];
-  for (const width of widths) {
+  for (const width of [...widths].sort((a, b) => b - a)) {
     jobs.push({ codec: "av1-mp4", width });
     if (!(probe.videoCodec === "h264" && width >= probe.width)) jobs.push({ codec: "h264-mp4", width });
   }
@@ -311,7 +314,7 @@ function videoJobs(widths: readonly number[], probe: MediaProbe): Job[] {
  */
 function animatedJobs(widths: readonly number[], context: MediaAsset["context"]): Job[] {
   const jobs: Job[] = [];
-  for (const width of widths) {
+  for (const width of [...widths].sort((a, b) => b - a)) {
     jobs.push({ codec: "animated-avif", width }, { codec: "animated-webp", width });
     if (context === "img") jobs.push({ codec: "av1-mp4", width });
   }
@@ -375,6 +378,7 @@ async function runJobs(
   const { opts } = env;
   const candidates: CandidateResult[] = [];
   const reasons: string[] = [];
+  const failed: { codec: MediaCodec; width: number; reason: string }[] = [];
   let samples: Promise<string[]> | undefined;
   for (const job of jobs) {
     const cacheKey = `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
@@ -405,11 +409,14 @@ async function runJobs(
       else if (outcome.reason === "no-passing-quality") await opts.cache?.putJson(cacheKey, { ok: false, reason: "no-passing-quality" } satisfies CachedOutcome);
     }
     if (outcome.ok) candidates.push(outcome.best);
-    else reasons.push(outcome.reason);
+    else {
+      reasons.push(outcome.reason);
+      failed.push({ codec: job.codec, width: job.width, reason: outcome.reason });
+    }
   }
-  if (candidates.length > 0) return { probe, candidates };
+  if (candidates.length > 0) return { probe, candidates, failed };
   if (jobs.length === 0) return { probe, candidates, notEncoded: "no width to encode" };
-  return { probe, candidates, notEncoded: reasons[0] };
+  return { probe, candidates, notEncoded: reasons[0], failed };
 }
 
 /**
@@ -649,7 +656,9 @@ function attachVideo(record: VideoRecord, entry: MediaEntry | undefined, fallbac
   // AV1 is the main hint; the H.264 fallback is the estimate only when no AV1 encode passed at the target width.
   const estimate = smallest(atTarget.filter((c) => c.codec === "av1-mp4")) ?? smallest(atTarget);
   if (estimate === undefined) {
-    out.notEncoded = entry.notEncoded ?? "no passing quality";
+    // The target's own failure says why (a time limit, or no quality that passed); the generic reason is the last resort.
+    const atTargetFailure = entry.failed?.find((f) => f.width === target)?.reason;
+    out.notEncoded = entry.notEncoded ?? atTargetFailure ?? "no passing quality";
     return out;
   }
   out.estimate = estimate;
