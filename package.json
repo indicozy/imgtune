@@ -1,6 +1,6 @@
 {
   "name": "imgtune",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Finds the image waste on live pages: the sizes, quality and format for each image, checked with SSIMULACRA2, and the line of code that renders it.",
   "license": "MIT",
   "author": "indicozy",
