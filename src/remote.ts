@@ -3947,12 +3947,6 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const writePage = async (url: string, result: PageResult): Promise<void> => {
       await writeFileAtomic(join(opts.outDir, pageFileName(new URL(url))), `${JSON.stringify(result, null, 2)}\n`, { root: opts.outDir });
     };
-    // A measured page's image analysis, written before the media phase: a crash or Ctrl-C during that phase keeps it. It has
-    // no media results and no completeness marker, so --resume scans the page again and readers skip it; the final write
-    // below replaces it.
-    const writeProvisional = async (url: string, analysed: PageResult): Promise<void> => {
-      await writePage(url, withBroken({ ...analysed, options, scorer: scorerOf(run.gpu) }, opts.expectImages?.(url)));
-    };
     await mapLimit(urls, opts.pageConcurrency ?? 1, async (url, index) => {
       // Synchronous up to the first await, so pages start in input order even with several in flight.
       if (limitReached()) return;
@@ -3971,7 +3965,6 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       if (staged !== undefined) {
         const stagedProvisional = await staged.page.analyse(collector);
         mediaAssets.push(...mediaAssetsOf(stagedProvisional));
-        await writeProvisional(url, stagedProvisional);
         measured.push({ index, url, page: staged.page });
         images += staged.images;
         measuredCount++;
@@ -3994,7 +3987,6 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       await outcome.stage?.();
       const provisional = await outcome.analyse(collector);
       mediaAssets.push(...mediaAssetsOf(provisional));
-      await writeProvisional(url, provisional);
       await outcome.countImages?.(provisional.counts?.images ?? 0);
       measured.push({ index, url, page: outcome });
       images += provisional.counts?.images ?? 0;
@@ -4006,20 +3998,25 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       const counts = registry.counts();
       opts.log(`estimates: ${counts.unique} unique of ${counts.requests}, ${counts.skipped} skipped`);
       await registry.runJobs(QUALITY_PARALLEL);
-      // The media phase runs once for every page's assets, before any page is written (see runMediaFor).
-      const media = await runMediaFor(mediaAssets, run, opts, urls);
+      // Each page's image analysis is written as soon as its estimates are in, with no media results and no completeness
+      // marker: a crash or Ctrl-C during the long media phase keeps it (--resume scans it again and readers skip it).
+      const analysedPages: { index: number; url: string; page: MeasuredPage; analysed: PageResult; fallbacks: number }[] = [];
       for (const { index, url, page } of measured) {
         const tally = { fallbacks: 0 };
-        const analysed = attachMediaResults(await page.analyse(registry.reader(tally)), media, {
-          quality: opts.quality,
-          survey: opts.survey === true,
-        });
-        const result: PageResult = withBroken({ ...analysed, complete: true, options, scorer: scorerOf(run.gpu, tally.fallbacks) }, opts.expectImages?.(url));
+        const analysed = await page.analyse(registry.reader(tally));
+        await writePage(url, withBroken({ ...analysed, options, scorer: scorerOf(run.gpu, tally.fallbacks) }, opts.expectImages?.(url)));
+        analysedPages.push({ index, url, page, analysed, fallbacks: tally.fallbacks });
+        opts.log(progressLine([...finished, ...analysedPages.map((p) => p.analysed)], urls.length));
+      }
+      // The media phase runs once for every page's assets (see runMediaFor); each page is then written again, complete.
+      const media = await runMediaFor(mediaAssets, run, opts, urls);
+      for (const { index, url, page, analysed, fallbacks } of analysedPages) {
+        const withMedia = attachMediaResults(analysed, media, { quality: opts.quality, survey: opts.survey === true });
+        const result: PageResult = withBroken({ ...withMedia, complete: true, options, scorer: scorerOf(run.gpu, fallbacks) }, opts.expectImages?.(url));
         results[index] = result;
         finished.push(result);
         await writePage(url, result);
         await page.finish?.();
-        opts.log(progressLine(finished, urls.length));
       }
     }
     // Every measured page is complete now: the stage's blobs go with it (an interrupted run never gets here).

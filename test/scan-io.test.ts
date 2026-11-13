@@ -227,7 +227,8 @@ describe("runScan: a measured page is written before the media phase", () => {
 
   it("has every page's JSON on disk, without the completeness marker, when the estimates end and before the media phase starts", async () => {
     const out = await mkdtemp(join(tmpdir(), "imgtune-provisional-"));
-    // The log line "estimates:" comes right before the media phase, so the pages on disk then are the provisional ones. The
+    // The progress line "page 2/2 done" comes once both pages' image analysis is written, before the media phase, so the
+    // pages on disk then are the provisional ones. The
     // snapshot is read synchronously there: an asynchronous read could see the final writes.
     const seen: { complete: unknown }[][] = [];
     const snapshot = (): { complete: unknown }[] =>
@@ -242,7 +243,7 @@ describe("runScan: a measured page is written before the media phase", () => {
         quality: true,
         viewports: DEFAULT_VIEWPORTS.filter((v) => v.name === "iphone-15").map((v) => ({ ...v })),
         log: (line) => {
-          if (line.startsWith("estimates:") && seen.length === 0) seen.push(snapshot());
+          if (line.startsWith("page 2/2 done") && seen.length === 0) seen.push(snapshot());
         },
       });
       expect(seen).toHaveLength(1);
