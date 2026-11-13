@@ -2105,7 +2105,9 @@ async function readGroup(
             loadCapMs,
             light,
             idleTimeoutMs,
-            step === 0 ? undefined : () => waitNetworkQuiet(() => busy.size, idleTimeoutMs),
+            // Every full read waits on the busy set, fresh load included: Playwright's networkidle counts the media requests
+            // too, so a streaming video would hold a fresh load to the cap. A light fresh load waits for nothing, as before.
+            step === 0 && light ? undefined : () => waitNetworkQuiet(() => busy.size, idleTimeoutMs),
             !light && step === 0,
             withVideos,
           );

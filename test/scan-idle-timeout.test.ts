@@ -204,6 +204,30 @@ describe("scan of a page with an endless-streaming video (autoplay)", () => {
     }
   }, 60_000);
 
+  it("settles a fresh load on the streaming video well under the idle cap (the busy set excludes media, as on a resize)", async () => {
+    const out = await mkdtemp(join(tmpdir(), "imgtune-stream-fresh-"));
+    try {
+      const started = Date.now();
+      const [result] = await runScan([`${base}/video`], {
+        outDir: out,
+        cwd: out,
+        aggressive: false,
+        quality: false,
+        viewports: [desktop],
+        log: () => undefined,
+        loadCapMs: 500,
+        idleTimeoutMs: 20_000,
+      });
+      const seconds = (Date.now() - started) / 1000;
+      expect(result.status).toBe("ok");
+      // Before the fix the fresh load's network-idle wait held the stream to the 20 s cap, and the media read added 5 s more.
+      // With the busy set the settle waits only for the media read (5 s, BODY_READ_TIMEOUT_MS): the bound sits well below 20 s.
+      expect(seconds).toBeLessThan(15);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("waits for the stream once per page, not once per viewport, and counts the bytes that arrived before the settle", async () => {
     const out = await mkdtemp(join(tmpdir(), "imgtune-stream-"));
     const narrow: Viewport = { name: "narrow", width: 390, height: 844, dpr: 1, mobile: true };
