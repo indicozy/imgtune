@@ -537,6 +537,10 @@ function attachVideo(record: VideoRecord, entry: MediaEntry | undefined, fallbac
   const levers = { ...record.levers };
   const audio = audioBytesOf(record, entry.probe);
   if (audio !== undefined) levers.audio = { bytes: audio };
+  // Frame rate is informational, never in the claim (CLAUDE.md): a faster source costs more bytes, so a lower rate is a lever.
+  if (entry.probe !== undefined && entry.probe.fps > 30) {
+    levers.info = [...levers.info, `${entry.probe.fps} fps: a lower frame rate would save bytes too (not measured)`];
+  }
   const out: VideoRecord = {
     ...record,
     bytes: refineBytes(record.bytes, entry.length),
