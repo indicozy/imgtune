@@ -2000,7 +2000,11 @@ async function readGroup(
       // The requests in flight, for the network-idle wait after a resize (the browser's own events).
       const cdp = viewports.length > 1 ? await context.newCDPSession(page) : undefined;
       if (cdp !== undefined) {
-        cdp.on("Network.requestWillBeSent", (event: { requestId: string }) => busy.add(event.requestId));
+        // A media request is not counted: a streaming autoplay video never finishes, and would hold every resize's
+        // network-idle wait to its cap. Its bytes are still counted per response (see the media branch above).
+        cdp.on("Network.requestWillBeSent", (event: { requestId: string; type?: string }) => {
+          if (event.type !== "Media") busy.add(event.requestId);
+        });
         cdp.on("Network.loadingFinished", (event: { requestId: string }) => busy.delete(event.requestId));
         cdp.on("Network.loadingFailed", (event: { requestId: string }) => busy.delete(event.requestId));
         await cdp.send("Network.enable");

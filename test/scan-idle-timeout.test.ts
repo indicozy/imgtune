@@ -116,3 +116,71 @@ describe("scan of a page whose network never goes idle", () => {
     expect(seconds).toBeLessThan(6);
   }, 60_000);
 });
+
+describe("scan of a page with an endless-streaming video (autoplay)", () => {
+  // The video never ends its response, so its request is in flight for the whole scan. A media request is not network
+  // traffic the page waits for: with two viewports the resize must not hold the network-idle wait to its cap.
+  let base = "";
+  let server: Server | undefined;
+  const streams: { res: ServerResponse; timer: NodeJS.Timeout }[] = [];
+  const wide: Viewport = { name: "wide", width: 1440, height: 900, dpr: 1, mobile: false };
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      const url = req.url ?? "";
+      if (url === "/stream.mp4") {
+        res.writeHead(200, { "content-type": "video/mp4" });
+        const chunk = Buffer.alloc(1024, 7);
+        const timer = setInterval(() => res.write(chunk), 50);
+        streams.push({ res, timer });
+        res.on("close", () => clearInterval(timer));
+        return;
+      }
+      if (url === "/video") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end(
+          '<!doctype html><html><head><meta charset="utf-8"></head><body>' +
+            '<video autoplay muted loop playsinline width="320" height="200" src="/stream.mp4"></video></body></html>',
+        );
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", () => resolve()));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    for (const { res, timer } of streams) {
+      clearInterval(timer);
+      res.destroy();
+    }
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  it("does not hold the resize's network-idle wait to the cap while the video streams", async () => {
+    const out = await mkdtemp(join(tmpdir(), "imgtune-stream-"));
+    try {
+      const started = Date.now();
+      const [result] = await runScan([`${base}/video`], {
+        outDir: out,
+        cwd: out,
+        aggressive: false,
+        quality: false,
+        viewports: [desktop, wide],
+        sharedLoads: true,
+        log: () => undefined,
+        loadCapMs: 500,
+        idleTimeoutMs: 4000,
+      });
+      const seconds = (Date.now() - started) / 1000;
+      expect(result.status).toBe("ok");
+      // The first load's network-idle settle (4 s) and the two body reads of the stream (5 s each, BODY_READ_TIMEOUT_MS)
+      // take about 16 s. A resize that waited out its cap would add 4 s more: the bound sits between the two.
+      expect(seconds).toBeLessThan(18);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
