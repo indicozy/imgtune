@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
+  FfmpegOutputTooLarge,
   FfmpegTimeout,
   probeFfmpeg,
   probeMedia,
@@ -157,6 +158,31 @@ describe("runFfmpeg", () => {
     expect(result.code).toBe(0);
     expect(result.stdout.length).toBe(16 * 16 * 3 * 3);
     expect(typeof result.stderr).toBe("string");
+  });
+
+  it("keeps the last 64 KB of stderr, decoded without a split character", async () => {
+    const bin = join(scratch, "chatty-ffmpeg.sh");
+    // 200 KB of two-byte characters, then a marker: the kept tail must end with the marker and hold no U+FFFD.
+    writeFileSync(bin, "#!/bin/sh\nyes '\u00e9' | head -c 200001 >&2\necho END-OF-RUN >&2\nexit 1\n");
+    chmodSync(bin, 0o755);
+    setEnv({ IMGTUNE_FFMPEG: bin });
+    const result = await runFfmpeg(["-version"], { timeoutMs: 10_000 });
+    expect(result.code).toBe(1);
+    expect(result.stderr.endsWith("END-OF-RUN\n")).toBe(true);
+    expect(result.stderr).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(result.stderr, "utf8")).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("rejects with FfmpegOutputTooLarge when stdout passes its cap", async () => {
+    const error = await runFfmpeg(["-f", "lavfi", "-i", "testsrc2=d=5", "-f", "rawvideo", "-"], {
+      timeoutMs: 60_000,
+      maxStdoutBytes: 1_000_000,
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(FfmpegOutputTooLarge);
+    expect((error as FfmpegOutputTooLarge).maxStdoutBytes).toBe(1_000_000);
   });
 
   it("rejects without running when the signal is already aborted", async () => {

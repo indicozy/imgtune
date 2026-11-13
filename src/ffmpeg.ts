@@ -39,8 +39,11 @@ export const FFMPEG_JOBS = 4;
 /** Threads each ffmpeg job uses. FFMPEG_JOBS × FFMPEG_THREADS stays within the CPUs the encodes are given. */
 export const FFMPEG_THREADS = 2;
 
-/** Stderr kept from a run, in characters. The tail is kept, because ffmpeg prints the error last. */
+/** Stderr kept from a run, in bytes. The tail is kept, because ffmpeg prints the error last. */
 const STDERR_CAP = 64 * 1024;
+
+/** Stdout a run may produce before it is stopped, in bytes: enough for a short raw-video sample, not for a runaway. */
+export const DEFAULT_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 
 /** Thrown when an ffmpeg run passes its timeout; the process is killed before this rejects. */
 export class FfmpegTimeout extends Error {
@@ -53,6 +56,17 @@ export class FfmpegTimeout extends Error {
   }
 }
 
+/** Thrown when a run writes more stdout than its cap; the process is killed before this rejects. */
+export class FfmpegOutputTooLarge extends Error {
+  readonly maxStdoutBytes: number;
+
+  constructor(maxStdoutBytes: number) {
+    super(`ffmpeg wrote more than ${maxStdoutBytes} bytes to stdout`);
+    this.name = "FfmpegOutputTooLarge";
+    this.maxStdoutBytes = maxStdoutBytes;
+  }
+}
+
 interface RunResult {
   code: number;
   stdout: Buffer;
@@ -62,14 +76,18 @@ interface RunResult {
 interface RunOptions {
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Stdout cap in bytes; a run past it is killed and rejects with FfmpegOutputTooLarge. */
+  maxStdoutBytes?: number;
 }
 
 /**
  * Runs a binary to completion. Resolves with the exit code for any exit (a non-zero code is the caller's to judge);
- * rejects on a timeout (FfmpegTimeout), on an abort, or when the binary cannot be started. The process is killed with
- * SIGKILL on a timeout or an abort, so a stuck encode releases its CPU at once.
+ * rejects on a timeout (FfmpegTimeout), on an abort, on stdout past its cap (FfmpegOutputTooLarge), or when the binary
+ * cannot be started. The process is killed with SIGKILL on a timeout, an abort or an oversized stdout, so a stuck or
+ * runaway encode releases its CPU at once.
  */
 function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunResult> {
+  const maxStdoutBytes = opts.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES;
   return new Promise<RunResult>((resolve, reject) => {
     if (opts.signal?.aborted) {
       reject(abortError());
@@ -77,7 +95,10 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
     }
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
-    let stderr = "";
+    let stdoutBytes = 0;
+    // Stderr is kept as bytes and decoded once at close, so a multi-byte character is never split by a chunk edge.
+    let stderr: Buffer[] = [];
+    let stderrBytes = 0;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -99,15 +120,43 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
     }, opts.timeoutMs);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxStdoutBytes) {
+        child.kill("SIGKILL");
+        finish(() => reject(new FfmpegOutputTooLarge(maxStdoutBytes)));
+        return;
+      }
+      stdout.push(chunk);
+    });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_CAP);
+      stderr.push(chunk);
+      stderrBytes += chunk.length;
+      if (stderrBytes > STDERR_CAP) {
+        // Compact to the tail, so memory stays bounded even for a chatty run.
+        const tail = Buffer.concat(stderr).subarray(-STDERR_CAP);
+        stderr = [tail];
+        stderrBytes = tail.length;
+      }
     });
     child.on("error", (err) => finish(() => reject(err)));
     child.on("close", (code) => {
-      finish(() => resolve({ code: code ?? -1, stdout: Buffer.concat(stdout), stderr }));
+      finish(() =>
+        resolve({ code: code ?? -1, stdout: Buffer.concat(stdout), stderr: decodeStderr(Buffer.concat(stderr)) }),
+      );
     });
   });
+}
+
+/**
+ * Decodes the kept tail of stderr. The tail may start inside a multi-byte character, so leading continuation bytes
+ * (10xxxxxx) are dropped first. Valid UTF-8 never starts with one, so this is a no-op when nothing was cut.
+ */
+function decodeStderr(bytes: Buffer): string {
+  let start = 0;
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString("utf8");
 }
 
 function abortError(): Error {
