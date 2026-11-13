@@ -42,7 +42,7 @@ The production check. It needs a browser and the URLs, and no source, dev server
    estimate, heaviest types first, up to `--deep <N>` (default 20). The types the cap leaves out are named in the report.
    A deep page the browser could not load is retried once: the next-heaviest measured page of its route type is scanned in
    its place, and the report names both. The failed page still counts as failed.
-   `--gpu`, `--gpu-device`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--ignore-robots`,
+   `--gpu`, `--gpu-device`, `--gpu-encode`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--ignore-robots`,
    `--storage-state`, `--block-third-party` and `--allow-host` apply here.
 3. **report**: `report.md`, built from the two phases.
 
@@ -134,9 +134,9 @@ One command for the agent flow. It runs, in order:
 2. **heaviest pages**: one per route type, ranked by image KB per view (exact KB only as the tie-break), route types
    ordered by their total KB per view. `--deep <N>` (default 20) types are chosen; the summary names the types left out.
    Broken pages are not ranked.
-3. **deep**: a full scan of those pages (six viewports, exact and est.). `--gpu`, `--gpu-device`, `--page-concurrency`,
-   `--idle-timeout`, `--no-cache`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party` and `--allow-host`
-   pass through.
+3. **deep**: a full scan of those pages (six viewports, exact and est.). `--gpu`, `--gpu-device`, `--gpu-encode`,
+   `--page-concurrency`, `--idle-timeout`, `--no-cache`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party`
+   and `--allow-host` pass through.
 4. **locate** (with `--dev <origin>`): each deep page at the same path on the dev server (`scan --locate-only`).
 5. **hints**: the fix hints of the deep pages (or of their located copies), grouped by call site, as `hints.json`.
 
@@ -214,7 +214,13 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--sizes-only` | with `--recheck`: judge the browser's sizes choice on the dev page (the `sizes`, rendered width, DPR, the file chosen and its bytes) against the hint and the measured file. Nothing decoded, nothing scored |
 | `--url <dev-url>` | with `--recheck --sizes-only`: the page to check (default: the dev page the file was located on) |
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in). Needs the `imgtune-ssimu2-gpu` program; without it, a warning and the CPU. See [GPU scoring](#gpu-scoring-gpu) |
-| `--gpu-device <n>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)) |
+| `--gpu-device <n[,n]>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)). A comma list (`0,1`): the first GPU scores, and with `--gpu-encode` each listed GPU gets its own encode workers |
+| `--gpu-encode` | **experimental**: encode the videos and animated images on the GPU (NVENC, CUDA VMAF) instead of the CPU. Off by default. Bytes are scaled to a CPU encode (÷1.4) and labelled as such. See [Animated media and video](#animated-media-and-video) |
+| `--media-budget <N>` | sample-encode at most N animated images and videos per run, heaviest first, 0 to 1000 (default 20); the rest keep their cheap hints, marked `over --media-budget` |
+| `--media-time <s>` | time limit of the media encodes in seconds, 1 to 3600 (default 600) |
+| `--video-bar <n>` | minimum VMAF of a video or animated encode, 0 to 100 (default 93), against the served file at its display size |
+| `--video-still-bar <n>` | minimum SSIMULACRA2 of the still-frame guard, 0 to 100 (default 65), lowered to at most 10 points below the codec's best on that content, never below 20 |
+| `--max-video-widths <n>` | the most widths each video is served at, 1 to 3 (default 2) |
 | `-h, --help` | show this help |
 
 `--locate-only` joins the flagged images of a measured scan to the dev page's elements. The URL pattern of an image is its whole
@@ -250,6 +256,27 @@ located nothing. `run` uses the same codes: 4 when it stops on broken pages, 1 w
 `LCP is not an image (…)` when the largest paint is text or another element. The LCP is read before the page is scrolled, so
 a lazy image that loads on scroll cannot take it. It is read on a fresh load of each viewport (the default); a viewport
 that `--shared-loads` resizes has no LCP line.
+
+## Animated media and video
+
+`scan` also measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and self-hosted `<video>`
+elements with a plain file source. Adaptive streams (HLS, DASH, Mux, Cloudflare Stream) and third-party iframes (YouTube,
+Vimeo) are not reported. Static GIFs get the normal image hints.
+
+- **Bytes.** Per view counts what the first view fetches: an autoplay video its full file, `preload="auto"` the bytes the
+  scan saw (browser-dependent), `preload="metadata"` or `"none"` 0. Per play is the full file, shown for every video.
+- **Encodes** run on the heaviest animated assets first, up to `--media-budget` per run (default 20) and `--media-time`
+  seconds (default 600). Each asset is encoded once per run and cached by URL and content hash. Estimates come from 2 s
+  samples (one for a video of up to 6 s, three for a longer one); the full-file bytes are extrapolated and labelled.
+- **Quality** is checked with VMAF (`--video-bar`, default 93) and a still-frame SSIMULACRA2 guard (`--video-still-bar`,
+  default 65, lowered for a source whose own best encode scores low, never below 20).
+- **Widths.** A video is served at most `--max-video-widths` widths (default 2). `audit` reports the bytes at one, two and
+  three widths and leaves the choice to the agent.
+- **ffmpeg** is taken from `PATH` and not bundled. Without it, the bytes and widths are still reported, with one note.
+  `--survey` and `--no-quality` make no encodes.
+- **Cache.** Cache version 3 (ImgTune 0.2.0). Entries from 0.1 are not reused.
+
+See the README section "GIFs and video" for the reasoning behind these rules.
 
 ## hints
 
@@ -336,15 +363,24 @@ and dot folders are skipped). See [Repo images and file mode](/guide/repo-images
 | `--write <dir>` | write optimised copies (best format, at the largest needed width) into this folder |
 | `--format <text\|json>` | `text` (default) or `json` |
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in; see [GPU scoring](#gpu-scoring-gpu)) |
-| `--gpu-device <n>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)) |
+| `--gpu-device <n>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)). A comma list is accepted: its first GPU is used |
+| `--gpu-encode` | **experimental**: encode the media on the GPU (the `--gpu-device` GPU, else 0), as in `scan` |
+| `--reference <file>` | check one media candidate against this original (a local file): one verdict line, `VMAF <v> (bar <b>) still p10 <s> (bar <sb>): pass\|fail` |
+| `--video-bar <n>` | the minimum VMAF of a media encode or check, 0 to 100 (default 93) |
+| `--video-still-bar <n>` | the still-frame guard's bar, 0 to 100 (default 65), lowered for a source whose own best encode scores low |
 | `--no-cache` | do not read or write `.imgtune/cache` (see `scan --no-cache`) |
 | `-h, --help` | show this help |
 
-Exit status: 0 when every file was measured, 1 when one failed.
+Media: an animated GIF, animated WebP or APNG gets the candidates of animated AVIF, animated WebP and AV1 MP4 at `--width`
+(the file's own width by default). A video (MP4, MOV, WebM) is described; with `--reference` it is checked against the original.
+The encodes need ffmpeg on `PATH`; without it the sizes are still measured. Media is local files only.
+
+Exit status: 0 when every file was measured (with `--reference`: when the verdict passes), 1 when one failed or the verdict fails.
 
 ## GPU scoring (`--gpu`)
 
-Opt-in, for `scan`, `scan --recheck` and `image`. Only SSIMULACRA2 scoring moves to the GPU. Encoding stays on the CPU.
+Opt-in, for `scan`, `scan --recheck` and `image`. Only SSIMULACRA2 scoring moves to the GPU. Encoding stays on the CPU unless
+`--gpu-encode` asks for the GPU (media only).
 
 - **The program.** `imgtune-ssimu2-gpu` is built from `native/ssimulacra2-gpu/imgtune-ssimu2-gpu.cpp` against libvship
   from [Vship](https://codeberg.org/Line-fr/Vship), which is not bundled. Put the binary on `PATH`, or set
@@ -352,7 +388,8 @@ Opt-in, for `scan`, `scan --recheck` and `image`. Only SSIMULACRA2 scoring moves
   `CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 imgtune-ssimu2-gpu --check --device 0`.
 - **The device.** `--gpu-device <n>` is a CUDA index. CUDA numbers the GPUs fastest first unless the environment sets
   `CUDA_DEVICE_ORDER=PCI_BUS_ID`, so to match `nvidia-smi` set that too. A user's `CUDA_VISIBLE_DEVICES` is kept, and the
-  index is within the devices it lists. Without `--gpu-device`, device 0 is used. The scorer prints the device it opened
+  index is within the devices it lists. Without `--gpu-device`, device 0 is used. A comma list (`--gpu-device 0,1`) makes
+  the first GPU the scorer and gives each listed GPU its own encode workers when `--gpu-encode` is set. The scorer prints the device it opened
   (name and index) before the first score: check the name. The scan JSON records `deviceOrder` and `visibleDevices`.
 - **Fallback.** A missing program, or one that fails its self-test, prints `--gpu: ...` and the run scores on the CPU. A
   failure during the run prints the same warning, and the scores from then on are the CPU's. Nothing hard-fails.

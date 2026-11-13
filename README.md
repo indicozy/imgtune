@@ -159,7 +159,7 @@ self-hosted `<video>` elements with a plain file source. Static GIFs get the nor
   an NVENC failure is encoded on the CPU for that candidate. NVENC is larger at equal quality, so its bytes are reported as
   NVENC bytes ÷ 1.4, labelled `est. (GPU-encoded, scaled to a CPU encode ÷1.4)`. In our measurements `--gpu-encode` was
   slower than the CPU (per-process CUDA start-up); see the report before using it. `--gpu` and `--gpu-device` only pick the
-  SSIMULACRA2 GPU scorer (the first device). The hint's recipe is the CPU one (`libsvtav1` / `libx264`), and an NVENC
+  SSIMULACRA2 GPU scorer (the first device) unless `--gpu-encode` is given. The hint's recipe is the CPU one (`libsvtav1` / `libx264`), and an NVENC
   quality is marked `approx.` (CRF = cq).
 - **Hints.** A large animated GIF gets `<video autoplay muted loop playsinline>` with AV1 first and an H.264 fallback, and
   the animated-image alternative with its size. A small `<img>` GIF or a CSS background gets an animated AVIF or WebP. A

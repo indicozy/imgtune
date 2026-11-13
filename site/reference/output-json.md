@@ -271,6 +271,27 @@ Each node in `nodes`:
 | `kind` | `css-background` for a CSS background layer; absent for an `<img>`, `srcset` or `<picture>` element |
 | `notes` | how the numbers were made: where the `sizes` came from, which source was resolved, and any limit (for example a layout chain cut at the depth cap) |
 
+## Media (0.2.0)
+
+A page file gains `videos` (one record per `<video>` element) and `mediaNote` (set when ffmpeg is not found on `PATH`:
+the bytes and widths are still measured, and the encodes are not). An animated image keeps its image record: its
+`fix.animated` holds the animation (`info`, `context` `img` or `css-background`), `perViewBytes` (the average over the
+viewports), and either `estimate` (one candidate per codec and width) or `notEncoded` (the reason). Scan JSON from 0.1 has
+neither field and is read as having no media.
+
+| field | meaning |
+| --- | --- |
+| `videos[].bytes.perView` | bytes per view: an autoplay video counts its full file; `preload="auto"` counts the bytes seen (`observed`, browser-dependent); `metadata` or `none` counts 0 (`perViewBasis`: `full-file`, `observed`, `none`) |
+| `videos[].bytes.perPlay` | the full file, for every video (estimated when `fullBytesKnown` is `false`) |
+| `videos[].perViewport` | each viewport's box width and DPR, and whether it is in the first view |
+| `videos[].widths` (scan) / `widthOptions` (audit) | the kept widths (at most `--max-video-widths`) and the width each viewport gets; audit gives the plans at one, two and three widths |
+| `videos[].levers` | the audio track, the loading cost, a missing AV1 codec, a missing poster, and `info` (frame rate, duration, source width: informational, never in the claim) |
+| `videos[].estimate` | the chosen candidate: `codec`, `width`, `quality`, `bytes` (an estimate from 2 s samples; `measuredBytes` is what the encoder wrote, which differs for an NVENC encode) |
+| `videos[].steps` | the lever steps, which sum to the claimed saving |
+| `videos[].notEncoded` | why no encode was made (for example `over --media-budget` or `third-party blocked`) |
+
+Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
+
 ## Summary JSON
 
 `--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
