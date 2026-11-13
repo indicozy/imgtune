@@ -795,9 +795,17 @@ export function animatedLines(animated: AnimatedFix, src?: string, alt?: string)
   if (webp !== undefined) coverage.push(COVERAGE.webp);
   const cap = sourceCapLine(animated.need, animated.sourceWidth, main.width);
   if (targets.video && av1 !== undefined) {
-    const altPart = alt !== undefined ? ` role="img" aria-label=${JSON.stringify(safeText(alt))}` : "";
+    // An empty alt is a decorative image: the <video> is hidden from assistive technology, with no label. Otherwise the alt is
+    // kept as the accessible name (role="img", aria-label).
+    const decorative = alt !== undefined && alt.trim() === "";
+    const altPart = decorative
+      ? ' aria-hidden="true"'
+      : alt !== undefined
+        ? ` role="img" aria-label=${JSON.stringify(safeText(alt))}`
+        : "";
     const lines = [`   ${head}: replace with <video autoplay muted loop playsinline poster="<first frame>"${altPart}>`];
-    if (alt !== undefined) lines.push("     the image's alt text is kept as the <video>'s aria-label (role=\"img\"): the accessible name does not change");
+    if (decorative) lines.push('     the image is decorative (alt=""): the <video> is aria-hidden, with no label');
+    else if (alt !== undefined) lines.push("     the image's alt text is kept as the <video>'s aria-label (role=\"img\"): the accessible name does not change");
     lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> AV1 MP4 (${encoderRecipe("av1-mp4", av1)}), CRF ${av1.quality}, ${av1.width}px, ${kb(av1.bytes)} est.`);
     lines.push(
       h264 !== undefined
@@ -941,8 +949,20 @@ function targetLines(video: VideoRecord, plan: WidthPlan): string[] {
     const media = source.media !== undefined ? `media="${source.media}" ` : "";
     for (const kind of ["av1", "h264"] as const) {
       const codec = kind === "av1" ? "av1-mp4" : "h264-mp4";
-      const measured = est !== undefined && est.codec === codec && est.width === source.width;
-      const at = measured ? ` ${kind === "av1" ? "AV1" : "H.264"} MP4 (${encoderRecipe(codec, est)}), CRF ${est.quality}, ${est.width}px, ${kb(est.bytes)} est.` : "";
+      const label = kind === "av1" ? "AV1" : "H.264";
+      // Every source names the exact encoder settings an agent runs: the estimate's codec, preset and CRF. At the estimate's
+      // own width that is measured; at another width the same settings apply, which is not measured there.
+      const same = est !== undefined && est.codec === codec ? est : undefined;
+      let at: string;
+      if (same !== undefined && same.width === source.width) {
+        at = ` ${label} MP4 (${encoderRecipe(codec, same)}), CRF ${same.quality}, ${same.width}px, ${kb(same.bytes)} est.`;
+      } else if (same !== undefined) {
+        at = ` ${label} MP4 (${encoderRecipe(codec, same)}), CRF ${same.quality}, ${source.width}px: same settings, not measured at this width`;
+      } else if (kind === "h264") {
+        at = ` H.264 MP4 (${H264_RECIPE}), ${source.width}px: not measured (no H.264 encode for this video)`;
+      } else {
+        at = ` AV1 MP4 (libsvtav1 -preset 10 -pix_fmt yuv420p -movflags +faststart), CRF not measured: no AV1 encode passed for this video`;
+      }
       lines.push(`     <source ${media}src="…-${source.width}.${kind}.mp4" type="${kind === "av1" ? AV1_TYPE : H264_TYPE}">${at}`);
     }
   }

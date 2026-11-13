@@ -908,7 +908,7 @@ describe("video hints (levers, target, bytes, evidence)", () => {
       "   resolution: serve 960px: saves 500 KB/play est.",
       "   re-encode (av1 CRF 32): saves 1000 KB/play est.",
       '     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> AV1 MP4 (libsvtav1 -preset 10 -crf 32 -pix_fmt yuv420p -movflags +faststart), CRF 32, 960px, 400 KB est.',
-      '     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028">',
+      '     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028"> H.264 MP4 (libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart -an), 960px: not measured (no H.264 encode for this video)',
       "   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)",
       "   saves 1600 KB/view est., 1600 KB/play est. (estimate from 2 s samples)",
     ]);
@@ -1249,6 +1249,20 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
     expect(text).toContain("the image's alt text is kept as the <video>'s aria-label");
   });
 
+  it("hides a decorative video (alt empty) from assistive technology, with no label", () => {
+    const video = {
+      info: gifInfo,
+      context: "img" as const,
+      target: { main: "video" as const, alternatives: [] },
+      estimate: [cand("av1-mp4", 960, 32, { encoder: "libsvtav1" })],
+      perViewBytes: 2000 * 1024,
+    };
+    const text = animatedLines(video, "https://shop.example/a.gif", "").join("\n");
+    expect(text).toContain('<video autoplay muted loop playsinline poster="<first frame>" aria-hidden="true">');
+    expect(text).not.toContain("aria-label");
+    expect(text).not.toContain('role="img"');
+  });
+
   it("gives an AV1 and an AVIF target the exact encoder, and a WebP target its own; the AV1 quality is a CRF", () => {
     expect(encoderRecipe("av1-mp4", cand("av1-mp4", 960, 40, { encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40 -pix_fmt yuv420p -movflags +faststart");
     expect(encoderRecipe("animated-avif", cand("animated-avif", 960, 40, { encoder: "libsvtav1" }))).toBe("libsvtav1 -preset 10 -crf 40, -f avif");
@@ -1274,6 +1288,21 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
     expect(reasonText("too-large")).toBe("too large to score");
     expect(reasonText("ffmpeg not found")).toBe("ffmpeg not found");
     expect(animatedLines({ info: gifInfo, context: "img", perViewBytes: 1024, notEncoded: "too-large" }).join("\n")).toContain("not encoded: too large to score");
+  });
+
+  it("prints the estimate's exact settings on a secondary source width, marked as not measured there", () => {
+    // The phone needs 1280 px, the wide desktop 3840 px: the target is the widest, where the estimate was made.
+    const needs = [
+      { viewport: "phone", viewportWidth: 390, boxWidth: 390, dpr: 3 },
+      { viewport: "desktop", viewportWidth: 1900, boxWidth: 1900, dpr: 2 },
+    ];
+    const video = encodedVideo({
+      widths: clusterVideoWidths(needs, 2, 3840),
+      estimate: candidateOf({ codec: "av1-mp4", width: 3840, quality: 24, bytes: 200 * 1024, vmafBar: 93 }),
+    });
+    const text = videoLines(video, 1).join("\n");
+    expect(text).toMatch(/AV1 MP4 \(libsvtav1 -preset 10 -crf 24 .*CRF 24, 3840px, 200 KB est\./);
+    expect(text).toMatch(/AV1 MP4 \(libsvtav1 -preset 10 -crf 24 .*CRF 24, 1280px: same settings, not measured at this width/);
   });
 
   it("names a video's width cap when its file is narrower than the widths needed", () => {

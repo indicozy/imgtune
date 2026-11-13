@@ -3865,9 +3865,10 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
   if (assets.length === 0) return { byKey: new Map() };
   const allowPrivate = urls.length > 0 && urls.every((url) => isLocalTarget(url));
   let proxy: EgressProxy | undefined;
+  // Declared outside the try: a media error after the probe keeps the lengths, so a click-to-play video's per-play bytes stay.
+  let lengths = new Map<string, number>();
   try {
     const videoUrls = assets.filter((asset) => asset.kind === "video").map((asset) => asset.url);
-    let lengths = new Map<string, number>();
     if (videoUrls.length > 0) {
       proxy = await startEgressProxy({ resolver: run.resolver, allowPrivate, connectAddress: run.connectAddress });
       lengths = await probeLengths(
@@ -3901,7 +3902,7 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
     ).then((results) => ({ ...results, lengths }));
   } catch (err) {
     const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
-    return skippedMedia(assets, `media error: ${message}`);
+    return { ...skippedMedia(assets, `media error: ${message}`), lengths };
   } finally {
     await proxy?.close();
   }
