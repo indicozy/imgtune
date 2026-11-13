@@ -3903,7 +3903,7 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         score: run.deps.score,
         scorerId: run.deps.scorerId,
         // The GPU encodes with NVENC unless --cpu-encode asks for the CPU encoders.
-        gpu: opts.cpuEncode === true ? undefined : opts.gpu?.device,
+        gpus: opts.cpuEncode === true ? undefined : opts.gpu?.devices,
         signal: opts.signal,
         thirdParty: run.thirdParty,
       },

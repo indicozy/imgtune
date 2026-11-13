@@ -9,7 +9,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { mapLimit } from "./concurrency.js";
 import { animationOf } from "./animated.js";
-import { FFMPEG_JOBS, probeFfmpeg, probeMedia, withGpu, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
+import { FFMPEG_JOBS, onGpuDevice, probeFfmpeg, probeMedia, withGpu, type FfmpegCaps, type MediaProbe } from "./ffmpeg.js";
 import { prepareMedia } from "./media-prepare.js";
 import {
   cutSamples,
@@ -91,10 +91,11 @@ export interface MediaOptions {
   /** Names the scorer in the cache identity: "cpu", or the GPU that scores the run. Defaults to "cpu". */
   scorerId?: string;
   /**
-   * The GPU index the sample encodes run on, with NVENC (see media-encode's usesNvenc). Undefined: the CPU encoders. The
-   * device is tested once (withGpu); without a working NVENC encoder the phase encodes on the CPU, and the cache keeps the
-   * two apart.
+   * The GPUs whose workers take assets from the same queue as the CPU workers (see runMediaPhase). Each device is proven once
+   * (withGpu). Undefined or empty: the CPU only.
    */
+  gpus?: number[];
+  /** Set by the phase for each worker: the GPU its searches encode and score on. Not a caller option. */
   gpu?: number;
   /** The SSIMULACRA2 scorer. The CPU one when absent. */
   score?: Scorer;
@@ -166,6 +167,8 @@ export function partitionByPolicy(assets: MediaAsset[], policy: ThirdPartyPolicy
  */
 export interface MediaDeps {
   caps?: FfmpegCaps;
+  /** The GPU proof of one device (withGpu). Tests replace it. */
+  gpu?: (caps: FfmpegCaps, device: number) => Promise<FfmpegCaps>;
   search?: typeof searchQuality;
   cut?: typeof cutSamples;
   probe?: typeof probeMedia;
@@ -339,6 +342,9 @@ function animatedJobs(widths: readonly number[], context: MediaAsset["context"])
   return jobs;
 }
 
+/** Assets one GPU works on at once: each worker holds one asset, and a GPU's own pool keeps its processes to GPU_MAX_PROCS. */
+export const GPU_WORKERS_PER_DEVICE = 2;
+
 /** The dependencies and settings every asset's encode shares. */
 interface Env {
   opts: MediaOptions;
@@ -384,7 +390,7 @@ function isCachedOutcome(value: unknown): value is CachedOutcome {
  * GPU, or the CPU) and the versions.
  */
 function cacheKeyOf(identity: string, job: Job, opts: MediaOptions): string {
-  const encoder = opts.gpu !== undefined ? `nvenc gpu${opts.gpu}` : "cpu";
+  const encoder = opts.gpu !== undefined ? `gpu${opts.gpu}` : "cpu";
   return `media|${identity}|${job.codec}|w${job.width}|v${opts.vmafBar}|s${opts.stillBar}|scorer ${opts.scorerId ?? "cpu"}|encoder ${encoder}|imgtune ${IMGTUNE_VERSION}|cache ${CACHE_VERSION}`;
 }
 
@@ -597,41 +603,60 @@ export async function runMediaPhase(assets: MediaAsset[], opts: MediaOptions, de
   const started = Date.now();
   const phaseEnd = started + Math.max(0, opts.timeS) * 1000;
   try {
-    // The NVENC encoders are proven on the device before any encode. Without a working one the phase encodes on the CPU.
     const probed = deps.caps ?? (await probeFfmpeg());
-    const caps = await withGpu(probed, opts.gpu);
-    if (opts.gpu !== undefined && !caps.av1Nvenc && !caps.h264Nvenc) opts = { ...opts, gpu: undefined };
-    if (opts.gpu !== undefined) opts.log(`media: encoding on the GPU ${opts.gpu} with NVENC (${caps.av1Nvenc ? "AV1" : ""}${caps.av1Nvenc && caps.h264Nvenc ? ", " : ""}${caps.h264Nvenc ? "H.264" : ""})`);
     const unique = [...new Map(assets.map((a) => [a.key, a])).values()];
     const ranked = rankForBudget(unique, opts.budget);
-    const running = !opts.survey && caps.ffmpeg;
+    const running = !opts.survey && probed.ffmpeg;
     opts.log(`media: ${assets.length} assets, ${running ? ranked.encode.length : 0} to encode (budget ${opts.budget})`);
     if (opts.survey) {
       for (const asset of unique) byKey.set(asset.key, { candidates: [], notEncoded: "survey" });
       return finish(byKey, started, opts, undefined, unique);
     }
-    if (!caps.ffmpeg) {
+    if (!probed.ffmpeg) {
       for (const asset of unique) byKey.set(asset.key, { candidates: [], notEncoded: "ffmpeg not found" });
       opts.log(`media: ffmpeg not found; ${MEDIA_NOTE}`);
       return finish(byKey, started, opts, MEDIA_NOTE, unique);
     }
     for (const asset of ranked.skipped) byKey.set(asset.key, { candidates: [], notEncoded: "over --media-budget" });
-    const env: Env = {
-      opts,
+    const score = opts.score ?? makeScorer("ssimulacra2");
+    const envOf = (device: number | undefined, caps: FfmpegCaps): Env => ({
+      opts: { ...opts, gpu: device },
       caps,
-      score: opts.score ?? makeScorer("ssimulacra2"),
+      score,
       search: deps.search ?? searchQuality,
       cut: deps.cut ?? cutSamples,
       probe: deps.probe ?? probeMedia,
       hasRange: deps.hasRange ?? hasRange,
       fetch: deps.fetch,
-    };
+    });
+    // The workers: FFMPEG_JOBS on the CPU, and GPU_WORKERS_PER_DEVICE for each GPU that proves a use. A GPU worker runs
+    // its assets' processes in that GPU's pool, with NVENC and libvmaf_cuda where the device has them.
+    const cpuCaps: FfmpegCaps = { ...probed, av1Nvenc: false, h264Nvenc: false, vmafCuda: false };
+    const workers: { device?: number; env: Env }[] = Array.from({ length: FFMPEG_JOBS }, () => ({ env: envOf(undefined, cpuCaps) }));
+    const gpuNotes: string[] = [];
+    for (const device of opts.gpus ?? []) {
+      const caps = await (deps.gpu ?? withGpu)(probed, device);
+      if (!caps.av1Nvenc && !caps.h264Nvenc && !caps.vmafCuda) {
+        gpuNotes.push(`GPU ${device} has no working encoder or VMAF, not used`);
+        continue;
+      }
+      for (let i = 0; i < GPU_WORKERS_PER_DEVICE; i++) workers.push({ device, env: envOf(device, caps) });
+      const parts = [caps.av1Nvenc && "AV1 NVENC", caps.h264Nvenc && "H.264 NVENC", caps.vmafCuda && "VMAF on the GPU"].filter(Boolean);
+      gpuNotes.push(`GPU ${device}: ${parts.join(", ") || "no GPU encoder"}`);
+    }
+    opts.log(`media: ${workers.filter((w) => w.device === undefined).length} CPU workers${gpuNotes.length > 0 ? `; ${gpuNotes.join("; ")}` : ""}`);
     await mkdir(opts.workDir, { recursive: true });
-    try {
-      await mapLimit(ranked.encode, FFMPEG_JOBS, async (asset) => {
+    // One FIFO queue in rank order: whichever worker is free takes the next asset.
+    const queue = [...ranked.encode];
+    const drain = async (worker: { device?: number; env: Env }): Promise<void> => {
+      for (let asset = queue.shift(); asset !== undefined; asset = queue.shift()) {
         const deadline = Math.min(Date.now() + ASSET_CAP_MS, phaseEnd);
-        byKey.set(asset.key, await encodeOne(asset, env, deadline));
-      });
+        const work = (): Promise<MediaEntry> => encodeOne(asset, worker.env, deadline);
+        byKey.set(asset.key, worker.device === undefined ? await work() : await onGpuDevice(worker.device, work));
+      }
+    };
+    try {
+      await Promise.all(workers.map(drain));
     } finally {
       await rm(opts.workDir, { recursive: true, force: true });
     }

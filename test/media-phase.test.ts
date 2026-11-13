@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { probeFfmpeg, resetFfmpegProbe, type FfmpegCaps, type MediaProbe } from "../src/ffmpeg.js";
+import { FFMPEG_JOBS, probeFfmpeg, resetFfmpegProbe, type FfmpegCaps, type MediaProbe } from "../src/ffmpeg.js";
 import type { CandidateResult, SearchOutcome } from "../src/media-encode.js";
 import {
   attachMediaResults,
@@ -19,6 +19,7 @@ import {
   partitionByPolicy,
   probeLengths,
   refineAssetLength,
+  GPU_WORKERS_PER_DEVICE,
   runMediaPhase,
   skippedMedia,
   videoIdentityOf,
@@ -815,4 +816,56 @@ describe("a third-party video the policy blocks is never fetched by the media ph
     expect(video?.notEncoded).toBe("third-party blocked");
     expect(videoHits).toEqual([]);
   }, 120_000);
+});
+
+describe("hybrid workers: one queue for the CPU and each GPU", () => {
+  /** Stubs that hold each encode for a moment and record, per worker, how many run at once and which worker took each one. */
+  function trackedSteps(gpuCaps: FfmpegCaps) {
+    const inflight = new Map<string, number>();
+    const peak = new Map<string, number>();
+    const used = new Map<string, number>();
+    const deps: NonNullable<Parameters<typeof runMediaPhase>[2]> = {
+      caps,
+      gpu: async () => gpuCaps,
+      hasRange: async () => ({ range: true, length: 500_000, etag: '"v1"' }),
+      probe: async () => probe,
+      cut: async () => ["/unused/sample-0.mkv"],
+      search: async (_samples, _probe, codec, width, searchOpts): Promise<SearchOutcome> => {
+        const key = searchOpts.gpu === undefined ? "cpu" : `gpu${searchOpts.gpu}`;
+        const now = (inflight.get(key) ?? 0) + 1;
+        inflight.set(key, now);
+        peak.set(key, Math.max(peak.get(key) ?? 0, now));
+        used.set(key, (used.get(key) ?? 0) + 1);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        inflight.set(key, (inflight.get(key) ?? 1) - 1);
+        return { ok: true, best: candidate(codec, width, 1000), tried: 1 };
+      },
+    };
+    return { deps, peak, used };
+  }
+
+  it("lets the CPU and both GPUs take assets from one queue, with each pool's own limit", async () => {
+    const { deps, peak, used } = trackedSteps({ ...caps, av1Nvenc: true, h264Nvenc: true, vmafCuda: true });
+    const assets = Array.from({ length: 24 }, (_, i) => video(`http://127.0.0.1:1/hybrid-${i}.mp4`, 1000 - i));
+    const results = await runMediaPhase(assets, options({ gpus: [0, 1] }), deps);
+    expect(results.byKey.size).toBe(24);
+    expect(used.get("cpu") ?? 0).toBeGreaterThan(0);
+    expect(used.get("gpu0") ?? 0).toBeGreaterThan(0);
+    expect(used.get("gpu1") ?? 0).toBeGreaterThan(0);
+    expect(peak.get("cpu") ?? 0).toBeLessThanOrEqual(FFMPEG_JOBS);
+    expect(peak.get("gpu0") ?? 0).toBeLessThanOrEqual(GPU_WORKERS_PER_DEVICE);
+    expect(peak.get("gpu1") ?? 0).toBeLessThanOrEqual(GPU_WORKERS_PER_DEVICE);
+  });
+
+  it("uses the CPU only when no GPU list is given", async () => {
+    const { deps, used } = trackedSteps({ ...caps, av1Nvenc: true, h264Nvenc: true, vmafCuda: true });
+    await runMediaPhase([video("http://127.0.0.1:1/cpu-only.mp4", 100)], options(), deps);
+    expect([...used.keys()]).toEqual(["cpu"]);
+  });
+
+  it("leaves out a GPU that has no working encoder and no VMAF", async () => {
+    const { deps, used } = trackedSteps({ ...caps, av1Nvenc: false, h264Nvenc: false, vmafCuda: false });
+    await runMediaPhase([video("http://127.0.0.1:1/no-gpu.mp4", 100)], options({ gpus: [0] }), deps);
+    expect([...used.keys()]).toEqual(["cpu"]);
+  });
 });
