@@ -170,7 +170,8 @@ describe("searchQuality", () => {
     expect(outcome.best.bytes).toBeGreaterThan(0);
     expect(outcome.best.vmaf).toBeGreaterThanOrEqual(93);
     expect(outcome.best.still).toBeGreaterThanOrEqual(outcome.best.stillBar);
-    expect(outcome.best.stillBar).toBeLessThanOrEqual(65);
+    // text.gif's own WebP ceiling is high, so the requested bar applies unchanged (not lowered).
+    expect(outcome.best.stillBar).toBe(65);
   }, 120_000);
 
   it("reports score-failed, not a failing quality, when the scorer throws", async () => {
