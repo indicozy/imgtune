@@ -21,6 +21,7 @@ import {
   refineAssetLength,
   runMediaPhase,
   skippedMedia,
+  videoIdentityOf,
   type MediaAsset,
   type MediaOptions,
 } from "../src/media-phase.js";
@@ -266,6 +267,35 @@ describe("third-party policy and cache identity", () => {
     const allowedOut = attachMediaResults(pageOn(other, mk(cdn, other)), results, { quality: true, survey: false });
     expect((allowedOut.videos?.[0] as VideoRecord).estimate).toEqual(av1);
     expect(allowedAsset.key).toBe(asset.key);
+  });
+
+  it("same URL, different ETag: no cache hit, so a changed file is encoded again", async () => {
+    const dir = await mkdtemp(join(scratch, "etag-"));
+    const cache = new ResultCache(dir);
+    const url = "http://127.0.0.1:1/etag.mp4";
+    const v1 = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache }), v1.deps);
+    const v2 = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache }), { ...v2.deps, hasRange: async () => ({ range: true, length: 500_000, etag: '"v2"' }) });
+    expect(v1.searches.length).toBeGreaterThan(0);
+    expect(v2.searches).toEqual(v1.searches);
+  });
+
+  it("same URL and ETag, different length: no cache hit", async () => {
+    const dir = await mkdtemp(join(scratch, "length-"));
+    const cache = new ResultCache(dir);
+    const url = "http://127.0.0.1:1/length.mp4";
+    const first = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache }), first.deps);
+    const second = fakeSteps();
+    await runMediaPhase([video(url, 100)], options({ cache }), { ...second.deps, hasRange: async () => ({ range: true, length: 600_000, etag: '"v1"' }) });
+    expect(second.searches).toEqual(first.searches);
+  });
+
+  it("the video identity is ETag, else Last-Modified, plus the length", () => {
+    expect(videoIdentityOf("http://a/x.mp4", { etag: '"e"', lastModified: "Mon", length: 9 })).toBe('http://a/x.mp4|"e"|9');
+    expect(videoIdentityOf("http://a/x.mp4", { lastModified: "Mon", length: 9 })).toBe("http://a/x.mp4|Mon|9");
+    expect(videoIdentityOf("http://a/x.mp4", { length: 9 })).toBe("http://a/x.mp4||9");
   });
 
   it("a candidate found under another scorer is not reused: the scorer is part of the cache identity", async () => {

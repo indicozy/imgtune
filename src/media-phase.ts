@@ -488,8 +488,17 @@ async function encodeVideo(asset: MediaAsset, env: Env, deadline: number): Promi
     const file = await writeSource(dir, buffer);
     return encodeFile(file, `${asset.url}|${contentHash(buffer)}`, jobsOf, env, deadline, dir, undefined, "could not read the video");
   }
-  const identity = `${asset.url}|${range.etag ?? range.lastModified ?? ""}|${length ?? ""}`;
+  const identity = videoIdentityOf(asset.url, { etag: range.etag, lastModified: range.lastModified, length });
   return encodeFile(input, identity, jobsOf, env, deadline, dir, proxy, "could not read the video");
+}
+
+/**
+ * The identity of a video's cached results: its URL, its validator (the ETag, else the Last-Modified date) and its length from
+ * the Range probe. A changed file at the same URL changes the validator or the length, so it misses the cache. The asset key
+ * (mediaKeyOf) cannot carry them: they are known only after the probe, which runs after the key is made.
+ */
+export function videoIdentityOf(url: string, range: { etag?: string; lastModified?: string; length?: number }): string {
+  return `${url}|${range.etag ?? range.lastModified ?? ""}|${range.length ?? ""}`;
 }
 
 /** An animated image: its bytes, written to the work folder so ffmpeg reads a local file, then its sample encodes. */
