@@ -86,3 +86,49 @@ describe("cacheScope", () => {
     expect(cacheScope(a, 480, "cpu", "sharp 0.36.0 vips 8.18.7")).not.toBe(base);
   });
 });
+
+describe("ResultCache JSON entries", () => {
+  it("returns the JSON stored under the same key only", async () => {
+    const cache = new ResultCache(await freshDir());
+    expect(await cache.getJson("j1")).toBeUndefined();
+    await cache.putJson("j1", { ok: true, best: { bytes: 1234, vmaf: 93.5 } });
+    expect(await cache.getJson("j1")).toEqual({ ok: true, best: { bytes: 1234, vmaf: 93.5 } });
+    expect(await cache.getJson("j2")).toBeUndefined();
+  });
+
+  it("does not read a number entry as JSON, nor JSON as a number", async () => {
+    const cache = new ResultCache(await freshDir());
+    await cache.put("n", 5);
+    expect(await cache.getJson("n")).toBeUndefined();
+    await cache.putJson("o", { a: 1 });
+    expect(await cache.get("o")).toBeUndefined();
+  });
+
+  it("ignores corrupt, foreign or oversized JSON entries", async () => {
+    const dir = await freshDir();
+    const cache = new ResultCache(dir);
+    await cache.putJson("k", { a: 1 });
+    const name = (await readdir(dir))[0];
+    await writeFile(join(dir, name), "{not json");
+    expect(await cache.getJson("k")).toBeUndefined();
+    await writeFile(join(dir, name), JSON.stringify({ k: "other", j: { a: 1 } }));
+    expect(await cache.getJson("k")).toBeUndefined();
+    await writeFile(join(dir, name), JSON.stringify({ k: "k", j: { pad: "x".repeat(5000) } }));
+    expect(await cache.getJson("k")).toBeUndefined();
+    await writeFile(join(dir, name), JSON.stringify({ k: "k", j: null }));
+    expect(await cache.getJson("k")).toBeUndefined();
+  });
+
+  it("does not store a value too large for an entry, or a key too long", async () => {
+    const dir = await freshDir();
+    const cache = new ResultCache(dir);
+    await cache.putJson("big", { pad: "x".repeat(5000) });
+    await cache.putJson("k".repeat(5000), { a: 1 });
+    expect(await readdir(dir)).toHaveLength(0);
+  });
+
+  it("refuses keys longer than the limit on read", async () => {
+    const cache = new ResultCache(await freshDir());
+    expect(await cache.getJson("k".repeat(5000))).toBeUndefined();
+  });
+});

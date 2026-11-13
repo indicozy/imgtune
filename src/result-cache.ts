@@ -87,6 +87,44 @@ export class ResultCache {
     }
   }
 
+  /**
+   * The JSON value stored under `key` (see putJson), or undefined: absent, corrupt, of another key, a number entry, or
+   * a value that is null. The value is untrusted data: callers check its shape before use.
+   */
+  async getJson<T>(key: string): Promise<T | undefined> {
+    if (key.length > MAX_KEY_LENGTH) return undefined;
+    const file = this.fileOf(key);
+    try {
+      const info = await stat(file);
+      if (!info.isFile() || info.size > MAX_ENTRY_BYTES) return undefined;
+      const parsed = JSON.parse(await readFile(file, "utf8")) as { k?: unknown; j?: unknown } | null;
+      if (parsed === null || typeof parsed !== "object") return undefined;
+      if (parsed.k !== key || parsed.j === undefined || parsed.j === null) return undefined;
+      return parsed.j as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Stores a JSON value under `key`, for small results such as a sample encode's outcome. A value that does not fit an
+   * entry (MAX_ENTRY_BYTES) or a key that is too long is not stored, and a failed write is ignored, as for put.
+   */
+  async putJson(key: string, value: unknown): Promise<void> {
+    if (key.length > MAX_KEY_LENGTH || value === undefined) return;
+    const text = JSON.stringify({ k: key, j: value });
+    if (text === undefined || Buffer.byteLength(text, "utf8") > MAX_ENTRY_BYTES) return;
+    try {
+      if (!this.dirReady) {
+        await mkdir(this.dir, { recursive: true });
+        this.dirReady = true;
+      }
+      await writeFileAtomic(this.fileOf(key), text, { root: this.dir });
+    } catch {
+      // Ignored: the value is computed again the next time.
+    }
+  }
+
   /** Removes the oldest entries until the folder holds at most 90% of the limit. Only files named like entries are touched. */
   async trim(): Promise<{ removed: number; kept: number }> {
     return trimCache(this.dir, this.maxBytes);
