@@ -1,0 +1,255 @@
+/**
+ * Pure rules for animated media and `<video>`: which widths to encode at, how many bytes a view or a play costs,
+ * which target to recommend for a GIF, how to split a saving across levers, how to sample a clip, and which assets
+ * fit the encode budget. No I/O and no ffmpeg here, so every rule can be tested without a browser or an encoder.
+ */
+
+/** Widths a video rendition can be snapped to. Few buckets keep the encode count and the cache keys small. */
+export const WIDTH_BUCKETS = [320, 480, 640, 720, 854, 960, 1080, 1280, 1440, 1920, 2560, 3840] as const;
+
+/**
+ * Snaps a needed pixel width to the smallest bucket at or above it, never above the source width. A need the source
+ * cannot reach returns the source width, since encoding wider than the source adds bytes and no detail.
+ */
+export function snapWidth(need: number, sourceWidth: number): number {
+  if (need >= sourceWidth) return sourceWidth;
+  const bucket = WIDTH_BUCKETS.find((b) => b >= need);
+  return bucket === undefined ? sourceWidth : Math.min(bucket, sourceWidth);
+}
+
+/** The `preload` attribute as written in the page, or "default" when it is absent. */
+export type PreloadKind = "autoplay" | "auto" | "metadata" | "none" | "default";
+
+/**
+ * Bytes a `<video>` costs. `perView` is what the page pulls on load (the claim and the priority order); `perPlay` is
+ * the full file, shown for every video so large click-to-play files are not missed.
+ */
+export interface VideoBytes {
+  perView: number;
+  perPlay: number;
+  /** "full-file": counted from the file size. "observed": the bytes seen in the scan. "none": nothing loads. */
+  perViewBasis: "full-file" | "observed" | "none";
+  /** True when the browser decides how much to fetch (preload="auto"), so the observed figure varies by browser. */
+  browserDependent: boolean;
+}
+
+/**
+ * Applies the per-view rules. A video that is not visible (0×0 or `display:none`) costs nothing per view, because the
+ * browser does not fetch it for the page. Autoplay fetches the whole file once it plays, so it counts the full file;
+ * before that it counts what the scan saw. preload="auto" and the default fetch whatever the browser chooses, so they
+ * count the observed bytes. metadata and none fetch no media on load.
+ */
+export function videoBytes(input: {
+  kind: PreloadKind;
+  playing: boolean;
+  observedBytes: number;
+  fullBytes: number;
+  visible: boolean;
+}): VideoBytes {
+  const perPlay = input.fullBytes;
+  if (!input.visible) return { perView: 0, perPlay, perViewBasis: "none", browserDependent: false };
+  switch (input.kind) {
+    case "autoplay":
+      return input.playing
+        ? { perView: input.fullBytes, perPlay, perViewBasis: "full-file", browserDependent: false }
+        : { perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: false };
+    case "auto":
+      return { perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: true };
+    case "default":
+      return { perView: input.observedBytes, perPlay, perViewBasis: "observed", browserDependent: false };
+    case "metadata":
+    case "none":
+      return { perView: 0, perPlay, perViewBasis: "none", browserDependent: false };
+  }
+}
+
+/** The chosen renditions for one video, with the width each viewport gets and the `<source>` conditions. */
+export interface WidthPlan {
+  /** The kept widths, ascending. */
+  widths: number[];
+  /** Per viewport: `need` is the snapped pixel width the box needs (ceil(box × DPR), snapped), `width` the kept one. */
+  perViewport: { viewport: string; need: number; width: number }[];
+  /**
+   * `(min-width: Npx)` media conditions for the `<source>` list, largest width first. The smallest width is the
+   * final source with no media, so it is not in this list.
+   */
+  conditions: string[];
+  /**
+   * True when the box width is not monotonic in the viewport width (a box that is wider on the smaller viewport).
+   * The media conditions then cannot express the plan, and the hint renderer prints box widths instead.
+   */
+  containerDriven: boolean;
+}
+
+/** One viewport's input to the width clustering. */
+export interface WidthNeed {
+  viewport: string;
+  viewportWidth: number;
+  boxWidth: number;
+  dpr: number;
+}
+
+/** Ignores floating-point noise such as 1080.0000000002 before taking the ceiling. */
+function pixelNeed(boxWidth: number, dpr: number): number {
+  return Math.ceil(boxWidth * dpr - 1e-9);
+}
+
+/** True when a larger viewport never gets a smaller box, so the widths can be picked by viewport. */
+function isMonotonic(needs: readonly WidthNeed[]): boolean {
+  for (const a of needs) {
+    for (const b of needs) {
+      if (a.viewportWidth < b.viewportWidth && a.boxWidth > b.boxWidth) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Picks at most `max` widths for a video and assigns each viewport the smallest kept width that covers its need.
+ *
+ * The candidate widths are the distinct snapped needs. The largest one is always kept, so no viewport is under-served.
+ * Every subset that keeps it and has at most `max` widths is tried (at most six needs, so brute force is cheap). The
+ * subset with the smallest sum of per-viewport widths wins; ties go to fewer widths, then to the smaller sum of widths.
+ *
+ * A `(min-width: Npx)` condition for each kept width above the smallest uses N = the smallest viewport width that is
+ * assigned that width or a larger one, so the largest match in the `<source>` list gives the same assignment on a
+ * monotonic page.
+ */
+export function clusterVideoWidths(needs: WidthNeed[], max: number, sourceWidth: number): WidthPlan {
+  const snapped = needs.map((n) => ({ ...n, need: snapWidth(pixelNeed(n.boxWidth, n.dpr), sourceWidth) }));
+  const distinct = [...new Set(snapped.map((s) => s.need))].sort((a, b) => a - b);
+  const largest = distinct[distinct.length - 1];
+  const others = distinct.slice(0, -1);
+  const limit = Math.max(1, Math.floor(max));
+
+  let best: { chosen: number[]; cost: number; sum: number } | undefined;
+  for (let mask = 0; mask < 1 << others.length; mask++) {
+    const picked = others.filter((_, i) => (mask >> i) & 1);
+    if (picked.length + 1 > limit) continue;
+    const chosen = [...picked, largest];
+    let cost = 0;
+    for (const s of snapped) cost += chosen.find((w) => w >= s.need) as number;
+    const sum = chosen.reduce((acc, w) => acc + w, 0);
+    if (
+      !best ||
+      cost < best.cost ||
+      (cost === best.cost && (chosen.length < best.chosen.length || (chosen.length === best.chosen.length && sum < best.sum)))
+    ) {
+      best = { chosen, cost, sum };
+    }
+  }
+  const widths = best!.chosen;
+
+  const perViewport = snapped.map((s) => ({
+    viewport: s.viewport,
+    need: s.need,
+    width: widths.find((w) => w >= s.need) as number,
+  }));
+
+  const conditions: string[] = [];
+  for (let i = widths.length - 1; i >= 1; i--) {
+    const reaching = perViewport.filter((p) => p.width >= widths[i]);
+    const n = Math.min(...reaching.map((p) => viewportWidthOf(needs, p.viewport)));
+    conditions.push(`(min-width: ${n}px)`);
+  }
+
+  return { widths, perViewport, conditions, containerDriven: !isMonotonic(needs) };
+}
+
+function viewportWidthOf(needs: readonly WidthNeed[], viewport: string): number {
+  return needs.find((n) => n.viewport === viewport)!.viewportWidth;
+}
+
+/**
+ * The plans for `max` = 1, 2 and 3, for `audit`, which reports the bytes per view at each count and leaves the pick
+ * to the agent.
+ */
+export function widthOptions(needs: WidthNeed[], sourceWidth: number): WidthPlan[] {
+  return [1, 2, 3].map((max) => clusterVideoWidths(needs, max, sourceWidth));
+}
+
+/** A GIF bigger than this is recommended as `<video>`; a smaller one as an animated AVIF/WebP image. */
+export const GIF_VIDEO_THRESHOLD = 1_000_000;
+
+/** The recommended replacement for an animated GIF, and the other options with their order. */
+export type AnimatedTarget = {
+  main: "animated-image" | "video";
+  alternatives: ("animated-avif" | "animated-webp" | "video")[];
+};
+
+/**
+ * Chooses the target for an animated GIF by where it is used. A CSS background cannot use `<video>` in a way that keeps
+ * the same markup, so it gets animated AVIF or WebP only. A small `<img>` GIF only changes `src`. A big `<img>` GIF
+ * is best as `<video autoplay muted loop playsinline>`, with the animated image kept as an alternative.
+ */
+export function animatedTarget(context: "img" | "css-background", avifBytes: number | undefined): AnimatedTarget {
+  if (context === "css-background") return { main: "animated-image", alternatives: ["animated-avif", "animated-webp"] };
+  if (avifBytes === undefined || avifBytes <= GIF_VIDEO_THRESHOLD) {
+    return { main: "animated-image", alternatives: ["animated-avif", "animated-webp", "video"] };
+  }
+  return { main: "video", alternatives: ["animated-avif", "animated-webp"] };
+}
+
+/** Bytes saved by each lever, in the order the chain applies them. */
+export interface LeverSteps {
+  audio: number;
+  resolution: number;
+  codec: number;
+  quality: number;
+}
+
+/**
+ * Splits the saving of a re-encode into levers. Each lever is the drop from the previous stage, clamped at zero, so a
+ * stage that adds bytes is not credited with a negative lever. When every stage shrinks the file, the levers sum to
+ * start − final.
+ */
+export function attributeLevers(chain: { start: number; noAudio: number; resized: number; recoded: number; final: number }): LeverSteps {
+  const step = (from: number, to: number): number => Math.max(0, from - to);
+  return {
+    audio: step(chain.start, chain.noAudio),
+    resolution: step(chain.noAudio, chain.resized),
+    codec: step(chain.resized, chain.recoded),
+    quality: step(chain.recoded, chain.final),
+  };
+}
+
+/** Scales the bytes of a sample clip to the full duration. A sample with no length returns its bytes unchanged. */
+export function extrapolate(sampleBytes: number, sampleSeconds: number, totalSeconds: number): number {
+  if (sampleSeconds <= 0) return sampleBytes;
+  return Math.round((sampleBytes * totalSeconds) / sampleSeconds);
+}
+
+/**
+ * Start offsets, in seconds, of the 2-second sample clips. A clip of up to 6 s is sampled once, centred. A longer one
+ * is sampled at 1/6, 1/2 and 5/6 of its length, each shifted back by 1 s so the clip sits around that point, and kept
+ * inside the file. Clips under 2 s are sampled from the start.
+ */
+export function sampleOffsets(durationS: number): number[] {
+  if (durationS < 2) return [0];
+  if (durationS <= 6) return [Math.max(0, (durationS - 2) / 2)];
+  return [1 / 6, 1 / 2, 5 / 6].map((f) => Math.min(Math.max(0, durationS * f - 1), durationS - 2));
+}
+
+/**
+ * Orders assets for the encode budget: heaviest per-view bytes first, then per-play bytes, then key. Duplicate keys
+ * are dropped, keeping the first (heaviest) copy. The first `budget` assets are encoded; the rest are skipped and
+ * still get their cheap hints. The input is not mutated.
+ */
+export function rankForBudget<T extends { perView: number; perPlay: number; key: string }>(
+  assets: T[],
+  budget: number,
+): { encode: T[]; skipped: T[] } {
+  const sorted = [...assets].sort(
+    (a, b) =>
+      b.perView - a.perView || b.perPlay - a.perPlay || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+  );
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const a of sorted) {
+    if (seen.has(a.key)) continue;
+    seen.add(a.key);
+    unique.push(a);
+  }
+  const cut = Math.max(0, Math.floor(budget));
+  return { encode: unique.slice(0, cut), skipped: unique.slice(cut) };
+}
