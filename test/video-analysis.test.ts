@@ -149,6 +149,21 @@ describe("videoRecordsOf in scan mode", () => {
     expect(video.levers.posterMissing).toBeUndefined();
   });
 
+  it("suppresses the codec lever for a Cloudinary f_auto or imgix auto=format URL, and says the CDN handles the format", () => {
+    const cloudinary = "https://res.cloudinary.com/demo/video/upload/f_auto,q_auto/hero.mp4";
+    const imgix = "https://demo.imgix.net/hero.mp4?auto=format,compress";
+    for (const url of [cloudinary, imgix]) {
+      const video = observedVideo({ sources: [{ src: url, type: "video/mp4" }], currentSrc: url });
+      const [record] = videoRecordsOf(PAGE, [observation(VIEW_PHONE, { videos: [video] })], new Map(), "scan", 2);
+      expect(record.levers.codec).toBeUndefined();
+      expect(record.levers.info.join("\n")).toMatch(/format handled by (Cloudinary|imgix) \((f_auto|auto=format)\)/);
+    }
+    const plain = observedVideo({ sources: [{ src: HERO, type: "video/mp4" }] });
+    const [record] = videoRecordsOf(PAGE, [observation(VIEW_PHONE, { videos: [plain] })], new Map(), "scan", 2);
+    expect(record.levers.codec).toEqual({ missing: "av1" });
+    expect(record.levers.info.some((line) => line.startsWith("format handled"))).toBe(false);
+  });
+
   it("marks a below-the-fold video that loads its file as a loading lever", () => {
     const below = observedVideo({ autoplay: false, preload: "auto", inFirstViewport: false });
     const media = new Map([[HERO, { url: HERO, contentType: "video/mp4", bytes: 400, status: 206 }]]);

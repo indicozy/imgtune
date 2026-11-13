@@ -9,6 +9,7 @@ import type { CandidateResult } from "./media-encode.js";
 import type { MediaProbe } from "./ffmpeg.js";
 import { COMPONENT_NAME, sanitizeText, type OwnerTrace } from "./locate.js";
 import type { ImageLocator, ResolvedSource } from "./images.js";
+import { adapterFor, formatAutoOf } from "./loaders.js";
 import {
   clusterVideoWidths,
   videoBytes,
@@ -194,6 +195,35 @@ function observedBytesOf(obs: ViewportObservation, url: string): number {
   return obs.media?.get(url)?.bytes ?? 0;
 }
 
+/**
+ * True when a Cloudinary video URL (`/<cloud>/video/upload/<transforms>/<file>`) has `f_auto` among its transforms. The
+ * image loader (loaders.ts) reads `image/upload` only, so the video path is read here.
+ */
+function cloudinaryVideoFormatAuto(url: URL): boolean {
+  if (url.hostname !== "res.cloudinary.com") return false;
+  const upload = /^\/[^/]+\/video\/upload\/(.+)$/.exec(url.pathname);
+  if (!upload) return false;
+  return upload[1].split("/").slice(0, -1).some((segment) => segment.split(",").includes("f_auto"));
+}
+
+/**
+ * The info note of a video whose URL the CDN already serves in the format the browser takes (Cloudinary `f_auto`, imgix
+ * `auto=format`): the codec lever does not apply, because the CDN negotiates the format per request. Undefined otherwise.
+ */
+export function formatHandledNote(src: string, page: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(src, page);
+  } catch {
+    return undefined;
+  }
+  if (cloudinaryVideoFormatAuto(url)) return "format handled by Cloudinary (f_auto): the CDN serves AV1 or H.264 per browser, no codec change";
+  if (!formatAutoOf(src, page)) return undefined;
+  const name = adapterFor(src, page).adapter.name;
+  if (name === "imgix") return "format handled by imgix (auto=format): the CDN serves the format per browser, no codec change";
+  return "format handled by the CDN (f_auto): the CDN serves the format per browser, no codec change";
+}
+
 /** True when the video's sources name an AV1 stream, by type or by an `.av1.mp4` file name. */
 function hasAv1(video: ObservedVideo): boolean {
   if (video.sources.some((s) => /av01|av1/i.test(s.type ?? ""))) return true;
@@ -251,6 +281,8 @@ export function videoRecordsOf(
       dpr: m.obs.viewport.dpr,
     }));
     const info: string[] = [];
+    const handled = formatHandledNote(src, page);
+    if (handled !== undefined) info.push(handled);
     let sourceWidth = knownWidth;
     if (sourceWidth === undefined) {
       // Without the source width the widths are capped at the largest display need, which is all the page shows.
@@ -263,7 +295,7 @@ export function videoRecordsOf(
     if (heaviest.perView > 0 && (belowFold || ref.preload === "auto")) {
       levers.loading = { perViewBytes: heaviest.perView, belowFold };
     }
-    if (!hasAv1(ref)) levers.codec = { missing: "av1" };
+    if (handled === undefined && !hasAv1(ref)) levers.codec = { missing: "av1" };
     if (ref.poster === undefined) levers.posterMissing = true;
 
     const locator: ImageLocator = {
