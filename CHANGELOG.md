@@ -1,17 +1,78 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and
   self-hosted `<video>` elements with a plain file source. Each page gets a Video section with the bytes per view and per
-  play, the levers (audio, width, codec, preload, poster) and an AV1 estimate from 2 s samples. Duration and frame rate are
-  informational notes only, never part of the claim. Adaptive streams
-  and third-party iframes are not reported. Without ffmpeg on `PATH` the bytes and widths are still reported, with one note.
-  New flags: `--media-budget` (default 20), `--media-time` (600 s), `--video-bar` (93), `--video-still-bar` (65) and
-  `--max-video-widths` (2). `imgtune image` accepts GIF, animated WebP and APNG, MP4 and WebM, and `--reference` checks a
-  candidate against the original with the same bars.
-- The scan JSON gains `videos` and `mediaNote` on each page and `fix.animated` on animated image records. `hints` prints the
-  animated and video hints.
+  play, and the levers (audio, width, codec, preload, poster). Adaptive streams (HLS, DASH, Mux, Cloudflare Stream) and
+  third-party iframes (YouTube, Vimeo) are not reported. A video hosted on another site follows the third-party rules.
+- Hints for animated media. A large animated GIF gets `<video autoplay muted loop playsinline>` with AV1 first and an H.264
+  fallback. The H.264 fallback is a recipe (libx264, CRF 23, yuv420p, faststart), marked not measured. The animated-image
+  alternative is shown with its size. A small `<img>` GIF or a CSS background gets an animated AVIF or WebP, and only its
+  `src` changes. A `<video>` hint names each lever: the width per breakpoint (`<source media>`), the CRF, the codec, the
+  audio track of a muted video, and `preload`. A poster is audited through the image pipeline. Duration and frame rate are
+  informational notes only, never part of the claim.
+- Static GIFs (one frame) get the normal image hints. Animated images stay in the image totals.
+- Bytes per view and per play. Per view is what the first view fetches: an autoplay video counts its full file,
+  `preload="auto"` counts the bytes the scan saw (labelled browser-dependent), and `preload="metadata"` or `"none"` counts 0.
+  Per play is the full file, shown for every video, so a large click-to-play file is not missed. A URL's bytes are the union
+  of the byte ranges read, capped at the file length, and a length probe reads the size when the server sends no
+  Content-Length, so a looping video is not counted once per loop. Posters count as images.
+- Quality bars. A candidate must reach VMAF 93 (`--video-bar`) against the served file at its display size. A still-frame
+  guard (SSIMULACRA2 on the stillest frames) catches blurred text in screen recordings. Its bar is `--video-still-bar`
+  (default 65), lowered to at most 10 points below the best the same codec reaches on that content, and never below 20. The
+  relative bar catches the loss the encode adds, not what a format can never reproduce, such as GIF dither. For GIF sources
+  both frames of the guard are blurred slightly (Gaussian, sigma 1) before scoring, so dither the eye averages out does not
+  fail it.
+- Encodes and budget. Encodes run on the heaviest animated assets first (by per-view bytes), at most `--media-budget` per run
+  (default 20) and within `--media-time` seconds (default 600). Assets over the budget keep their cheap hints and are marked
+  "over --media-budget". The CRF search runs on 2 s sample clips: one for a video of up to 6 s, three for a longer one. The
+  full-file bytes are extrapolated from the samples and labelled as an estimate; nothing is encoded in full. Each asset is
+  encoded once per run, keyed by URL and content hash in the result cache. Widths are snapped to a few buckets first.
+- Video widths. `scan` and `check` serve each video at most `--max-video-widths` widths (default 2): each viewport gets the
+  smallest kept width that covers its display width times its device pixel ratio. `audit` does not choose: it reports each
+  viewport's needed width and the bytes per view at one, two and three widths.
+- ffmpeg. The system ffmpeg on `PATH` is used; ImgTune does not bundle it. Without it, animated media is still detected, and
+  its bytes and needed width are still reported, with one note: `install ffmpeg for verified video and GIF hints`. ffmpeg and
+  ffprobe read only the protocols they need, and a URL input goes through the egress proxy (the scan's own policy for
+  private addresses), so a scanned page cannot reach a private host through a video.
+- `imgtune image` accepts GIF, animated WebP and APNG (candidates: animated AVIF, animated WebP and AV1 MP4 at `--width`),
+  and MP4 and WebM. `--reference <original>` checks a candidate against the original with the same VMAF and still-frame bars.
+  It prints one line, `VMAF <v> (bar <b>) still p10 <s> (bar <sb>): pass|fail`, and exits 0 or 1.
+- `audit` locates `<video>` and GIF elements at `file:line`, as it locates images. `hints` prints the animated and video hints.
+- Network idle. A streaming media request does not hold the wait for network idle, so an autoplay video does not hold each
+  resize up to `--idle-timeout`.
+- Scan JSON. Each page gains `videos` and `mediaNote`, and an animated image record gains `fix.animated`. The resume record
+  gains the media settings (`mediaBudget`, `mediaTime`, `videoBar`, `videoStillBar`, `maxVideoWidths`, `ffmpeg`).
+- New flags, with their defaults: `--media-budget <N>` (20, 0 to 1000), `--media-time <s>` (600, 1 to 3600), `--video-bar <n>`
+  (93), `--video-still-bar <n>` (65), `--max-video-widths <n>` (2, 1 to 3). `--survey` and `--no-quality` make no encodes.
+  `image` takes `--reference`, `--video-bar` and `--video-still-bar`.
+- `--gpu-encode` (experimental, off by default). The media encodes run on the GPU with NVENC (`av1_nvenc`, `h264_nvenc`), and
+  VMAF runs on the GPU with `libvmaf_cuda` when the ffmpeg on `PATH` has it. The NVENC bytes are scaled by 1 / 1.4 to a CPU
+  encode and labelled `est. (GPU-encoded, scaled to a CPU encode ÷1.4)`. Each GPU is proven by a small test encode first, and
+  a width under 144 px is encoded on the CPU. In our measurements it was slower than the CPU on 2 s samples (CUDA starts once
+  per ffmpeg process), so the CPU stays the default.
+- `--gpu-device` takes a comma list (`0,1`). The first GPU scores. With `--gpu-encode`, each listed GPU gets its own encode
+  workers beside the CPU ones. `--gpu` alone is unchanged.
+- Ctrl-C and SIGTERM stop the whole run: the media phase is aborted, the pages already written are kept, and the process
+  exits 130 (SIGINT) or 143 (SIGTERM) within 2 s.
+- Media fetches and the ffmpeg reads of a page's videos go through the egress proxy. ffmpeg's `httpproxy` tunnel is allowed,
+  so `https` videos are read through it.
+- Animated WebP and APNG are decoded one frame at a time, only for the frames of each 2 s sample window, and streamed to
+  ffmpeg. A long animation does not fill memory, and the pixel limit applies to each frame.
+- A measured page's JSON is written after its image estimates and before the media phase, so a long media phase does not
+  hold back the results.
+- Cache: `CACHE_VERSION` is 3. Entries from 0.1 are not read, so the first scan on 0.2 is cold.
+- Changes for 0.1 users:
+  - A scan that encodes media takes longer. The encodes are bounded by `--media-time` (600 s) and `--media-budget` (20
+    assets); `--no-quality` or `--survey` keeps the 0.1 timing.
+  - Without ffmpeg on `PATH`, `scan` prints one note and gives no encode hints.
+  - `--resume` scans a 0.1 page again when the new run encodes media, because its record has no media settings. A run with
+    no encodes (`--no-quality`, `--survey`, or no ffmpeg) resumes 0.1 pages as before.
+  - The JSON gains fields (`videos`, `mediaNote`, `fix.animated`, the resume media settings); existing fields are unchanged.
+    Animated GIFs, WebP and APNG keep their place in the image totals, but their hint is now a video or animated-image hint.
+  - `<video>` elements are not image records: their bytes are in the Video section, and their posters are images.
+  - The cache is not reused across the version change (see above).
 
 ## 0.1.0 (2026-11-03)
 
