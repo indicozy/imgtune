@@ -887,7 +887,7 @@ async function cutWebpSamples(animation: WebpAnimation, durationS: number, workD
  * different timebases, so their timestamps would otherwise pair the wrong frames. The longer side is trimmed to the
  * shorter (shortest=1), since an encode can drop or add a frame.
  */
-async function vmafOf(
+export async function vmafOf(
   distorted: string[],
   reference: string,
   width: number,
@@ -896,18 +896,26 @@ async function vmafOf(
   deadline: number,
   signal?: AbortSignal,
   stdin?: () => AsyncIterable<Uint8Array>,
+  cuda?: number,
 ): Promise<number> {
   return stage("no-vmaf", async () => {
     const retime = `settb=AVTB,setpts=N/${fps}/TB`;
-    const graph =
-      `[0:v]scale=${width}:-2:flags=bicubic,${retime}[d];` +
-      `[1:v]scale=${width}:-2:flags=bicubic,${retime}[r];` +
-      `[d][r]libvmaf=n_threads=${FFMPEG_THREADS}:shortest=1:n_subsample=${VMAF_SUBSAMPLE}:log_fmt=json:log_path=${escapeFilterValue(log)}`;
+    const logPath = escapeFilterValue(log);
+    // The frames are re-timed by index before any upload, so the GPU and the CPU pair the same frames. On a GPU the frames
+    // go to libvmaf_cuda in CUDA memory (format, then hwupload_cuda); the device is the run's (CUDA_VISIBLE_DEVICES).
+    const graph = cuda === undefined
+      ? `[0:v]scale=${width}:-2:flags=bicubic,${retime}[d];` +
+        `[1:v]scale=${width}:-2:flags=bicubic,${retime}[r];` +
+        `[d][r]libvmaf=n_threads=${FFMPEG_THREADS}:shortest=1:n_subsample=${VMAF_SUBSAMPLE}:log_fmt=json:log_path=${logPath}`
+      : `[0:v]scale=${width}:-2:flags=bicubic,${retime},format=yuv420p,hwupload_cuda[d];` +
+        `[1:v]scale=${width}:-2:flags=bicubic,${retime},format=yuv420p,hwupload_cuda[r];` +
+        `[d][r]libvmaf_cuda=shortest=1:n_subsample=${VMAF_SUBSAMPLE}:log_fmt=json:log_path=${logPath}`;
     const result = await ffrun(
       [...distorted, ...inputOptions(reference), "-i", reference, "-lavfi", graph, "-f", "null", "-"],
       deadline,
       signal,
       stdin,
+      cuda === undefined ? undefined : nvencEnv(cuda),
     );
     if (result.code !== 0) throw new Error(lastLine(result.stderr));
     const json = JSON.parse(await readFile(log, "utf8")) as { pooled_metrics?: { vmaf?: { mean?: unknown } } };
@@ -915,6 +923,15 @@ async function vmafOf(
     if (typeof mean !== "number") throw new Error("no pooled VMAF mean");
     return mean;
   });
+}
+
+/**
+ * The GPU that scores a candidate's VMAF, or undefined for the CPU libvmaf. A GPU search uses libvmaf_cuda when its device
+ * has it; an animated WebP candidate is CPU work (no GPU decoder for it), so it always uses the CPU.
+ */
+function cudaFor(ctx: Ctx, codec: MediaCodec): number | undefined {
+  if (codec === "animated-webp" || ctx.opts.gpu === undefined || !ctx.opts.caps.vmafCuda) return undefined;
+  return ctx.opts.gpu;
 }
 
 /** Everything one search needs, so the steps do not take it as separate arguments. */
@@ -976,7 +993,7 @@ async function readSample(ctx: Ctx, q: number, dir: string, i: number, nvenc: bo
   const cand = codec === "animated-webp"
     ? await stage("no-encoder", () => webpCandidate(out, ctx.fps, ctx.seconds[i]))
     : fileCandidate(out, opts.deadline, opts.signal);
-  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin);
+  const vmaf = await vmafOf(cand.input, ctx.samples[i], width, ctx.fps, join(dir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin, cudaFor(ctx, codec));
   let frames: RawImage[] | null;
   try {
     frames = await cand.frames(ctx.guards[i].indices);
@@ -1347,7 +1364,7 @@ async function scoreSamples(
     const cand = kind.webp
       ? await webpCandidate(candidates[i], ctx.fps, ctx.seconds[i])
       : fileCandidate(candidates[i], opts.deadline, opts.signal);
-    vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin));
+    vmafs.push(await vmafOf(cand.input, samples[i], width, ctx.fps, join(opts.workDir, `vmaf-${i}.json`), opts.deadline, opts.signal, cand.stdin, cudaFor(ctx, kind.webp ? "animated-webp" : "av1-mp4")));
     scores.push(...(await guardScores(ctx, i, cand, kind.strict)));
   }
   return { vmaf: mean(vmafs), still: tenthPercentile(scores) };

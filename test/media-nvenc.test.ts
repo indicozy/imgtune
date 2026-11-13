@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { probeFfmpeg, probeMedia, withGpu, type FfmpegCaps } from "../src/ffmpeg.js";
+import { inputOptions, probeFfmpeg, probeMedia, runFfmpeg, withGpu, type FfmpegCaps } from "../src/ffmpeg.js";
 import {
   NVENC_BYTE_FACTOR,
   NVENC_MIN_WIDTH,
@@ -12,6 +12,7 @@ import {
   encoderArgs,
   searchQuality,
   usesNvenc,
+  vmafOf,
   withNvencFallback,
 } from "../src/media-encode.js";
 import { makeScorer } from "../src/metric.js";
@@ -244,4 +245,24 @@ describe("--cpu-encode", () => {
     expect(parseImageArgs(["a.gif"]).cpuEncode).toBeUndefined();
     expect(parseImageArgs(["a.gif", "--cpu-encode"]).cpuEncode).toBe(true);
   });
+});
+
+/** libvmaf_cuda agrees with libvmaf. Skipped unless the build lists libvmaf_cuda and the device passes its test. */
+describe.skipIf(!nvencCaps.vmafCuda)("libvmaf_cuda against libvmaf (GPU " + GPU + ")", () => {
+  it("scores the same clip.mp4 candidate within 0.1 on the CPU and the GPU", async () => {
+    const probe = (await probeMedia(fixture("clip.mp4"), 10_000))!;
+    const dir = join(scratch, "vmaf-agree");
+    const samples = await cutSamples(fixture("clip.mp4"), probe, dir, Date.now() + 120_000);
+    const candidate = join(dir, "candidate.mp4");
+    const made = await runFfmpeg(
+      ["-i", samples[0], "-vf", "scale=640:-2:flags=lanczos", "-c:v", "libsvtav1", "-preset", "10", "-crf", "40", "-svtav1-params", "lp=2", "-pix_fmt", "yuv420p", "-an", "-y", candidate],
+      { timeoutMs: 120_000 },
+    );
+    expect(made.code).toBe(0);
+    const fps = probe.fps > 0 ? probe.fps : 30;
+    const cpu = await vmafOf([...inputOptions(candidate), "-i", candidate], samples[0], 640, fps, join(dir, "cpu.json"), Date.now() + 120_000);
+    const gpu = await vmafOf([...inputOptions(candidate), "-i", candidate], samples[0], 640, fps, join(dir, "gpu.json"), Date.now() + 120_000, undefined, undefined, GPU);
+    console.log(`VMAF libvmaf ${cpu.toFixed(4)}, libvmaf_cuda ${gpu.toFixed(4)}`);
+    expect(Math.abs(cpu - gpu)).toBeLessThan(0.1);
+  }, 240_000);
 });
