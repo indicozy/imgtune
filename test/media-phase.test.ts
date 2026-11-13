@@ -533,3 +533,33 @@ describe("runScan media phase", () => {
     expect(readdirSync(out)).not.toContain(".media-work");
   }, 600_000);
 });
+
+describe("runMediaPhase log counts the target-width estimates", () => {
+  /** Ffmpeg steps where every width below `failFrom` passes and the wider ones run out of time. */
+  function stepsFailingFrom(failFrom: number): NonNullable<Parameters<typeof runMediaPhase>[2]> {
+    const steps = fakeSteps().deps;
+    return {
+      ...steps,
+      search: async (_samples, _probe, codec, width): Promise<SearchOutcome> =>
+        width >= failFrom ? { ok: false, reason: "time-limit" } : { ok: true, best: candidate(codec, width, 1000), tried: 1 },
+    };
+  }
+
+  it("counts an asset with an estimate only at a smaller width as not encoded", async () => {
+    const logs: string[] = [];
+    const url = "http://127.0.0.1:1/wide.mp4";
+    const results = await runMediaPhase([video(url, 100, [320, 640])], options({ log: (line) => logs.push(line) }), stepsFailingFrom(640));
+    expect(results.byKey.get(mediaKeyOf("video", "video", url, [320, 640]))?.candidates.some((c) => c.width === 320)).toBe(true);
+    expect(logs.find((line) => line.startsWith("media: done"))).toMatch(/, 0 encoded, 1 not encoded$/);
+  });
+
+  it("counts an asset with an estimate at its target width as encoded", async () => {
+    const logs: string[] = [];
+    await runMediaPhase(
+      [video("http://127.0.0.1:1/ok.mp4", 100, [320, 640])],
+      options({ log: (line) => logs.push(line) }),
+      stepsFailingFrom(Number.POSITIVE_INFINITY),
+    );
+    expect(logs.find((line) => line.startsWith("media: done"))).toMatch(/, 1 encoded, 0 not encoded$/);
+  });
+});

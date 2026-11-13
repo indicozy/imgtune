@@ -4,7 +4,8 @@
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and
   self-hosted `<video>` elements with a plain file source. Each page gets a Video section with the bytes per view and per
-  play, the levers (audio, width, codec, preload, poster, frame rate) and an AV1 estimate from 2 s samples. Adaptive streams
+  play, the levers (audio, width, codec, preload, poster) and an AV1 estimate from 2 s samples. Duration and frame rate are
+  informational notes only, never part of the claim. Adaptive streams
   and third-party iframes are not reported. Without ffmpeg on `PATH` the bytes and widths are still reported, with one note.
   New flags: `--media-budget` (default 20), `--media-time` (600 s), `--video-bar` (93), `--video-still-bar` (65) and
   `--max-video-widths` (2). `imgtune image` accepts GIF, animated WebP and APNG, MP4 and WebM, and `--reference` checks a

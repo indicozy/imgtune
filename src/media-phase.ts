@@ -439,12 +439,12 @@ export async function runMediaPhase(assets: MediaAsset[], opts: MediaOptions, de
     opts.log(`media: ${assets.length} assets, ${running ? ranked.encode.length : 0} to encode (budget ${opts.budget})`);
     if (opts.survey) {
       for (const asset of unique) byKey.set(asset.key, { candidates: [], notEncoded: "survey" });
-      return finish(byKey, started, opts, undefined);
+      return finish(byKey, started, opts, undefined, unique);
     }
     if (!caps.ffmpeg) {
       for (const asset of unique) byKey.set(asset.key, { candidates: [], notEncoded: "ffmpeg not found" });
       opts.log(`media: ffmpeg not found; ${MEDIA_NOTE}`);
-      return finish(byKey, started, opts, MEDIA_NOTE);
+      return finish(byKey, started, opts, MEDIA_NOTE, unique);
     }
     for (const asset of ranked.skipped) byKey.set(asset.key, { candidates: [], notEncoded: "over --media-budget" });
     const env: Env = {
@@ -466,7 +466,7 @@ export async function runMediaPhase(assets: MediaAsset[], opts: MediaOptions, de
     } finally {
       await rm(opts.workDir, { recursive: true, force: true });
     }
-    return finish(byKey, started, opts, undefined);
+    return finish(byKey, started, opts, undefined, unique);
   } catch (err) {
     // Unexpected: every asset gets the reason, and the scan goes on.
     const reason = `media error: ${errorText(err)}`;
@@ -475,12 +475,23 @@ export async function runMediaPhase(assets: MediaAsset[], opts: MediaOptions, de
   }
 }
 
-/** The phase's closing log line, and its results. */
-function finish(byKey: Map<string, MediaEntry>, started: number, opts: MediaOptions, note: string | undefined): MediaResults {
+/**
+ * True when the entry has a candidate at the asset's target width, the largest of its widths: the width a video's estimate
+ * is taken at (attachVideo) and an animated image's single width. An encode at a smaller width alone is not an estimate.
+ */
+export function hasTargetEstimate(entry: MediaEntry, asset: MediaAsset): boolean {
+  const target = Math.max(0, ...asset.widths);
+  return entry.candidates.some((c) => c.width === target);
+}
+
+/** The phase's closing log line, and its results. An asset counts as encoded only with an estimate at its target width. */
+function finish(byKey: Map<string, MediaEntry>, started: number, opts: MediaOptions, note: string | undefined, assets: MediaAsset[]): MediaResults {
+  const byAsset = new Map(assets.map((a) => [a.key, a]));
   let encoded = 0;
   let notEncoded = 0;
-  for (const entry of byKey.values()) {
-    if (entry.candidates.length > 0) encoded++;
+  for (const [key, entry] of byKey) {
+    const asset = byAsset.get(key);
+    if (asset !== undefined && hasTargetEstimate(entry, asset)) encoded++;
     else notEncoded++;
   }
   opts.log(`media: done in ${((Date.now() - started) / 1000).toFixed(1)} s, ${encoded} encoded, ${notEncoded} not encoded`);
