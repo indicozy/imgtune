@@ -118,7 +118,7 @@ describe("inputOptions", () => {
   it("whitelists http(s) and tcp/tls for URLs, adds the proxy only to URLs, and file/pipe for absolute paths", () => {
     expect(inputOptions("http://cdn.example/clip.mp4", "http://127.0.0.1:3128")).toEqual([
       "-protocol_whitelist",
-      "http,https,tcp,tls,crypto",
+      "http,https,tcp,tls,crypto,httpproxy",
       "-http_proxy",
       "http://127.0.0.1:3128",
     ]);

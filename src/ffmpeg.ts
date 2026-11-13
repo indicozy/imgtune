@@ -372,7 +372,8 @@ export function inputOptions(input: string, proxy?: string): string[] {
   if (/^https?:\/\//i.test(input)) {
     // A URL comes from a scanned page, so it only ever goes through the egress proxy, which checks each destination.
     if (proxy === undefined) throw new Error("URL inputs require the egress proxy");
-    return ["-protocol_whitelist", "http,https,tcp,tls,crypto", "-http_proxy", proxy];
+    // httpproxy is ffmpeg's CONNECT tunnel to `proxy`: without it every https URL fails ("not on whitelist").
+    return ["-protocol_whitelist", "http,https,tcp,tls,crypto,httpproxy", "-http_proxy", proxy];
   }
   if (isAbsolute(input)) return ["-protocol_whitelist", "file,pipe"];
   throw new Error(`media input must be an absolute path or an http(s) URL: ${input}`);
