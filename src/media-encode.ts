@@ -43,6 +43,11 @@ export interface CandidateResult {
   vmaf: number;
   /** 10th percentile of the SSIMULACRA2 scores of the still-frame guard. */
   still: number;
+  /**
+   * The effective still bar this result was judged against: min(the requested bar, this source's ceiling − STILL_GUARD_DELTA).
+   * Reports show it next to `still`, since a source whose best encode scores low gets a lower bar, not a failing result.
+   */
+  stillBar: number;
   estimate: true;
   /** Always false: the encodes drop audio, and the audio saving is attributed separately. */
   audio: boolean;
@@ -98,6 +103,12 @@ const GUARD_FRAMES = 3;
  * not blurred.
  */
 export const GIF_GUARD_SIGMA = 1;
+/**
+ * How far below the source's own best-quality guard score the still bar may sit. The guard is relative: an encode
+ * cannot score above what its codec achieves at its best quality, so a bar above (ceiling − this) can never pass a
+ * source whose ceiling is low. Same rule as imgtune's image bar (max(70, served − delta)), taken the other way round.
+ */
+export const STILL_GUARD_DELTA = 10;
 /** Longest single ffmpeg run, in ms; the asset deadline caps it further. */
 const RUN_CAP_MS = 60_000;
 /** Pixels a decoded image may have, the same limit as the image pipeline. */
@@ -703,6 +714,24 @@ interface Ctx {
   guards: GuardRef[];
   /** The guard prefilter sigma: GIF_GUARD_SIGMA for a GIF source, undefined otherwise. */
   blur?: number;
+  /** Results of this search by quality, so no quality is encoded twice. */
+  cache: Map<number, Scored>;
+}
+
+/** A scored quality, before the search attaches the still bar it was judged against. */
+type Scored = Omit<CandidateResult, "stillBar">;
+
+/**
+ * evaluate, memoised per search: a quality already encoded is returned from the cache. The deadline is checked before a
+ * new encode, so the ceiling encode and the bisection both stop at the deadline.
+ */
+async function evaluateCached(ctx: Ctx, q: number): Promise<Scored> {
+  const known = ctx.cache.get(q);
+  if (known) return known;
+  if (Date.now() >= ctx.opts.deadline) throw new DeadlineHit();
+  const result = await evaluate(ctx, q);
+  ctx.cache.set(q, result);
+  return result;
 }
 
 /**
@@ -741,7 +770,7 @@ function mean(values: number[]): number {
 }
 
 /** Encodes every sample at quality `q`, scores it, and returns the result (pass or fail). Removes its files after. */
-async function evaluate(ctx: Ctx, q: number): Promise<CandidateResult> {
+async function evaluate(ctx: Ctx, q: number): Promise<Scored> {
   const { codec, width, opts } = ctx;
   const dir = join(opts.workDir, `cand-${codec}-${width}-${q}`);
   await mkdir(dir, { recursive: true });
@@ -882,21 +911,26 @@ export async function searchQuality(
     opts,
     guards: [],
     blur: probe.videoCodec === "gif" ? GIF_GUARD_SIGMA : undefined,
+    cache: new Map(),
   };
 
   let best: CandidateResult | undefined;
-  let tried = 0;
   try {
     await mkdir(opts.workDir, { recursive: true });
     ctx.guards = await prepareGuards(ctx);
+    // The ceiling: the codec's best-quality encode. Its guard score sets the still bar for this source. A ceiling that
+    // misses the VMAF bar means no quality can pass, so the search ends there.
+    const bound = codec === "animated-webp" ? spec.hi : spec.lo;
+    const ceiling = await evaluateCached(ctx, bound);
+    if (ceiling.vmaf < opts.vmafBar) return { ok: false, reason: "no-passing-quality" };
+    const stillBar = Math.min(opts.stillBar, ceiling.still - STILL_GUARD_DELTA);
     let lo = spec.lo;
     let hi = spec.hi;
     for (let step = 0; step < spec.steps && lo <= hi; step++) {
       const q = Math.floor((lo + hi) / 2);
-      const result = await evaluate(ctx, q);
-      tried++;
-      const pass = result.vmaf >= opts.vmafBar && result.still >= opts.stillBar;
-      if (pass && (best === undefined || result.bytes < best.bytes)) best = result;
+      const result = await evaluateCached(ctx, q);
+      const pass = result.vmaf >= opts.vmafBar && result.still >= stillBar;
+      if (pass && (best === undefined || result.bytes < best.bytes)) best = { ...result, stillBar };
       // The cheaper side is the one to search next: up for a CRF, down for a WebP q.
       if (spec.fewerBytesAt === "high") {
         if (pass) lo = q + 1;
@@ -910,9 +944,9 @@ export async function searchQuality(
   } catch (err) {
     // A broken scorer is reported even when an earlier quality passed: the passes before it were not checked by it.
     if (err instanceof StageError && err.reason === "score-failed") return { ok: false, reason: "score-failed" };
-    if (best) return { ok: true, best, tried };
+    if (best) return { ok: true, best, tried: ctx.cache.size };
     if (err instanceof StageError) return { ok: false, reason: err.reason };
     return { ok: false, reason: isDeadline(err) ? "time-limit" : "probe-failed" };
   }
-  return best ? { ok: true, best, tried } : { ok: false, reason: "no-passing-quality" };
+  return best ? { ok: true, best, tried: ctx.cache.size } : { ok: false, reason: "no-passing-quality" };
 }

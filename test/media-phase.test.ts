@@ -59,7 +59,7 @@ const video = (url: string, perView: number, widths = [640], page = "http://127.
 });
 
 function candidate(codec: CandidateResult["codec"], width: number, bytes: number): CandidateResult {
-  return { codec, width, quality: 40, sampleBytes: bytes / 4, sampleSeconds: 6, bytes, vmaf: 95, still: 80, estimate: true, audio: false };
+  return { codec, width, quality: 40, sampleBytes: bytes / 4, sampleSeconds: 6, bytes, vmaf: 95, still: 80, stillBar: 65, estimate: true, audio: false };
 }
 
 /** Options for a phase run with a fresh work folder; the cache and the proxy are off unless a case sets them. */
@@ -484,7 +484,7 @@ describe("runScan media phase", () => {
     expect(page.status).toBe("ok");
     // This machine has the encoders, so each asset's outcome is asserted, not just its presence. clip.webm: AV1 fails the
     // bar on this content, the H.264 fallback passes, so the estimate is a passing H.264 encode. clip.mp4 passes, with its
-    // audio lever. text.gif passes its animated encodes. anim.gif fails the bar on its content (no-passing-quality).
+    // audio lever. text.gif passes its animated encodes. anim.gif passes against its own ceiling (relative still bar).
     const caps = await probeFfmpeg();
     const encoders = caps.ffmpeg && caps.vmaf && caps.av1 !== undefined;
     const webm = page.videos?.find((v) => v.src.endsWith("/clip.webm"));
@@ -514,8 +514,10 @@ describe("runScan media phase", () => {
       const candidates = textRecord!.fix.animated!.estimate ?? [];
       expect(candidates.length).toBeGreaterThan(0);
       expect(candidates.every((c) => c.bytes > 0)).toBe(true);
-      expect(animRecord!.fix.animated!.estimate).toBeUndefined();
-      expect(animRecord!.fix.animated!.notEncoded).toBe("no-passing-quality");
+      // anim.gif passes with the relative still bar (the source's own ceiling minus 10), so it has a real estimate.
+      const animCandidates = animRecord!.fix.animated!.estimate ?? [];
+      expect(animCandidates.length).toBeGreaterThan(0);
+      expect(animCandidates.every((c) => c.bytes > 0)).toBe(true);
     } else {
       expect(textRecord!.fix.animated!.notEncoded).toMatch(/^(no-encoder|no-vmaf|no-ffmpeg|ffmpeg not found)$/);
     }

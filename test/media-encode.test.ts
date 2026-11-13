@@ -135,7 +135,8 @@ describe("searchQuality", () => {
     if (!outcome.ok) return;
     expect(outcome.best.bytes).toBeLessThan(statSync(fixture("clip.mp4")).size);
     expect(outcome.best.vmaf).toBeGreaterThanOrEqual(93);
-    expect(outcome.best.still).toBeGreaterThanOrEqual(65);
+    expect(outcome.best.still).toBeGreaterThanOrEqual(outcome.best.stillBar);
+    expect(outcome.best.stillBar).toBeLessThanOrEqual(65);
     expect(outcome.best.estimate).toBe(true);
     expect(outcome.best.audio).toBe(false);
   }, 120_000);
@@ -157,7 +158,8 @@ describe("searchQuality", () => {
     if (!outcome.ok) return;
     expect(outcome.best.bytes).toBeGreaterThan(0);
     expect(outcome.best.vmaf).toBeGreaterThanOrEqual(93);
-    expect(outcome.best.still).toBeGreaterThanOrEqual(65);
+    expect(outcome.best.still).toBeGreaterThanOrEqual(outcome.best.stillBar);
+    expect(outcome.best.stillBar).toBeLessThanOrEqual(65);
   }, 120_000);
 
   it("reports score-failed, not a failing quality, when the scorer throws", async () => {
@@ -195,7 +197,8 @@ describe("searchQuality", () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.best.vmaf).toBeGreaterThanOrEqual(93);
-    expect(outcome.best.still).toBeGreaterThanOrEqual(65);
+    expect(outcome.best.still).toBeGreaterThanOrEqual(outcome.best.stillBar);
+    expect(outcome.best.stillBar).toBeLessThan(65);
   }, 120_000);
 
   it("returns time-limit when the deadline has already passed", async () => {
