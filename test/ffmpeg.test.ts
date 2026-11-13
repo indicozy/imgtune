@@ -6,11 +6,16 @@ import {
   FFMPEG_MAX_PROCS,
   FfmpegOutputTooLarge,
   FfmpegTimeout,
+  capsOf,
   inputOptions,
+  nvencEnv,
+  nvencOptions,
+  parseListing,
   probeFfmpeg,
   probeMedia,
   resetFfmpegProbe,
   runFfmpeg,
+  withNvenc,
 } from "../src/ffmpeg.js";
 
 const FIXTURES = join(import.meta.dirname, "fixtures", "media");
@@ -60,6 +65,8 @@ describe("probeFfmpeg", () => {
       x264: false,
       webpAnim: false,
       avifMuxer: false,
+      av1Nvenc: false,
+      h264Nvenc: false,
     });
   });
 
@@ -327,5 +334,45 @@ describe("process slots", () => {
     await Promise.all(blockers);
     // Only the blockers ever started: the queued run was removed from the queue when its timeout fired.
     expect(maxAlive(log).starts).toBe(FFMPEG_MAX_PROCS);
+  });
+});
+
+describe("NVENC capabilities", () => {
+  it("reads the NVENC encoders from the encoder listing, and nothing else", () => {
+    const caps = capsOf({
+      encoders: parseListing(" V....D av1_nvenc  NVIDIA NVENC av1\n V....D h264_nvenc NVENC h264\n V....D libx264 x264\n"),
+      filters: new Set(["libvmaf"]),
+      muxers: new Set(["avif"]),
+      ffprobe: true,
+    });
+    expect(caps).toMatchObject({ av1Nvenc: true, h264Nvenc: true, x264: true, av1: undefined, ffmpeg: true });
+  });
+
+  it("does not list NVENC for a build without it, or for names that only contain it", () => {
+    const caps = capsOf({ encoders: parseListing(" V....D libsvtav1 svt\n V....D av1_nvenc_fake nope\n") });
+    expect(caps).toMatchObject({ av1Nvenc: false, h264Nvenc: false, av1: "libsvtav1" });
+  });
+
+  it("reports everything missing when no listing could be read", () => {
+    expect(capsOf({})).toMatchObject({ ffmpeg: false, ffprobe: false, av1Nvenc: false, h264Nvenc: false });
+  });
+
+  it("sets the NVENC device by PCI order and the index, overriding any visible list", () => {
+    const env = nvencEnv(1, { PATH: "/bin", CUDA_VISIBLE_DEVICES: "0,1" });
+    expect(env).toMatchObject({ PATH: "/bin", CUDA_DEVICE_ORDER: "PCI_BUS_ID", CUDA_VISIBLE_DEVICES: "1" });
+  });
+
+  it("gives the NVENC options: p4, high-quality tune, constant quality in VBR, GPU 0", () => {
+    expect(nvencOptions(32)).toEqual(["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "32", "-b:v", "0", "-gpu", "0"]);
+  });
+
+  it("reports no NVENC when no device is given, without running a test encode", async () => {
+    const caps = { ...capsOf({ encoders: parseListing(" V....D av1_nvenc x\n") }), ffmpeg: true };
+    expect(await withNvenc(caps, undefined)).toMatchObject({ av1Nvenc: false, h264Nvenc: false });
+  });
+
+  it("tests NVENC with a tiny encode on the device, and says no for an encoder the build does not list", async () => {
+    const caps = { ...capsOf({ encoders: new Set<string>() }), ffmpeg: true };
+    expect(await withNvenc(caps, 0)).toMatchObject({ av1Nvenc: false, h264Nvenc: false });
   });
 });

@@ -19,6 +19,12 @@ export interface FfmpegCaps {
   x264: boolean;
   webpAnim: boolean;
   avifMuxer: boolean;
+  /**
+   * NVENC encoders, listed by the build and proven by a test encode on the chosen GPU (see withNvenc). Both are false
+   * until withNvenc runs for a device: the listing alone does not say the driver can open the card.
+   */
+  av1Nvenc: boolean;
+  h264Nvenc: boolean;
 }
 
 /** What one probed video or animated file is: its size, length, frame rate and codecs, read by ffprobe. */
@@ -85,6 +91,8 @@ interface RunOptions {
   stdin?: () => AsyncIterable<Uint8Array>;
   /** Stdout cap in bytes; a run past it is killed and rejects with FfmpegOutputTooLarge. */
   maxStdoutBytes?: number;
+  /** The environment of the process. Default: this process's. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -184,7 +192,7 @@ function runBinary(bin: string, args: string[], opts: RunOptions): Promise<RunRe
     const start = (): void => {
       holdsSlot = true;
       try {
-        child = spawn(bin, args, { stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+        child = spawn(bin, args, { stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"], env: opts.env });
       } catch (err) {
         finish(() => reject(err instanceof Error ? err : new Error(String(err))));
         return;
@@ -302,14 +310,6 @@ export function resetFfmpegProbe(): void {
 const PROBE_TIMEOUT_MS = 15_000;
 
 async function computeCaps(): Promise<FfmpegCaps> {
-  const none: FfmpegCaps = {
-    ffmpeg: false,
-    ffprobe: false,
-    vmaf: false,
-    x264: false,
-    webpAnim: false,
-    avifMuxer: false,
-  };
   try {
     const [encoders, filters, muxers, ffprobeOk] = await Promise.all([
       listOutput(() => runFfmpeg(["-encoders"], { timeoutMs: PROBE_TIMEOUT_MS })),
@@ -320,25 +320,93 @@ async function computeCaps(): Promise<FfmpegCaps> {
         () => false,
       ),
     ]);
-    const ffmpegOk = encoders !== undefined;
-    const encoderNames = encoders ?? new Set<string>();
-    const av1 = encoderNames.has("libsvtav1")
-      ? "libsvtav1"
-      : encoderNames.has("libaom-av1")
-        ? "libaom-av1"
-        : undefined;
-    return {
-      ffmpeg: ffmpegOk,
-      ffprobe: ffprobeOk,
-      vmaf: filters?.has("libvmaf") ?? false,
-      av1,
-      x264: encoderNames.has("libx264"),
-      webpAnim: encoderNames.has("libwebp_anim"),
-      avifMuxer: muxers?.has("avif") ?? false,
-    };
+    return capsOf({ encoders, filters, muxers, ffprobe: ffprobeOk });
   } catch {
-    return none;
+    return capsOf({});
   }
+}
+
+/**
+ * The capabilities a set of ffmpeg listings gives. A listing that is undefined (the command failed) reports its
+ * capabilities as missing; `ffmpeg` is true only when the encoder listing could be read. The NVENC flags are only the
+ * listing's: the device test (withNvenc) is what makes them usable.
+ */
+export function capsOf(lists: { encoders?: Set<string>; filters?: Set<string>; muxers?: Set<string>; ffprobe?: boolean }): FfmpegCaps {
+  const encoderNames = lists.encoders ?? new Set<string>();
+  const av1 = encoderNames.has("libsvtav1")
+    ? "libsvtav1"
+    : encoderNames.has("libaom-av1")
+      ? "libaom-av1"
+      : undefined;
+  return {
+    ffmpeg: lists.encoders !== undefined,
+    ffprobe: lists.ffprobe ?? false,
+    vmaf: lists.filters?.has("libvmaf") ?? false,
+    av1,
+    x264: encoderNames.has("libx264"),
+    webpAnim: encoderNames.has("libwebp_anim"),
+    avifMuxer: lists.muxers?.has("avif") ?? false,
+    av1Nvenc: encoderNames.has("av1_nvenc"),
+    h264Nvenc: encoderNames.has("h264_nvenc"),
+  };
+}
+
+/** The NVENC options of one encode: preset p4, the high-quality tune, constant quality `cq` in VBR, on GPU index 0. */
+export function nvencOptions(cq: number): string[] {
+  return ["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", String(cq), "-b:v", "0", "-gpu", "0"];
+}
+
+/**
+ * The environment of an NVENC run on one GPU: CUDA numbers the devices by PCI bus, and only the chosen device is visible,
+ * so `-gpu 0` is that device. This overrides any CUDA_VISIBLE_DEVICES of this process (the encode has no other use for it).
+ */
+export function nvencEnv(device: number, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...base, CUDA_DEVICE_ORDER: "PCI_BUS_ID", CUDA_VISIBLE_DEVICES: String(device) };
+}
+
+/** The 256x144 test clip of the NVENC probe: 0.2 s, the smallest size NVENC takes. */
+const NVENC_TEST_INPUT = ["-f", "lavfi", "-i", "testsrc2=s=256x144:d=0.2"];
+const NVENC_TEST_TIMEOUT_MS = 30_000;
+
+const nvencTests = new Map<number, Promise<{ av1: boolean; h264: boolean }>>();
+
+/**
+ * Runs a tiny NVENC encode for each NVENC encoder the build lists, on one GPU. The result is memoised per device, so a run
+ * tests each card once. A failed encode means that encoder cannot run on that device: the probe returns false for it.
+ */
+export function testNvenc(device: number, caps: FfmpegCaps): Promise<{ av1: boolean; h264: boolean }> {
+  let pending = nvencTests.get(device);
+  if (pending === undefined) {
+    pending = Promise.all([
+      caps.av1Nvenc ? encodesOn("av1_nvenc", device) : Promise.resolve(false),
+      caps.h264Nvenc ? encodesOn("h264_nvenc", device) : Promise.resolve(false),
+    ]).then(([av1, h264]) => ({ av1, h264 }));
+    nvencTests.set(device, pending);
+  }
+  return pending;
+}
+
+/** Whether `encoder` makes a frame on `device` (exit code 0 of a short encode to the null muxer). Never throws. */
+async function encodesOn(encoder: string, device: number): Promise<boolean> {
+  try {
+    const result = await runFfmpeg(
+      [...NVENC_TEST_INPUT, "-c:v", encoder, ...nvencOptions(30), "-f", "null", "-"],
+      { timeoutMs: NVENC_TEST_TIMEOUT_MS, env: nvencEnv(device) },
+    );
+    return result.code === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The capabilities with the NVENC encoders that passed the test encode on `device`. Without a device, or when the build
+ * does not list NVENC, the caps come back with both NVENC flags false.
+ */
+export async function withNvenc(caps: FfmpegCaps, device: number | undefined): Promise<FfmpegCaps> {
+  if (device === undefined || (!caps.av1Nvenc && !caps.h264Nvenc)) return { ...caps, av1Nvenc: false, h264Nvenc: false };
+  const tested = await testNvenc(device, caps);
+  return { ...caps, av1Nvenc: tested.av1, h264Nvenc: tested.h264 };
 }
 
 /**
