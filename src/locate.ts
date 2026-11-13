@@ -377,8 +377,12 @@ const OPENING_SEARCH = 30;
 /** Largest project file read for the check. */
 export const MAX_SOURCE_READ = 2 * 1024 * 1024;
 
-/** An opening image tag or a srcset prop. */
-const IMAGE_TOKEN = /<(?:img|Image|picture|source)(?=[\s/>]|$)|\bsrc[sS]et\s*[={]/;
+/**
+ * An opening image tag or a srcset prop. A <video> opening and a <source> child count too: a video's poster is an image
+ * record that carries the video's locator, so its owner line is the <video> element (and the sources sit on their own
+ * lines). Lowercase only, so a component such as <VideoPlayer> is not taken for the element.
+ */
+const IMAGE_TOKEN = /<(?:img|Image|picture|source|video)(?=[\s/>]|$)|\bsrc[sS]et\s*[={]/;
 
 /**
  * Whether a project source line (1-based) renders an image: an image token within SOURCE_WINDOW lines of it, an opening

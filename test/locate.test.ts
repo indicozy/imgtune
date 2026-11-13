@@ -346,6 +346,16 @@ describe("imageAtLine (the source check of a resolved file:line)", () => {
     expect(imageAtLine(text, 6)).toBe(false);
   });
 
+  it("accepts a <video> opening and a <source> child as image lines (a video's poster and its sources)", () => {
+    expect(imageAtLine(["<video", "  autoplay", "  muted", "  src={clip}", "/>"].join("\n"), 1)).toBe(true);
+    expect(imageAtLine(["<video autoplay>", "  <source src={clip} type=\"video/mp4\" />", "</video>"].join("\n"), 2)).toBe(true);
+  });
+
+  it("does not take <videoplayer> or <sourcelist> for a video or source tag", () => {
+    expect(imageAtLine(["<VideoPlayer", "  src={clip}", "/>"].join("\n"), 2)).toBe(false);
+    expect(imageAtLine(["<sourceList>", "  x", "</sourceList>"].join("\n"), 2)).toBe(false);
+  });
+
   it("is false for a line outside the file", () => {
     expect(imageAtLine(fixture("ProductCard.tsx"), 0)).toBe(false);
     expect(imageAtLine(fixture("ProductCard.tsx"), 999)).toBe(false);
