@@ -1192,12 +1192,12 @@ describe("animated saving is the encode alone (no double count with a sizes prop
       perViewBytes: 500 * 1024,
     });
     rec.fix.bytes = { saved: 90 * 1024, addedForSharpness: 0, sizes: 90 * 1024, quality: 0 };
-    rec.fix.sizes = { value: "50vw", basis: "measured", rung: "measured-page", branches: [] };
+    rec.fix.sizes = { value: "50vw", basis: "measured-max", rung: "measured-page", branches: [] };
     const [hint] = hintsOf(page([rec]));
     expect(hint.bytes.saved).toBe(380 * 1024);
     expect(hint.bytes.sizes).toBeUndefined();
     const text = renderHint(hint, 1).join("\n");
-    expect(text).toContain("   sizes 33vw -> 50vw (measured)");
+    expect(text).toContain("   sizes 33vw -> 50vw (measured-max)");
     expect(text).toContain("saves 380 KB/view est. (estimate from 2 s samples)");
     expect(text).toContain("   saves 380 KB/view, +0 KB sharpness (separate)");
   });
