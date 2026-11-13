@@ -11,6 +11,9 @@ import type { OwnerSource } from "./locate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, type QualityCapPlan } from "./qualities-cap.js";
+import type { CandidateResult, MediaCodec } from "./media-encode.js";
+import type { WidthPlan } from "./media-model.js";
+import type { AnimatedFix, VideoRecord } from "./video-analysis.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
@@ -94,6 +97,10 @@ export interface Hint {
   qualityNote?: string;
   /** The CDN negotiates the format of a jpeg or png: no format change is proposed. */
   formatNote?: string;
+  /** An animated image (GIF, animated WebP or APNG): its animation and encode candidates (see video-analysis.ts). */
+  animated?: AnimatedFix;
+  /** The image's served URL, named by the animated hint's fallback. Set with `animated`. */
+  src?: string;
   rung: string;
   notes: string[];
 }
@@ -178,7 +185,8 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
  * planQualityCap); it applies only when no --qualities list was given (that list is the framework's own).
  */
 export function hintsOf(result: PageResult, qualities?: number[], plan?: QualityCapPlan): Hint[] {
-  return (result.images ?? []).filter(hasFix).map((record) => {
+  // An animated image is a hint even without a sizes or byte saving: its saving is an encode (see animatedLines).
+  return (result.images ?? []).filter((record) => hasFix(record) || record.fix.animated !== undefined).map((record) => {
     const served = record.current.format;
     const rawTarget = served !== undefined ? record.fix.quality?.perFormat[served] : undefined;
     // With the framework's allowed qualities, the target goes up to one of them. The quality saving was estimated at the
@@ -275,6 +283,10 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
       hint.quality = quality;
     }
     if (record.fix.format !== undefined || served !== undefined) hint.format = { current: served, best: record.fix.format };
+    if (record.fix.animated !== undefined) {
+      hint.animated = record.fix.animated;
+      if (record.current.src !== undefined) hint.src = record.current.src;
+    }
     return hint;
   });
 }
@@ -356,6 +368,7 @@ export function renderHint(hint: Hint, rank: number): string[] {
   if (hint.background === true) {
     lines.push("   css background: no sizes in CSS; serve a file at that width, or image-set() with the density or width variants");
   } else if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
+  if (hint.animated !== undefined) lines.push(...animatedLines(hint.animated, hint.src));
   const parts: string[] = [];
   if (hint.quality) parts.push(`quality ${hint.quality.current}${qualityTarget(hint.quality)} (max of ${hint.quality.samples}, ${safeText(hint.quality.group)})`);
   if (hint.format) parts.push(`format ${hint.format.current ?? "?"}${hint.format.best && hint.format.best !== hint.format.current ? ` -> ${hint.format.best}` : ""}${hint.formatNote !== undefined ? ` (${safeText(hint.formatNote)})` : ""}`);
@@ -608,6 +621,10 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
   const ids = group.hints.map((h) => h.id);
   const shown = ids.slice(0, 8).join(" ");
   lines.push(`   ids ${shown}${ids.length > 8 ? ` (+${ids.length - 8} more; --flat lists each image)` : ""}`);
+  // An animated image's hint is its own (its target and bytes are not a sizes or quality change), so it is printed here.
+  for (const hint of group.hints) {
+    if (hint.animated !== undefined) lines.push(`   ${safeText(hint.id)}`, ...animatedLines(hint.animated, hint.src));
+  }
   return lines;
 }
 
@@ -625,6 +642,236 @@ export function renderHints(hints: Hint[], total: number, offset: number, page?:
   const head = `${total} image(s) with fix hints${page ? ` (page ${safeText(page)})` : ""}; showing ${offset + 1}-${offset + hints.length}\n`;
   const body = hints.flatMap((hint, i) => renderHint(hint, offset + i + 1));
   return `${head}${body.join("\n")}\n`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Animated images and `<video>` (Task 8): the text of their hints and of the Video section of a page. Every estimated byte
+// figure is marked "est."; a hint names the sample encodes once. Page-derived names and attributes are JSON strings.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The note that marks a figure as an estimate from the 2-second sample encodes. A hint says it once. */
+export const SAMPLE_NOTE = "(estimate from 2 s samples)";
+/** The `type` of the two sources a video hint names: AV1 first, H.264 as the fallback. */
+const AV1_TYPE = 'video/mp4; codecs=av01.0.08M.08';
+const H264_TYPE = 'video/mp4; codecs=avc1.640028';
+const FORMAT_LABEL: Record<AnimatedFix["info"]["format"], string> = { gif: "GIF", webp: "WebP", apng: "APNG" };
+
+/** The smallest candidate of one codec, or undefined. The first of equal bytes wins. */
+export function smallestCandidate(candidates: CandidateResult[] | undefined, codec: MediaCodec): CandidateResult | undefined {
+  let best: CandidateResult | undefined;
+  for (const c of candidates ?? []) {
+    if (c.codec === codec && (best === undefined || c.bytes < best.bytes)) best = c;
+  }
+  return best;
+}
+
+/**
+ * The quality evidence of an encode: VMAF with its bar, and the still-frame guard with its bar. A bar the candidate does not
+ * carry is said so, not guessed: the run's flag is not in the scan file.
+ */
+export function evidenceOf(c: CandidateResult & { vmafBar?: number }): string {
+  const bar = (value: number | undefined): string => (value === undefined ? "bar not recorded" : `bar ${value}`);
+  return `VMAF ${c.vmaf.toFixed(1)} (${bar(c.vmafBar)}), still ${c.still.toFixed(1)} (${bar(c.stillBar)})`;
+}
+
+/** The codec as a hint names it: "av1", "h264", or the codec's own name. */
+function codecName(codec: MediaCodec): string {
+  return codec === "av1-mp4" ? "av1" : codec === "h264-mp4" ? "h264" : codec;
+}
+
+/**
+ * The lines of an animated image's hint. An image target (AVIF or WebP, with the `<picture>` or `image-set()` fallback) when
+ * the encode offers one; the `<video>` replacement with its AV1 and H.264 sources when the target is video. With no encode,
+ * the bytes per view and the reason. `src` is the served file's URL, printed as a JSON string.
+ */
+export function animatedLines(animated: AnimatedFix, src?: string): string[] {
+  const { info, perViewBytes } = animated;
+  const head = `animated ${FORMAT_LABEL[info.format]} ${(info.durationMs / 1000).toFixed(1)} s, ${info.frames} frames`;
+  const avif = smallestCandidate(animated.estimate, "animated-avif");
+  const webp = smallestCandidate(animated.estimate, "animated-webp");
+  const av1 = smallestCandidate(animated.estimate, "av1-mp4");
+  const h264 = smallestCandidate(animated.estimate, "h264-mp4");
+  const first = avif ?? webp;
+  if (first === undefined && av1 === undefined) {
+    return [`   ${head}: ${kb(perViewBytes)}/view; not encoded: ${safeText(animated.notEncoded ?? "no passing quality")}`];
+  }
+  const offered = [
+    avif !== undefined ? `animated AVIF q${avif.quality} at ${avif.width}px (${kb(avif.bytes)} est.)` : undefined,
+    webp !== undefined ? `animated WebP q${webp.quality} (${kb(webp.bytes)} est.)` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const video = av1 !== undefined && (animated.target?.main === "video" || first === undefined);
+  if (video) {
+    const lines = [`   ${head}: replace with <video autoplay muted loop playsinline poster="<first frame>">`];
+    lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> CRF ${av1.quality}, ${av1.width}px, ${kb(av1.bytes)} est.`);
+    lines.push(
+      h264 !== undefined
+        ? `     <source src="…-${h264.width}.h264.mp4" type="${H264_TYPE}"> CRF ${h264.quality}, ${h264.width}px, ${kb(h264.bytes)} est.`
+        : `     <source src="…-${av1.width}.h264.mp4" type="${H264_TYPE}"> H.264 fallback: not encoded (the scan makes no H.264 encode of an animated image)`,
+    );
+    lines.push(`   evidence: ${evidenceOf(av1)}`);
+    if (offered.length > 0) lines.push(`   alternative: ${offered.join(", ")}`);
+    lines.push(`   saves ${kb(Math.max(0, perViewBytes - av1.bytes))}/view est. ${SAMPLE_NOTE}`);
+    return lines;
+  }
+  const best = first as CandidateResult;
+  const fallback =
+    animated.context === "css-background"
+      ? 'image-set(url(<avif>) type("image/avif"), url(<webp>) type("image/webp"))'
+      : `<picture><source type="image/avif" srcset="…"><img src=${JSON.stringify(src ?? "")}></picture>`;
+  return [
+    `   ${head}: serve ${offered.join(", ")}; fallback: ${fallback}; saves ${kb(Math.max(0, perViewBytes - best.bytes))}/view est. ${SAMPLE_NOTE}`,
+    `   evidence: ${evidenceOf(best)}`,
+  ];
+}
+
+/** The name a video records by: where it is in the page, a file or component, else its selector. */
+export function videoWhere(video: VideoRecord): string {
+  if (video.locator.file !== undefined) return `${video.locator.file}:${video.locator.line ?? 0}`;
+  return video.locator.component[0] ?? video.locator.selector;
+}
+
+/**
+ * The bytes a view and a play save, est. The lever steps are per play (the full file less the encode); the view's share is
+ * the same fraction of the bytes the page loads per view.
+ */
+export function videoSavingOf(video: VideoRecord): { view: number; play: number } {
+  if (video.steps === undefined) return { view: 0, play: 0 };
+  const { audio, resolution, codec, quality } = video.steps;
+  const play = audio + resolution + codec + quality;
+  const { perView, perPlay } = video.bytes;
+  return { view: perPlay > 0 ? (play * perView) / perPlay : 0, play };
+}
+
+/**
+ * The Video section's totals: bytes per view and per play over the videos, and the saveable bytes (an estimate, marked when
+ * any video has steps). Undefined with no video.
+ */
+export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
+  if (videos.length === 0) return undefined;
+  const sum = (values: number[]): number => values.reduce((total, v) => total + v, 0);
+  const savings = videos.map(videoSavingOf);
+  const est = videos.some((v) => v.steps !== undefined) ? " est." : "";
+  return `video: ${kb(sum(videos.map((v) => v.bytes.perView)))}/view, ${kb(sum(videos.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}`;
+}
+
+/** A video's encode in one phrase: the encode at its width with its bytes, or why it was not encoded. */
+export function videoStatusOf(video: VideoRecord): string {
+  const e = video.estimate;
+  if (e === undefined) return `not encoded: ${safeText(video.notEncoded ?? "no passing quality")}`;
+  return `${codecName(e.codec)} CRF ${e.quality}, ${e.width}px, ${kb(e.bytes)} est.`;
+}
+
+/** One video as a row of a page's Video section: its place (quoted by the caller), its bytes, and its encode or reason. */
+export function videoRowOf(video: VideoRecord, quote: (text: string) => string): string {
+  return `${quote(videoWhere(video))}: ${kb(video.bytes.perView)}/view, ${kb(video.bytes.perPlay)}/play; ${videoStatusOf(video)}`;
+}
+
+/** What the bytes per view are, as a hint says it: the autoplay full file, the bytes seen in the scan, or none. */
+function viewBasisOf(video: VideoRecord): string {
+  const b = video.bytes;
+  if (b.perViewBasis === "full-file") return "autoplay: full file";
+  if (b.perViewBasis === "none") return "not loaded before play";
+  return b.browserDependent ? "preload=auto: browser-dependent, bytes seen in the scan" : "bytes seen in the scan";
+}
+
+/** The bytes per view of a width plan (audit): the encode's full bytes scaled by pixels to each viewport's width, averaged. */
+function bytesAtPlan(video: VideoRecord, plan: WidthPlan): string {
+  const est = video.estimate;
+  if (est === undefined || video.bytes.perPlay <= 0) {
+    return `not encoded${video.notEncoded !== undefined ? `: ${safeText(video.notEncoded)}` : ""}`;
+  }
+  if (plan.perViewport.length === 0) return "-";
+  const ratio = video.bytes.perView / video.bytes.perPlay;
+  const views = plan.perViewport.map((v) => est.bytes * (v.width / est.width) ** 2 * ratio);
+  return `${kb(views.reduce((total, v) => total + v, 0) / views.length)}/view est.`;
+}
+
+/** Audit: each viewport's need, and the bytes per view at one, two and three widths. No pick: the agent chooses. */
+function widthOptionLines(options: WidthPlan[]): string[] {
+  const lines: string[] = [];
+  const first = options[0];
+  if (first !== undefined && first.perViewport.length > 0) {
+    lines.push(`   viewports: ${first.perViewport.map((v) => `${JSON.stringify(safeText(v.viewport))} needs ${v.need}px`).join(", ")}`);
+  }
+  lines.push("   widths → bytes/view (audit: no pick)");
+  return lines;
+}
+
+/** Scan: the `<source>` list of the planned widths, AV1 then H.264 for each, with the encode's CRF and bytes at its width. */
+function targetLines(video: VideoRecord, plan: WidthPlan): string[] {
+  if (plan.containerDriven) {
+    return plan.perViewport.map((row) => {
+      const box = video.perViewport.find((v) => v.viewport === row.viewport);
+      const boxText = box !== undefined ? `box ${box.boxWidth} px at ${box.dpr}x` : "box not read";
+      return `     viewport ${JSON.stringify(safeText(row.viewport))}: ${boxText}, serve ${row.width}px`;
+    });
+  }
+  const est = video.estimate;
+  const lines: string[] = [];
+  for (const source of plan.sources) {
+    const media = source.media !== undefined ? `media="${source.media}" ` : "";
+    for (const kind of ["av1", "h264"] as const) {
+      const codec = kind === "av1" ? "av1-mp4" : "h264-mp4";
+      const at = est !== undefined && est.codec === codec && est.width === source.width ? ` CRF ${est.quality}, ${est.width}px, ${kb(est.bytes)} est.` : "";
+      lines.push(`     <source ${media}src="…-${source.width}.${kind}.mp4" type="${kind === "av1" ? AV1_TYPE : H264_TYPE}">${at}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * The lines of one video's hint: where and the bytes; the levers of the encode (audio, resolution, re-encode, one line each
+ * with its bytes per play; never a quality line, as the encode's quality is the re-encode); the loading, codec and poster
+ * levers; the target sources (or the widths table in audit); the evidence; and the saving. Without steps, the target and its
+ * bytes only. Without an encode, the reason.
+ */
+export function videoLines(video: VideoRecord, rank = 1): string[] {
+  const lines = [`${rank}. ${safeText(video.id)}  ${JSON.stringify(safeText(videoWhere(video)))}  ${safeText(video.page)}`];
+  lines.push(`   bytes: ${kb(video.bytes.perView)}/view (${viewBasisOf(video)}), ${kb(video.bytes.perPlay)}/play`);
+  const est = video.estimate;
+  if (est !== undefined && video.steps !== undefined) {
+    const s = video.steps;
+    lines.push(`   audio: drop the track (muted video): saves ${kb(s.audio)}/play est.`);
+    lines.push(`   resolution: serve ${est.width}px: saves ${kb(s.resolution)}/play est.`);
+    lines.push(`   re-encode (${codecName(est.codec)} CRF ${est.quality}): saves ${kb(s.codec)}/play est.`);
+  }
+  if (video.levers.loading !== undefined) {
+    const loading = video.levers.loading;
+    const attr = video.attributes.preload === "" ? "no preload attribute" : `preload=${JSON.stringify(safeText(video.attributes.preload))}`;
+    const action = video.attributes.autoplay
+      ? "autoplay fetches the file on load: lazy-load the video until it is in view"
+      : loading.belowFold
+        ? 'below the fold: set preload="none"'
+        : 'set preload="metadata"';
+    lines.push(`   loading: ${attr} loads ${kb(loading.perViewBytes)}/view before play: ${action}`);
+  }
+  if (video.levers.codec !== undefined) lines.push("   codec: no AV1 source: serve AV1 first, H.264 fallback");
+  if (video.levers.posterMissing === true) lines.push('   poster: none: add poster="<first frame>" (audited as an image)');
+  for (const note of video.levers.info) lines.push(`   info: ${safeText(note)}`);
+  if (video.widthOptions !== undefined) {
+    lines.push(...widthOptionLines(video.widthOptions));
+    for (const plan of video.widthOptions) {
+      lines.push(`     ${plan.widths.length} width(s): ${plan.widths.map((w) => `${w}px`).join(", ")} → ${bytesAtPlan(video, plan)}`);
+    }
+  } else if (video.widths !== undefined) {
+    lines.push(...targetLines(video, video.widths));
+  }
+  if (est !== undefined) lines.push(`   evidence: ${evidenceOf(est)}`);
+  else if (video.notEncoded !== undefined) lines.push(`   not encoded: ${safeText(video.notEncoded)}`);
+  if (est !== undefined && video.steps !== undefined) {
+    const s = videoSavingOf(video);
+    lines.push(`   saves ${kb(s.view)}/view est., ${kb(s.play)}/play est. ${SAMPLE_NOTE}`);
+  } else if (est !== undefined) {
+    lines.push(`   ${SAMPLE_NOTE}`);
+  }
+  return lines;
+}
+
+/** The hints command's Video part: each video's hint, numbered. Empty with no video. */
+export function renderVideoHints(videos: VideoRecord[]): string {
+  if (videos.length === 0) return "";
+  const body = videos.flatMap((video, i) => videoLines(video, i + 1));
+  return `${videos.length} video(s) on the page(s), self-hosted files:\n${body.join("\n")}\n`;
 }
 
 /**
@@ -652,6 +899,13 @@ function planJson(plan: QualityCapPlan | undefined): object | null {
     estKeptBytes: Math.round(plan.kept),
     estTotalBytes: Math.round(plan.total),
   };
+}
+
+/** The videos of the selected pages, for the hints command (none when a --component filter is given: videos have no sizes). */
+function videosOf(results: PageResult[], args: HintsArgs): VideoRecord[] {
+  if (args.component !== undefined) return [];
+  const page = args.page?.toLowerCase();
+  return results.flatMap((r) => r.videos ?? []).filter((v) => page === undefined || v.page.toLowerCase().includes(page));
 }
 
 /** `imgtune hints <scan.json> [<scan.json> ...] ...`: reads the pages' scan files, returns the text or JSON to print. */
@@ -690,6 +944,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   }
   // JSON is not cut to the text default: it is all of it unless --limit is passed, and `truncated` says whether it is.
   const jsonLimit = args.limitGiven ? args.limit : Number.MAX_SAFE_INTEGER;
+  const videos = videosOf(results, args);
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
     const groups = groupHints(filtered);
@@ -719,10 +974,11 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
           ids: group.hints.map((h) => h.id),
           hints: group.hints,
         })),
+        ...(videos.length > 0 ? { videos } : {}),
       };
       return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
     }
-    const text = renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page);
+    const text = `${renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page)}${renderVideoHints(videos)}`;
     return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
   }
   const selected = selectHints(all, args.format === "json" ? { ...args, limit: jsonLimit } : args);
@@ -737,10 +993,11 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
       truncated: args.offset + selected.length < filtered.length,
       qualities: planJson(plan),
       hints: selected,
+      ...(videos.length > 0 ? { videos } : {}),
     };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
   }
-  const text = renderHints(selected, filtered.length, args.offset, args.page);
+  const text = `${renderHints(selected, filtered.length, args.offset, args.page)}${renderVideoHints(videos)}`;
   return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
 }
 

@@ -7,7 +7,7 @@ import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
-import { commentHints } from "./hints.js";
+import { commentHints, videoRowOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
@@ -4023,6 +4023,13 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
       lines.push(`    ${sizes} -> ${suggested}  saves ${kb(g.savedBytes)}/view${loader}${hint}${qualityHint}`);
     }
   }
+  // The Video section: the page's <video> files, per view and per play, with each one's encode or the reason it has none.
+  const videos = result.videos ?? [];
+  const totals = videoTotalsLine(videos);
+  if (totals !== undefined) {
+    lines.push(`  ${totals}`);
+    for (const video of videos) lines.push(`    ${videoRowOf(video, (text) => JSON.stringify(safeText(text)))}`);
+  }
   return lines;
 }
 
@@ -4033,6 +4040,9 @@ export function renderScan(results: PageResult[], aggressive: boolean, hintsFile
   if (survey !== undefined) lines.push(survey, "");
   const note = scorerNote(results);
   if (note !== undefined) lines.push(note, "");
+  // The media phase's note (no ffmpeg, a failed encode run) is printed once, at the top, not once per page.
+  const media = results.find((r) => r.mediaNote !== undefined)?.mediaNote;
+  if (media !== undefined) lines.push(safeText(media), "");
   for (const result of results) lines.push(...renderPage(result, aggressive, hintsFile?.(result)), "");
   const byHost = new Map<string, PageNumbers[]>();
   for (const result of results) {
@@ -4112,6 +4122,8 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   if (survey !== undefined) lines.push(survey, "");
   const note = scorerNote(results);
   if (note !== undefined) lines.push(note, "");
+  const media = results.find((r) => r.mediaNote !== undefined)?.mediaNote;
+  if (media !== undefined) lines.push(mdText(media), "");
   lines.push(mdRow(head, width), mdRow(align, width));
   for (const result of results) {
     const label = pageLabel(result.url);
@@ -4129,18 +4141,25 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
     if (result.status !== "ok" || !result.page) continue;
     // The LCP line goes above the page's table: the image that the first paint waits for comes first.
     const lcp = lcpLinesOf(result, mdCode);
-    if (lcp.length === 0 && result.groups.length === 0) continue;
+    const videos = result.videos ?? [];
+    if (lcp.length === 0 && result.groups.length === 0 && videos.length === 0) continue;
     lines.push("", `### ${pageLabel(result.url)}`, "");
     for (const line of lcp) lines.push(line, "");
-    if (result.groups.length === 0) continue;
-    lines.push(mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
-    lines.push(mdRow(["---", "---", "---:", "---", "---"], 5));
-    for (const g of result.groups.slice(0, SUMMARY_GROUPS)) {
-      const current = g.sizes === undefined ? "no sizes" : mdCode(g.sizes);
-      const suggested = g.suggestedSizes === undefined ? "-" : mdCode(g.suggestedSizes);
-      const loader = g.loader ? mdCode(g.loader) : "-";
-      const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdCode(h)).join("; ");
-      lines.push(mdRow([current, suggested, `${kbNumber(g.savedBytes)}${g.estApprox === true ? APPROX_MARK : ""}`, loader, hint || "-"], 5));
+    if (result.groups.length > 0) {
+      lines.push(mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
+      lines.push(mdRow(["---", "---", "---:", "---", "---"], 5));
+      for (const g of result.groups.slice(0, SUMMARY_GROUPS)) {
+        const current = g.sizes === undefined ? "no sizes" : mdCode(g.sizes);
+        const suggested = g.suggestedSizes === undefined ? "-" : mdCode(g.suggestedSizes);
+        const loader = g.loader ? mdCode(g.loader) : "-";
+        const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdCode(h)).join("; ");
+        lines.push(mdRow([current, suggested, `${kbNumber(g.savedBytes)}${g.estApprox === true ? APPROX_MARK : ""}`, loader, hint || "-"], 5));
+      }
+    }
+    const totals = videoTotalsLine(videos);
+    if (totals !== undefined) {
+      lines.push("", totals, "");
+      for (const video of videos) lines.push(`- ${mdCode(videoRowOf(video, (text) => JSON.stringify(safeText(text))))}`);
     }
   }
   const plan = planQualityCap(results, maxQualities);

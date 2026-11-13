@@ -1,14 +1,14 @@
 // The Markdown report of `imgtune check`: a pure builder over the survey results, the deep results, the route grouping and
 // the deep selection. No browser, no files. The audit mode extends it with source-aware sections; the sections below keep
 // their order so the two stay comparable. Page-derived text goes through mdText and mdCode (see text.ts).
-import { hintsOf, type Hint } from "./hints.js";
+import { hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import { hasFix, type ImageRecord } from "./images.js";
 import { APPROX_MARK, siteNumbers, type PageResult } from "./remote.js";
 import type { RouteGrouping } from "./routes.js";
 import type { DeepRetry, DeepSelection, LeftOutType } from "./deep.js";
-import { errorLine, mdCode, mdText } from "./text.js";
+import { errorLine, mdCode, mdText, safeText } from "./text.js";
 
 /** How many fixes, heavy pages, sharpness images and survey route types the report lists in full. */
 export const REPORT_FIXES = 15;
@@ -242,6 +242,10 @@ export function buildCheckReport(input: CheckReportInput): string {
   );
   out(`time: survey ${input.timings.survey.toFixed(1)} s, deep ${input.timings.deep.toFixed(1)} s, total ${(input.timings.survey + input.timings.deep).toFixed(1)} s`, "");
 
+  // The media phase's note is printed once, at the top (the same note is on each page that has media).
+  const media = [...input.survey, ...input.deep].find((p) => p.mediaNote !== undefined)?.mediaNote;
+  if (media !== undefined) out(mdText(media), "");
+
   if (input.stop !== undefined) {
     out("## Stopped before the deep phase", "", `${mdText(input.stop.reason)}`, `Fix: ${mdText(input.stop.fix)}`, "");
   }
@@ -284,6 +288,18 @@ export function buildCheckReport(input: CheckReportInput): string {
   else {
     out(`Merged across the deep pages: one file:line when located, else one image pattern with the same proposed sizes. Ranked by the total saving over the pages. Top ${Math.min(REPORT_FIXES, fixes.length)} of ${fixes.length}.`, "");
     fixes.slice(0, REPORT_FIXES).forEach((fix, i) => out(...fixLines(fix, i + 1), ""));
+  }
+
+  // 3b. Video: the self-hosted <video> files of the deep pages, per view and per play, largest saveable first.
+  const videos = deepOk.flatMap((p) => (p.videos ?? []).map((video) => ({ page: p.url, video })));
+  if (videos.length > 0) {
+    out("## Video", "");
+    out(`${videoTotalsLine(videos.map((v) => v.video))} (${videos.length} video(s) on ${deepOk.filter((p) => (p.videos ?? []).length > 0).length} deep page(s))`, "");
+    const ranked = [...videos].sort((a, b) => videoSavingOf(b.video).view - videoSavingOf(a.video).view || a.page.localeCompare(b.page));
+    for (const row of ranked.slice(0, REPORT_FIXES)) {
+      out(`- ${mdCode(videoRowOf(row.video, (text) => JSON.stringify(safeText(text))))} on ${mdCode(pathOf(row.page))}`);
+    }
+    out("");
   }
 
   // 4. Heavy but not wasteful.
@@ -388,6 +404,9 @@ export function buildCheckReport(input: CheckReportInput): string {
       : "- Quality targets are not snapped (no --qualities given): a target the framework cannot serve is not the saving it looks like.",
     `- Third-party requests: ${input.options.thirdParty}${input.options.allowHosts ? ` (hosts kept: ${input.options.allowHosts.map(mdText).join(", ")})` : ""}. Blocking can drop images a page loads through its own API on another host.`,
     `- Pages with images still loading at settle show the images that loaded; the rest are not measured.`,
+    ...(videos.length > 0
+      ? [`- Video bytes: per view as the page loads them (autoplay: the whole file). The saveable bytes come from 2 s sample encodes: est.`]
+      : []),
     input.options.gpu !== undefined ? `- Quality was scored on the GPU ${input.options.gpu} (with the CPU fallback noted in the page JSON).` : "- Quality was scored on the CPU.",
     "",
   );

@@ -2,7 +2,7 @@
 // MAX_SUMMARY_LINES lines, so an agent decides the next step from it without opening the JSON.
 import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { hintsCommand } from "./hints.js";
+import { hintsCommand, videoTotalsLine } from "./hints.js";
 import { safeText, shellWord } from "./text.js";
 import { APPROX_MARK, APPROX_NOTE, pageFileName, type PageResult, siteNumbers, surveyLabelOf } from "./remote.js";
 import { candidatesOf, patternRanking } from "./worst.js";
@@ -95,6 +95,9 @@ export function renderSummary(input: SummaryInput): string {
     const parts = input.timings.map((t) => `${safeText(t.name)} ${t.seconds.toFixed(0)} s`).join(", ");
     lines.push(`time: ${total.toFixed(0)} s total (${parts})`);
   }
+  // The media phase's note is printed once, at the top (the same note is on each page that has media).
+  const media = [...(input.survey ?? []), ...input.deep].find((p) => p.mediaNote !== undefined)?.mediaNote;
+  if (media !== undefined) lines.push(safeText(media));
   lines.push("");
   if (input.stop !== undefined) {
     lines.push(`STOPPED before the deep phase: ${safeText(input.stop.reason)}`, `  fix: ${safeText(input.stop.fix)}`, "");
@@ -102,6 +105,8 @@ export function renderSummary(input: SummaryInput): string {
   if (input.survey !== undefined) lines.push(...surveyBlock(input.survey, input.surveyLabel, input.routes), "");
   else if (input.surveyLabel !== undefined) lines.push(safeText(input.surveyLabel), "");
   if (input.deep.length > 0) lines.push(...deepBlock(input.deep), "");
+  const withVideo = input.deep.filter((p) => p.status === "ok" && (p.videos ?? []).length > 0);
+  if (withVideo.length > 0) lines.push(...videoBlock(withVideo), "");
   if (input.callSites !== undefined) lines.push(...callSiteBlock(input.callSites), "");
   if (input.warnings.length > 0) lines.push(...listBlock("warnings", input.warnings, WARNING_ROWS), "");
   if (input.next.length > 0) lines.push(...listBlock("next", input.next, NEXT_ROWS));
@@ -165,6 +170,16 @@ const exactOf = (page: PageResult): number => {
   const n = page.page as NonNullable<PageResult["page"]>;
   return (n.meanImageBytes * n.exactPct) / 100;
 };
+
+/** The deep pages with a `<video>`: one line each, the page's video totals (per view, per play, saveable est.). */
+function videoBlock(pages: PageResult[]): string[] {
+  const shown = Math.min(DEEP_ROWS, pages.length);
+  const lines = [`videos: ${pages.length} deep page(s) with <video> (${shown} of ${pages.length} shown)`];
+  for (const page of pages.slice(0, DEEP_ROWS)) {
+    lines.push(`  ${trim(labelOf(page.url), LABEL_WIDTH).padEnd(LABEL_WIDTH)}  ${videoTotalsLine(page.videos ?? []) ?? ""}`);
+  }
+  return lines;
+}
 
 function callSiteBlock(sites: CallSite[]): string[] {
   if (sites.length === 0) return ["call sites by saving per view: none (no deep page has a fix hint)"];

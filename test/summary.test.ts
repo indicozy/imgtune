@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callSitesFromJson, labelOf, MAX_SUMMARY_LINES, parseManifest, renderSummary, showPath, summaryCommand, type CallSite, type SummaryInput } from "../src/summary.js";
-import { okPage, otherPage } from "./page-fixtures.js";
+import { candidateOf, okPage, otherPage, videoOf } from "./page-fixtures.js";
 
 const site = (i: number): CallSite => ({
   saved: (100 - i) * 1024,
@@ -279,5 +279,26 @@ describe("run.json is checked before anything from it is printed", () => {
     const text = renderSummary(input({ heading: "imgtune run:\u001b[31m 4 URL(s)\u0007" }));
     expect(text).not.toMatch(/\u001b|\u0007/);
     expect(text.split("\n")[0]).toBe("imgtune run: 4 URL(s)");
+  });
+});
+
+describe("renderSummary: the video line per page and the media note", () => {
+  it("prints one video line per deep page with <video>, and the media note once", () => {
+    const hero = videoOf({
+      bytes: { perView: 2000 * 1024, perPlay: 2000 * 1024, perViewBasis: "full-file", browserDependent: false, fullBytesKnown: true },
+      estimate: candidateOf({ codec: "av1-mp4", width: 960, quality: 32, bytes: 400 * 1024 }),
+      steps: { audio: 100 * 1024, resolution: 500 * 1024, codec: 1000 * 1024, quality: 0 },
+    });
+    const page = okPage("https://shop.example/p/one-1", 200, 25, { viewports: ["desktop"], videos: [hero], mediaNote: "ffmpeg not found" });
+    const other = okPage("https://shop.example/p/two-2", 120, 10, { viewports: ["desktop"], mediaNote: "ffmpeg not found" });
+    const out = renderSummary(input({ deep: [page, other] }));
+    expect(out).toMatch(/^  \/p\/one-1 +video: 2000 KB\/view, 2000 KB\/play, saveable 1600 KB\/view \(1600 KB\/play\) est\.$/m);
+    expect(out).not.toMatch(/\/p\/two-2 +video:/);
+    expect(out.split("ffmpeg not found").length).toBe(2);
+    expect(out.indexOf("ffmpeg not found")).toBeLessThan(out.indexOf("survey:"));
+  });
+
+  it("prints no video line for a summary without videos", () => {
+    expect(renderSummary(input())).not.toContain("video");
   });
 });

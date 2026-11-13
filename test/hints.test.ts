@@ -21,8 +21,12 @@ import {
   selectHints,
   type Hint,
 } from "../src/hints.js";
-import { renderPage, type PageResult } from "../src/remote.js";
+import { renderMarkdown, renderPage, type PageResult } from "../src/remote.js";
 import { planQualityCap } from "../src/qualities-cap.js";
+import { animatedLines, renderVideoHints, videoLines, videoTotalsLine } from "../src/hints.js";
+import { clusterVideoWidths } from "../src/media-model.js";
+import type { AnimatedFix, VideoRecord } from "../src/video-analysis.js";
+import { candidateOf, okPage, otherPage, videoOf } from "./page-fixtures.js";
 
 /** A synthetic image record. The fix defaults to a saving of `saved` bytes and a formula sizes value. */
 function record(id: string, overrides: { saved?: number; sharpness?: number; component?: string[]; file?: string; line?: number; sizes?: string; proposed?: string } = {}): ImageRecord {
@@ -760,3 +764,305 @@ describe("LCP first, sizes=\"auto\", CDN quality and the images.qualities cap (p
   });
 });
 
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Animated images and `<video>` in the hints and the page output (Task 8). The shapes are the exact text of the brief.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** An animated GIF's image record: the fix carries the animation and its encode candidates. */
+function animatedRecord(id: string, animated: AnimatedFix, src = "https://shop.example/a.gif"): ImageRecord {
+  const rec = record(id, { saved: 0 });
+  rec.current.src = src;
+  rec.fix.animated = animated;
+  return rec;
+}
+
+const GIF_INFO = { format: "gif" as const, frames: 30, durationMs: 3000, loop: 0 };
+
+describe("animated hints (the image hints of an animated file)", () => {
+  it("prints the animated AVIF and WebP shape with the <picture> fallback, the saving and the sample note", () => {
+    const animated: AnimatedFix = {
+      info: GIF_INFO,
+      context: "img",
+      target: { main: "animated-image", alternatives: ["animated-avif", "animated-webp", "video"] },
+      estimate: [
+        candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 }),
+        candidateOf({ codec: "animated-webp", width: 960, quality: 70, bytes: 150 * 1024 }),
+      ],
+      perViewBytes: 500 * 1024,
+    };
+    const [hint] = hintsOf(page([animatedRecord("g1", animated)]));
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain(
+      '   animated GIF 3.0 s, 30 frames: serve animated AVIF q45 at 960px (120 KB est.), animated WebP q70 (150 KB est.); fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est. (estimate from 2 s samples)',
+    );
+    expect(text.split("(estimate from 2 s samples)")).toHaveLength(2);
+  });
+
+  it("prints the CSS background fallback as image-set() with the AVIF and WebP files", () => {
+    const animated: AnimatedFix = {
+      info: GIF_INFO,
+      context: "css-background",
+      target: { main: "animated-image", alternatives: ["animated-avif", "animated-webp"] },
+      estimate: [
+        candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 }),
+        candidateOf({ codec: "animated-webp", width: 960, quality: 70, bytes: 150 * 1024 }),
+      ],
+      perViewBytes: 500 * 1024,
+    };
+    const rec = animatedRecord("g2", animated);
+    rec.kind = "css-background";
+    const [hint] = hintsOf(page([rec]));
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain('fallback: image-set(url(<avif>) type("image/avif"), url(<webp>) type("image/webp"))');
+  });
+
+  it("prints the <video> replacement for a big GIF: AV1 and H.264 sources, the AVIF alternative and the saving", () => {
+    const animated: AnimatedFix = {
+      info: GIF_INFO,
+      context: "img",
+      target: { main: "video", alternatives: ["animated-avif", "animated-webp"] },
+      estimate: [
+        candidateOf({ codec: "av1-mp4", width: 960, quality: 32, bytes: 412 * 1024 }),
+        candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 900 * 1024 }),
+        candidateOf({ codec: "animated-webp", width: 960, quality: 70, bytes: 1000 * 1024 }),
+      ],
+      perViewBytes: 1800 * 1024,
+    };
+    const [hint] = hintsOf(page([animatedRecord("g3", animated)]));
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain('   animated GIF 3.0 s, 30 frames: replace with <video autoplay muted loop playsinline poster="<first frame>">');
+    expect(text).toContain('     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> CRF 32, 960px, 412 KB est.');
+    expect(text).toContain('     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028"> H.264 fallback: not encoded');
+    expect(text).toContain("   alternative: animated AVIF q45 at 960px (900 KB est.), animated WebP q70 (1000 KB est.)");
+    expect(text).toContain("   saves 1388 KB/view est. (estimate from 2 s samples)");
+  });
+
+  it("prints the encode's quality evidence with its bars, and says when a bar was not recorded", () => {
+    const animated: AnimatedFix = {
+      info: GIF_INFO,
+      context: "img",
+      target: { main: "animated-image", alternatives: [] },
+      estimate: [candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024, vmafBar: 93 })],
+      perViewBytes: 500 * 1024,
+    };
+    const [hint] = hintsOf(page([animatedRecord("g4", animated)]));
+    expect(renderHint(hint, 1).join("\n")).toContain("   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)");
+    const bare = { ...animated, estimate: [candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 })] };
+    const [other] = hintsOf(page([animatedRecord("g5", bare)]));
+    expect(renderHint(other, 1).join("\n")).toContain("   evidence: VMAF 95.2 (bar not recorded), still 72.0 (bar 70)");
+  });
+
+  it("says a not encoded animated image with its reason and its bytes, and no target", () => {
+    const animated: AnimatedFix = {
+      info: GIF_INFO,
+      context: "img",
+      target: { main: "animated-image", alternatives: ["animated-avif", "animated-webp", "video"] },
+      perViewBytes: 500 * 1024,
+      notEncoded: "survey",
+    };
+    const [hint] = hintsOf(page([animatedRecord("g6", animated)]));
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain("   animated GIF 3.0 s, 30 frames: 500 KB/view; not encoded: survey");
+    expect(text).not.toContain("serve animated AVIF");
+  });
+
+  it("keeps an animated image in the hints even when it has no sizes or byte saving", () => {
+    const animated: AnimatedFix = { info: GIF_INFO, context: "img", target: { main: "animated-image", alternatives: [] }, perViewBytes: 1 };
+    const rec = animatedRecord("g7", animated);
+    delete rec.fix.sizes;
+    expect(hintsOf(page([rec]))).toHaveLength(1);
+  });
+});
+
+/** A `<video>` with one desktop viewport, a 960px AV1 target and a 400 KB estimate, plus the steps of that encode. */
+function encodedVideo(over: Partial<VideoRecord> = {}): VideoRecord {
+  const needs = [{ viewport: "desktop", viewportWidth: 1280, boxWidth: 480, dpr: 2 }];
+  return videoOf({
+    attributes: { autoplay: true, muted: true, loop: false, playsinline: true, preload: "" },
+    bytes: { perView: 2000 * 1024, perPlay: 2000 * 1024, perViewBasis: "full-file", browserDependent: false, fullBytesKnown: true },
+    widths: clusterVideoWidths(needs, 2, 1920),
+    estimate: candidateOf({ codec: "av1-mp4", width: 960, quality: 32, bytes: 400 * 1024, vmafBar: 93 }),
+    steps: { audio: 100 * 1024, resolution: 500 * 1024, codec: 1000 * 1024, quality: 0 },
+    ...over,
+  });
+}
+
+describe("video hints (levers, target, bytes, evidence)", () => {
+  it("prints one line per claimed lever with its bytes, the target sources, the evidence and the saving", () => {
+    const lines = videoLines(encodedVideo(), 1);
+    expect(lines).toEqual([
+      '1. video:abc  "Hero"  https://shop.example/bags',
+      "   bytes: 2000 KB/view (autoplay: full file), 2000 KB/play",
+      "   audio: drop the track (muted video): saves 100 KB/play est.",
+      "   resolution: serve 960px: saves 500 KB/play est.",
+      "   re-encode (av1 CRF 32): saves 1000 KB/play est.",
+      '     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> CRF 32, 960px, 400 KB est.',
+      '     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028">',
+      "   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)",
+      "   saves 1600 KB/view est., 1600 KB/play est. (estimate from 2 s samples)",
+    ]);
+  });
+
+  it("prints the target and its bytes only, with no lever breakdown, when there are no steps", () => {
+    const text = videoLines(encodedVideo({ steps: undefined }), 1).join("\n");
+    expect(text).not.toMatch(/drop the track|resolution: serve|re-encode \(/);
+    expect(text).toContain('CRF 32, 960px, 400 KB est.');
+    expect(text.split("(estimate from 2 s samples)")).toHaveLength(2);
+  });
+
+  it("never prints a quality lever line", () => {
+    expect(videoLines(encodedVideo(), 1).join("\n")).not.toMatch(/^ {3}quality/m);
+  });
+
+  it("prints the media condition of each width source, with the H.264 source after the AV1 one", () => {
+    const needs = [
+      { viewport: "mobile", viewportWidth: 390, boxWidth: 390, dpr: 2 },
+      { viewport: "desktop", viewportWidth: 1280, boxWidth: 640, dpr: 2 },
+    ];
+    const video = encodedVideo({ widths: clusterVideoWidths(needs, 2, 1920) });
+    const text = videoLines(video, 1).join("\n");
+    expect(text).toContain('     <source media="(min-width: 1280px)" src="…-1280.av1.mp4" type="video/mp4; codecs=av01.0.08M.08">');
+    expect(text).toContain('     <source media="(min-width: 1280px)" src="…-1280.h264.mp4" type="video/mp4; codecs=avc1.640028">');
+    expect(text).toContain('     <source src="…-854.av1.mp4" type="video/mp4; codecs=av01.0.08M.08">');
+  });
+
+  it("prints each viewport's box width instead of the conditions when the box drives the need", () => {
+    const widths = { widths: [1280], perViewport: [{ viewport: "desktop", need: 1280, width: 1280 }], sources: [{ width: 1280, media: undefined }], conditions: [], containerDriven: true };
+    const text = videoLines(encodedVideo({ widths }), 1).join("\n");
+    expect(text).toContain('     viewport "desktop": box 480 px at 2x, serve 1280px');
+    expect(text).not.toContain("<source");
+  });
+
+  it("prints the widths table in audit mode, with each viewport's need and no pick", () => {
+    const needs = [
+      { viewport: "desktop", viewportWidth: 1280, boxWidth: 640, dpr: 2 },
+      { viewport: "mobile", viewportWidth: 390, boxWidth: 390, dpr: 2 },
+    ];
+    const widthOptions = [1, 2, 3].map((max) => clusterVideoWidths(needs, max, 1920));
+    const video = encodedVideo({ widths: undefined, widthOptions, estimate: undefined, steps: undefined, notEncoded: "survey" });
+    const text = videoLines(video, 1).join("\n");
+    expect(text).toContain('   viewports: "desktop" needs 1280px, "mobile" needs 854px');
+    expect(text).toContain("   widths → bytes/view (audit: no pick)");
+    expect(text).toContain("     1 width(s): 1280px → not encoded");
+    expect(text).toContain("     2 width(s): 854px, 1280px → not encoded");
+    expect(text).not.toContain("<source");
+  });
+
+  it("prints the bytes per view at each audit width from the encode, scaled by pixels", () => {
+    const needs = [{ viewport: "desktop", viewportWidth: 1280, boxWidth: 640, dpr: 2 }];
+    const widthOptions = [1, 2, 3].map((max) => clusterVideoWidths(needs, max, 1920));
+    const estimate = candidateOf({ codec: "av1-mp4", width: 1280, quality: 32, bytes: 400 * 1024 });
+    const text = videoLines(encodedVideo({ widths: undefined, widthOptions, steps: undefined, estimate }), 1).join("\n");
+    expect(text).toContain("     1 width(s): 1280px → 400 KB/view est.");
+  });
+
+  it("prints the not encoded reason, and the levers that need no encode", () => {
+    const video = videoOf({
+      levers: { info: ["frame rate 30 fps"], posterMissing: true, codec: { missing: "av1" }, loading: { perViewBytes: 500 * 1024, belowFold: true } },
+      notEncoded: "server has no Range support",
+    });
+    const text = videoLines(video, 1).join("\n");
+    expect(text).toContain("   not encoded: server has no Range support");
+    expect(text).toContain("   info: frame rate 30 fps");
+    expect(text).toContain("   codec: no AV1 source: serve AV1 first, H.264 fallback");
+    expect(text).toContain('   poster: none: add poster="<first frame>" (audited as an image)');
+    expect(text).toContain("loads 500 KB/view before play");
+  });
+
+  it("prints page-derived names as JSON strings, so a quote or a newline stays data", () => {
+    const video = videoOf({ locator: { component: [], selector: 'video."x"\n<b>', classes: "", loader: "video" } });
+    const header = videoLines(video, 1)[0];
+    expect(header).toContain('"video.\\"x\\"<b>"');
+    expect(header.includes("\n")).toBe(false);
+  });
+
+  it("totals the video bytes per view and per play, and the saveable bytes", () => {
+    const other = videoOf({ id: "video:def", bytes: { perView: 0, perPlay: 1000 * 1024, perViewBasis: "none", browserDependent: false, fullBytesKnown: true } });
+    expect(videoTotalsLine([encodedVideo(), other])).toBe("video: 2000 KB/view, 3000 KB/play, saveable 1600 KB/view (1600 KB/play) est.");
+    expect(videoTotalsLine([])).toBeUndefined();
+  });
+
+  it("renders no video hints for a page without videos", () => {
+    expect(renderVideoHints([])).toBe("");
+  });
+});
+
+describe("page output with media (the image output is unchanged)", () => {
+  it("renders the page of the fixture exactly as before the media sections existed", () => {
+    expect(renderPage(okPage("https://shop.example/p/one-1", 200, 25, { viewports: ["iphone-15", "desktop"] }), false, "x.json")).toEqual([
+      "https://shop.example/p/one-1  ok",
+      "  viewports: iphone-15, desktop",
+      "  image bytes per view   200 KB",
+      "  saving exact           25.0%",
+      "  saving exact + est.    25.0%",
+      "  of fixable images      25.0%",
+      "  sharpness (separate)   +0.0 KB",
+    ]);
+  });
+
+  it("adds a Video section with the totals and the not encoded reason", () => {
+    const result = okPage("https://shop.example/bags", 200, 25, {
+      videos: [encodedVideo(), videoOf({ id: "video:def", notEncoded: "server has no Range support" })],
+    });
+    const text = renderPage(result, false).join("\n");
+    expect(text).toContain("  video: 2000 KB/view, 4000 KB/play, saveable 1600 KB/view (1600 KB/play) est.");
+    expect(text).toContain('    "Hero": 2000 KB/view, 2000 KB/play; av1 CRF 32, 960px, 400 KB est.');
+    expect(text).toContain('    "Hero": 0 KB/view, 2000 KB/play; not encoded: server has no Range support');
+  });
+});
+
+describe("markdown and the hints command with media", () => {
+  it("renders the Markdown scan of a page without media exactly as before the media sections existed", () => {
+    const pages = [
+      okPage("https://shop.example/p/one-1", 200, 25, { viewports: ["iphone-15", "desktop"] }),
+      okPage("https://shop.example/c/x", 80, 40),
+      otherPage("https://shop.example/c/y", "blocked"),
+    ];
+    expect(renderMarkdown(pages, false).split("\n")).toEqual([
+      "## imgtune scan",
+      "",
+      "| page | status | image KB/view | exact | exact + est. | sharpness |",
+      "| --- | --- | ---: | ---: | ---: | ---: |",
+      "| `shop.example/p/one-1` | ok | 200 | 25.0% | 25.0% | +0.0 KB |",
+      "| `shop.example/c/x` | ok | 80 | 40.0% | 40.0% | +0.0 KB |",
+      "| `shop.example/c/y` | blocked `blocked` |  |  |  |  |",
+      "",
+      "Method: savings are shares of each page view's image bytes, averaged over viewports. exact = the site's own smaller srcset candidates, measured; est. = a local re-encode (quality, format or a plain img resize), judged by SSIMULACRA2 at delta 2. Sharpness is undersized images, reported apart from the savings.",
+      "",
+      "Viewports: `iphone-15`, `desktop`.",
+    ]);
+  });
+
+  it("adds the Video totals and one row per video to the Markdown scan, and the media note once at the top", () => {
+    const hero = videoOf({
+      bytes: { perView: 2000 * 1024, perPlay: 2000 * 1024, perViewBasis: "full-file", browserDependent: false, fullBytesKnown: true },
+      estimate: candidateOf({ codec: "av1-mp4", width: 960, quality: 32, bytes: 400 * 1024 }),
+      steps: { audio: 100 * 1024, resolution: 500 * 1024, codec: 1000 * 1024, quality: 0 },
+    });
+    const withMedia = okPage("https://shop.example/bags", 200, 25, { viewports: ["desktop"], videos: [hero], mediaNote: "ffmpeg not found" });
+    const md = renderMarkdown([withMedia, okPage("https://shop.example/c/x", 80, 40, { mediaNote: "ffmpeg not found" })], false);
+    expect(md).toContain("video: 2000 KB/view, 2000 KB/play, saveable 1600 KB/view (1600 KB/play) est.");
+    expect(md).toContain('- `"Hero": 2000 KB/view, 2000 KB/play; av1 CRF 32, 960px, 400 KB est.`');
+    expect(md.split("ffmpeg not found").length).toBe(2);
+  });
+
+  it("prints the video hints after the image hints, and adds them to the JSON only when there are videos", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-video-hints-"));
+    const animated: AnimatedFix = { info: GIF_INFO, context: "img", target: { main: "animated-image", alternatives: [] }, perViewBytes: 500 * 1024, notEncoded: "survey" };
+    const withVideo = { ...page([animatedRecord("g9", animated)]), videos: [encodedVideo()] };
+    const plain = { ...page([animatedRecord("g10", animated)]) };
+    const textFile = join(dir, "video.json");
+    const plainFile = join(dir, "plain.json");
+    await writeFile(textFile, JSON.stringify(withVideo));
+    await writeFile(plainFile, JSON.stringify(plain));
+    const text = (await hintsCommand([textFile], dir)).output;
+    expect(text).toContain("animated GIF 3.0 s, 30 frames: 500 KB/view; not encoded: survey");
+    expect(text).toContain("1. video:abc");
+    expect(text.indexOf("animated GIF")).toBeLessThan(text.indexOf("1. video:abc"));
+    const json = JSON.parse((await hintsCommand([textFile, "--format", "json"], dir)).output);
+    expect(json.videos).toHaveLength(1);
+    const plainJson = JSON.parse((await hintsCommand([plainFile, "--format", "json"], dir)).output);
+    expect(plainJson).not.toHaveProperty("videos");
+  });
+});

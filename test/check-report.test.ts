@@ -7,7 +7,8 @@ import { selectDeepPages } from "../src/deep.js";
 import { groupRoutes } from "../src/routes.js";
 import type { ImageRecord } from "../src/images.js";
 import type { PageResult } from "../src/remote.js";
-import { okPage, otherPage } from "./page-fixtures.js";
+import { candidateOf, okPage, otherPage, videoOf } from "./page-fixtures.js";
+import type { VideoRecord } from "../src/video-analysis.js";
 
 const SHOP = "https://shop.example";
 
@@ -256,5 +257,56 @@ describe("failed pages and retries in the report", () => {
     expect(report).toMatch(/deep 3 page\(s\) \(1 retried\): 2 ok, 1 failed, 0 not measured/);
     expect(report).toMatch(/Deep: 1 of 3 page\(s\) not measured, 1 failed;/);
     expect(report).toContain("- retried: `/showcase` failed, so `/faqs` (the next-heaviest page of `/showcase`) was deep-scanned in its place");
+  });
+});
+
+describe("buildCheckReport: the Video section and the media note", () => {
+  /** A report input over one survey page and the given deep pages (no image fixes needed for the video section). */
+  function reportOver(deep: PageResult[]): CheckReportInput {
+    const survey: PageResult[] = [okPage(`${SHOP}/ae-en/cart`, 300, 20)];
+    const routes = groupRoutes(survey.map((p) => p.url));
+    return {
+      site: "https://shop.example",
+      date: "2026-11-13",
+      version: "0.1.0",
+      survey,
+      deep,
+      routes,
+      selection: selectDeepPages(survey, routes, 10),
+      urls: { listed: 1, surveyed: 1 },
+      timings: { survey: 1, deep: 2 },
+      options: { surveyViewports: ["desktop"], deepViewports: ["desktop"], thirdParty: "allowed", quality: true },
+    };
+  }
+
+  it("has no Video section for a report without videos", () => {
+    const report = buildCheckReport(reportOver([deepOf(`${SHOP}/ae-en/cart`, 300, 20, [])]));
+    expect(report).not.toContain("## Video");
+    expect(report).not.toContain("video:");
+  });
+
+  it("prints the totals, each video with its encode or reason, and the media note once at the top", () => {
+    const withVideos = (url: string, videos: VideoRecord[]): PageResult => ({
+      ...deepOf(url, 300, 20, []),
+      videos,
+      mediaNote: "ffmpeg not found: the encodes are left out",
+    });
+    const encoded = videoOf({
+      page: `${SHOP}/ae-en/cart`,
+      attributes: { autoplay: true, muted: true, loop: false, playsinline: true, preload: "" },
+      bytes: { perView: 2000 * 1024, perPlay: 2000 * 1024, perViewBasis: "full-file", browserDependent: false, fullBytesKnown: true },
+      estimate: candidateOf({ codec: "av1-mp4", width: 960, quality: 32, bytes: 400 * 1024 }),
+      steps: { audio: 100 * 1024, resolution: 500 * 1024, codec: 1000 * 1024, quality: 0 },
+    });
+    const missing = videoOf({ id: "video:def", page: `${SHOP}/ae-en/faqs`, notEncoded: "server has no Range support" });
+    const report = buildCheckReport(
+      reportOver([withVideos(`${SHOP}/ae-en/cart`, [encoded]), withVideos(`${SHOP}/ae-en/faqs`, [missing])]),
+    );
+    expect(report).toContain("## Video");
+    expect(report).toContain("video: 2000 KB/view, 4000 KB/play, saveable 1600 KB/view (1600 KB/play) est.");
+    expect(report).toContain("av1 CRF 32, 960px, 400 KB est.");
+    expect(report).toContain("not encoded: server has no Range support");
+    expect(report.split("ffmpeg not found").length).toBe(2);
+    expect(report.indexOf("ffmpeg not found")).toBeLessThan(report.indexOf("## Summary"));
   });
 });
