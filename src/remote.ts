@@ -444,8 +444,8 @@ export interface ScanArgs {
   root?: string;
   /** --no-cache: encode and score everything again, and keep nothing on disk. */
   noCache?: boolean;
-  /** --cpu-encode: the media is encoded on the CPU even with a GPU (the default with --gpu is NVENC). */
-  cpuEncode?: boolean;
+  /** --gpu-encode (experimental): the media is encoded on the GPUs (NVENC, CUDA VMAF). Off by default: CPU encodes. */
+  gpuEncode?: boolean;
   out: string;
   aggressive: boolean;
   quality: boolean;
@@ -597,7 +597,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--resume") args.resume = true;
     else if (arg === "--gpu") args.gpu ??= gpuSettingOne(0);
     else if (arg === "--no-cache") args.noCache = true;
-    else if (arg === "--cpu-encode") args.cpuEncode = true;
+    else if (arg === "--gpu-encode") args.gpuEncode = true;
     else if (arg === "--harness") args.harness = true;
     else if (arg === "--survey") args.survey = true;
     else if (arg === "--fail-on-broken") args.failOnBroken = true;
@@ -3392,8 +3392,8 @@ export interface ScanOptions {
   qualityFor?: (inst: Instance) => boolean;
   /** Score with the GPU scorer on this GPU index (--gpu, --gpu-device). Undefined: the CPU scores. */
   gpu?: GpuSetting;
-  /** --cpu-encode: the media is encoded on the CPU even with a GPU (see the media phase). */
-  cpuEncode?: boolean;
+  /** --gpu-encode (experimental): the media is encoded on the GPUs (see the media phase). Off by default: CPU encodes. */
+  gpuEncode?: boolean;
   /** Pages in flight at once on the shared browser (--page-concurrency). Default 1: one page at a time. */
   pageConcurrency?: number;
   /** The cap on the wait for network idle after scroll, in ms (--idle-timeout). Default NETWORK_IDLE_TIMEOUT_MS; 0 skips the wait. */
@@ -3902,8 +3902,8 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         proxy: proxy?.url,
         score: run.deps.score,
         scorerId: run.deps.scorerId,
-        // The GPU encodes with NVENC unless --cpu-encode asks for the CPU encoders.
-        gpus: opts.cpuEncode === true ? undefined : opts.gpu?.devices,
+        // The media is encoded on the CPU unless --gpu-encode asks for the GPUs: the --gpu-device list, else GPU 0.
+        gpus: opts.gpuEncode === true ? (opts.gpu?.devices ?? [0]) : undefined,
         signal: opts.signal,
         thirdParty: run.thirdParty,
       },
@@ -4517,7 +4517,7 @@ export async function scanCommand(
     sharedLoads: args.sharedLoads === true,
     storageState,
     gpu: args.gpu,
-    cpuEncode: args.cpuEncode,
+    gpuEncode: args.gpuEncode,
     cache: args.noCache !== true,
     report,
     thirdParty: args.thirdParty,

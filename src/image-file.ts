@@ -51,8 +51,8 @@ export interface ImageArgs {
   gpu?: GpuSetting;
   /** --no-cache: the numbers are computed again, and none is kept in .imgtune/cache. */
   noCache?: boolean;
-  /** --cpu-encode: the media is encoded on the CPU even with a GPU (the default with --gpu is NVENC). */
-  cpuEncode?: boolean;
+  /** --gpu-encode (experimental): the media is encoded on the GPU (the --gpu-device GPU, else 0). Off by default: CPU encodes. */
+  gpuEncode?: boolean;
   /** --reference: the original a media candidate is compared with. A local file (media is never read from a URL here). */
   reference?: string;
   /** --video-bar: the minimum VMAF of a video or animated encode, 0 to 100 (default DEFAULT_VIDEO_BAR). */
@@ -92,8 +92,8 @@ export function parseImageArgs(argv: string[]): ImageArgs {
       args.noCache = true;
       continue;
     }
-    if (arg === "--cpu-encode") {
-      args.cpuEncode = true;
+    if (arg === "--gpu-encode") {
+      args.gpuEncode = true;
       continue;
     }
     if (arg === "--json") {
@@ -519,8 +519,8 @@ async function measureInputs(
   let scratch: string | undefined;
   const mediaContext = async (): Promise<MediaContext> => {
     scratch ??= await mkdtemp(join(tmpdir(), "imgtune-media-file-"));
-    // The NVENC encoders are proven on the GPU before any encode; --cpu-encode keeps the CPU encoders.
-    const device = args.cpuEncode === true ? undefined : args.gpu?.device;
+    // The media is encoded on the CPU unless --gpu-encode asks for the GPU; its encoders are proven on that GPU first.
+    const device = args.gpuEncode === true ? (args.gpu?.device ?? 0) : undefined;
     const caps = await withGpu(await probeFfmpeg(), device);
     return {
       caps,

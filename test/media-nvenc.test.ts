@@ -238,12 +238,16 @@ describe("hint labels of an NVENC candidate", () => {
   });
 });
 
-describe("--cpu-encode", () => {
+describe("--gpu-encode (experimental, off by default)", () => {
   it("is read by the scan and the image command, and is off by default", () => {
-    expect(parseScanArgs(["https://example.com"]).cpuEncode).toBeUndefined();
-    expect(parseScanArgs(["https://example.com", "--cpu-encode"]).cpuEncode).toBe(true);
-    expect(parseImageArgs(["a.gif"]).cpuEncode).toBeUndefined();
-    expect(parseImageArgs(["a.gif", "--cpu-encode"]).cpuEncode).toBe(true);
+    expect(parseScanArgs(["https://example.com"]).gpuEncode).toBeUndefined();
+    expect(parseScanArgs(["https://example.com", "--gpu-encode"]).gpuEncode).toBe(true);
+    expect(parseImageArgs(["a.gif"]).gpuEncode).toBeUndefined();
+    expect(parseImageArgs(["a.gif", "--gpu-encode"]).gpuEncode).toBe(true);
+  });
+
+  it("leaves --gpu and --gpu-device to the scorer alone", () => {
+    expect(parseScanArgs(["https://example.com", "--gpu-device", "0,1"]).gpuEncode).toBeUndefined();
   });
 });
 

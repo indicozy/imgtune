@@ -153,12 +153,14 @@ self-hosted `<video>` elements with a plain file source. Static GIFs get the nor
 - **ffmpeg** is used from `PATH`; ImgTune does not bundle it. Without it, `scan` still reports each animated image's and
   video's bytes and the width it needs, and prints one note: `install ffmpeg for verified video and GIF hints`. The encodes,
   and so the fix hints with a size, need it.
-- **GPU encodes (NVENC).** With `--gpu` or `--gpu-device <n>`, the sample encodes run on the GPU: AV1 (`av1_nvenc`) and H.264
-  (`h264_nvenc`), preset p4, constant quality (`cq`) in VBR. Each GPU is proven by a tiny test encode first. A width under
-  144 px, or an NVENC failure, is encoded on the CPU for that candidate. Performance before precision: NVENC is larger at
-  equal quality, so the reported bytes are the NVENC bytes ÷ 1.4, labelled `est. (GPU-encoded, scaled to a CPU encode ÷1.4)`.
-  The hint's recipe is the CPU one (`libsvtav1` / `libx264`), and an NVENC quality is marked `approx.` (CRF = cq). Pass
-  `--cpu-encode` to use the CPU encoders with a GPU; the `scan`, `run`, `check` and `image` commands take it.
+- **Encodes run on the CPU by default.** `--gpu-encode` is **experimental**: it moves the sample encodes to the GPU (NVENC
+  `av1_nvenc` / `h264_nvenc`, preset p4, constant quality in VBR; `libvmaf_cuda` for the VMAF). It uses the `--gpu-device`
+  list, else GPU 0, in workers beside the CPU ones. Each GPU is proven by a tiny test encode first; a width under 144 px or
+  an NVENC failure is encoded on the CPU for that candidate. NVENC is larger at equal quality, so its bytes are reported as
+  NVENC bytes ÷ 1.4, labelled `est. (GPU-encoded, scaled to a CPU encode ÷1.4)`. In our measurements `--gpu-encode` was
+  slower than the CPU (per-process CUDA start-up); see the report before using it. `--gpu` and `--gpu-device` only pick the
+  SSIMULACRA2 GPU scorer (the first device). The hint's recipe is the CPU one (`libsvtav1` / `libx264`), and an NVENC
+  quality is marked `approx.` (CRF = cq).
 - **Hints.** A large animated GIF gets `<video autoplay muted loop playsinline>` with AV1 first and an H.264 fallback, and
   the animated-image alternative with its size. A small `<img>` GIF or a CSS background gets an animated AVIF or WebP. A
   `<video>` hint names each lever: the width per breakpoint (`<source media>`), the CRF, the codec, the audio track of a
