@@ -278,7 +278,7 @@ describe.skipIf(!nvencCaps.av1Nvenc)("NVENC output at the bottom of the quality 
       { timeoutMs: 120_000, env: nvencEnv(GPU) },
     );
     expect(made.code).toBe(0);
-    const vmaf = await vmafOf([...inputOptions(candidate), "-i", candidate], samples[0], 640, probe.fps > 0 ? probe.fps : 30, join(dir, "cq20.json"), Date.now() + 120_000, undefined, undefined, GPU);
+    const vmaf = await vmafOf([...inputOptions(candidate), "-i", candidate], samples[0], 640, probe.fps > 0 ? probe.fps : 30, join(dir, "cq20.json"), Date.now() + 120_000);
     expect(vmaf).toBeGreaterThan(90);
   }, 240_000);
 });
