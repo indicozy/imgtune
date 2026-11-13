@@ -40,9 +40,9 @@ export function otherPage(url: string, status: PageResult["status"], over: Parti
   return { ...okPage(url, 0, 0), status, page: undefined, error: status, ...over };
 }
 
-/** A candidate encode: the fixed fields a rendered hint reads, with the bars the record would carry. */
-export function candidateOf(over: Partial<CandidateResult> & { vmafBar?: number } = {}): CandidateResult & { vmafBar?: number } {
-  return {
+/** A candidate encode: the fields a rendered hint reads. The VMAF bar defaults to 93 (the default --video-bar). */
+export function candidateOf(over: Partial<CandidateResult> & { vmafBar?: number } = {}): CandidateResult {
+  const base: CandidateResult = {
     codec: "av1-mp4",
     width: 960,
     quality: 32,
@@ -52,10 +52,11 @@ export function candidateOf(over: Partial<CandidateResult> & { vmafBar?: number 
     vmaf: 95.2,
     still: 72,
     stillBar: 70,
+    vmafBar: 93,
     estimate: true,
     audio: false,
-    ...over,
   };
+  return { ...base, ...over };
 }
 
 /** A `<video>` record of a page: autoplay off, preload metadata, 2000 KB file, one desktop viewport. */

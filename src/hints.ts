@@ -286,6 +286,16 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
     if (record.fix.animated !== undefined) {
       hint.animated = record.fix.animated;
       if (record.current.src !== undefined) hint.src = record.current.src;
+      // The animated saving is the encode's (est.), so it ranks the hint like an image's saving. The record's own sizes part
+      // stays; its quality estimate is replaced by the encode (the animated file is not re-encoded by the image pipeline).
+      const encoded = animatedSavingOf(record.fix.animated);
+      const sizesPart = record.fix.bytes.sizes;
+      hint.bytes = {
+        saved: (sizesPart ?? 0) + encoded,
+        addedForSharpness: record.fix.bytes.addedForSharpness,
+        ...(sizesPart !== undefined ? { sizes: sizesPart } : {}),
+        quality: encoded,
+      };
     }
     return hint;
   });
@@ -360,7 +370,9 @@ export function renderHint(hint: Hint, rank: number): string[] {
   }
   if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
-  else lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
+  else if (hint.animated === undefined || hint.sizes.proposed !== undefined) {
+    lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
+  }
   if (hint.sizesAuto !== undefined) lines.push(`   alternative: sizes="${safeText(hint.sizesAuto)}" (Chrome, Edge, Firefox 150+; Safari falls back to ${safeText(hint.sizes.proposed ?? "-")})`);
   if (hint.via === "prod-sourcemap") {
     lines.push("   located via the production source map: the component's definition; the image is inside it");
@@ -654,6 +666,8 @@ export const SAMPLE_NOTE = "(estimate from 2 s samples)";
 /** The `type` of the two sources a video hint names: AV1 first, H.264 as the fallback. */
 const AV1_TYPE = 'video/mp4; codecs=av01.0.08M.08';
 const H264_TYPE = 'video/mp4; codecs=avc1.640028';
+/** The H.264 fallback recipe an animated GIF's video hint gives. It is not encoded by imgtune (performance first). */
+const H264_RECIPE = "libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart -an";
 const FORMAT_LABEL: Record<AnimatedFix["info"]["format"], string> = { gif: "GIF", webp: "WebP", apng: "APNG" };
 
 /** The smallest candidate of one codec, or undefined. The first of equal bytes wins. */
@@ -679,47 +693,88 @@ function codecName(codec: MediaCodec): string {
   return codec === "av1-mp4" ? "av1" : codec === "h264-mp4" ? "h264" : codec;
 }
 
-/**
- * The lines of an animated image's hint. An image target (AVIF or WebP, with the `<picture>` or `image-set()` fallback) when
- * the encode offers one; the `<video>` replacement with its AV1 and H.264 sources when the target is video. With no encode,
- * the bytes per view and the reason. `src` is the served file's URL, printed as a JSON string.
- */
-export function animatedLines(animated: AnimatedFix, src?: string): string[] {
-  const { info, perViewBytes } = animated;
-  const head = `animated ${FORMAT_LABEL[info.format]} ${(info.durationMs / 1000).toFixed(1)} s, ${info.frames} frames`;
+/** The encode candidates an animated image offers, and the one its hint leads with (`main`). */
+export interface AnimatedTargets {
+  avif?: CandidateResult;
+  webp?: CandidateResult;
+  av1?: CandidateResult;
+  h264?: CandidateResult;
+  /** True when the hint is the `<video>` replacement (AV1 is the main target). */
+  video: boolean;
+  /** The main target: the AV1 video, else the AVIF, else the WebP. Undefined when nothing was encoded. */
+  main?: CandidateResult;
+}
+
+/** The targets of an animated image's encode (see AnimatedTargets). The main one's bytes are the saving's basis. */
+export function animatedTargetsOf(animated: AnimatedFix): AnimatedTargets {
   const avif = smallestCandidate(animated.estimate, "animated-avif");
   const webp = smallestCandidate(animated.estimate, "animated-webp");
   const av1 = smallestCandidate(animated.estimate, "av1-mp4");
   const h264 = smallestCandidate(animated.estimate, "h264-mp4");
-  const first = avif ?? webp;
-  if (first === undefined && av1 === undefined) {
+  const video = av1 !== undefined && (animated.target?.main === "video" || (avif === undefined && webp === undefined));
+  return { avif, webp, av1, h264, video, main: video ? av1 : (avif ?? webp) };
+}
+
+/** The bytes per view an animated image saves: its bytes per view less the main target's encode, floored at 0 (est.). */
+export function animatedSavingOf(animated: AnimatedFix): number {
+  const main = animatedTargetsOf(animated).main;
+  return main === undefined ? 0 : Math.max(0, animated.perViewBytes - main.bytes);
+}
+
+/**
+ * The fallback of an image-target hint, built only from the candidates that exist: the `<picture>` with an AVIF source (for
+ * AVIF, with or without WebP), a plain `src` swap for WebP alone (WebP animates everywhere it shows an image), and for a CSS
+ * background an `image-set()` with the existing types.
+ */
+function imageFallbackOf(context: AnimatedFix["context"], targets: AnimatedTargets, src: string | undefined): string {
+  if (context === "css-background") {
+    const types = [
+      targets.avif !== undefined ? 'url(<avif>) type("image/avif")' : undefined,
+      targets.webp !== undefined ? 'url(<webp>) type("image/webp")' : undefined,
+    ].filter((t): t is string => t !== undefined);
+    return `fallback: image-set(${types.join(", ")})`;
+  }
+  if (targets.avif !== undefined) {
+    return `fallback: <picture><source type="image/avif" srcset="…"><img src=${JSON.stringify(src ?? "")}></picture>`;
+  }
+  return "plain src swap to the animated WebP (WebP animates in every browser that shows the image)";
+}
+
+/**
+ * The lines of an animated image's hint. An image target (AVIF and/or WebP, with a fallback built from the candidates that
+ * exist) when the encode offers one; the `<video>` replacement with its AV1 source and the H.264 recipe when the target is
+ * video. With no encode, the bytes per view and the reason. `src` is the served file's URL, printed as a JSON string.
+ */
+export function animatedLines(animated: AnimatedFix, src?: string): string[] {
+  const { info, perViewBytes } = animated;
+  const head = `animated ${FORMAT_LABEL[info.format]} ${(info.durationMs / 1000).toFixed(1)} s, ${info.frames} frames`;
+  const targets = animatedTargetsOf(animated);
+  const { avif, webp, av1, h264, main } = targets;
+  if (main === undefined) {
     return [`   ${head}: ${kb(perViewBytes)}/view; not encoded: ${safeText(animated.notEncoded ?? "no passing quality")}`];
   }
+  const saves = animatedSavingOf(animated);
   const offered = [
     avif !== undefined ? `animated AVIF q${avif.quality} at ${avif.width}px (${kb(avif.bytes)} est.)` : undefined,
     webp !== undefined ? `animated WebP q${webp.quality} (${kb(webp.bytes)} est.)` : undefined,
   ].filter((part): part is string => part !== undefined);
-  const video = av1 !== undefined && (animated.target?.main === "video" || first === undefined);
-  if (video) {
+  if (targets.video && av1 !== undefined) {
     const lines = [`   ${head}: replace with <video autoplay muted loop playsinline poster="<first frame>">`];
     lines.push(`     <source src="…-${av1.width}.av1.mp4" type="${AV1_TYPE}"> CRF ${av1.quality}, ${av1.width}px, ${kb(av1.bytes)} est.`);
     lines.push(
       h264 !== undefined
         ? `     <source src="…-${h264.width}.h264.mp4" type="${H264_TYPE}"> CRF ${h264.quality}, ${h264.width}px, ${kb(h264.bytes)} est.`
-        : `     <source src="…-${av1.width}.h264.mp4" type="${H264_TYPE}"> H.264 fallback: not encoded (the scan makes no H.264 encode of an animated image)`,
+        : `     <source src="…-${av1.width}.h264.mp4" type="${H264_TYPE}"> H.264 fallback, not measured: ${H264_RECIPE} at ${av1.width}px wide`,
     );
     lines.push(`   evidence: ${evidenceOf(av1)}`);
     if (offered.length > 0) lines.push(`   alternative: ${offered.join(", ")}`);
-    lines.push(`   saves ${kb(Math.max(0, perViewBytes - av1.bytes))}/view est. ${SAMPLE_NOTE}`);
+    lines.push(`   saves ${kb(saves)}/view est. ${SAMPLE_NOTE}`);
     return lines;
   }
-  const best = first as CandidateResult;
-  const fallback =
-    animated.context === "css-background"
-      ? 'image-set(url(<avif>) type("image/avif"), url(<webp>) type("image/webp"))'
-      : `<picture><source type="image/avif" srcset="…"><img src=${JSON.stringify(src ?? "")}></picture>`;
+  const best = main;
+  const fallback = imageFallbackOf(animated.context, targets, src);
   return [
-    `   ${head}: serve ${offered.join(", ")}; fallback: ${fallback}; saves ${kb(Math.max(0, perViewBytes - best.bytes))}/view est. ${SAMPLE_NOTE}`,
+    `   ${head}: serve ${offered.join(", ")}; ${fallback}; saves ${kb(saves)}/view est. ${SAMPLE_NOTE}`,
     `   evidence: ${evidenceOf(best)}`,
   ];
 }
@@ -735,7 +790,7 @@ export function videoWhere(video: VideoRecord): string {
  * the same fraction of the bytes the page loads per view.
  */
 export function videoSavingOf(video: VideoRecord): { view: number; play: number } {
-  if (video.steps === undefined) return { view: 0, play: 0 };
+  if (video.steps === undefined || video.estimate === undefined) return { view: 0, play: 0 };
   const { audio, resolution, codec, quality } = video.steps;
   const play = audio + resolution + codec + quality;
   const { perView, perPlay } = video.bytes;
@@ -750,7 +805,7 @@ export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
   if (videos.length === 0) return undefined;
   const sum = (values: number[]): number => values.reduce((total, v) => total + v, 0);
   const savings = videos.map(videoSavingOf);
-  const est = videos.some((v) => v.steps !== undefined) ? " est." : "";
+  const est = videos.some((v) => v.steps !== undefined && v.estimate !== undefined) ? " est." : "";
   return `video: ${kb(sum(videos.map((v) => v.bytes.perView)))}/view, ${kb(sum(videos.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}`;
 }
 
@@ -774,7 +829,11 @@ function viewBasisOf(video: VideoRecord): string {
   return b.browserDependent ? "preload=auto: browser-dependent, bytes seen in the scan" : "bytes seen in the scan";
 }
 
-/** The bytes per view of a width plan (audit): the encode's full bytes scaled by pixels to each viewport's width, averaged. */
+/**
+ * The bytes per view of a width plan (audit), est. (scaled): each viewport's bytes at its width are the encode's bytes times
+ * (w / w_encoded)², the pixel ratio, and the per-view share of the file. They are summed over the viewports and divided by
+ * their count, the same average the image savings use. Without an encode, "not encoded" and the reason.
+ */
 function bytesAtPlan(video: VideoRecord, plan: WidthPlan): string {
   const est = video.estimate;
   if (est === undefined || video.bytes.perPlay <= 0) {
@@ -782,8 +841,8 @@ function bytesAtPlan(video: VideoRecord, plan: WidthPlan): string {
   }
   if (plan.perViewport.length === 0) return "-";
   const ratio = video.bytes.perView / video.bytes.perPlay;
-  const views = plan.perViewport.map((v) => est.bytes * (v.width / est.width) ** 2 * ratio);
-  return `${kb(views.reduce((total, v) => total + v, 0) / views.length)}/view est.`;
+  const total = plan.perViewport.reduce((sum, v) => sum + est.bytes * (v.width / est.width) ** 2 * ratio, 0);
+  return `${kb(total / plan.perViewport.length)}/view est. (scaled)`;
 }
 
 /** Audit: each viewport's need, and the bytes per view at one, two and three widths. No pick: the agent chooses. */
@@ -935,16 +994,16 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   const dropped = results.reduce((sum, r) => sum + (r.images ?? []).filter((i) => i.fix?.noSaving !== undefined).length, 0);
   if (dropped > 0) notes.push(`${dropped} sizes proposal(s) left out: no saving (their predicted outcome adds bytes or changes nothing)`);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
+  const videos = videosOf(results, args);
   if (args.top !== undefined) {
     const top = groupHints(filtered).slice(0, args.top);
     if (args.format === "json") {
       return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g) })), qualities: planJson(plan) }, null, 2)}\n`, exitCode: 0 };
     }
-    return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}`, exitCode: 0 };
+    return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}${renderVideoHints(videos)}`, exitCode: 0 };
   }
   // JSON is not cut to the text default: it is all of it unless --limit is passed, and `truncated` says whether it is.
   const jsonLimit = args.limitGiven ? args.limit : Number.MAX_SAFE_INTEGER;
-  const videos = videosOf(results, args);
   if (!args.flat) {
     // Grouped (the default): --limit and --offset count call sites, so a batch is whole call sites.
     const groups = groupHints(filtered);

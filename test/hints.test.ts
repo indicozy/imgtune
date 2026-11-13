@@ -20,12 +20,16 @@ import {
   renderHints,
   selectHints,
   type Hint,
+  animatedLines,
+  renderVideoHints,
+  videoLines,
+  videoTotalsLine,
 } from "../src/hints.js";
 import { renderMarkdown, renderPage, type PageResult } from "../src/remote.js";
 import { planQualityCap } from "../src/qualities-cap.js";
-import { animatedLines, renderVideoHints, videoLines, videoTotalsLine } from "../src/hints.js";
 import { clusterVideoWidths } from "../src/media-model.js";
 import type { AnimatedFix, VideoRecord } from "../src/video-analysis.js";
+import type { CandidateResult } from "../src/media-encode.js";
 import { candidateOf, okPage, otherPage, videoOf } from "./page-fixtures.js";
 
 /** A synthetic image record. The fix defaults to a saving of `saved` bytes and a formula sizes value. */
@@ -833,7 +837,7 @@ describe("animated hints (the image hints of an animated file)", () => {
     const text = renderHint(hint, 1).join("\n");
     expect(text).toContain('   animated GIF 3.0 s, 30 frames: replace with <video autoplay muted loop playsinline poster="<first frame>">');
     expect(text).toContain('     <source src="…-960.av1.mp4" type="video/mp4; codecs=av01.0.08M.08"> CRF 32, 960px, 412 KB est.');
-    expect(text).toContain('     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028"> H.264 fallback: not encoded');
+    expect(text).toContain('     <source src="…-960.h264.mp4" type="video/mp4; codecs=avc1.640028"> H.264 fallback, not measured: libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart -an at 960px wide');
     expect(text).toContain("   alternative: animated AVIF q45 at 960px (900 KB est.), animated WebP q70 (1000 KB est.)");
     expect(text).toContain("   saves 1388 KB/view est. (estimate from 2 s samples)");
   });
@@ -848,7 +852,9 @@ describe("animated hints (the image hints of an animated file)", () => {
     };
     const [hint] = hintsOf(page([animatedRecord("g4", animated)]));
     expect(renderHint(hint, 1).join("\n")).toContain("   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)");
-    const bare = { ...animated, estimate: [candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 })] };
+    const bareCandidate: Partial<CandidateResult> = candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 });
+    delete bareCandidate.vmafBar;
+    const bare = { ...animated, estimate: [bareCandidate as CandidateResult] };
     const [other] = hintsOf(page([animatedRecord("g5", bare)]));
     expect(renderHint(other, 1).join("\n")).toContain("   evidence: VMAF 95.2 (bar not recorded), still 72.0 (bar 70)");
   });
@@ -1064,5 +1070,114 @@ describe("markdown and the hints command with media", () => {
     expect(json.videos).toHaveLength(1);
     const plainJson = JSON.parse((await hintsCommand([plainFile, "--format", "json"], dir)).output);
     expect(plainJson).not.toHaveProperty("videos");
+  });
+});
+
+describe("animated hints: the sizes line, the fallback from the candidates that exist, the saving", () => {
+  const gifInfo = { format: "gif" as const, frames: 30, durationMs: 3000, loop: 0 };
+  const avifOf = () => candidateOf({ codec: "animated-avif", width: 960, quality: 45, bytes: 120 * 1024 });
+  const webpOf = () => candidateOf({ codec: "animated-webp", width: 960, quality: 70, bytes: 150 * 1024 });
+  const imageTarget = { main: "animated-image" as const, alternatives: [] as ("animated-avif" | "animated-webp" | "video")[] };
+
+  /** The rendered hint of an animated image record, its lines as text. */
+  function rendered(rec: ImageRecord): string {
+    const [hint] = hintsOf(page([rec]));
+    return renderHint(hint, 1).join("\n");
+  }
+
+  it("omits the sizes line when the animated image has no sizes fix, and renders the full hint", () => {
+    const rec = animatedRecord("s1", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf(), webpOf()], perViewBytes: 500 * 1024 });
+    delete rec.fix.sizes;
+    delete rec.fix.quality;
+    rec.fix.format = undefined;
+    rec.current.format = undefined;
+    const [hint] = hintsOf(page([rec]));
+    expect(renderHint(hint, 1)).toEqual([
+      '1. s1  "Card"  https://shop.example/bags',
+      "   owner unknown",
+      '   animated GIF 3.0 s, 30 frames: serve animated AVIF q45 at 960px (120 KB est.), animated WebP q70 (150 KB est.); fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est. (estimate from 2 s samples)',
+      "   evidence: VMAF 95.2 (bar 93), still 72.0 (bar 70)",
+      "   saves 380 KB/view, +0 KB sharpness (separate)  rung measured-page",
+    ]);
+  });
+
+  it("keeps the sizes line for an animated image that has a sizes fix", () => {
+    const rec = animatedRecord("s2", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf()], perViewBytes: 500 * 1024 });
+    expect(rendered(rec)).toContain("   sizes ");
+  });
+
+  it("avif and webp: the picture names the AVIF file, and the WebP is an alternative", () => {
+    const text = rendered(animatedRecord("f1", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf(), webpOf()], perViewBytes: 500 * 1024 }));
+    expect(text).toContain('fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>');
+    expect(text).toContain("animated AVIF q45 at 960px (120 KB est.), animated WebP q70 (150 KB est.)");
+  });
+
+  it("webp only: a plain src swap to the WebP, with no picture and no AVIF named", () => {
+    const text = rendered(animatedRecord("f2", { info: gifInfo, context: "img", target: imageTarget, estimate: [webpOf()], perViewBytes: 500 * 1024 }));
+    expect(text).toContain("   animated GIF 3.0 s, 30 frames: serve animated WebP q70 (150 KB est.); plain src swap to the animated WebP (WebP animates in every browser that shows the image); saves 350 KB/view est. (estimate from 2 s samples)");
+    expect(text).not.toContain("<picture");
+    expect(text).not.toContain("AVIF");
+  });
+
+  it("avif only: the picture names the AVIF file, with the original as the img fallback", () => {
+    const text = rendered(animatedRecord("f3", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf()], perViewBytes: 500 * 1024 }));
+    expect(text).toContain('serve animated AVIF q45 at 960px (120 KB est.); fallback: <picture><source type="image/avif" srcset="…"><img src="https://shop.example/a.gif"></picture>; saves 380 KB/view est.');
+    expect(text).not.toContain("WebP");
+  });
+
+  it("css background, avif and webp: image-set names both types", () => {
+    const rec = animatedRecord("c1", { info: gifInfo, context: "css-background", target: imageTarget, estimate: [avifOf(), webpOf()], perViewBytes: 500 * 1024 });
+    rec.kind = "css-background";
+    expect(rendered(rec)).toContain('fallback: image-set(url(<avif>) type("image/avif"), url(<webp>) type("image/webp"))');
+  });
+
+  it("css background, webp only: image-set names only the WebP type", () => {
+    const rec = animatedRecord("c2", { info: gifInfo, context: "css-background", target: imageTarget, estimate: [webpOf()], perViewBytes: 500 * 1024 });
+    rec.kind = "css-background";
+    const text = rendered(rec);
+    expect(text).toContain('fallback: image-set(url(<webp>) type("image/webp"))');
+    expect(text).not.toContain("image/avif");
+  });
+
+  it("css background, avif only: image-set names only the AVIF type", () => {
+    const rec = animatedRecord("c3", { info: gifInfo, context: "css-background", target: imageTarget, estimate: [avifOf()], perViewBytes: 500 * 1024 });
+    rec.kind = "css-background";
+    const text = rendered(rec);
+    expect(text).toContain('fallback: image-set(url(<avif>) type("image/avif"))');
+    expect(text).not.toContain("image/webp");
+  });
+
+  it("carries the animated saving (per view, floored at 0) on the hint, for ranking", () => {
+    const [hint] = hintsOf(page([animatedRecord("r1", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf()], perViewBytes: 500 * 1024 })]));
+    expect(hint.bytes.saved).toBe(380 * 1024);
+    const [none] = hintsOf(page([animatedRecord("r2", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf()], perViewBytes: 10 * 1024 })]));
+    expect(none.bytes.saved).toBe(0);
+    const ranked = selectHints([none, hint], { limit: 10, offset: 0 });
+    expect(ranked[0].id).toBe("r1");
+  });
+
+  it("audit: each width's bytes per view are scaled by the pixel ratio from the encode, est. (scaled)", () => {
+    const needs = [
+      { viewport: "desktop", viewportWidth: 1280, boxWidth: 640, dpr: 2 },
+      { viewport: "mobile", viewportWidth: 390, boxWidth: 390, dpr: 2 },
+    ];
+    const widthOptions = [1, 2, 3].map((max) => clusterVideoWidths(needs, max, 1920));
+    const estimate = candidateOf({ codec: "av1-mp4", width: 1280, quality: 32, bytes: 400 * 1024 });
+    const text = videoLines(encodedVideo({ widths: undefined, widthOptions, steps: undefined, estimate }), 1).join("\n");
+    expect(text).toContain("     1 width(s): 1280px → 400 KB/view est. (scaled)");
+    expect(text).toContain("     2 width(s): 854px, 1280px → 289 KB/view est. (scaled)");
+  });
+
+  it("video totals count a saving only when the encode exists", () => {
+    const orphan = encodedVideo({ estimate: undefined });
+    expect(videoTotalsLine([orphan])).toBe("video: 2000 KB/view, 2000 KB/play, saveable 0 KB/view (0 KB/play)");
+  });
+
+  it("--top prints the video hints too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "imgtune-top-video-"));
+    const file = join(dir, "top.json");
+    await writeFile(file, JSON.stringify({ ...page([animatedRecord("t1", { info: gifInfo, context: "img", target: imageTarget, estimate: [avifOf()], perViewBytes: 500 * 1024 })]), videos: [encodedVideo()] }));
+    const out = (await hintsCommand([file, "--top", "3"], dir)).output;
+    expect(out).toContain("1. video:abc");
   });
 });
