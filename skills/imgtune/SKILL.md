@@ -21,8 +21,8 @@ Use this when the user asks to fix image sizes, next/image sizes, or the LCP ima
 1. **Scan** the pages on a built server into a folder: `npx imgtune scan <url> [<url> ...] --out .imgtune/scan`.
 2. **Read the hints in batches**: `npx imgtune hints .imgtune/scan/*.json --limit 10`. The LCP image comes first, and its line
    starts with `LCP image`. Take it first in every batch.
-3. **Open each hint's file and line**, check that it renders that image, then apply the hint's `sizes` (or `width` for a
-   plain image), its quality and its format, as `reference.md` says. A hint marked `(unverified)`, or with no file and line,
+3. **Open each hint's file and line**, check that it renders that image, then apply the hint's `sizes` (or, for a plain
+   `<img>` with no srcset, its `srcset` variants and the `sizes`), its quality and its format, as `reference.md` says. A hint marked `(unverified)`, or with no file and line,
    is not edited: say so in the report.
 4. **Apply the site-level `next.config: images.qualities: [...]` line once**, in `next.config`, and keep it as printed. Never
    lower a quality below the hint's target.

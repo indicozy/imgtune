@@ -153,7 +153,9 @@ The short form. [`reference.md`](https://github.com/indicozy/imgtune/blob/main/s
 - **next/image:** set `sizes` to the hint's value. `quality` must be in `images.qualities`. `fill` needs a positioned,
   sized parent, and `sizes` still applies.
 - **Plain `<img>` and `<picture>`:** `srcset` with width descriptors and the hint's `sizes`. Keep `width` and `height`, so the
-  space stays reserved. Use `<source type="image/avif">` for the formats.
+  space stays reserved. Use `<source type="image/avif">` for the formats. A plain `<img>` with no `srcset` at all gets
+  the hint's variant widths: export those files (for example at 190w, 270w and 380w), name them in the `srcset`, and add the
+  hint's `sizes`. A `sizes` alone does nothing there.
 - **Nuxt `<NuxtImg>`:** set `quality` and `format`. Its `sizes` prop is Nuxt Image's breakpoint syntax (for example
   `sm:100vw md:50vw lg:400px`), not a CSS value. The agent translates the hint's `sizes` with the project's configured
   `screens`, or uses a plain `<img>` or `<picture>` with the CSS value.
