@@ -8,7 +8,7 @@ import type { PageContext, ResourceRecord } from "../../src/resources/types.js";
 const PAGE = "https://example.test/";
 
 /** The top-level finding of a URL: its id has no suffix (`lottie:<hash>`). */
-const mainOf = (out: { id: string }[]) => out.find((f) => f.id.split(":").length === 2);
+const mainOf = <T extends { id: string }>(out: T[]): T | undefined => out.find((f) => f.id.split(":").length === 2);
 
 function ctx(lottie: PageContext["lottie"] = [], dpr = 1): PageContext {
   return {

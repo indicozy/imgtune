@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Lottie animations. `scan` reads each Lottie JSON and `.lottie` file the page loads: the size, layers, frame rate and duration,
+  and the savings: embedded rasters re-encoded to WebP at the display size, numbers rounded to three decimals, and a `.lottie`
+  repack (an estimate). A huge animation shown small gets a hint to export at the display size.
+- SVG files. Each SVG of 2 KB to 5 MB is optimised with SVGO (floatPrecision 2) and reported when the brotli size drops by at
+  least 20% and the render still scores 70 or more on SSIMULACRA2 at half size. SVGs with embedded `data:` rasters are listed.
+
 ## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and

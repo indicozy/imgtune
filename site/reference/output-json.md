@@ -292,6 +292,15 @@ neither field and is read as having no media.
 
 Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
 
+## Resource findings: lottie and svg (0.3.0)
+
+Each finding has `id`, `kind` (`lottie` or `svg`), `url`, `bytes` (per view), `savedBytes` (per view, 0 when informational),
+`estimate`, `title`, `fix` (lines) and `details`. Lottie `details`: `layers`, `fps`, `seconds`, `width`, `height`,
+`embeddedRasters`, `displayBox` when known. Lottie raster findings: `rasters[]` with `asset`, `from`, `width`, `height`,
+`bytes`, `toWidth`, `toBytes`. SVG `details`: `rawBefore`, `rawAfter`, `brotliBefore`, `brotliAfter`, `ssimulacra2`
+(and `brotliEstimate` for large files). Ids are `lottie:<hash>` (informational), `lottie:<hash>:raster|precision|dotlottie|stored`,
+`svg:<hash>` and `svg:<hash>:raster`.
+
 ## Summary JSON
 
 `--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
