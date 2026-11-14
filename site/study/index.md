@@ -18,6 +18,8 @@ import SavingDistribution from "../.vitepress/theme/components/survey/SavingDist
 import CategoryBars from "../.vitepress/theme/components/survey/CategoryBars.vue";
 import WeightVsSaving from "../.vitepress/theme/components/survey/WeightVsSaving.vue";
 import TechBars from "../.vitepress/theme/components/survey/TechBars.vue";
+import MediaBars from "../.vitepress/theme/components/survey/MediaBars.vue";
+import media from "../data/media-survey.json";
 
 const stacks = survey.summary.byTech.filter((t) => t.tech !== "Other / unknown");
 const unknownCount = survey.summary.byTech.find((t) => t.tech === "Other / unknown")?.count ?? 0;
@@ -29,6 +31,16 @@ const scanWhen =
 const fmt = (n) => n.toLocaleString("en-US");
 const tldr = survey.summary;
 const shareCount = survey.sites.filter((s) => s.exactEstPct >= 20).length;
+
+const ms = media.summary;
+const mediaWhen =
+  media.scannedFrom === media.scannedTo ? media.scannedFrom : `${media.scannedFrom} to ${media.scannedTo}`;
+const pct = (a, b) => ((a / b) * 100).toFixed(1);
+const videoShare = pct(ms.videoMbPerView, ms.videoMbPerView + ms.imageMb);
+const videoSavedPct = pct(ms.videoSavedMb, ms.videoMbPerView);
+const imageSavedPct = pct(ms.imageSavedMb, ms.imageMb);
+const animatedSavedPct = pct(ms.animatedSavedMb, ms.animatedMb);
+const videoPlayRatio = (ms.videoMbPerPlay / ms.videoMbPerView).toFixed(1);
 </script>
 
 ## TL;DR {#tldr}
@@ -41,6 +53,8 @@ const shareCount = survey.sites.filter((s) => s.exactEstPct >= 20).length;
   and could cut **{{ tldr.medianExactEstPct }}%** of them. **{{ shareCount }} of {{ survey.count }}** ({{ tldr.shareAtLeast20Pct }}%)
   could save 20% or more. Most of the estimate is re-encodes: few sites ship a smaller `srcset` candidate that goes unused.
 - **8 open-source apps:** developer sites carry few image bytes. The waste sits in image-heavy commerce.
+- **Video (0.2.0, {{ ms.sites }} homepages):** video is {{ videoShare }}% of the media bytes per view. On {{ pct(ms.sitesWithVideo, ms.sites) }}%
+  of sites there is a video, and {{ videoSavedPct }}% of video bytes could be saved. The saving is a floor. See [Video and animated images](#video).
 
 **Method**
 
@@ -131,9 +145,60 @@ without bot walls. The scan measures the live page in a browser, so it works on 
 
 The estimate is built as in the method above, with re-encodes scored with SSIMULACRA2 at a delta of 2.
 
+## Video and animated images (0.2.0) {#video}
+
+Version 0.2.0 also measures animated GIF, animated WebP, APNG and self-hosted `<video>`. This section runs that version on
+{{ ms.sites }} production homepages.
+
+**What was scanned.** {{ ms.sites }} production homepages, from the same kind of public lists as the image survey. Sites with bot
+walls were dropped. Each was scanned on its homepage only, at two viewports (iphone-15 and a desktop), one visit each, with
+imgtune 0.2.0, scanned {{ mediaWhen }}. The sites are anonymous: M001 onward, ranked by total media weight.
+
+**Method.** Per view follows the rules in [Animated media and video](/guide/video-and-gifs): an autoplay video counts its full
+file, `preload="metadata"` or `"none"` counts 0, and `preload="auto"` counts the bytes the scan saw. Per play is the full file.
+Videos are re-encoded on 2-second samples with SVT-AV1 or x264, heaviest first, within the default time limit of 600 s per run.
+The CRF is bisected until VMAF reaches 93 against the served file at its display size, and a still-frame SSIMULACRA2 guard must
+pass too. Bytes are extrapolated to the full file and labelled
+as estimates. A file used by several elements counts once.
+
+**Results.**
+
+- **Per view,** the sites load {{ fmt(ms.videoMbPerView) }} MB of video, {{ fmt(ms.imageMb) }} MB of images (animated images included) and
+  {{ fmt(ms.animatedMb) }} MB of animated GIF, WebP and APNG. The estimated saving is {{ fmt(ms.videoSavedMb) }} MB of video ({{ videoSavedPct }}%),
+  {{ fmt(ms.imageSavedMb) }} MB of images ({{ imageSavedPct }}%) and {{ fmt(ms.animatedSavedMb) }} MB of animated images ({{ animatedSavedPct }}%).
+- **Sites with video:** {{ ms.sitesWithVideo }} of {{ ms.sites }} ({{ pct(ms.sitesWithVideo, ms.sites) }}%).
+- **Videos:** {{ ms.videos }} in all. {{ ms.autoplay }} autoplay ({{ pct(ms.autoplay, ms.videos) }}%), {{ ms.noPoster }} with no poster
+  ({{ pct(ms.noPoster, ms.videos) }}%), and {{ ms.noAv1 }} with no AV1 source ({{ pct(ms.noAv1, ms.videos) }}%).
+- **Video outweighs all images** on {{ ms.videoOutweighsImages }} sites ({{ pct(ms.videoOutweighsImages, ms.sites) }}%).
+- **Per play,** the video total is {{ fmt(ms.videoMbPerPlay) }} MB, about {{ videoPlayRatio }} times the per-view figure. Click-to-play
+  files are big, which is why both are shown.
+
+<MediaBars />
+
+<details class="survey-all">
+<summary>All {{ ms.sites }} sites, video and animated images</summary>
+
+<table class="study-table">
+  <thead>
+    <tr><th>id</th><th>image KB / view</th><th>video KB / view</th><th>video KB / play</th><th>video saved KB</th><th>animated KB / view</th><th>animated saved KB</th></tr>
+  </thead>
+  <tbody>
+    <tr v-for="r in media.sites" :key="r.id">
+      <th>{{ r.id }}</th><td>{{ r.imageKbPerView.toLocaleString("en-US") }}</td><td>{{ r.videoKbPerView.toLocaleString("en-US") }}</td><td>{{ r.videoKbPerPlay.toLocaleString("en-US") }}</td><td>{{ r.videoSavedKb.toLocaleString("en-US") }}</td><td>{{ r.animatedKbPerView.toLocaleString("en-US") }}</td><td>{{ r.animatedSavedKb.toLocaleString("en-US") }}</td>
+    </tr>
+  </tbody>
+</table>
+
+</details>
+
 ## Limits
 
 - **Six deciders** is a signal, not proof. The sample leans toward sites without bot walls.
+- **Video savings are a floor.** Some videos were not encoded within the time limit (600 s per run), so their saving is not
+  counted. Their bytes are still in the totals.
+- **Video is homepage only.** The video study scanned one page per site, so inner pages may weigh more.
+- **Per-view bytes for `preload="auto"` depend on the browser.** The scan counts the bytes it saw, which another browser may
+  fetch differently.
 - **Part of the estimate is an estimate.** The re-encode part is a floor where an image could not be scored (counted per page as
   `qualityNA`).
 - Quality and format are only estimated when the original is known. Where the loader is not known, the estimate is not made.
