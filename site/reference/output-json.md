@@ -292,6 +292,25 @@ neither field and is read as having no media.
 
 Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
 
+## Fonts (0.3.0)
+
+Font findings are the `resources` entries with `kind: "font"` (the same shape as every resource finding: `id`, `url`,
+`bytes`, `savedBytes`, `estimate`, `title`, `fix`). Their `details` hold the numbers:
+
+| field | meaning |
+| --- | --- |
+| `details.format` | the file's format as fetched: `woff2`, `woff`, `sfnt` (TTF or OTF) or `eot` |
+| `details.numGlyphs`, `details.codepoints` | glyphs in the font, and Unicode code points its cmap maps |
+| `details.textCodepoints` | distinct characters of the page's text the font maps to a glyph |
+| `details.families`, `details.weightClass`, `details.italic` | the font's name table names (typographic, then family), OS/2 weight class, and italic flag |
+| `details.variable`, `details.axes` | whether the font has variation axes, and each axis's `tag`, `min` and `max` |
+| `details.woff2Bytes` | the WOFF2 size of the whole font (measured for files up to 256 KB; `woff2Estimate` is `true` otherwise) |
+| `details.subsetBytes`, `details.subsetCodepoints` | the WOFF2 size of the subset to the page's Unicode blocks, and the code points it keeps (absent when no subset applies) |
+| `details.iconic` | the font is mostly private-use code points (an icon font): no subset, no unused claim |
+
+A finding's `savedBytes` is the fetched size minus the smaller of the WOFF2 and subset sizes; an unused face's is its full
+size. A family of several static faces has `savedBytes: 0` and `details.faces` and `details.weights`.
+
 ## Summary JSON
 
 `--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
