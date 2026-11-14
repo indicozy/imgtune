@@ -1494,9 +1494,17 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         let clipped = false;
         for (let el: Element | null = img; el !== null; el = el.parentElement) {
           const s = getComputedStyle(el);
-          if (s.display === "none") displayNone = true;
+          // content-visibility: hidden keeps the box (a closed <details> does) but skips the rendering: not shown either.
+          if (s.display === "none" || s.getPropertyValue("content-visibility") === "hidden") displayNone = true;
           if (s.opacity === "0") opacityZero = true;
+          // A tab panel, a hidden subtree, an aria-hidden one, or the content of a closed <details> (rendered when it opens).
           if (el.getAttribute("role") === "tabpanel" || el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") inPanel = true;
+          // The content of a closed <details> is not rendered (Chrome skips it with a pseudo-element, so the box is laid out
+          // and only the content is not shown); the summary stays visible.
+          if (el.tagName === "DETAILS" && !el.hasAttribute("open") && img.closest("summary") === null) {
+            inPanel = true;
+            displayNone = true;
+          }
           // The root's overflow is the viewport's (it propagates from html or body), so it clips nothing: only the ancestors between.
           const root = el === document.documentElement || el === document.body;
           if (!root && el !== img && (s.overflowX === "hidden" || s.overflowY === "hidden" || s.overflowX === "clip" || s.overflowY === "clip")) {

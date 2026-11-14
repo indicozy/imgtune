@@ -138,7 +138,7 @@ describe("scan of loaded-but-not-shown images", () => {
   let base = "";
   let server: Server | undefined;
   let bodyPage = "";
-  const names = ["twinDesk", "twinMob", "slide1", "slide2", "slide3", "tabImg", "opaImg", "visImg", "zeroImg", "shownImg", "tinyImg"];
+  const names = ["twinDesk", "twinMob", "slide1", "slide2", "slide3", "tabImg", "detailsImg", "opaImg", "visImg", "zeroImg", "shownImg", "tinyImg"];
 
   beforeAll(async () => {
     const files: Record<string, Buffer> = {};
@@ -170,6 +170,7 @@ describe("scan of loaded-but-not-shown images", () => {
       ${img("twinMob").replace("<img", '<img class="mobile-only"')}
       <div id="carousel"><div id="track">${img("slide1")}${img("slide2")}${img("slide3")}</div></div>
       <div role="tabpanel" hidden>${img("tabImg")}</div>
+      <details><summary>More</summary>${img("detailsImg")}</details>
       ${img("opaImg")}${img("visImg")}${img("zeroImg")}${img("shownImg")}${img("tinyImg")}
     </body></html>`;
     const started = await new Promise<{ base: string; server: Server }>((resolve) => {
@@ -237,6 +238,9 @@ describe("scan of loaded-but-not-shown images", () => {
     expect(named(result.images, "slide1")?.hidden).toBeUndefined();
     expect(named(result.images, "tabImg")?.hidden?.action).toBe("lazy");
     expect(named(result.images, "tabImg")?.hidden?.inPanel).toBe(true);
+    // The content of a closed <details> renders when it opens: lazy, not removable.
+    expect(named(result.images, "detailsImg")?.hidden?.action).toBe("lazy");
+    expect(named(result.images, "detailsImg")?.hidden?.inPanel).toBe(true);
     expect(named(result.images, "opaImg")?.hidden?.reasons).toEqual(["opacity"]);
     expect(named(result.images, "opaImg")?.hidden?.action).toBe("remove");
     expect(named(result.images, "visImg")?.hidden?.reasons).toEqual(["visibility"]);
@@ -259,7 +263,7 @@ describe("scan of loaded-but-not-shown images", () => {
 
   it("adds the page's hidden bytes apart from the savings, and gives no sizes claim to a hidden copy", async () => {
     const result = await scan();
-    expect(result.hidden?.images).toBe(8);
+    expect(result.hidden?.images).toBe(9);
     expect(result.hidden?.bytesPerView).toBeGreaterThan(0);
     expect(named(result.images, "opaImg")?.fix.bytes.saved).toBe(0);
     expect(named(result.images, "opaImg")?.fix.quality).toBeUndefined();
