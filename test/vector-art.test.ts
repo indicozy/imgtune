@@ -33,11 +33,11 @@ afterEach(() => {
 });
 
 describe("thresholds", () => {
-  it("are the tuned values: bar 70, a 30% saving, flat at 97% in 16 colours and 256 colours at most", () => {
+  it("are the tuned values: bar 70, a 30% saving, flat at 97% in 16 colours and 300 colours at most", () => {
     expect(VECTOR_BAR).toBe(70);
     expect(VECTOR_MIN_SAVING).toBe(0.3);
     expect(FLAT_TOP16_MIN).toBe(0.97);
-    expect(FLAT_MAX_COLORS).toBe(256);
+    expect(FLAT_MAX_COLORS).toBe(300);
   });
 
   it("names the vectorizer version the package pins", () => {

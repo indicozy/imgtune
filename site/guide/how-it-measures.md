@@ -44,8 +44,9 @@ saving itself.
 
 ## Vector art
 
-A still raster is flat when its 256-pixel version has at most 256 colours after 5-bit quantisation, and 90% of its pixels
-are in the 16 most common. A flat image is traced with vtracer (the Poster preset). The SVG is rendered back at the served
+A still raster is flat when its 256-pixel version has at most 300 colours after 5-bit quantisation, 97% of its pixels are in
+the 16 most common, at most 12% of its neighbouring pixel pairs differ by a small step (soft shading), and it is at most 5
+megapixels. A flat image is traced with vtracer (the Poster preset). The SVG is rendered back at the served
 size and scored with SSIMULACRA2 at half size, both images halved with lanczos3, against the served image. The bar is 70.
 Half size is used because the raster's antialiased edges are not the ground truth: the traced SVG is sharper, and at full
 size it fails on the edges alone. For a very large image the pair is scaled further, to at most one megapixel, so the check

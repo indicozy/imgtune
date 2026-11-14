@@ -23,7 +23,7 @@ export const FLAT_SIZE = 256;
 /** A flat image: the 16 most common colours cover at least this share of its pixels... */
 export const FLAT_TOP16_MIN = 0.97;
 /** ...and it has at most this many colours (after 5-bit quantisation of each channel). */
-export const FLAT_MAX_COLORS = 256;
+export const FLAT_MAX_COLORS = 300;
 /**
  * ...and at most this share of its neighbouring pixel pairs differ by a small step (1 to 8 levels in some channel). Soft
  * shading and photo-like gradients are made of small steps; flat art has none, or hard edges.
