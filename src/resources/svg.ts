@@ -23,14 +23,25 @@ const kb = (n: number): string => `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} 
 const shortHash = (url: string): string => createHash("sha1").update(url).digest("hex").slice(0, 10);
 const basename = (url: string): string => {
   const path = url.replace(/[?#].*$/, "");
-  return path.slice(path.lastIndexOf("/") + 1) || url;
+  const raw = path.slice(path.lastIndexOf("/") + 1) || url;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 };
+
+/**
+ * Above this size mergePaths is switched off: on a 700 KB export it takes ~7 s and gains about 1% of the brotli size.
+ */
+export const MERGE_PATHS_MAX_BYTES = 256 * 1024;
 
 /** Optimises with the default preset at floatPrecision 2 (the plan's setting; the fidelity check guards it). */
 export function optimizeSvg(text: string): string {
+  const overrides: Record<string, false> = text.length > MERGE_PATHS_MAX_BYTES ? { mergePaths: false } : {};
   const result = optimize(text, {
     multipass: false,
-    plugins: [{ name: "preset-default", params: { floatPrecision: 2 } }],
+    plugins: [{ name: "preset-default", params: { floatPrecision: 2, overrides } }],
   });
   return result.data;
 }
@@ -146,14 +157,15 @@ async function analyzeOne(record: ResourceRecord, body: Buffer): Promise<Resourc
 export const analyzer: ResourceAnalyzer = {
   kind: "svg",
   wants(r: ResourceRecord): boolean {
-    if (r.bytes < MIN_BYTES || r.bytes > MAX_BYTES) return false;
+    // The size cap is applied on the body in analyze(): a chunked response has no length before it is read.
+    if (r.bytes < MIN_BYTES) return false;
     return /image\/svg\+xml/.test(r.contentType) || (/\.svg(?:[?#]|$)/i.test(r.url) && /xml|octet-stream/.test(r.contentType));
   },
   async analyze(records: ResourceRecord[], _ctx: PageContext): Promise<ResourceFinding[]> {
     const out: ResourceFinding[] = [];
     const seen = new Set<string>();
     for (const r of records) {
-      if (r.body === undefined || seen.has(r.url)) continue;
+      if (r.body === undefined || seen.has(r.url) || r.body.length > MAX_BYTES || r.body.length < MIN_BYTES) continue;
       seen.add(r.url);
       try {
         out.push(...(await analyzeOne(r, r.body)));

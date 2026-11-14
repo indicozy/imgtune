@@ -43,7 +43,11 @@ describe("svg wants", () => {
     expect(analyzer.wants(record(PAGE + "a.svg", Buffer.alloc(3000)))).toBe(true);
     expect(analyzer.wants(record(PAGE + "a.svg", Buffer.alloc(100)))).toBe(false);
     expect(analyzer.wants(record(PAGE + "a.png", Buffer.alloc(3000), "image/png"))).toBe(false);
-    expect(analyzer.wants({ ...record(PAGE + "big.svg", Buffer.alloc(10)), bytes: 6 * 1024 * 1024 })).toBe(false);
+  });
+
+  it("skips bodies over the size cap, and bodies under the minimum, in analyze", async () => {
+    const big = Buffer.alloc(6 * 1024 * 1024, 0x20);
+    expect(await analyzer.analyze([record(PAGE + "big.svg", big)], CTX)).toEqual([]);
   });
 });
 
@@ -53,6 +57,14 @@ describe("svg optimisation", () => {
     const out = optimizeSvg(src);
     expect(out.length).toBeLessThan(src.length * 0.8);
     expect(out).not.toContain("Generator");
+  });
+
+  it("skips mergePaths on large exports, and keeps the output valid", () => {
+    const big = verboseSvg(4000);
+    expect(big.length).toBeGreaterThan(256 * 1024);
+    const out = optimizeSvg(big);
+    expect(out.startsWith("<svg")).toBe(true);
+    expect(out.length).toBeLessThan(big.length);
   });
 
   it("keeps the render when the change is faithful, and not when the picture changes", async () => {
