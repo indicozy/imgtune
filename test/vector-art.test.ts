@@ -125,3 +125,14 @@ describe("a missing vectorizer", () => {
     expect(await mod.traceSvg(await logoPng())).toBeUndefined();
   });
 });
+
+describe("the fidelity scale", () => {
+  it("scores a very large image at no more than SCORE_MAX_PIXELS, and still passes a clean trace", async () => {
+    const big = await sharp(Buffer.from(LOGO_SVG)).resize(4000, 1334, { fit: "fill" }).png().toBuffer();
+    const svg = (await traceSvg(big)) as string;
+    const started = Date.now();
+    const fidelity = await svgFidelity(big, svg);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(fidelity.score).toBeGreaterThanOrEqual(VECTOR_BAR);
+  });
+});

@@ -158,7 +158,9 @@ async function traceOne(url: string, id: string, opts: VectorPhaseOptions, deps:
     await mkdir(dir, { recursive: true });
     const file = join(dir, `${id}.svg`);
     await writeFileAtomic(file, svg, { root: opts.outDir });
-    return { ...outcome, tracedFile: relative(opts.cwd, file) };
+    // Relative to the project folder when the file is inside it; absolute otherwise (a scan into another folder).
+    const named = relative(opts.cwd, file);
+    return { ...outcome, tracedFile: named.startsWith("..") ? file : named };
   } catch {
     return { notChecked: "trace failed" };
   }

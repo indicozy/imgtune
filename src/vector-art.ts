@@ -30,6 +30,8 @@ export const VECTOR_LOOKS_MIN_BYTES = 10 * 1024;
 export const VECTOR_MAX_PIXELS = 2_000_000;
 /** The time allowed for one image's trace and fidelity check, in ms. The trace cannot be stopped: a late result is dropped. */
 export const VECTOR_CAP_MS = 2000;
+/** The most pixels the fidelity check scores: the half-size pair is scaled down to this (both images alike). */
+export const SCORE_MAX_PIXELS = 1_000_000;
 /** A pixel counts as a bad pixel when its RGB L1 difference from the served image is above this. */
 const BAD_PIXEL_L1 = 96;
 
@@ -196,19 +198,21 @@ export function svgBytes(svg: string): number {
 
 /**
  * The fidelity of an SVG against the served image it traces. The SVG is rendered back at the served size; the score is
- * SSIMULACRA2 at half size (both images halved with lanczos3, so the raster's antialiasing is not the ground truth), and
- * badPixelShare is the share of pixels, at full size, whose RGB L1 difference is over BAD_PIXEL_L1. Both are on white.
+ * SSIMULACRA2 at half size (both images halved with lanczos3, so the raster's antialiasing is not the ground truth; capped
+ * at SCORE_MAX_PIXELS for a very large image), and badPixelShare is the share of pixels at that scoring size whose RGB L1
+ * difference is over BAD_PIXEL_L1. Both are on white.
  */
 export async function svgFidelity(served: Buffer, svg: string): Promise<{ score: number; badPixelShare: number }> {
-  const ref = await decodeOnWhite(openImage(served).rotate());
-  const test = await decodeOnWhite(sharp(Buffer.from(svg)).resize(ref.width, ref.height, { fit: "fill" }));
-  const halfWidth = Math.round(ref.width / 2);
-  const halfHeight = Math.round(ref.height / 2);
-  // ssimulacra2 needs at least 8 px a side: a smaller image is scored at full size.
-  const half = halfWidth >= 8 && halfHeight >= 8;
-  const value = half
-    ? await score("ssimulacra2", await resizeTo(ref, halfWidth, halfHeight), await resizeTo(test, halfWidth, halfHeight))
-    : await score("ssimulacra2", ref, test);
+  const full = await decodeOnWhite(openImage(served).rotate());
+  // Scored at half size, and at most SCORE_MAX_PIXELS: a large logo costs seconds at full size, and the scale is the same
+  // for both images, so the score is the same kind of number.
+  const scale = Math.min(0.5, Math.sqrt(SCORE_MAX_PIXELS / (full.width * full.height)));
+  const width = Math.max(1, Math.round(full.width * scale));
+  const height = Math.max(1, Math.round(full.height * scale));
+  const ref = await resizeTo(full, width, height);
+  const test = await decodeOnWhite(sharp(Buffer.from(svg)).resize(width, height, { fit: "fill", kernel: "lanczos3" }));
+  // ssimulacra2 needs at least 8 px a side: a smaller image is scored at the size it has.
+  const value = width >= 8 && height >= 8 ? await score("ssimulacra2", ref, test) : await score("ssimulacra2", full, await decodeOnWhite(sharp(Buffer.from(svg)).resize(full.width, full.height, { fit: "fill" })));
   return { score: value, badPixelShare: badPixelShareOf(ref, test) };
 }
 
