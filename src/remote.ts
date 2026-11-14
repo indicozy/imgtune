@@ -1256,6 +1256,11 @@ export interface ViewportObservation {
    * each is flagged unstable: "unknown". Absent in a light read.
    */
   revealCapped?: number;
+  /**
+   * The hosts the egress proxy could not resolve during this page load (a name a browser may still load). Their pages' hidden
+   * copies are unverified (unstable: "unknown"). Absent when every name resolved.
+   */
+  unresolvedHosts?: string[];
   /** The elements with a CSS background image (none in a light read). */
   backgrounds?: ObservedBackground[];
   /** The page's <video> elements with a file source, in document order (none in a light read). */
@@ -2201,6 +2206,8 @@ async function readGroup(
   // costs BODY_READ_TIMEOUT_MS once per page, not once per viewport.
   let mediaDeadline: number | undefined;
   let blockedRequests = 0;
+  // The names the egress proxy could not resolve during this page load (see startEgressProxy).
+  const unresolvedHosts = new Set<string>();
   let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
   const failedSheets = new Set<string>();
@@ -2212,8 +2219,10 @@ async function readGroup(
   // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
   // time. Chromium gives the route handler no route for a redirect hop, so the route guard alone would miss them.
   const egress = await measure("egress proxy start", () =>
-    startEgressProxy(guard.policy, () => {
+    startEgressProxy(guard.policy, (host) => {
       blockedRequests++;
+      // A name the proxy could not resolve (not a refused address): the page's own scripts for it may not run here.
+      if (host !== undefined) unresolvedHosts.add(host);
     }),
   );
   try {
@@ -2248,6 +2257,13 @@ async function readGroup(
           blocked = /^https?:/i.test(url) ? await guard.isBlocked(url) : true;
         } catch {
           blocked = true;
+          // The guard could not resolve the name (it throws on a failed lookup, not on a refused address): a name a browser
+          // may still load (see unresolvedHosts).
+          try {
+            unresolvedHosts.add(new URL(url).hostname);
+          } catch {
+            // Not a URL the guard looked at.
+          }
         }
         if (blocked) {
           blockedRequests++;
@@ -2438,11 +2454,18 @@ async function readGroup(
             decoded.add(record);
             record.pixels = await measure("decode: pixel size", () => pixelSize(record.buffer as Buffer));
           }
+          // A page with a name the proxy could not resolve may not run its own scripts as a visitor's browser runs them: its
+          // hidden copies are not verified (unstable: "unknown"), and the page says which names (unresolvedHosts).
+          if (unresolvedHosts.size > 0) {
+            for (const image of seen.images) if (image.hidden !== undefined) image.unstable = "unknown";
+            for (const video of seen.videos) if (video.hidden && video.hiddenReason !== undefined) video.unstable = "unknown";
+          }
           outcomes.push({
             ok: true,
             value: {
               viewport,
               load: step === 0 ? "fresh" : "resized",
+              ...(unresolvedHosts.size > 0 ? { unresolvedHosts: [...unresolvedHosts].slice(0, 20) } : {}),
               status,
               finalUrl: page.url(),
               ...(step === 0 && loaded !== undefined ? { loadTimedOut: loaded.loadTimedOut } : {}),
