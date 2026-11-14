@@ -18,6 +18,12 @@
   repack (an estimate). A huge animation shown small gets a hint to export at the display size.
 - SVG files. Each SVG of 2 KB to 5 MB is optimised with SVGO (floatPrecision 2) and reported when the brotli size drops by at
   least 20% and the render still scores 70 or more on SSIMULACRA2 at half size. SVGs with embedded `data:` rasters are listed.
+- 3D models. `scan` checks glTF and GLB files: the geometry saving with meshopt is measured (the file is repacked and
+  run through gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. Draco and
+  meshopt files are reported as compressed. USDZ, OBJ, FBX, KTX2, splats and PLY are informational.
+- Audio. `scan` probes each audio file with ffprobe. WAV and FLAC, lossy files above 128 kbps stereo (64 kbps mono), and
+  stereo files with identical channels get an Opus re-encode, measured on a 10 s sample. A file loaded on page load gets the
+  `preload="none"` fix. Without ffmpeg only the bytes are reported.
 
 ## 0.2.0 (2026-11-14)
 

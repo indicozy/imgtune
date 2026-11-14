@@ -336,6 +336,17 @@ Each finding has `id`, `kind` (`lottie` or `svg`), `url`, `bytes` (per view), `s
 `bytes`, `toWidth`, `toBytes`. SVG `details`: `rawBefore`, `rawAfter`, `brotliBefore`, `brotliAfter`, `ssimulacra2`
 (and `brotliEstimate` for large files). Ids are `lottie:<hash>` (informational), `lottie:<hash>:raster|precision|dotlottie|stored`,
 `svg:<hash>` and `svg:<hash>:raster`.
+## Models and audio (0.3.0)
+
+Each 3D model and audio file is a `ResourceFinding` (`kind` `model` or `audio`) in the `resources` list. The fields are
+`id`, `url`, `bytes` (bytes per view), `savedBytes`, `estimate`, `title`, `fix` and `locator`. The `details` object holds:
+
+| kind | details fields |
+| --- | --- |
+| `model` | `format` (`glTF` or `GLB`), `extensionsUsed`, `geometryBytes`, `textures`, `textureBytes`, `textureDetails` (per image: `width`, `height`, `bytes`, `webpBytes`, `estimate`), `repackBytes`, `repackSavedBytes`, `meshoptBytes`, `externalBuffers` |
+| `audio` | `codec`, `channels`, `sampleRate`, `durationS`, `bitrateKbps`, `lossless`, `nearMono`, `fetchedBytes`, `fullBytes`, `eager`, `preload`, `autoplay`, `opusFullBytes`, `aacFullBytes`, `targetKbps`, `targetChannels` |
+
+`estimate` is `false` for a measured model geometry saving; the texture and audio savings are estimates.
 
 ## Summary JSON
 

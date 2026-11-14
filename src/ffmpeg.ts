@@ -555,6 +555,8 @@ interface ProbeStream {
   r_frame_rate?: string;
   duration?: string;
   bit_rate?: string;
+  channels?: number;
+  sample_rate?: string;
   disposition?: { attached_pic?: number };
 }
 
@@ -611,4 +613,61 @@ export function parseRate(rate: string | undefined): number | undefined {
   if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0 || n < 0) return undefined;
   const fps = n / d;
   return fps > 0 ? fps : undefined;
+}
+
+/** What an audio file is: codec, length, bitrate and channels, read by ffprobe (see probeAudio). */
+export interface AudioProbe {
+  /** ffprobe's codec_name of the first audio stream, e.g. "mp3", "aac", "opus", "vorbis", "flac", "pcm_s16le". */
+  codec: string;
+  /** Length in seconds. 0 when the file does not say. */
+  durationS: number;
+  /** Bits per second: the container's figure, else the stream's. Undefined when neither is given. */
+  bitrate?: number;
+  channels: number;
+  /** Sample rate in Hz, when given. */
+  sampleRate?: number;
+}
+
+interface AudioProbeJson {
+  streams?: ProbeStream[];
+  format?: { duration?: string; bit_rate?: string };
+}
+
+/** Turns ffprobe's JSON into an AudioProbe, or undefined when there is no audio stream with a codec. */
+export function parseAudioProbeJson(json: AudioProbeJson): AudioProbe | undefined {
+  const audio = (json.streams ?? []).find((s) => s.codec_type === "audio");
+  if (!audio?.codec_name) return undefined;
+  const bitrate = toNumber(json.format?.bit_rate) ?? toNumber(audio.bit_rate);
+  const probe: AudioProbe = {
+    codec: audio.codec_name,
+    durationS: toNumber(json.format?.duration) ?? toNumber(audio.duration) ?? 0,
+    channels: typeof audio.channels === "number" && audio.channels > 0 ? audio.channels : 0,
+  };
+  if (bitrate !== undefined && bitrate > 0) probe.bitrate = bitrate;
+  const sampleRate = toNumber(audio.sample_rate);
+  if (sampleRate !== undefined && sampleRate > 0) probe.sampleRate = sampleRate;
+  return probe;
+}
+
+/**
+ * Reads an audio file with ffprobe. `input` is an absolute file path or an http(s) URL (see inputOptions). Resolves
+ * undefined when ffprobe fails, times out or finds no audio stream. Never throws for a bad file.
+ */
+export async function probeAudio(
+  input: string,
+  timeoutMs: number,
+  opts: { proxy?: string } = {},
+): Promise<AudioProbe | undefined> {
+  if (/^https?:\/\//i.test(input) && opts.proxy === undefined) return undefined;
+  try {
+    const result = await runBinary(
+      ffprobeBin(),
+      ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", ...inputOptions(input, opts.proxy), "-i", input],
+      { timeoutMs },
+    );
+    if (result.code !== 0) return undefined;
+    return parseAudioProbeJson(JSON.parse(result.stdout.toString("utf8")));
+  } catch {
+    return undefined;
+  }
 }

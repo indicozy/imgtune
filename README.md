@@ -163,6 +163,12 @@ the browser resolved, not from a guess.
 duration, and its savings: embedded rasters re-encoded to WebP at the display size, a `.lottie` repack (an estimate), and
 numbers rounded to three decimals. An SVG is optimised with SVGO and reported when the brotli size drops by 20% or more and
 the render still scores 70 or more on SSIMULACRA2 at half size. Guides: `site/guide/lottie.md` and `site/guide/svg.md`.
+## 3D models and audio
+
+`scan` also reads the 3D models and audio files a page loads. A glTF or GLB gets a measured meshopt saving (the file is
+repacked with gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. An audio
+file that is lossless, above 128 kbps stereo, or stereo with identical channels gets an Opus re-encode, measured on a 10 s
+sample with ffmpeg. See the [guide](site/guide/model-and-audio.md).
 
 ## GIFs and video
 

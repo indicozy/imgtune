@@ -60,6 +60,7 @@ export default defineConfig({
             { text: "Fonts", link: "/guide/fonts" },
             { text: "Lottie animations", link: "/guide/lottie" },
             { text: "SVG files", link: "/guide/svg" },
+            { text: "3D models and audio", link: "/guide/model-and-audio" },
             { text: "Image loaders and CDNs", link: "/guide/loaders-and-cdns" },
             { text: "Limitations and FAQ", link: "/guide/limitations-and-faq" },
             { text: "Compared with other tools", link: "/guide/compared-with-other-tools" },
