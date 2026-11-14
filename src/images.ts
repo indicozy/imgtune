@@ -20,6 +20,7 @@ import { parseSrcset } from "./srcset-parse.js";
 import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
 import { animatedTarget } from "./media-model.js";
 import type { AnimatedFix } from "./video-analysis.js";
+import type { VectorFix } from "./vector-art.js";
 
 export type { SizesBasis, SizesBranch };
 
@@ -183,6 +184,11 @@ export interface ImageFix {
    * video-analysis.ts). Absent for a still image. Its bytes stay in the image totals.
    */
   animated?: AnimatedFix;
+  /**
+   * A still raster that looks like vector art (flat colours): its flatness, and the traced SVG when the vector check ran (see
+   * vector-art.ts and vector-phase.ts). Absent for a photo-like image.
+   */
+  vector?: VectorFix;
 }
 
 /**
@@ -461,6 +467,8 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
         `sizes: ${sizes.basis} (${formulas} of ${sized.length} media branch(es) from the layout formula, checked at ${measured.length} of ${viewportCount} viewports)`,
       );
     }
+    const flatMember = members.find((m) => m.flatness?.flat === true);
+    if (flatMember?.flatness !== undefined) fix.vector = { flatness: { ...flatMember.flatness } };
     if (member.kind === "plain") fix.width = member.needed;
     if (best !== undefined) fix.format = best;
 

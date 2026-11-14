@@ -98,6 +98,8 @@ export function renderSummary(input: SummaryInput): string {
   // The media phase's note is printed once, at the top (the same note is on each page that has media).
   const media = [...(input.survey ?? []), ...input.deep].find((p) => p.mediaNote !== undefined)?.mediaNote;
   if (media !== undefined) lines.push(safeText(media));
+  const vectorNote = input.deep.find((p) => p.vectorNote !== undefined)?.vectorNote;
+  if (vectorNote !== undefined) lines.push(safeText(vectorNote));
   lines.push("");
   if (input.stop !== undefined) {
     lines.push(`STOPPED before the deep phase: ${safeText(input.stop.reason)}`, `  fix: ${safeText(input.stop.fix)}`, "");
@@ -105,6 +107,8 @@ export function renderSummary(input: SummaryInput): string {
   if (input.survey !== undefined) lines.push(...surveyBlock(input.survey, input.surveyLabel, input.routes), "");
   else if (input.surveyLabel !== undefined) lines.push(safeText(input.surveyLabel), "");
   if (input.deep.length > 0) lines.push(...deepBlock(input.deep), "");
+  const vector = vectorLine(input.deep);
+  if (vector !== undefined) lines.push(vector, "");
   const withVideo = input.deep.filter((p) => p.status === "ok" && (p.videos ?? []).length > 0);
   if (withVideo.length > 0) lines.push(...videoBlock(withVideo), "");
   if (input.callSites !== undefined) lines.push(...callSiteBlock(input.callSites), "");
@@ -164,6 +168,28 @@ function deepBlock(deep: PageResult[]): string[] {
   }
   if (sorted.slice(0, DEEP_ROWS).some((page) => (page.page as NonNullable<PageResult["page"]>).estApprox === true)) lines.push(`  ${APPROX_NOTE}`);
   return lines;
+}
+
+/**
+ * The vector check over the pages: the flat images, the ones traced to an SVG that passes, and the SVG's saving per view
+ * (the bytes the passing SVGs save over their served files). Undefined when no image is flat.
+ */
+export function vectorLine(pages: PageResult[]): string | undefined {
+  let flat = 0;
+  let passed = 0;
+  let savedPerView = 0;
+  for (const page of pages) {
+    for (const image of page.images ?? []) {
+      if (image.fix.vector === undefined) continue;
+      flat++;
+      if (image.fix.vector.passed === true) {
+        passed++;
+        savedPerView += image.fix.vector.savedPerView ?? 0;
+      }
+    }
+  }
+  if (flat === 0) return undefined;
+  return `vector art: ${flat} image(s) look like vector art, ${passed} traced to a smaller SVG, ${kbText(savedPerView / 1024)} KB/view`;
 }
 
 const exactOf = (page: PageResult): number => {

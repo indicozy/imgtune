@@ -6,13 +6,17 @@ import type { Browser, BrowserContext, BrowserContextOptions, CDPSession, Page, 
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
+import { MAX_INPUT_PIXELS, openImage } from "./image-open.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
 import { commentHints, videoRowOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
+export { MAX_INPUT_PIXELS, openImage };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
+import { loadVectorizer, stillFlatness, type Flatness } from "./vector-art.js";
+import { applyVector, FlatBuffers, runVectorPhase } from "./vector-phase.js";
 import { startEgressProxy, type EgressPolicy, type EgressProxy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
@@ -482,6 +486,8 @@ export interface ScanArgs {
   survey?: boolean;
   /** --media-budget: the most animated images and videos sample-encoded per run (default 20). */
   mediaBudget?: number;
+  /** --svg-budget: the most flat images traced to SVG per run (default DEFAULT_SVG_BUDGET; 0 traces none). */
+  svgBudget?: number;
   /** --media-time: the time limit of the media encodes, in seconds (default 600). */
   mediaTime?: number;
   /** --video-bar: the minimum VMAF of a video or animated encode (default 93). */
@@ -555,6 +561,7 @@ const VALUE_OPTIONS: readonly string[] = [
   "--page-concurrency",
   "--idle-timeout",
   "--media-budget",
+  "--svg-budget",
   "--media-time",
   "--video-bar",
   "--video-still-bar",
@@ -589,6 +596,9 @@ export const DEFAULT_MEDIA_TIME = 600;
 const MAX_MEDIA_TIME = 3600;
 export const DEFAULT_VIDEO_BAR = 93;
 export const DEFAULT_VIDEO_STILL_BAR = 65;
+/** The vector check's budget: the flat images traced per run, heaviest first (--svg-budget). */
+export const DEFAULT_SVG_BUDGET = 50;
+export const MAX_SVG_BUDGET = 1000;
 
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
@@ -627,6 +637,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--media-budget") args.mediaBudget = parseRange(arg, value, 0, MAX_MEDIA_BUDGET);
+      else if (arg === "--svg-budget") args.svgBudget = parseRange(arg, value, 0, MAX_SVG_BUDGET);
       else if (arg === "--media-time") args.mediaTime = parseRange(arg, value, 1, MAX_MEDIA_TIME);
       else if (arg === "--video-bar") args.videoBar = parseRange(arg, value, 0, 100);
       else if (arg === "--video-still-bar") args.videoStillBar = parseRange(arg, value, 0, 100);
@@ -651,17 +662,9 @@ export function parseScanArgs(argv: string[]): ScanArgs {
 }
 
 
-/** The most input pixels sharp accepts for a downloaded file. */
-export const MAX_INPUT_PIXELS = 100_000_000;
-
 /** A width clamped to 1..MAX_WIDTH. */
 export function clampWidth(width: number): number {
   return Math.max(1, Math.min(MAX_WIDTH, Math.floor(width)));
-}
-
-/** sharp over a downloaded file, refusing inputs above `limit` pixels. */
-export function openImage(buffer: Buffer, limit = MAX_INPUT_PIXELS): Sharp {
-  return sharp(buffer, { limitInputPixels: limit });
 }
 
 
@@ -2294,6 +2297,8 @@ export interface Instance {
   formatAuto?: true;
   /** The served file is animated (a GIF, animated WebP or APNG): see animated.ts. Absent for a still image. */
   animated?: AnimationInfo;
+  /** The served still image's flatness (see vector-art.ts). Absent for an animated, small or undecodable file. */
+  flatness?: Flatness;
   /** The CDN's auto quality of the element's group (see applyCdnPolicies). Set on q_auto images only. */
   cdnQuality?: { handled: boolean; saved: number };
 }
@@ -2306,6 +2311,8 @@ export interface AnalysisContext {
   /** The page is on a loopback or private host, so its candidates and originals may be too. */
   allowPrivate: boolean;
   deps: QualityDeps;
+  /** The browser's bytes of the flat images, kept for the vector check (see FlatBuffers). */
+  flatBuffers?: FlatBuffers;
   quality: boolean;
   /**
    * False in a survey: no local resize estimate (est.) for a plain image or a background layer either, so the numbers are
@@ -2546,6 +2553,9 @@ async function measureBackground(
   });
   const animated = animationOfBuffer(response.buffer as Buffer);
   if (animated !== undefined) instance.animated = animated;
+  const flatness = await stillFlatness(response, served, animated !== undefined);
+  if (flatness !== undefined) instance.flatness = flatness;
+  if (flatness?.flat === true) ctx.flatBuffers?.offer(chosen.url, response.buffer as Buffer, response.bytes);
   if (ctx.estimates !== false && animated === undefined && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("background resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
@@ -2590,6 +2600,9 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   Object.assign(instance, { bytes: response.bytes, pixelWidth: served.width, format: formatName(served.format) });
   const animated = animationOfBuffer(response.buffer as Buffer);
   if (animated !== undefined) instance.animated = animated;
+  const flatness = await stillFlatness(response, served, animated !== undefined);
+  if (flatness !== undefined) instance.flatness = flatness;
+  if (flatness?.flat === true) ctx.flatBuffers?.offer(img.currentSrc, response.buffer as Buffer, response.bytes);
 
   const candidates = parseSrcset(img.srcset, ctx.pageUrl);
   if (candidates.length > 0) {
@@ -2947,6 +2960,8 @@ export interface PageResult {
   mediaNote?: string;
   /** The resource findings of the page (sorted by saving), when the resource phase ran (see resources/phase.ts). */
   resources?: ResourceFinding[];
+  /** The vector check's note for the run (the missing vectorizer), on a page with flat images (see vector-phase.ts). */
+  vectorNote?: string;
   scannedAt: string;
   imgtuneVersion: string;
   metric: "ssimulacra2";
@@ -3034,6 +3049,12 @@ export interface ScanRecordOptions {
    * is not resumed by a scan with them (its page has no resource findings). Absent in scans from before 0.3.
    */
   resources?: boolean;
+  /**
+   * The vector check's settings, recorded when it can run (quality on, not a survey): the budget, and whether the vectorizer
+   * was installed. Absent otherwise, so older pages still resume.
+   */
+  svgBudget?: number;
+  vectorizer?: boolean;
   /** The hosts kept while blocking (--allow-host), sorted. Absent when there are none. */
   allowHosts?: string[];
   /**
@@ -3047,9 +3068,10 @@ export interface ScanRecordOptions {
 export function recordOptionsOf(
   opts: Pick<
     ScanOptions,
-    "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "thirdParty" | "sharedLoads" | "mediaBudget" | "mediaTime" | "videoBar" | "videoStillBar" | "maxVideoWidths" | "resources"
+    "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "thirdParty" | "sharedLoads" | "mediaBudget" | "mediaTime" | "videoBar" | "videoStillBar" | "maxVideoWidths" | "resources" | "svgBudget"
   >,
   ffmpeg?: boolean,
+  vectorizer?: boolean,
 ): ScanRecordOptions {
   const thirdParty = opts.thirdParty ?? DEFAULT_THIRD_PARTY;
   // The media settings are recorded when encodes can run, so a page scanned under other settings (or without ffmpeg) is
@@ -3065,8 +3087,13 @@ export function recordOptionsOf(
         ffmpeg,
       }
     : {};
+  const vector =
+    opts.quality === true && opts.survey !== true
+      ? { svgBudget: opts.svgBudget ?? DEFAULT_SVG_BUDGET, vectorizer: vectorizer === true }
+      : {};
   return {
     ...media,
+    ...vector,
     imgtuneVersion: IMGTUNE_VERSION,
     aggressive: opts.aggressive,
     quality: opts.quality,
@@ -3436,6 +3463,8 @@ export interface ScanOptions {
   videoStillBar?: number;
   /** The most widths a video is served at (see video-analysis.ts). Undefined: SCAN_MAX_VIDEO_WIDTHS. */
   maxVideoWidths?: number;
+  /** The vector check's budget: the flat images traced per run (--svg-budget). Undefined: DEFAULT_SVG_BUDGET. */
+  svgBudget?: number;
   /** Reuse the complete pages already in outDir with the same options (--resume). */
   resume?: boolean;
   /** Stop after this many pages, scanned or resumed (--max-pages). */
@@ -3523,6 +3552,8 @@ async function scanPage(
     harness: boolean;
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
+    /** The browser's bytes of the flat images, for the vector check (see FlatBuffers). */
+    flatBuffers: FlatBuffers;
     /** The run's stage (see stage.ts and runScan): the measured pages are written here before their analysis. */
     stage?: { dir: string; options: ScanRecordOptions };
     /** Capture the resources of each page and run the resource phase (see resources/). */
@@ -3684,6 +3715,7 @@ function analysisContextOf(run: PageRun, pageUrl: string): Omit<AnalysisContext,
     projectDir: run.projectDir,
     projectRoot: run.projectRoot,
     thirdParty: run.thirdParty,
+    flatBuffers: run.flatBuffers,
   };
 }
 
@@ -3868,6 +3900,8 @@ async function withBrowser<T>(
       ignoreRobots: opts.ignoreRobots === true,
       harness: opts.harness === true,
       sourceMaps: new Map(),
+      // The browser's own bytes of the flat images the vector check may trace (see FlatBuffers); none without the check.
+      flatBuffers: new FlatBuffers(opts.quality && opts.survey !== true ? (opts.svgBudget ?? DEFAULT_SVG_BUDGET) : 0),
       storageState: opts.storageState,
       thirdParty: opts.thirdParty ?? DEFAULT_THIRD_PARTY,
       qualityFor: opts.qualityFor,
@@ -4020,7 +4054,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
   return withScanRun(opts, async (browser, run, robotsFor) => {
     await mkdir(opts.outDir, { recursive: true });
     // Whether ffmpeg is installed decides whether the media encodes run, so it is part of the record (see recordOptionsOf).
-    const options = recordOptionsOf(opts, (await probeFfmpeg()).ffmpeg);
+    const vectorizer = (await loadVectorizer()) !== undefined;
+    const options = recordOptionsOf(opts, (await probeFfmpeg()).ffmpeg, vectorizer);
     run.stage = { dir: stageDirOf(opts.outDir), options };
     const results = new Array<PageResult | undefined>(urls.length);
     // The finished pages in finishing order: the progress line counts them.
@@ -4099,6 +4134,25 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
         analysedPages.push({ index, url, page, analysed, fallbacks: tally.fallbacks });
         opts.log(progressLine([...finished, ...analysedPages.map((p) => p.analysed)], urls.length));
       }
+      // The vector check runs once over the flat images of every page (see vector-phase.ts), before the media phase.
+      const allowPrivate = urls.length > 0 && urls.every((url) => isLocalTarget(url));
+      const vector = await runVectorPhase(
+        analysedPages.map((p) => p.analysed),
+        {
+          budget: opts.svgBudget ?? DEFAULT_SVG_BUDGET,
+          survey: opts.survey === true,
+          quality: opts.quality,
+          outDir: resolve(opts.outDir),
+          cwd: opts.cwd,
+          cache: run.deps.cache,
+          log: opts.log,
+        },
+        {
+          // The browser's own bytes when they were kept (the same file the page got); else fetched, as before.
+          fetch: async (url) => run.flatBuffers.get(url) ?? run.fetcher.get(url, { maxBytes: MAX_IMAGE_BYTES, allowPrivate }),
+        },
+      );
+      for (const entry of analysedPages) entry.analysed = applyVector(entry.analysed, vector);
       // The media phase runs once for every page's assets (see runMediaFor); each page is then written again, complete.
       const media = await runMediaFor(mediaAssets, run, opts, urls);
       for (const { index, url, page, analysed, fallbacks } of analysedPages) {
@@ -4306,6 +4360,8 @@ export function renderScan(results: PageResult[], aggressive: boolean, hintsFile
   // The media phase's note (no ffmpeg, a failed encode run) is printed once, at the top, not once per page.
   const media = results.find((r) => r.mediaNote !== undefined)?.mediaNote;
   if (media !== undefined) lines.push(safeText(media), "");
+  const vectorNote = results.find((r) => r.vectorNote !== undefined)?.vectorNote;
+  if (vectorNote !== undefined) lines.push(safeText(vectorNote), "");
   for (const result of results) lines.push(...renderPage(result, aggressive, hintsFile?.(result)), "");
   const byHost = new Map<string, PageNumbers[]>();
   for (const result of results) {
@@ -4387,6 +4443,8 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   if (note !== undefined) lines.push(note, "");
   const media = results.find((r) => r.mediaNote !== undefined)?.mediaNote;
   if (media !== undefined) lines.push(mdText(media), "");
+  const vectorNote = results.find((r) => r.vectorNote !== undefined)?.vectorNote;
+  if (vectorNote !== undefined) lines.push(mdText(vectorNote), "");
   lines.push(mdRow(head, width), mdRow(align, width));
   for (const result of results) {
     const label = pageLabel(result.url);
@@ -4605,6 +4663,7 @@ export async function scanCommand(
     maxPages: args.maxPages,
     maxImages: args.maxImages,
     mediaBudget: args.mediaBudget,
+    svgBudget: args.svgBudget,
     mediaTime: args.mediaTime,
     videoBar: args.videoBar,
     videoStillBar: args.videoStillBar,

@@ -25,6 +25,15 @@
   stereo files with identical channels get an Opus re-encode, measured on a 10 s sample. A file loaded on page load gets the
   `preload="none"` fix. Without ffmpeg only the bytes are reported.
 
+- Vector art. A still raster that is flat (a few colours cover most of it: logos, icons, flat illustrations) gets a vector
+  check. `scan` traces the heaviest such images (`--svg-budget`, default 50, 0 to 1000; 0 traces none) with vtracer, through
+  the optional `@neplex/vectorizer` dependency, and renders each SVG back at the served size. The fidelity is SSIMULACRA2 at
+  half size against the served image (bar 70). A passing SVG must be at least 30% smaller than the served file. Its saving is
+  the record's claim when it is the larger one, and the raster fix stays as the fallback. The traced file is written to
+  `svg/<id>.svg` in the scan folder. Without the vectorizer, a flat image gets one note and no byte claim. `check` and `run`
+  pass the flag through.
+- `fix.vector` in the scan JSON and a `vector` field on hints. The summary and the check report count the flat and traced
+  images.
 ## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and

@@ -275,6 +275,12 @@ Each node in `nodes`:
 
 A page file gains `videos` (one record per `<video>` element) and `mediaNote` (set when ffmpeg is not found on `PATH`:
 the bytes and widths are still measured, and the encodes are not). An animated image keeps its image record: its
+`fix.vector` is set on a still raster that looks like vector art. It holds `flatness` (`uniqueColors`, `top16Share`,
+`alphaBinaryShare`, `flat`). When the vector check ran it also holds `svgBytes` (brotli, quality 11), `score` (SSIMULACRA2 at
+half size), `badPixelShare`, `passed`, `savedPerView`, `wins` (set when the SVG's saving is the record's claim), `tracedFile`
+(the SVG, when it passed) and `notChecked` (why it did not run: `survey`, `quality off`, `svg-budget 0`, `over --svg-budget`,
+`vectorizer not installed`, `timeout` or `trace failed`).
+
 `fix.animated` holds the animation (`info`, `context` `img` or `css-background`), `perViewBytes` (the average over the
 viewports), and either `estimate` (one candidate per codec and width) or `notEncoded` (the reason). Scan JSON from 0.1 has
 neither field and is read as having no media.

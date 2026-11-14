@@ -69,6 +69,10 @@ const OPTION_HELP = {
     "--media-budget <N>",
     "sample-encode at most N animated images and videos per run, heaviest first, 0 to 1000 (default 20); the rest keep their cheap hints",
   ],
+  svgBudget: [
+    "--svg-budget <N>",
+    "trace at most N flat images (logos, icons, flat illustrations) to SVG and check them, heaviest first, 0 to 1000 (default 50; 0 traces none)",
+  ],
   mediaTime: ["--media-time <s>", "time limit of the media encodes, in seconds, 1 to 3600 (default 600)"],
   videoBar: ["--video-bar <n>", "minimum VMAF of a video or animated encode, 0 to 100 (default 93)"],
   videoStillBar: ["--video-still-bar <n>", "minimum SSIMULACRA2 of the still-frame guard, 0 to 100 (default 65)"],
@@ -175,6 +179,7 @@ const SCAN_HELP = commandHelp(
     "maxPages",
     "maxImages",
     "mediaBudget",
+    "svgBudget",
     "mediaTime",
     "videoBar",
     "videoStillBar",
@@ -225,6 +230,7 @@ Options:
   --gpu-encode                    EXPERIMENTAL: encode the deep pages' videos and animated images on the GPU (see scan --help)
   --page-concurrency <N>          pages at once in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait in the deep phase (default 10000)
+  --svg-budget <N>                trace at most N flat images of the deep pages to SVG (default 50; 0 traces none)
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
   --allow-host <h1,h2>            with --block-third-party: keep the requests to these hosts
   --no-cache                      do not read or write the result cache

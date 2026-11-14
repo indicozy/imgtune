@@ -169,6 +169,12 @@ the render still scores 70 or more on SSIMULACRA2 at half size. Guides: `site/gu
 repacked with gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. An audio
 file that is lossless, above 128 kbps stereo, or stereo with identical channels gets an Opus re-encode, measured on a 10 s
 sample with ffmpeg. See the [guide](site/guide/model-and-audio.md).
+## Vector art
+
+A flat logo, icon or illustration served as PNG, WebP or JPEG can often be an SVG: smaller, and sharp at every density.
+`scan` traces the heaviest flat images (`--svg-budget`, default 50) with an optional dependency, `@neplex/vectorizer`,
+renders each SVG back, and keeps it only when it scores at least 70 at half size and is at least 30% smaller. A passing
+trace is written to `svg/` in the scan folder. Without the dependency, a flat image gets one note and no byte claim.
 
 ## GIFs and video
 
