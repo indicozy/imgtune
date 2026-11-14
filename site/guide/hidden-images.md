@@ -38,13 +38,15 @@ itself. They do count in `image bytes per view`, which is the page's total of do
   does not need it.
 - **Carousel slide or tab panel** (clipped, or inside a `role="tabpanel"` or a `hidden` subtree). Add `loading="lazy"`, or
   render the slide or the tab when it opens.
-- **Never shown** at any viewport. Remove the element, or render it only when the part of the page it belongs to opens.
+- **Hover swap** (a sibling image that a `:hover` rule shows): load it on demand. `loading="lazy"` does this for a display change.
+- **Never shown on load** at any viewport. Remove it, or load it on demand when the menu, modal or hover opens.
 
 ## Limits
 
-- Only `<img>` elements are read. A CSS background that is hidden but was downloaded is still reported as `hidden` and not
-  measured.
-- The `clipped` check is a box test at the time of the scan. A slide that moves into view by a user's click is still a
-  candidate for `loading="lazy"`, not a proof of its use.
-- The scan does not click, hover or open menus. A menu or a dialog that is hidden until the user opens it shows as "never
-  shown" when its image was downloaded. Check the source before removing anything.
+- CSS backgrounds are covered when their file was downloaded while hidden. A background that the browser did not download
+  (`display: none`, usually) is not counted.
+- The checks are a snapshot at the time of the scan, after its scroll. A carousel slide that is out of its track at that
+  moment shows as `clipped`, so treat `lazy` as "not shown on load", not as proof that a user never sees it.
+- The scan does not click or open menus. A menu, modal or dialog that opens by script shows as "never shown on load". Check
+  the source before removing anything: the advice is to load it on demand, not to delete it.
+- Hover swaps are found from the stylesheets the page loads (same-origin). A hover that a script drives is not seen.

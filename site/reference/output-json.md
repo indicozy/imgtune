@@ -37,7 +37,7 @@ read the same numbers.
 | `perViewport` | the measurements at each viewport, keyed by viewport name (below) |
 | `images` | one fix record per image element, merged across viewports (below) |
 | `notLoaded` | the number of lazy images that never loaded at any viewport |
-| `hidden` | loaded but not shown (0.3): `images` (the elements the browser loaded but that no viewport shows in full, at one or more viewports) and `bytesPerView` (their files' bytes per view, the mean over the viewports). Not part of the savings. Absent when there are none. See the `images[].hidden` field |
+| `hidden` | loaded but not shown on load (0.3): `images` (the records, elements or CSS background layers, hidden at one or more viewports), `bytesPerView` (their files' bytes per view, summed) and `cases` (`responsive`, `lazy`, `never-shown-on-load`; they add up to `images`). Not part of the savings. Absent when there are none. See `images[].hidden` |
 | `complete` | `true` once the page is done. A page without it (an interrupted run) is scanned again by `--resume` |
 | `options` | the options the page was scanned with: `imgtuneVersion`, `aggressive`, `quality`, `viewports`, `ignoreRobots` and `storageState` (a boolean; the state itself is not recorded). `survey: true` on a `--survey` page and `idleTimeoutMs` when it is not the default, each present only when set. `--resume` reuses a page only when they match |
 
@@ -279,14 +279,18 @@ own at those viewports.
 
 | field | meaning |
 | --- | --- |
-| `reasons` | why it is hidden, over its hidden viewports: `display` (display:none on it or an ancestor), `visibility` (visibility:hidden), `opacity` (opacity 0 on it or an ancestor), `zero-size` (a zero-width or zero-height box), `clipped` (a box outside its overflow:hidden or clip ancestor, such as an offscreen carousel slide) |
-| `inPanel` | `true` when it sits in a tab panel (`role="tabpanel"`), a `hidden` subtree or an `aria-hidden` one |
+| `reasons` | why it is hidden, over its hidden viewports: `display` (display:none on it or an ancestor, or a closed details), `visibility` (visibility:hidden), `opacity` (opacity 0 on it or an ancestor), `zero-size` (a zero-width or zero-height box), `clipped` (a box outside its overflow:hidden or clip ancestor, such as an offscreen carousel slide) |
+| `inPanel` | `true` when it sits in a tab panel (`role="tabpanel"`), a `hidden` subtree, an `aria-hidden` one or a closed `<details>` |
+| `hover` | `true` when a `:hover` rule that sets display, visibility or opacity shows it (a hover swap) |
 | `viewports` | the viewports where it is not shown |
-| `shownIn` | the viewports where it is shown (empty when it is never shown) |
+| `shownIn` | the viewports where it is shown on load (empty when it is never shown on load) |
 | `of` | the number of viewports in the scan |
 | `widths` | the width of each viewport it was seen at, by viewport name |
-| `action` | the fix by case: `responsive` (shown at some viewports and hidden at others: serve one file per viewport with `<picture>`), `lazy` (a carousel slide or a tab copy: `loading="lazy"`, or render on activation), `remove` (never shown at any viewport) |
-| `perViewBytes` | the bytes per view the element downloads while it is not shown (the hidden viewports' bytes over all viewports). Not in `bytes.saved` |
+| `action` | the fix by case: `responsive` (shown on load at some viewports and hidden at others: serve one file per viewport with `<picture>`), `lazy` (a carousel slide, a tab or closed-details copy, or a hover swap: `loading="lazy"`, or load on demand), `never-shown-on-load` (no viewport shows it on load: remove it, or load it on demand when the menu, modal or hover opens) |
+| `perViewBytes` | the bytes per view the element downloads while it is not shown on load (the hidden viewports' bytes over all viewports). Not in `bytes.saved` |
+
+A CSS background layer (`kind: "css-background"`) gets the same `hidden` field when its file was downloaded while hidden. A
+layer that was not downloaded (for example `display: none`) is skipped with the reason `hidden`.
 
 `perViewport[].hidden` names the reason at each viewport that hides the element. Scan JSON from before 0.3 has no such field.
 

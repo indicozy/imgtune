@@ -149,7 +149,7 @@ the browser resolved, not from a guess.
 offscreen slide of a carousel, a tab panel, an element with `opacity: 0` or `visibility: hidden`, and a zero-size box. Their
 bytes per view are reported on their own line ("loaded but not shown") and kept out of the savings. Each one gets the fix
 for its case: a `<picture>` with a media condition for a responsive twin, `loading="lazy"` or render-on-activation for a
-carousel or tab copy, and removal for an image no viewport shows. See [the guide](https://indicozy.github.io/imgtune/guide/hidden-images).
+carousel, tab or hover copy, and an on-demand load or removal for an image no viewport shows on load. See [the guide](https://indicozy.github.io/imgtune/guide/hidden-images).
 
 ## GIFs and video
 
