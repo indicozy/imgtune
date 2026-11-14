@@ -1247,6 +1247,11 @@ export interface ViewportObservation {
   thirdPartyBlocked?: number;
   nextjs: boolean;
   images: ObservedImage[];
+  /**
+   * Candidates (an opacity, clipped or zero-size copy) that were not re-read after a scroll because the viewport was past
+   * REVEAL_CAP. Their hidden reason is the snapshot's. Absent in a light read.
+   */
+  revealCapped?: number;
   /** The elements with a CSS background image (none in a light read). */
   backgrounds?: ObservedBackground[];
   /** The page's <video> elements with a file source, in document order (none in a light read). */
@@ -1289,7 +1294,7 @@ function isNavigationError(err: unknown): boolean {
 }
 
 interface PageView {
-  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[]; videos: ObservedVideo[] };
+  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[]; videos: ObservedVideo[]; revealCapped: number };
   html: string;
   /** The LCP read before the scroll (fresh loads only). */
   lcp?: LcpObservation;
@@ -1373,9 +1378,18 @@ export function addMediaResponse(
 }
 
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
+/**
+ * The most candidates per viewport that are re-read after a scroll (see readView): an opacity, clipped or zero-size copy.
+ * A candidate past the cap keeps its snapshot reason, and the page counts it (ViewportObservation.revealCapped).
+ */
+export const REVEAL_CAP = 60;
+
+/** The window scroll that brings an element's centre into view. The overflow boxes around it are not scrolled. */
+export const REVEAL_WAIT_MS = 400;
+
 async function readView(page: Page, light = false, withVideos = false): Promise<PageView> {
   const seen = await page.evaluate(
-    ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos }) => {
+    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1703,9 +1717,69 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           });
         });
       }
-      return { nextjs, images, backgrounds, videos };
+      // Scroll reveals: an opacity, clipped or zero-size copy may be a fade-in or a box that a scroll brings in. Each candidate
+      // (images, then videos, in document order) is brought to the centre of the window (the window only: an overflow box is
+      // not scrolled, so a carousel slide stays clipped), waited on for revealWait ms and two frames, and read again. A copy
+      // that is shown now is shown; one that is still hidden keeps the reason of the new read. Past revealCap per viewport a
+      // candidate keeps its snapshot reason and is counted. A display, visibility or closed-details copy is not re-read.
+      let revealCapped = 0;
+      if (!light) {
+        const isCandidate = (reason: HiddenReason | undefined): boolean => reason === "opacity" || reason === "clipped" || reason === "zero-size";
+        const candidates: { el: Element; apply: (info: { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined) => void }[] = [];
+        document.querySelectorAll("img").forEach((img, index) => {
+          const obj = images[index];
+          if (obj === undefined || !isCandidate(obj.hidden)) return;
+          candidates.push({
+            el: img,
+            apply: (info) => {
+              delete obj.hidden;
+              delete obj.inPanel;
+              delete obj.hover;
+              if (info !== undefined) {
+                obj.hidden = info.reason;
+                if (info.inPanel) obj.inPanel = true;
+                if (info.hover) obj.hover = true;
+              }
+            },
+          });
+        });
+        document.querySelectorAll("video").forEach((video, index) => {
+          const obj = videos.find((v) => v.index === index);
+          if (obj === undefined || !obj.hidden || !isCandidate(obj.hiddenReason)) return;
+          candidates.push({
+            el: video,
+            apply: (info) => {
+              delete obj.hiddenReason;
+              delete obj.inPanel;
+              delete obj.hover;
+              obj.hidden = info !== undefined;
+              if (info !== undefined) {
+                obj.hiddenReason = info.reason;
+                if (info.inPanel) obj.inPanel = true;
+                if (info.hover) obj.hover = true;
+              }
+            },
+          });
+        });
+        const x0 = window.scrollX;
+        const y0 = window.scrollY;
+        const frames = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        for (const [i, candidate] of candidates.entries()) {
+          if (i >= revealCap) {
+            revealCapped++;
+            continue;
+          }
+          const box = candidate.el.getBoundingClientRect();
+          window.scrollBy(box.left + box.width / 2 - window.innerWidth / 2, box.top + box.height / 2 - window.innerHeight / 2);
+          await new Promise((resolve) => setTimeout(resolve, revealWait));
+          await frames();
+          candidate.apply(hiddenReasonOf(candidate.el, candidate.el.getBoundingClientRect()));
+        }
+        window.scrollTo(x0, y0);
+      }
+      return { nextjs, images, backgrounds, videos, revealCapped };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_WAIT_MS },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -2297,6 +2371,7 @@ async function readGroup(
               thirdPartyBlocked: thirdPartyBlocked - thirdBefore,
               nextjs: seen.nextjs,
               images: seen.images,
+              revealCapped: seen.revealCapped,
               backgrounds: seen.backgrounds,
               videos: seen.videos,
               // A copy: the page load's records keep growing for the viewports after this one.
