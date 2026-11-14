@@ -6,12 +6,14 @@ import type { Browser, BrowserContext, BrowserContextOptions, CDPSession, Page, 
 import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
+import { MAX_INPUT_PIXELS, openImage } from "./image-open.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
 import { commentHints, videoRowOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
+export { MAX_INPUT_PIXELS, openImage };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { startEgressProxy, type EgressPolicy, type EgressProxy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
@@ -641,17 +643,9 @@ export function parseScanArgs(argv: string[]): ScanArgs {
 }
 
 
-/** The most input pixels sharp accepts for a downloaded file. */
-export const MAX_INPUT_PIXELS = 100_000_000;
-
 /** A width clamped to 1..MAX_WIDTH. */
 export function clampWidth(width: number): number {
   return Math.max(1, Math.min(MAX_WIDTH, Math.floor(width)));
-}
-
-/** sharp over a downloaded file, refusing inputs above `limit` pixels. */
-export function openImage(buffer: Buffer, limit = MAX_INPUT_PIXELS): Sharp {
-  return sharp(buffer, { limitInputPixels: limit });
 }
 
 
