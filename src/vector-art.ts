@@ -45,6 +45,44 @@ export interface Flatness {
 
 export type Vectorizer = typeof import("@neplex/vectorizer");
 
+/** Why a flat image has no traced SVG (see VectorFix.notChecked). */
+export type VectorNotChecked = "over --svg-budget" | "vectorizer not installed" | "timeout" | "trace failed";
+
+/**
+ * The vector check of one image record (images.ts, fix.vector). Numbers only, so the JSON stays small. The saving is the
+ * served bytes per view minus the SVG's, averaged over the viewports as the other savings are. `wins` is set when that
+ * saving is the record's claimed one (it is at least the raster fix's), so the hint leads with the SVG.
+ */
+export interface VectorFix {
+  flatness: Flatness;
+  svgBytes?: number;
+  score?: number;
+  badPixelShare?: number;
+  passed?: boolean;
+  savedPerView?: number;
+  wins?: true;
+  /** The traced SVG, relative to the project folder (the scan folder's svg/ when it passed). */
+  tracedFile?: string;
+  notChecked?: VectorNotChecked;
+}
+
+/** The raster formats the vector check reads: a still image in one of them. */
+const STILL_FORMATS = new Set(["png", "webp", "jpeg", "avif", "gif"]);
+
+/**
+ * The flatness of a served file the vector check can read: a still raster of at least VECTOR_MIN_BYTES. Undefined otherwise
+ * (an animated file, a format it does not read, or a file too small to matter). Never throws.
+ */
+export async function stillFlatness(
+  response: { bytes: number; buffer?: Buffer },
+  served: { format?: string },
+  animated: boolean,
+): Promise<Flatness | undefined> {
+  if (animated || response.buffer === undefined || response.bytes < VECTOR_MIN_BYTES) return undefined;
+  if (served.format === undefined || !STILL_FORMATS.has(served.format)) return undefined;
+  return flatnessOf(response.buffer);
+}
+
 const WHITE = "#ffffff";
 const flatMemo = new WeakMap<Buffer, Promise<Flatness | undefined>>();
 

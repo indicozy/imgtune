@@ -15,6 +15,7 @@ import type { LocateSummary } from "./locate-join.js";
 export { mdCode, mdText, safeText };
 export { MAX_INPUT_PIXELS, openImage };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
+import { stillFlatness, type Flatness } from "./vector-art.js";
 import { startEgressProxy, type EgressPolicy, type EgressProxy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
@@ -2253,6 +2254,8 @@ export interface Instance {
   formatAuto?: true;
   /** The served file is animated (a GIF, animated WebP or APNG): see animated.ts. Absent for a still image. */
   animated?: AnimationInfo;
+  /** The served still image's flatness (see vector-art.ts). Absent for an animated, small or undecodable file. */
+  flatness?: Flatness;
   /** The CDN's auto quality of the element's group (see applyCdnPolicies). Set on q_auto images only. */
   cdnQuality?: { handled: boolean; saved: number };
 }
@@ -2503,6 +2506,8 @@ async function measureBackground(
   });
   const animated = animationOfBuffer(response.buffer as Buffer);
   if (animated !== undefined) instance.animated = animated;
+  const flatness = await stillFlatness(response, served, animated !== undefined);
+  if (flatness !== undefined) instance.flatness = flatness;
   if (ctx.estimates !== false && animated === undefined && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("background resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
@@ -2547,6 +2552,8 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   Object.assign(instance, { bytes: response.bytes, pixelWidth: served.width, format: formatName(served.format) });
   const animated = animationOfBuffer(response.buffer as Buffer);
   if (animated !== undefined) instance.animated = animated;
+  const flatness = await stillFlatness(response, served, animated !== undefined);
+  if (flatness !== undefined) instance.flatness = flatness;
 
   const candidates = parseSrcset(img.srcset, ctx.pageUrl);
   if (candidates.length > 0) {

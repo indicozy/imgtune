@@ -9,6 +9,7 @@
 import { sha1 } from "./atomic.js";
 import { losslessServed, rungOfPage, searchHintsOf, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
 import type { AnimationInfo } from "./animated.js";
+import type { Flatness } from "./vector-art.js";
 import { animatedTarget } from "./media-model.js";
 import { loaderName, sanitizeText, urlPattern, type OwnerTrace } from "./locate.js";
 import type { Viewport } from "./types.js";
@@ -86,6 +87,8 @@ export interface BackgroundInstance {
   size: string;
   /** The served file is animated (see animated.ts). Absent for a still image. */
   animated?: AnimationInfo;
+  /** The served still image's flatness (see vector-art.ts). Absent for an animated, small or undecodable file. */
+  flatness?: Flatness;
 }
 
 /** Splits at the top-level separator: not inside parentheses or quotes. */
@@ -394,6 +397,8 @@ export function buildBackgroundRecords(input: {
         perViewBytes: members.reduce((sum, m) => sum + m.bytes, 0) / viewportCount,
       };
     }
+    const flatMember = members.find((m) => m.flatness?.flat === true);
+    if (flatMember?.flatness !== undefined) record.fix.vector = { flatness: { ...flatMember.flatness } };
     records.push(record);
   }
   return records.filter((r) => r.perViewport.some((p) => p.loaded || p.skipped !== undefined));
