@@ -86,4 +86,7 @@ A video with a hidden copy gets no encode and no width at the viewports that hid
   moment shows as `clipped`, so treat `lazy` as "not shown on load", not as proof that a user never sees it.
 - The scan does not click or open menus. A menu, modal or dialog that opens by script shows as "never shown on load". Check
   the source before removing anything: the advice is to load it on demand, not to delete it.
+- A `display: none` copy is not re-read after a scroll (the rule for display, visibility and closed details). A card or
+  carousel that a scroll or a script shows only in its active state can therefore read as "never shown" at the scan's end
+  position. A copy that a visitor sees after scrolling to it is a false finding: check it in the browser before removing it.
 - Hover swaps are found from the stylesheets the page loads (same-origin). A hover that a script drives is not seen.
