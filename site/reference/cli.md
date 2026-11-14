@@ -216,6 +216,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--gpu` | score SSIMULACRA2 on an NVIDIA GPU (opt-in). Needs the `imgtune-ssimu2-gpu` program; without it, a warning and the CPU. See [GPU scoring](#gpu-scoring-gpu) |
 | `--gpu-device <n[,n]>` | the GPU to score on, by CUDA index (implies `--gpu`; default 0; see [GPU scoring](#gpu-scoring-gpu)). A comma list (`0,1`): the first GPU scores, and with `--gpu-encode` each listed GPU gets its own encode workers |
 | `--gpu-encode` | **experimental**: encode the videos and animated images on the GPU (NVENC, CUDA VMAF) instead of the CPU. Off by default. Bytes are scaled to a CPU encode (÷1.4) and labelled as such. See [Animated media and video](#animated-media-and-video) |
+| `--svg-budget <N>` | trace at most N flat still images (logos, icons, flat illustrations) to SVG and check them, heaviest first, 0 to 1000 (default 50; 0 traces none). Skipped in `--survey` and with `--no-quality`. |
 | `--media-budget <N>` | sample-encode at most N animated images and videos per run, heaviest first, 0 to 1000 (default 20); the rest keep their cheap hints, marked `over --media-budget` |
 | `--media-time <s>` | time limit of the media encodes in seconds, 1 to 3600 (default 600) |
 | `--video-bar <n>` | minimum VMAF of a video or animated encode, 0 to 100 (default 93), against the served file at its display size |

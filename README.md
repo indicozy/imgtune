@@ -143,6 +143,13 @@ Every fix hint is labelled with the strength of its evidence, the rung it stands
 A ceiling is never derived from the existing `sizes` value. When a usage is measured, its `sizes` comes from the layout
 the browser resolved, not from a guess.
 
+## Vector art
+
+A flat logo, icon or illustration served as PNG, WebP or JPEG can often be an SVG: smaller, and sharp at every density.
+`scan` traces the heaviest flat images (`--svg-budget`, default 50) with an optional dependency, `@neplex/vectorizer`,
+renders each SVG back, and keeps it only when it scores at least 70 at half size and is at least 30% smaller. A passing
+trace is written to `svg/` in the scan folder. Without the dependency, a flat image gets one note and no byte claim.
+
 ## GIFs and video
 
 `scan` also measures animated media: animated GIFs in an `<img>` or a CSS background, animated WebP and APNG, and
