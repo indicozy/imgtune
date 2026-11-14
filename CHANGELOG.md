@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Loaded but not shown. `scan` now reports the images the browser downloaded but no viewport shows: `display:none` or
+  `visibility:hidden` on the element or an ancestor, `opacity: 0`, a zero-size box, and an offscreen slide of an
+  `overflow:hidden` track. Each one gets its bytes per view and how many of the six viewports hide it, in a "Loaded but not
+  shown" line per page and in the hints, apart from the savings. Each case gets its own fix: a responsive twin (`<picture>`
+  with a media condition), a carousel or tab copy (`loading="lazy"`, or render on activation), or removal. Such an image gets
+  no sizes or quality claim at the viewports that hide it.
+
 ## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and

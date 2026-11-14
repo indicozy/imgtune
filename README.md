@@ -143,6 +143,14 @@ Every fix hint is labelled with the strength of its evidence, the rung it stands
 A ceiling is never derived from the existing `sizes` value. When a usage is measured, its `sizes` comes from the layout
 the browser resolved, not from a guess.
 
+## Loaded but not shown
+
+`scan` also finds the images the browser downloads without showing: a desktop image hidden on phones (or the reverse), an
+offscreen slide of a carousel, a tab panel, an element with `opacity: 0` or `visibility: hidden`, and a zero-size box. Their
+bytes per view are reported on their own line ("loaded but not shown") and kept out of the savings. Each one gets the fix
+for its case: a `<picture>` with a media condition for a responsive twin, `loading="lazy"` or render-on-activation for a
+carousel or tab copy, and removal for an image no viewport shows. See [the guide](https://indicozy.github.io/imgtune/guide/hidden-images).
+
 ## GIFs and video
 
 `scan` also measures animated media: animated GIFs in an `<img>` or a CSS background, animated WebP and APNG, and

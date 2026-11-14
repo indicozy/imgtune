@@ -17,7 +17,7 @@ import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind,
 import { undersizedProposal, type ProposalPoint } from "./candidates.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
-import type { Instance, ObservedImage, ViewportObservation } from "./remote.js";
+import type { HiddenReason, Instance, ObservedImage, ViewportObservation } from "./remote.js";
 import { animatedTarget } from "./media-model.js";
 import type { AnimatedFix } from "./video-analysis.js";
 
@@ -142,6 +142,56 @@ export interface ImagePerViewport {
   lcp?: boolean;
   /** Why the element is not measured here (duplicate of another element, data URI, ...). */
   skipped?: string;
+  /** The browser loaded the file but the element is not shown at this viewport (see HiddenReason). */
+  hidden?: HiddenReason;
+}
+
+/**
+ * An image the browser loaded that is not shown at some viewports (see HiddenFix on ImageRecord). Its bytes are the page's
+ * image bytes, and they are reported apart from the savings: the saving of a hidden file is not counted in the page numbers.
+ */
+export interface HiddenFix {
+  /** The reasons the element is hidden, over its hidden viewports, each once. */
+  reasons: HiddenReason[];
+  /** The element is in a tab panel, a hidden subtree or an aria-hidden one, at a hidden viewport. */
+  inPanel: boolean;
+  /** The viewports where it is not shown. */
+  viewports: string[];
+  /** The viewports of the scan: `viewports` of them hide it. */
+  of: number;
+  /** The width of each viewport the element was seen at, by viewport name (the media condition of a responsive twin uses it). */
+  widths: Record<string, number>;
+  /** The viewports where it is shown. */
+  shownIn: string[];
+  /**
+   * The fix, by case: `responsive` (shown at some viewports, hidden at others: a responsive twin), `lazy` (a carousel
+   * slide or a tab panel: lazy loading, or render it on activation), `remove` (never shown at any viewport).
+   */
+  action: "responsive" | "lazy" | "remove";
+  /** The bytes per view the element downloads while it is not shown: the hidden viewports' bytes over all the viewports. */
+  perViewBytes: number;
+}
+
+/** The hidden fix of an element from its instances (one per viewport), or undefined when it is shown at every viewport. */
+export function hiddenFixOf(members: Instance[], viewportCount: number): HiddenFix | undefined {
+  const hidden = members.filter((m) => m.kind === "hidden");
+  if (hidden.length === 0) return undefined;
+  const reasons = [...new Set(hidden.map((m) => m.img.hidden).filter((r): r is HiddenReason => r !== undefined))];
+  const inPanel = hidden.some((m) => m.img.inPanel === true);
+  const shownIn = members.filter((m) => m.kind !== "hidden").map((m) => m.viewport.name);
+  const onlyClipped = reasons.length > 0 && reasons.every((r) => r === "clipped");
+  // A responsive twin: shown somewhere, and hidden by a CSS rule (not only by clipping). A clipped or panel copy is lazy.
+  const action: HiddenFix["action"] = shownIn.length > 0 && !onlyClipped ? "responsive" : reasons.includes("clipped") || inPanel ? "lazy" : "remove";
+  return {
+    reasons,
+    inPanel,
+    viewports: hidden.map((m) => m.viewport.name),
+    of: viewportCount,
+    widths: Object.fromEntries(members.map((m) => [m.viewport.name, m.viewport.width])),
+    shownIn,
+    action,
+    perViewBytes: hidden.reduce((sum, m) => sum + m.bytes, 0) / viewportCount,
+  };
 }
 
 export interface ImageFix {
@@ -213,6 +263,8 @@ export interface ImageRecord {
   lazy?: boolean;
   /** The viewports at which the element is the page's largest contentful paint (see lcp.ts). Absent in older scans; [] when none. */
   lcpViewports?: string[];
+  /** Set when the browser loaded the element's file but it is not shown at some viewport (see HiddenFix). */
+  hidden?: HiddenFix;
   /** Set when the element's source was read from a dev page by `scan --locate-only` (see locate-join.ts). */
   locate?: { viewport: string; by: "alt-order" | "url-unique"; devIndex: number };
   /**
@@ -316,7 +368,7 @@ function tunableOf(member: Instance, pageUrl: string, loader: string): { width: 
 /** The measured viewports of a group as the proposal check reads them. */
 function measuredPoints(members: Instance[]): ProposalPoint[] {
   return members
-    .filter((m) => m.renderedWidth >= 1)
+    .filter((m) => m.renderedWidth >= 1 && m.kind !== "hidden")
     .map((m) => ({ viewport: m.viewport.name, viewportWidth: m.viewport.width, dpr: m.viewport.dpr, renderedWidth: m.renderedWidth, srcset: m.img.srcset }));
 }
 
@@ -391,6 +443,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
         loaded: inst.url !== "" && obs.responses.get(inst.url)?.buffer !== undefined,
         lcp: obs.lcp?.kind === "image" && obs.lcp.index === inst.element,
       };
+      if (inst.kind === "hidden" && inst.img.hidden !== undefined) entry.hidden = inst.img.hidden;
       if (inst.pixelWidth > 0) entry.servedPx = inst.pixelWidth;
       if (inst.pixelWidth > 0 && inst.needed > 0) entry.overFetchRatio = round2(inst.pixelWidth / inst.needed);
       if (sizesPx !== undefined) entry.sizesResolvedPx = round1(sizesPx);
@@ -415,7 +468,7 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     }
 
     const measured = members
-      .filter((m) => m.renderedWidth >= 1)
+      .filter((m) => m.renderedWidth >= 1 && m.kind !== "hidden")
       .map((m) => ({
         viewportWidth: m.viewport.width,
         renderedWidth: m.renderedWidth,
@@ -511,6 +564,8 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       if (m.qualityInfo?.target === undefined || m.format === undefined) continue;
       own.set(m.format, Math.max(own.get(m.format) ?? -Infinity, m.qualityInfo.target));
     }
+    const hiddenFix = hiddenFixOf(members, viewportCount);
+    if (hiddenFix !== undefined) record.hidden = hiddenFix;
     targets.set(record, own);
     records.push(record);
   }
@@ -532,7 +587,8 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const perFormat: Record<string, number> = {};
     for (const [format, target] of entry.max) perFormat[format] = target;
     for (const record of entry.records) {
-      if (record.current.quality === undefined) continue;
+      // An image never shown has no quality claim: its file is not on screen at any viewport.
+      if (record.current.quality === undefined || record.hidden?.shownIn.length === 0) continue;
       record.fix.quality = {
         perFormat,
         groupRule: "max-of-targets",

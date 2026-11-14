@@ -37,6 +37,7 @@ read the same numbers.
 | `perViewport` | the measurements at each viewport, keyed by viewport name (below) |
 | `images` | one fix record per image element, merged across viewports (below) |
 | `notLoaded` | the number of lazy images that never loaded at any viewport |
+| `hidden` | loaded but not shown (0.3): `images` (the elements the browser loaded but that no viewport shows in full, at one or more viewports) and `bytesPerView` (their files' bytes per view, the mean over the viewports). Not part of the savings. Absent when there are none. See the `images[].hidden` field |
 | `complete` | `true` once the page is done. A page without it (an interrupted run) is scanned again by `--resume` |
 | `options` | the options the page was scanned with: `imgtuneVersion`, `aggressive`, `quality`, `viewports`, `ignoreRobots` and `storageState` (a boolean; the state itself is not recorded). `survey: true` on a `--survey` page and `idleTimeoutMs` when it is not the default, each present only when set. `--resume` reuses a page only when they match |
 
@@ -270,6 +271,24 @@ Each node in `nodes`:
 | `rung` | `measured-page` for a scanned page, `measured-harness` for a harness route (`/__imgtune/...`, or `--harness`). `ceiling-code` and `not-measured` are added by the agent. See [Fix it with your agent](/guide/fix-with-your-agent) |
 | `kind` | `css-background` for a CSS background layer; absent for an `<img>`, `srcset` or `<picture>` element |
 | `notes` | how the numbers were made: where the `sizes` came from, which source was resolved, and any limit (for example a layout chain cut at the depth cap) |
+
+### images[].hidden (0.3)
+
+Present on an image the browser loaded but that is not shown at some viewport. It has no sizes, quality or saving of its
+own at those viewports.
+
+| field | meaning |
+| --- | --- |
+| `reasons` | why it is hidden, over its hidden viewports: `display` (display:none on it or an ancestor), `visibility` (visibility:hidden), `opacity` (opacity 0 on it or an ancestor), `zero-size` (a zero-width or zero-height box), `clipped` (a box outside its overflow:hidden or clip ancestor, such as an offscreen carousel slide) |
+| `inPanel` | `true` when it sits in a tab panel (`role="tabpanel"`), a `hidden` subtree or an `aria-hidden` one |
+| `viewports` | the viewports where it is not shown |
+| `shownIn` | the viewports where it is shown (empty when it is never shown) |
+| `of` | the number of viewports in the scan |
+| `widths` | the width of each viewport it was seen at, by viewport name |
+| `action` | the fix by case: `responsive` (shown at some viewports and hidden at others: serve one file per viewport with `<picture>`), `lazy` (a carousel slide or a tab copy: `loading="lazy"`, or render on activation), `remove` (never shown at any viewport) |
+| `perViewBytes` | the bytes per view the element downloads while it is not shown (the hidden viewports' bytes over all viewports). Not in `bytes.saved` |
+
+`perViewport[].hidden` names the reason at each viewport that hides the element. Scan JSON from before 0.3 has no such field.
 
 ## Media (0.2.0)
 

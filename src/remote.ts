@@ -1100,7 +1100,21 @@ export interface ObservedImage {
   layout?: LayoutChainData;
   /** What identifies the element in its source. */
   locator?: ObservedLocator;
+  /**
+   * The browser loaded the file but the element is not shown at this viewport (see hiddenReasonOf). Absent for a shown
+   * element, and in a light read (which takes no layout and no hidden check).
+   */
+  hidden?: HiddenReason;
+  /** The element is inside a tab panel, a hidden subtree or an aria-hidden one (see hiddenReasonOf). Absent otherwise. */
+  inPanel?: true;
 }
+
+/**
+ * Why an image the browser loaded is not shown at a viewport: display:none on it or an ancestor, visibility:hidden on it,
+ * opacity 0 on it or an ancestor, a zero-size box, or a box outside its overflow:hidden (or clip) ancestor, such as an
+ * offscreen slide of a carousel track.
+ */
+export type HiddenReason = "display" | "visibility" | "opacity" | "zero-size" | "clipped";
 
 /** What the browser reads to find an image in the source: a React owner trace, a test id, an alt text and a DOM path. */
 export interface ObservedLocator {
@@ -1472,8 +1486,39 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         return { nodes, skipped, truncated: el !== null };
       };
       const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
+      // Why an image is not shown, if it is not (see HiddenReason). Read in full reads only: a light read has no use for it.
+      const hiddenReasonOf = (img: Element, rect: DOMRect): { reason: HiddenReason; inPanel: boolean } | undefined => {
+        let displayNone = false;
+        let opacityZero = false;
+        let inPanel = false;
+        let clipped = false;
+        for (let el: Element | null = img; el !== null; el = el.parentElement) {
+          const s = getComputedStyle(el);
+          if (s.display === "none") displayNone = true;
+          if (s.opacity === "0") opacityZero = true;
+          if (el.getAttribute("role") === "tabpanel" || el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") inPanel = true;
+          if (el !== img && (s.overflowX === "hidden" || s.overflowY === "hidden" || s.overflowX === "clip" || s.overflowY === "clip")) {
+            const box = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && (rect.right <= box.left || rect.left >= box.right || rect.bottom <= box.top || rect.top >= box.bottom)) clipped = true;
+          }
+        }
+        const own = getComputedStyle(img);
+        const reason: HiddenReason | undefined = displayNone
+          ? "display"
+          : own.visibility === "hidden" || own.visibility === "collapse"
+            ? "visibility"
+            : opacityZero
+              ? "opacity"
+              : rect.width === 0 || rect.height === 0
+                ? "zero-size"
+                : clipped
+                  ? "clipped"
+                  : undefined;
+        return reason === undefined ? undefined : { reason, inPanel };
+      };
       const images = Array.from(document.querySelectorAll("img"), (img, index) => {
         const rect = img.getBoundingClientRect();
+        const hidden = light ? undefined : hiddenReasonOf(img, rect);
         return {
           index,
           currentSrc: img.currentSrc,
@@ -1485,6 +1530,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           nextImage: img.hasAttribute("data-nimg"),
           inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
           lazy: img.loading === "lazy",
+          ...(hidden !== undefined ? { hidden: hidden.reason, ...(hidden.inPanel ? { inPanel: true as const } : {}) } : {}),
           layout: light ? undefined : layoutOf(img),
           locator: {
             testid: img.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
@@ -2235,7 +2281,11 @@ export interface Instance {
   pixelWidth: number;
   renderedWidth: number;
   needed: number;
-  kind: "srcset" | "plain" | "skipped";
+  /**
+   * "hidden": the browser loaded the file but the element is not shown here (img.hidden). Its bytes count per view; it has no
+   * saving, sizes or quality of its own.
+   */
+  kind: "srcset" | "plain" | "skipped" | "hidden";
   skipped?: string;
   /** The served file is undersized: it has growth, and no saving of its own. */
   undersized?: boolean;
@@ -2516,6 +2566,22 @@ async function measureBackground(
   return instance;
 }
 
+/**
+ * The page's hidden images: the elements with a hidden instance, and the bytes per view of those files (each URL once per
+ * viewport, then the mean over the viewports). Undefined when no image is hidden.
+ */
+export function hiddenPageOf(instances: Instance[], viewportCount: number): HiddenPage | undefined {
+  const hidden = instances.filter((i) => i.kind === "hidden");
+  if (hidden.length === 0) return undefined;
+  let bytes = 0;
+  for (const view of new Set(hidden.map((i) => i.viewport.name))) {
+    const urls = new Map<string, number>();
+    for (const inst of hidden) if (inst.viewport.name === view) urls.set(inst.url, inst.bytes);
+    bytes += [...urls.values()].reduce((sum, b) => sum + b, 0);
+  }
+  return { images: new Set(hidden.map((i) => i.element)).size, bytesPerView: bytes / viewportCount };
+}
+
 /** The est. fields of an instance: the saving, and the approx marker when the estimate is one. */
 function approxEst(saving: number, approx: true | undefined): Pick<Instance, "est" | "estAggressive" | "estimate"> {
   return approx ? { est: saving, estAggressive: saving, estimate: "approx" } : { est: saving, estAggressive: saving };
@@ -2543,11 +2609,20 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   };
   const skip = (reason: string): Instance => ({ ...instance, skipped: reason });
 
-  if (img.renderedWidth < MIN_RENDERED_PX) return skip("under 16 px");
+  // A hidden element is measured whatever its box: its file was downloaded, and that is what the page spends (see hidden).
+  if (img.renderedWidth < MIN_RENDERED_PX && img.hidden === undefined) return skip("under 16 px");
   if (!img.currentSrc || img.currentSrc.startsWith("data:")) return skip("data URI");
   const response = obs.responses.get(img.currentSrc);
   if (!response?.buffer) return skip("not loaded");
   const served = response.pixels;
+  if (img.hidden !== undefined) {
+    // Loaded but not shown at this viewport: the bytes, and nothing to fix in the file itself (no sizes, no quality, no saving).
+    instance.kind = "hidden";
+    Object.assign(instance, { bytes: response.bytes, pixelWidth: served?.width ?? 0, format: served?.format ? formatName(served.format) : undefined });
+    const hiddenAnimated = animationOfBuffer(response.buffer as Buffer);
+    if (hiddenAnimated !== undefined) instance.animated = hiddenAnimated;
+    return instance;
+  }
   if (response.contentType?.toLowerCase().includes("svg") || served?.format === "svg") return skip("vector");
   if (!served) return skip("not decodable");
   Object.assign(instance, { bytes: response.bytes, pixelWidth: served.width, format: formatName(served.format) });
@@ -2645,14 +2720,14 @@ export const CDN_AUTO_QUALITY_SHARE = 0.1;
 export function applyCdnPolicies(instances: Instance[], viewportCount: number): void {
   for (const inst of instances) {
     const lossless = inst.format === "jpeg" || inst.format === "png" || (inst.format === "gif" && inst.animated === undefined);
-    if (inst.formatAuto === true && inst.kind !== "skipped" && lossless) {
+    if (inst.formatAuto === true && inst.kind !== "skipped" && inst.kind !== "hidden" && lossless) {
       inst.est = 0;
       inst.estAggressive = 0;
     }
   }
   const groups = new Map<string, Instance[]>();
   for (const inst of instances) {
-    if (inst.qualityParam !== "auto" || inst.kind === "skipped") continue;
+    if (inst.qualityParam !== "auto" || inst.kind === "skipped" || inst.kind === "hidden") continue;
     const list = groups.get(inst.group);
     if (list) list.push(inst);
     else groups.set(inst.group, [inst]);
@@ -2826,7 +2901,7 @@ export interface ImageReport {
   dpr: number;
   needed: number;
   firstViewport: boolean;
-  kind: "srcset" | "plain" | "skipped";
+  kind: "srcset" | "plain" | "skipped" | "hidden";
   skipped?: string;
   sizes?: string;
   right?: { url: string; bytes: number; width: number };
@@ -2901,6 +2976,12 @@ export interface PageScorer {
   cpuFallbacks?: number;
 }
 
+/** The page's loaded-but-not-shown images: how many elements, and their bytes per view (the mean over the viewports). */
+export interface HiddenPage {
+  images: number;
+  bytesPerView: number;
+}
+
 export interface PageResult {
   url: string;
   host: string;
@@ -2949,6 +3030,11 @@ export interface PageResult {
   notLoaded?: number;
   /** The CSS background layers of the page: a separate line, not in the headline (see backgrounds.ts). */
   backgrounds?: BackgroundPage;
+  /**
+   * The images the browser loaded that are not shown at some viewport: a separate line, not in the savings (see HiddenFix).
+   * Absent when there are none.
+   */
+  hidden?: HiddenPage;
   /** Scanned with --harness: measured in isolation (the rung of every record is measured-harness). */
   harness?: true;
   /** Written once the page is done: a page without it (an interrupted run) is scanned again by --resume. */
@@ -3105,7 +3191,8 @@ function toReport(inst: Instance): ImageReport {
 export function groupReports(instances: Instance[], viewportCount: number): GroupReport[] {
   const byKey = new Map<string, Instance[]>();
   for (const inst of instances) {
-    if (inst.kind === "skipped") continue;
+    // A hidden file is not a group member: its saving is none, and its size is not a size the page shows.
+    if (inst.kind === "skipped" || inst.kind === "hidden") continue;
     const list = byKey.get(inst.group);
     if (list) list.push(inst);
     else byKey.set(inst.group, [inst]);
@@ -3263,7 +3350,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
   for (const e of elements) {
     const mine = instances.filter((i) => i.element === e);
     if (mine.every((i) => i.kind === "skipped" && i.skipped !== "duplicate")) skippedElements.add(e);
-    if (mine.some((i) => i.kind !== "skipped" && i.qualityRatio === undefined)) naElements.add(e);
+    if (mine.some((i) => i.kind !== "skipped" && i.kind !== "hidden" && i.qualityRatio === undefined)) naElements.add(e);
   }
 
   const numbers = measure("aggregate", () => pageNumbers(totals));
@@ -3290,6 +3377,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     refName,
     sources: bgSources,
   });
+  const hidden = hiddenPageOf(instances, observations.length);
   const videoSources = await resolveVideoSources(ctx, input);
   const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS, videoSources);
   return {
@@ -3309,6 +3397,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     thirdPartyBlocked: observations.reduce((sum, o) => sum + (o.thirdPartyBlocked ?? 0), 0),
     images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
+    ...(hidden !== undefined ? { hidden } : {}),
     ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
     ...(ctx.harness === true ? { harness: true as const } : {}),
   };
@@ -4187,7 +4276,19 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
       `  CSS backgrounds (not in the lines above): ${bg.layers} layer(s), ${kb(bg.servedBytes)}/view served, ${kb(bg.estSaved)}/view est. saving, ${bg.undersized} undersized`,
     );
   }
-  const hinted = (result.images ?? []).filter(hasFix).length;
+  // The Loaded but not shown group: the images the browser downloaded that no viewport shows in full, by bytes per view.
+  if (result.hidden !== undefined) {
+    lines.push(`  loaded but not shown: ${result.hidden.images} image(s), ${kb(result.hidden.bytesPerView)}/view (not in the savings)`);
+    const hiddenRecords = (result.images ?? []).filter((r) => r.hidden !== undefined);
+    const rows = hiddenRecords.sort((a, b) => (b.hidden?.perViewBytes ?? 0) - (a.hidden?.perViewBytes ?? 0)).slice(0, HIDDEN_ROWS);
+    for (const record of rows) {
+      const hidden = record.hidden as NonNullable<ImageRecord["hidden"]>;
+      const where = record.locator.file !== undefined ? `${record.locator.file}:${record.locator.line ?? 0}` : record.locator.selector;
+      lines.push(`    ${JSON.stringify(safeText(where))}  hidden at ${hidden.viewports.length} of ${hidden.of}  ${kb(hidden.perViewBytes)}/view  ${hidden.action}`);
+    }
+    if (hiddenRecords.length > rows.length) lines.push(`    (+${hiddenRecords.length - rows.length} more: see imgtune hints)`);
+  }
+  const hinted = (result.images ?? []).filter((r) => hasFix(r) || r.hidden !== undefined).length;
   if (hinted > 0 && hintsFile !== undefined) lines.push(`  ${hinted} images with fix hints: run \`imgtune hints ${safeText(hintsFile)}\``);
   if (result.groups.length > 0) {
     lines.push("  top groups:");
@@ -4209,6 +4310,9 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
   }
   return lines;
 }
+
+/** The most loaded-but-not-shown images the page's text output lists (the rest are in the hints). */
+const HIDDEN_ROWS = 10;
 
 /** Per-site line for hosts with two or more scanned pages. */
 export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string, maxQualities?: number): string {

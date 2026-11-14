@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { hasFix, OWNER_PLACEHOLDERS } from "./images.js";
+import { hasFix, OWNER_PLACEHOLDERS, type HiddenFix } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 import { cleanLocate } from "./locate-join.js";
@@ -97,6 +97,11 @@ export interface Hint {
   qualityNote?: string;
   /** The CDN negotiates the format of a jpeg or png: no format change is proposed. */
   formatNote?: string;
+  /**
+   * The browser loaded the file but the element is not shown at some viewports (see HiddenFix). Its bytes are not in the
+   * saving (bytes.saved counts the shown viewports' fixes only).
+   */
+  hidden?: HiddenFix;
   /** An animated image (GIF, animated WebP or APNG): its animation and encode candidates (see video-analysis.ts). */
   animated?: AnimatedFix;
   /** The image's served URL, named by the animated hint's fallback. Set with `animated`. */
@@ -185,8 +190,9 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
  * planQualityCap); it applies only when no --qualities list was given (that list is the framework's own).
  */
 export function hintsOf(result: PageResult, qualities?: number[], plan?: QualityCapPlan): Hint[] {
-  // An animated image is a hint even without a sizes or byte saving: its saving is an encode (see animatedLines).
-  return (result.images ?? []).filter((record) => hasFix(record) || record.fix.animated !== undefined).map((record) => {
+  // An animated image is a hint even without a sizes or byte saving: its saving is an encode (see animatedLines). So is a
+  // loaded-but-not-shown image: its bytes are the fix's (see hiddenLines).
+  return (result.images ?? []).filter((record) => hasFix(record) || record.fix.animated !== undefined || record.hidden !== undefined).map((record) => {
     const served = record.current.format;
     const rawTarget = served !== undefined ? record.fix.quality?.perFormat[served] : undefined;
     // With the framework's allowed qualities, the target goes up to one of them. The quality saving was estimated at the
@@ -283,6 +289,7 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
       hint.quality = quality;
     }
     if (record.fix.format !== undefined || served !== undefined) hint.format = { current: served, best: record.fix.format };
+    if (record.hidden !== undefined) hint.hidden = record.hidden;
     if (record.fix.animated !== undefined) {
       hint.animated = record.fix.animated;
       if (record.current.src !== undefined) hint.src = record.current.src;
@@ -338,6 +345,42 @@ export function savesText(hint: Hint): string {
   return `saves ${kb(saved)}/view = sizes ${kb(sizes)} + ${qualityPart}`;
 }
 
+/** The media condition that splits a responsive twin's viewports: a min-width or max-width at the default widths. */
+function twinMediaOf(hidden: HiddenFix): string {
+  const hiddenAt = hidden.viewports.map((name) => hidden.widths[name]);
+  const shownAt = hidden.shownIn.map((name) => hidden.widths[name]);
+  if (hiddenAt.some((w) => !(w > 0)) || shownAt.some((w) => !(w > 0))) return "(min-width: <breakpoint>px)";
+  // Shown at the wider viewports: the file goes from the breakpoint up, at the narrowest shown width.
+  if (Math.max(...hiddenAt) < Math.min(...shownAt)) return `(min-width: ${Math.min(...shownAt)}px)`;
+  // Shown at the narrower viewports: the file goes up to the widest shown width.
+  if (Math.min(...hiddenAt) > Math.max(...shownAt)) return `(max-width: ${Math.max(...shownAt)}px)`;
+  return "(min-width: <breakpoint>px)";
+}
+
+/**
+ * The lines of a loaded-but-not-shown image: where it is hidden, its bytes per view (kept apart from the saving), and the fix
+ * for its case (see HiddenFix.action). Page-derived viewport names are printed as JSON strings.
+ */
+export function hiddenLines(hidden: HiddenFix): string[] {
+  const names = (list: string[]): string => list.map((v) => JSON.stringify(safeText(v))).join(", ");
+  const reasons = [...hidden.reasons, ...(hidden.inPanel ? ["in a tab panel or hidden subtree" as const] : [])].join(", ");
+  const lines = [
+    `   loaded but not shown: ${kb(hidden.perViewBytes)}/view, hidden at ${hidden.viewports.length} of ${hidden.of} viewport(s) (${names(hidden.viewports)}): ${safeText(reasons)}; not in the saving`,
+  ];
+  if (hidden.action === "responsive") {
+    lines.push(
+      `   responsive twin, shown at ${names(hidden.shownIn)}: serve one file per viewport. Replace the two elements with <picture><source media="${twinMediaOf(hidden)}" srcset="<the file shown there>"><img …></picture>, or delete the hidden copy if the design does not need it.`,
+    );
+  } else if (hidden.action === "lazy") {
+    lines.push(
+      `   not shown at ${names(hidden.viewports)} (${hidden.inPanel ? "a tab panel" : "a carousel slide or other clipped box"}): add loading="lazy", or render it when the slide or tab opens.`,
+    );
+  } else {
+    lines.push(`   never shown at any of ${hidden.of} viewports: remove the element, or render it only when the part of the page it belongs to opens.`);
+  }
+  return lines;
+}
+
 /** One hint as four short lines: where, sizes, quality and format, bytes and rung. */
 export function renderHint(hint: Hint, rank: number): string[] {
   // Page-derived names and attributes are printed as JSON strings, so a newline or an instruction inside them stays data.
@@ -364,6 +407,13 @@ export function renderHint(hint: Hint, rank: number): string[] {
     );
   }
   if (hint.find) lines.push(`   find: ${hint.find.component} in ${hint.find.glob}`);
+  if (hint.hidden !== undefined) lines.push(...hiddenLines(hint.hidden));
+  // An image never shown has no sizes, quality or format change to print: its fix is the hidden block above.
+  if (hint.hidden !== undefined && hint.hidden.shownIn.length === 0) {
+    if (hint.file === undefined && hint.find === undefined && hint.kind !== "owner") lines.push("   owner unknown");
+    lines.push(`   rung ${hint.rung}`);
+    return lines;
+  }
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
   else if (hint.animated === undefined || hint.sizes.proposed !== undefined) {
     lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
