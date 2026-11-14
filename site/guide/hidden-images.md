@@ -65,9 +65,8 @@ The fixes, by case:
   ```
 
   Browsers pick the first source whose `media` matches, so the media source comes first and the no-media one last.
-  `<source media>` on video is reported as supported in Chrome 120 and Firefox 120, and in Safari (its version is not
-  verified here). A browser that ignores it takes the first source, so the fallback is a script that sets `src` from
-  `matchMedia` and reloads on change.
+  `<source media>` on video: Chrome and Edge 120+ and Firefox 120+ restored support; Safari has always supported it. A browser
+  that ignores it takes the first source, so the fallback is a script that sets `src` from `matchMedia` and reloads on change.
 - **Carousel slide, tab, closed `<details>` or clipped box** (lazy): `preload="none"`, no `autoplay` until the video is shown
   (an `IntersectionObserver`, or the tab, details or hover opens), and the poster only.
 - **Never shown on load** at any viewport (a modal, an opacity-0 or zero-size element): remove it, or load it on demand when
