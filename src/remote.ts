@@ -1384,6 +1384,11 @@ export function addMediaResponse(
  */
 export const REVEAL_CAP = 60;
 
+/** The candidates of a page's viewports that were past REVEAL_CAP (not re-read after a scroll), summed. */
+function revealCappedOf(observations: ViewportObservation[]): number {
+  return observations.reduce((sum, obs) => sum + (obs.revealCapped ?? 0), 0);
+}
+
 /** The window scroll that brings an element's centre into view. The overflow boxes around it are not scrolled. */
 export const REVEAL_WAIT_MS = 400;
 
@@ -3224,6 +3229,11 @@ export interface PageResult {
    * Absent when there are none.
    */
   hidden?: HiddenPage;
+  /**
+   * The candidates (an opacity, clipped or zero-size copy) of the viewports that were past REVEAL_CAP: not re-read after a
+   * scroll, so their hidden reason is the snapshot's. Absent when every candidate was re-read.
+   */
+  revealCapped?: number;
   /** Scanned with --harness: measured in isolation (the rung of every record is measured-harness). */
   harness?: true;
   /** Written once the page is done: a page without it (an interrupted run) is scanned again by --resume. */
@@ -3636,6 +3646,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
     ...(hiddenTotals !== undefined ? { hidden: hiddenTotals } : {}),
+    ...(revealCappedOf(input) > 0 ? { revealCapped: revealCappedOf(input) } : {}),
     ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
     ...(ctx.harness === true ? { harness: true as const } : {}),
   };

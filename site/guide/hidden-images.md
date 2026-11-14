@@ -14,6 +14,10 @@ An `<img>` (or a `<video>`, see below) the browser loaded is "not shown" at a vi
 - **`zero-size`**: a box with no width or no height.
 - **`clipped`**: a box outside its `overflow: hidden` (or `clip`) ancestor, such as an offscreen slide of a carousel track.
 
+An opacity, clipped or zero-size copy is first brought to the centre of the window, waited on for 400 ms, and read again: if
+it is shown after the scroll (a fade-in, a box a scroll brings in) it is not a finding. This is done for the first 60 such
+candidates per viewport; the rest keep the snapshot reason and the page says so (`revealCapped` in the JSON).
+
 Images with a visible box are never called hidden. An image under 16 px that is shown is still skipped as before.
 
 ## What the report says
