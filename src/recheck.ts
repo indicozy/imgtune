@@ -13,6 +13,7 @@ import { parseViewports, safeText, scanOnce, scorerNote, type PageResult } from 
 import { settleLimit } from "./concurrency.js";
 import { cleanRecord } from "./locate-join.js";
 import { batchLine, rowLine, type RecheckRow } from "./recheck-rows.js";
+import { hiddenSummaryLine } from "./hints.js";
 import { parseAllowHosts, thirdPartyFromFlags, type ThirdPartyPolicy } from "./third-party.js";
 
 export interface RecheckArgs {
@@ -404,6 +405,8 @@ async function recheckPage(
   out.push(...rows.map(rowLine));
   if (details.length > 0) out.push("", "not passed:", ...details);
   out.push(batchLine(rows, seconds) + ` on ${safeText(target.href)} at ${viewports.length} viewport(s)`);
+  const hiddenLine = hiddenSummaryLine(fresh.hidden);
+  if (hiddenLine !== undefined) out.push(hiddenLine);
   out.push(failures.length === 0 ? "ok: no image became undersized, and no bytes rose without a sharpness fix" : `FAILED: ${failures.length} check(s)`);
   for (const failure of failures) out.push(`  ${safeText(failure)}`);
   return { output: `${out.join("\n")}\n`, exitCode: failures.length === 0 ? 0 : 1 };

@@ -61,6 +61,7 @@ export default defineConfig({
             { text: "Lottie animations", link: "/guide/lottie" },
             { text: "SVG files", link: "/guide/svg" },
             { text: "3D models and audio", link: "/guide/model-and-audio" },
+            { text: "Loaded but not shown", link: "/guide/hidden-images" },
             { text: "Image loaders and CDNs", link: "/guide/loaders-and-cdns" },
             { text: "Limitations and FAQ", link: "/guide/limitations-and-faq" },
             { text: "Compared with other tools", link: "/guide/compared-with-other-tools" },

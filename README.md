@@ -175,6 +175,13 @@ A flat logo, icon or illustration served as PNG, WebP or JPEG can often be an SV
 `scan` traces the heaviest flat images (`--svg-budget`, default 50) with an optional dependency, `@neplex/vectorizer`,
 renders each SVG back, and keeps it only when it scores at least 70 at half size and is at least 30% smaller. A passing
 trace is written to `svg/` in the scan folder. Without the dependency, a flat image gets one note and no byte claim.
+## Loaded but not shown
+
+`scan` also finds the images the browser downloads without showing: a desktop image hidden on phones (or the reverse), an
+offscreen slide of a carousel, a tab panel, an element with `opacity: 0` or `visibility: hidden`, and a zero-size box. Their
+bytes per view are reported on their own line ("loaded but not shown") and kept out of the savings. Each one gets the fix
+for its case: a `<picture>` with a media condition for a responsive twin, `loading="lazy"` or render-on-activation for a
+carousel, tab or hover copy, and an on-demand load or removal for an image no viewport shows on load. See [the guide](https://indicozy.github.io/imgtune/guide/hidden-images).
 
 ## GIFs and video
 

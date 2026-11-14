@@ -34,6 +34,15 @@
   pass the flag through.
 - `fix.vector` in the scan JSON and a `vector` field on hints. The summary and the check report count the flat and traced
   images.
+- Loaded but not shown. `scan` now reports the images the browser downloaded but no viewport shows: `display:none` or
+  `visibility:hidden` on the element or an ancestor, `opacity: 0`, a zero-size box, and an offscreen slide of an
+  `overflow:hidden` track. Each one gets its bytes per view and how many of the six viewports hide it, in a "Loaded but not
+  shown" line per page and in the hints, apart from the savings. Each case gets its own fix: a responsive twin (`<picture>`
+  with a media condition), a carousel, tab, closed-details or hover-swap copy (`loading="lazy"`, or load on demand), or an
+  image never shown on load (remove it, or load it on demand when the menu, modal or hover opens). CSS background layers
+  whose file was downloaded while hidden are reported too. Such an element gets no sizes, quality or animated-encode claim
+  at the viewports that hide it.
+
 ## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and
