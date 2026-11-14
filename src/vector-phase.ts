@@ -31,8 +31,8 @@ export const VECTOR_NOTE = "install @neplex/vectorizer to check vector art";
 export const VECTOR_CONCURRENCY = 4;
 /** The folder of the traced SVGs, under the scan's folder. */
 export const VECTOR_SVG_DIR = "svg";
-/** Bumped when the trace settings change, so the cached numbers of the old settings are not read. */
-const TRACE_VERSION = "poster-1";
+/** Bumped when the trace or the scoring changes (input size, render, flat rule), so the cached numbers of the old ones are not read. */
+const TRACE_VERSION = "poster-2";
 
 /** What the phase found for one URL. */
 export interface VectorOutcome {
