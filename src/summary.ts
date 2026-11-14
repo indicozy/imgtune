@@ -2,9 +2,10 @@
 // MAX_SUMMARY_LINES lines, so an agent decides the next step from it without opening the JSON.
 import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { hintsCommand, videoTotalsLine } from "./hints.js";
+import { hiddenVideoSummaryLine, hintsCommand, videoTotalsLine } from "./hints.js";
 import { safeText, shellWord } from "./text.js";
 import { APPROX_MARK, APPROX_NOTE, pageFileName, type PageResult, siteNumbers, surveyLabelOf } from "./remote.js";
+import type { VideoRecord } from "./video-analysis.js";
 import { candidatesOf, patternRanking } from "./worst.js";
 import { groupRoutes, parseRouteMap, type RouteGrouping } from "./routes.js";
 import type { RunManifest } from "./run.js";
@@ -84,6 +85,7 @@ export function labelOf(url: string): string {
 }
 
 const kbText = (kb: number): string => kb.toFixed(1);
+const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
 const pctText = (value: number): string => `${value.toFixed(1)}%`;
 
 /** The lines of the summary, capped at MAX_SUMMARY_LINES (the row limits keep it under the cap; the cap is the backstop). */
@@ -204,8 +206,24 @@ function videoBlock(pages: PageResult[]): string[] {
   for (const page of pages.slice(0, DEEP_ROWS)) {
     lines.push(`  ${trim(labelOf(page.url), LABEL_WIDTH).padEnd(LABEL_WIDTH)}  ${videoTotalsLine(page.videos ?? []) ?? ""}`);
   }
+  // The loaded-but-not-shown group: the videos the browser fetched that no viewport shows in full, largest first.
+  const hidden = pages.flatMap((page) => (page.videos ?? []).filter((video) => video.hidden !== undefined).map((video) => ({ page, video })));
+  const hiddenLine = hiddenVideoSummaryLine(hidden.map((h) => h.video));
+  if (hiddenLine !== undefined) {
+    lines.push(`  ${hiddenLine}`);
+    const rows = [...hidden].sort((a, b) => (b.video.hidden?.perViewBytes ?? 0) - (a.video.hidden?.perViewBytes ?? 0)).slice(0, HIDDEN_VIDEO_ROWS);
+    for (const row of rows) {
+      const hiddenFix = row.video.hidden as NonNullable<VideoRecord["hidden"]>;
+      const where = row.video.locator.file !== undefined ? `${row.video.locator.file}:${row.video.locator.line ?? 0}` : row.video.locator.selector;
+      lines.push(`    ${JSON.stringify(safeText(where))}  hidden at ${hiddenFix.viewports.length} of ${hiddenFix.of}  ${kb(hiddenFix.perViewBytes)}/view  ${hiddenFix.action}`);
+    }
+    if (hidden.length > rows.length) lines.push(`    (+${hidden.length - rows.length} more: see imgtune hints)`);
+  }
   return lines;
 }
+
+/** The loaded-but-not-shown video rows the summary lists per run. */
+const HIDDEN_VIDEO_ROWS = 5;
 
 function callSiteBlock(sites: CallSite[]): string[] {
   if (sites.length === 0) return ["call sites by saving per view: none (no deep page has a fix hint)"];

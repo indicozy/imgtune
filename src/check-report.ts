@@ -1,7 +1,7 @@
 // The Markdown report of `imgtune check`: a pure builder over the survey results, the deep results, the route grouping and
 // the deep selection. No browser, no files. The audit mode extends it with source-aware sections; the sections below keep
 // their order so the two stay comparable. Page-derived text goes through mdText and mdCode (see text.ts).
-import { hiddenPagesLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
+import { hiddenPagesLine, hiddenVideoSummaryLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import { hasFix, type ImageRecord } from "./images.js";
@@ -300,6 +300,8 @@ export function buildCheckReport(input: CheckReportInput): string {
   if (videos.length > 0) {
     out("## Video", "");
     out(`${videoTotalsLine(videos.map((v) => v.video))} (${videos.length} video(s) on ${deepOk.filter((p) => (p.videos ?? []).length > 0).length} deep page(s))`, "");
+    const hiddenVideos = hiddenVideoSummaryLine(videos.map((v) => v.video));
+    if (hiddenVideos !== undefined) out(`- ${mdText(hiddenVideos)}`);
     const ranked = [...videos].sort((a, b) => videoSavingOf(b.video).view - videoSavingOf(a.video).view || a.page.localeCompare(b.page));
     for (const row of ranked.slice(0, REPORT_FIXES)) {
       out(`- ${mdCode(videoRowOf(row.video, (text) => JSON.stringify(safeText(text))))} on ${mdCode(pathOf(row.page))}`);

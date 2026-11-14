@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { hasFix, OWNER_PLACEHOLDERS, type HiddenFix, type ImageRecord } from "./images.js";
+import { hasFix, OWNER_PLACEHOLDERS, type HiddenAction, type HiddenFix, type ImageRecord } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 import type { HiddenPage } from "./images.js";
@@ -14,6 +14,7 @@ import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, type QualityCapPlan } from "./qualities-cap.js";
 import type { CandidateResult, MediaCodec } from "./media-encode.js";
 import { reasonText, type WidthPlan } from "./media-model.js";
+import { NEVER_SHOWN } from "./media-phase.js";
 import type { AnimatedFix, VideoRecord } from "./video-analysis.js";
 import { resourceLinesOf } from "./resources/report.js";
 import { VECTOR_BAR, VECTOR_LOOKS_MIN_BYTES, type VectorFix } from "./vector-art.js";
@@ -431,6 +432,40 @@ export function hiddenLines(hidden: HiddenFix): string[] {
     lines.push(
       `   never shown on load at any of ${hidden.of} viewport(s): remove it, or load it on demand (when the menu, modal or hover opens).`,
     );
+  }
+  return lines;
+}
+
+/**
+ * The loaded-but-not-shown lines of one video (see HiddenFix): its bytes per view, the case and the fix. The responsive case
+ * names the one element with <source media>; the lazy one preload none, no autoplay until shown; the never-shown one removal
+ * or an on-demand load. The bytes are not in the saving, as an image's are not.
+ */
+export function videoHiddenLines(hidden: HiddenFix): string[] {
+  const names = (list: string[]): string => list.map((v) => JSON.stringify(safeText(v))).join(", ");
+  const reasons = [
+    ...hidden.reasons,
+    ...(hidden.inPanel ? ["in a tab panel, a hidden subtree or a closed details"] : []),
+    ...(hidden.hover === true ? ["shown on hover"] : []),
+  ].join(", ");
+  const lines = [
+    `   loaded but not shown on load: ${kb(hidden.perViewBytes)}/view, hidden at ${hidden.viewports.length} of ${hidden.of} viewport(s) (${names(hidden.viewports)}): ${safeText(reasons)}; not in the savings`,
+  ];
+  if (hidden.action === "responsive") {
+    const media = twinMediaOf(hidden);
+    lines.push(
+      `   responsive twin, shown on load at ${names(hidden.shownIn)}: one <video> for both viewports, not two: <video autoplay muted playsinline poster="<first frame>"> with <source media="${media}" src="<the file shown at ${names(hidden.viewports)}>" type="video/mp4"> first, then <source src="<the file shown at ${names(hidden.shownIn)}>" type="video/mp4"> with no media. Or delete the hidden copy if the design does not need it.`,
+    );
+    lines.push(
+      `     <source media> on video works in Chrome 120+ and Safari. A browser that ignores it takes the first source, so the fallback is a script that sets src from matchMedia("${media}") and reloads on change.`,
+    );
+  } else if (hidden.action === "lazy") {
+    const what = hidden.hover === true ? "a hover swap" : hidden.inPanel ? "a tab panel, a hidden subtree or a closed details" : "a carousel slide or other clipped box";
+    lines.push(
+      `   ${what} (${names(hidden.viewports)}): preload="none", no autoplay until it is shown (an IntersectionObserver, or the tab, details or hover opens), and the poster only.`,
+    );
+  } else {
+    lines.push(`   never shown on load at any of ${hidden.of} viewport(s): remove it, or load it on demand (when the modal, menu or hover opens).`);
   }
   return lines;
 }
@@ -994,7 +1029,34 @@ export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
   const sum = (values: number[]): number => values.reduce((total, v) => total + v, 0);
   const savings = files.map(videoSavingOf);
   const est = files.some((v) => v.steps !== undefined && v.estimate !== undefined) ? " est." : "";
-  return `video: ${kb(sum(files.map((v) => v.bytes.perView)))}/view, ${kb(sum(files.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}`;
+  const hidden = hiddenVideoTotalOf(videos);
+  const loaded = hidden === undefined ? "" : `; loaded but not shown ${kb(hidden.bytes)}/view in ${hidden.count} video(s), not in the savings`;
+  return `video: ${kb(sum(files.map((v) => v.bytes.perView)))}/view, ${kb(sum(files.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}${loaded}`;
+}
+
+/** The loaded-but-not-shown total of some videos: the records that have a hidden fix, their count and bytes per view. */
+function hiddenVideoTotalOf(videos: VideoRecord[]): { count: number; bytes: number; cases: Record<HiddenAction, number> } | undefined {
+  const hidden = videos.flatMap((v) => (v.hidden !== undefined ? [v.hidden] : []));
+  if (hidden.length === 0) return undefined;
+  const cases: Record<HiddenAction, number> = { responsive: 0, lazy: 0, "never-shown-on-load": 0 };
+  for (const fix of hidden) cases[fix.action]++;
+  return { count: hidden.length, bytes: hidden.reduce((sum, fix) => sum + fix.perViewBytes, 0), cases };
+}
+
+/**
+ * The one-line summary of a page's loaded-but-not-shown videos, as the text, Markdown and check outputs print it. Undefined
+ * when no video has a hidden fix.
+ */
+export function hiddenVideoSummaryLine(videos: VideoRecord[]): string | undefined {
+  const total = hiddenVideoTotalOf(videos);
+  if (total === undefined) return undefined;
+  const { responsive, lazy, "never-shown-on-load": never } = total.cases;
+  return `loaded but not shown: ${total.count} video(s), ${kb(total.bytes)}/view (responsive ${responsive}, lazy ${lazy}, never shown on load ${never}); not in the savings`;
+}
+
+/** The loaded-but-not-shown line of the PR comment for videos: all ok pages together. */
+export function hiddenVideoPagesLine(results: PageResult[]): string | undefined {
+  return hiddenVideoSummaryLine(results.filter((r) => r.status === "ok").flatMap((r) => r.videos ?? []));
 }
 
 /** A video's encode in one phrase: the encode at its width with its bytes, or why it was not encoded. */
@@ -1102,6 +1164,12 @@ function targetLines(video: VideoRecord, plan: WidthPlan): string[] {
 export function videoLines(video: VideoRecord, rank = 1): string[] {
   const lines = [`${rank}. ${safeText(video.id)}  ${JSON.stringify(safeText(videoWhere(video)))}  ${safeText(video.page)}`];
   lines.push(`   bytes: ${kb(video.bytes.perView)}/view (${viewBasisOf(video)}), ${kb(video.bytes.perPlay)}/play`);
+  if (video.hidden !== undefined) lines.push(...videoHiddenLines(video.hidden));
+  // A video no viewport shows has no claim: no encode, source, width, loading or codec line, only its hidden fix.
+  if (video.hidden !== undefined && video.hidden.shownIn.length === 0) {
+    lines.push(`   not encoded: ${reasonText(NEVER_SHOWN)}`);
+    return lines;
+  }
   const est = video.estimate;
   if (est !== undefined && video.steps !== undefined) {
     const s = video.steps;

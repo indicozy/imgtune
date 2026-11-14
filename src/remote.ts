@@ -8,7 +8,7 @@ import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { MAX_INPUT_PIXELS, openImage } from "./image-open.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
-import { hiddenPagesLine, commentHints, hiddenSummaryLine, videoRowOf, videoTotalsLine } from "./hints.js";
+import { hiddenPagesLine, hiddenVideoPagesLine, commentHints, hiddenSummaryLine, videoRowOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
@@ -4684,7 +4684,9 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   const plan = planQualityCap(results, maxQualities);
   if (plan !== undefined) lines.push("", mdCode(qualitiesLine(plan)));
   const hiddenLine = hiddenPagesLine(results);
-  if (hiddenLine !== undefined) lines.push("", mdCode(hiddenLine));
+  const hiddenVideoLine = hiddenVideoPagesLine(results);
+  const hiddenRows = [hiddenLine, hiddenVideoLine].flatMap((line) => (line !== undefined ? [mdCode(line)] : []));
+  if (hiddenRows.length > 0) lines.push("", ...hiddenRows);
   if (withHints) {
     const hints = commentHints(results, undefined, maxQualities);
     if (hints.lines.length > 0) {
