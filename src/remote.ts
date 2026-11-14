@@ -71,6 +71,7 @@ import {
 } from "./media-phase.js";
 import { analyzeResources } from "./resources/phase.js";
 import { replayHarPath } from "./replay.js";
+import { RESOURCE_BODY_SETTLE_MS } from "./resources/capture.js";
 import { DEFAULT_RESOURCE_BUDGET_MS, newResourceRun, type ResourceRun } from "./resources/cache.js";
 import { resourceLinesOf, resourceTotalsLine } from "./resources/report.js";
 
@@ -2025,6 +2026,9 @@ async function readGroup(
   // Every media (video) response of the page load, by URL: its bytes from the headers, never from the body.
   const media = new Map<string, MediaRecord>();
   const bodyReads: Promise<void>[] = [];
+  // The resource bodies (see resources/): settled on their own short wait, so one stream that never ends costs seconds, not the
+  // image bodies' wait. A body not read in time is fetched again by the resource phase, when an analyzer wants it.
+  const resourceReads: Promise<void>[] = [];
   // The media bodies, awaited on their own: they share one deadline for the whole page load (see mediaDeadline below).
   const mediaReads: Promise<void>[] = [];
   // Per media response: counts the bytes that arrived, for a response still streaming when the media reads settle.
@@ -2166,7 +2170,7 @@ async function readGroup(
         if (captureResources && !light) {
           const record = resourceRecordOf(response, pageUrl, "", contentType);
           others.set(response.url(), record);
-          bodyReads.push(readResourceBody(record, response).catch(() => {}));
+          resourceReads.push(readResourceBody(record, response).catch(() => {}));
         }
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
         if (!isImage) return;
@@ -2269,6 +2273,7 @@ async function readGroup(
             await debug.session.detach().catch(() => undefined);
           }
           await measure("body reads", () => settleWithin(bodyReads, BODY_READ_TIMEOUT_MS));
+          await measure("resource bodies", () => settleWithin(resourceReads, RESOURCE_BODY_SETTLE_MS));
           mediaDeadline ??= Date.now() + BODY_READ_TIMEOUT_MS;
           await measure("media reads", () => settleWithin(mediaReads, Math.max(0, mediaDeadline! - Date.now())));
           // A media response still streaming at the settle counts the bytes that arrived; it is not waited for.

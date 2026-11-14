@@ -121,6 +121,31 @@ describe("buildImageRecords and the hints of a hidden image", () => {
     expect(record.fix.bytes.saved).toBe(0);
   });
 
+  it("does not count a responsive twin's hidden-viewport bytes in its saving", () => {
+    const build = (mobileBytes: number) => {
+      const desk = instanceOf(VIEWS.desktop, 1, false, 8000);
+      const mob = instanceOf(VIEWS.mobile, 1, true, mobileBytes);
+      const observations = [
+        { viewport: VIEWS.desktop, responses: new Map(), images: [], load: "fresh", blocked: false, blockedRequests: 0, nextjs: false },
+        { viewport: VIEWS.mobile, responses: new Map(), images: [], load: "fresh", blocked: false, blockedRequests: 0, nextjs: false },
+      ] as never[];
+      const [record] = buildImageRecords({
+        pageUrl: "https://example.test/",
+        observations,
+        instances: [desk, mob],
+        refName: "desktop",
+        resolved: new Map(),
+        currentQuality: () => ({ quality: 75, assumed: true }),
+      });
+      return record;
+    };
+    const small = build(1_000);
+    const large = build(400_000);
+    expect(large.hidden?.perViewBytes).toBeGreaterThan(small.hidden?.perViewBytes ?? 0);
+    // The hidden copy's download is reported apart; the saving is the shown copy's alone.
+    expect(large.fix.bytes.saved).toBe(small.fix.bytes.saved);
+    expect(large.fix.bytes.saved).toBeLessThanOrEqual(8000);
+  });
   it("gives a copy that is never shown on load no sizes claim, and no vector claim even when flat", () => {
     const desk = instanceOf(VIEWS.desktop, 1, true, 8000);
     const mob = instanceOf(VIEWS.mobile, 1, true, 12_000);

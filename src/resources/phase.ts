@@ -7,7 +7,7 @@ import { count, measure } from "../timing.js";
 import type { ResultCache } from "../result-cache.js";
 import { isFirstParty, isThirdPartyBlocked, type ThirdPartyPolicy } from "../third-party.js";
 import type { Viewport } from "../types.js";
-import { withResourceScope, type ResourceRun } from "./cache.js";
+import { newResourceRun, withResourceScope, type ResourceRun } from "./cache.js";
 import { ANALYZERS } from "./index.js";
 import { ICON_READ_MAX } from "./favicon.js";
 import { completeFontFaces, fontFaceRulesOf, RESOURCE_BODY_MAX, type FontFaceRule } from "./capture.js";
@@ -82,13 +82,15 @@ export function analyzeResources(views: ResourceView[], pageUrl: string, deps: R
 
 /** The phase over the given analyzers: the same merge for any list (the tests run one analyzer through it). */
 export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: ResourceView[], pageUrl: string, deps: ResourceDeps): Promise<ResourceFinding[]> {
+  const run = deps.run ?? newResourceRun();
   return withResourceScope(deps.cache, async () => {
-    const fetched = new Map<string, Promise<Buffer | undefined>>();
+    // Icons are fetched once per run (a favicon is shared by the pages of a site), and the fetches of a view run at once.
     const fetchIcon = (url: string): Promise<Buffer | undefined> => {
-      let pending = fetched.get(url);
+      const key = `resources:icon:${url}`;
+      let pending = run.memo.get(key) as Promise<Buffer | undefined> | undefined;
       if (pending === undefined) {
         pending = measure("resources icon fetch", () => deps.fetcher.get(url, { maxBytes: ICON_READ_MAX, allowPrivate: deps.allowPrivate })).catch(() => undefined);
-        fetched.set(url, pending);
+        run.memo.set(key, pending);
       }
       return pending;
     };
@@ -123,9 +125,12 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
       }
       // The icons fetched here: the favicon analyzer takes them whatever their names (they are icons by the page's links).
       const fetchedIcons = new Set<ResourceRecord>();
-      for (const url of iconUrlsToFetch(view, pageUrl)) {
-        if (deps.thirdParty !== undefined && isThirdPartyBlocked(deps.thirdParty, { pageUrl, requestUrl: url, resourceType: "image", subFrame: false })) continue;
-        const body = await fetchIcon(url);
+      const iconUrls = iconUrlsToFetch(view, pageUrl).filter(
+        (url) => deps.thirdParty === undefined || !isThirdPartyBlocked(deps.thirdParty, { pageUrl, requestUrl: url, resourceType: "image", subFrame: false }),
+      );
+      const iconBodies = await Promise.all(iconUrls.map((url) => fetchIcon(url)));
+      for (const [i, url] of iconUrls.entries()) {
+        const body = iconBodies[i];
         const type = body === undefined ? undefined : sniffImageType(body);
         if (body === undefined || type === undefined) continue;
         const record: ResourceRecord = {
@@ -183,5 +188,5 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
     // viewport reports it. Savings come first (first-party, then third-party, then leads), informational findings last.
     const kept = [...byId.values()].filter((f) => f.details?.perViewport !== "all" || (foundIn.get(f.id)?.size ?? 0) === views.length);
     return kept.sort((a, b) => findingTier(a) - findingTier(b) || b.savedBytes - a.savedBytes || a.id.localeCompare(b.id));
-  }, deps.run);
+  }, run);
 }

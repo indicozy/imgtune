@@ -339,6 +339,11 @@ the image totals). It is absent when the scan ran with `--no-resources`. Each fi
 | `details` | the numbers behind it: for compression `host`, `contentType`, `files`, `bytes`, `brotliBytes` and `urls`; for favicon `role`, `source` (the decoded size), `px` and `rebuiltBytes` |
 
 `imgtune hints --format json` gives the same findings as a top-level `resources` array, each with its `page`.
+
+Two flags on a finding's `details` say where it belongs: `thirdParty: true` (the file is on another registrable domain than
+the page; the title starts "third-party (ask the vendor):", and the totals report it apart from first-party savings) and
+`lead: true` (a small saving, under 5 KB, of a kind that is weak for its cost: SVG, Lottie, favicon). Leads and
+informational findings sort after the savings.
 ## Fonts (0.3.0)
 
 Font findings are the `resources` entries with `kind: "font"` (the same shape as every resource finding: `id`, `url`,

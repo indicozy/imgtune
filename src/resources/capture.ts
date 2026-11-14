@@ -47,6 +47,9 @@ export function resourceRecordOf(response: Response, pageUrl: string, viewport: 
  * Settles a resource record once its response has finished: the bytes (the encoded size the browser counted, else the
  * Content-Length), and the decoded body when an analyzer wants it and it is within RESOURCE_BODY_MAX.
  */
+/** How long a scan waits for the resource bodies of a page view before it moves on (a body still streaming is fetched again by the phase). */
+export const RESOURCE_BODY_SETTLE_MS = 1500;
+
 export async function readResourceBody(record: ResourceRecord, response: Response): Promise<void> {
   await response.finished().catch(() => null);
   let encoded = 0;

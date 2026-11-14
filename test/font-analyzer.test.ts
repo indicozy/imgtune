@@ -274,3 +274,49 @@ describe("font analyzer: findings", () => {
     expect(f.savedBytes).toBe(body.length - real);
   });
 });
+
+/** The same sfnt with one more table of `size` bytes (zeros) appended to the table directory: a font over 2 MB, synthetic. */
+function withPaddingTable(sfnt: Buffer, size: number): Buffer {
+  const n = sfnt.readUInt16BE(4);
+  const records = Array.from({ length: n }, (_, i) => ({
+    tag: sfnt.subarray(12 + 16 * i, 16 + 16 * i),
+    checksum: sfnt.readUInt32BE(16 + 16 * i),
+    body: sfnt.subarray(sfnt.readUInt32BE(20 + 16 * i), sfnt.readUInt32BE(20 + 16 * i) + sfnt.readUInt32BE(24 + 16 * i)),
+  }));
+  records.push({ tag: Buffer.from("zzpd"), checksum: 0, body: Buffer.alloc(size) });
+  const dirEnd = 12 + 16 * records.length;
+  const parts: Buffer[] = [];
+  let offset = dirEnd;
+  const header = Buffer.alloc(12);
+  sfnt.copy(header, 0, 0, 4);
+  header.writeUInt16BE(records.length, 4);
+  const dir: Buffer[] = [];
+  for (const r of records) {
+    const entry = Buffer.alloc(16);
+    r.tag.copy(entry, 0);
+    entry.writeUInt32BE(r.checksum, 4);
+    entry.writeUInt32BE(offset, 8);
+    entry.writeUInt32BE(r.body.length, 12);
+    dir.push(entry);
+    parts.push(r.body);
+    offset += Math.ceil(r.body.length / 4) * 4;
+    const pad = Math.ceil(r.body.length / 4) * 4 - r.body.length;
+    if (pad > 0) parts.push(Buffer.alloc(pad));
+  }
+  return Buffer.concat([header, ...dir, ...parts]);
+}
+
+describe("font analyzer: a face over 2 MB", () => {
+  it("gets the scaled subset estimate, not a WASM subset, and is labelled an estimate", async () => {
+    const big = withPaddingTable(fixture("synthetic-sans-regular.ttf"), 2.5 * 1024 * 1024);
+    expect(big.length).toBeGreaterThan(2 * 1024 * 1024);
+    const url = "https://page.example.test/fonts/Big-Sans.ttf";
+    const started = Date.now();
+    const [f] = await analyzer.analyze([record(url, big)], ctx());
+    expect(Date.now() - started).toBeLessThan(60_000);
+    expect(f).toBeDefined();
+    expect(f.details?.subsetBytes).toEqual(expect.any(Number));
+    expect(f.title).toContain("(estimate)");
+    expect(f.estimate).toBe(true);
+  });
+});

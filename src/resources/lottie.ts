@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { brotliSize } from "./brotli.js";
+import { brotliSize, brotliSizeFast } from "./brotli.js";
 import { digestOf, heavyValue } from "./cache.js";
 import sharp from "sharp";
 import { readZip, type ZipEntry } from "./zip.js";
@@ -246,8 +246,9 @@ function basename(url: string): string {
 /** Numbers rounded to three decimals, minified, measured with brotli against the served body. */
 function precisionFinding(url: string, body: Buffer, anim: LottieAnimation): ResourceFinding | undefined {
   const trimmed = Buffer.from(JSON.stringify(roundNumbers(anim)));
-  const served = brotliSize(body);
-  const after = brotliSize(trimmed);
+  // Both sizes at brotli quality 5 (an estimate): a quality-11 pass over a multi-megabyte JSON costs seconds per view.
+  const served = brotliSizeFast(body);
+  const after = brotliSizeFast(trimmed);
   const saved = served.bytes - after.bytes;
   if (saved < PRECISION_MIN_BYTES || saved < body.length * PRECISION_MIN_SHARE) return undefined;
   return {
@@ -273,7 +274,7 @@ async function dotLottieFinding(
   anim: LottieAnimation,
   rasters: { index: number; bytes: Buffer; ext: string }[],
 ): Promise<ResourceFinding | undefined> {
-  const served = brotliSize(body);
+  const served = brotliSizeFast(body);
   const copy = JSON.parse(JSON.stringify(anim)) as LottieAnimation;
   const byIndex = new Map(rasters.map((r) => [r.index, r]));
   (copy.assets ?? []).forEach((a, i) => {

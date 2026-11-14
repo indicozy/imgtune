@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Resource checks cost less. Each heavy step (brotli-11 sizes, SVGO and render, WOFF2 and subset encodes, lottie re-encodes,
+  3D meshopt, audio sample encodes) is computed once per run per distinct content, not once per viewport and page. Icons are
+  fetched once per run. `--resource-time <s>` (default 60) caps the heavy work of a run; a file over the budget keeps its cheap
+  finding, marked estimate or not measured.
+- Resource findings are labelled by where they come from: a file on another site is "third-party (ask the vendor)" and is
+  totalled apart from first-party savings; a small saving of a weak-for-cost kind (SVG, Lottie, favicon) is a "lead" and sorts
+  after real savings. The 3D packages (`@gltf-transform/*`, `meshoptimizer`) are optional dependencies: without them a model is
+  reported as not measured, with one install note.
+- A hidden image that already has `loading="lazy"` is no longer advised to get it: the hint says it is within the browser's
+  lazy-load distance and to render it on activation.
 - Resources. `scan` records every non-image response of a page and reports two checks in a Resources section (after
   Video, and in the JSON as `resources`): text served without compression (brotli-11 saving, grouped per host and content
   type), and favicons or apple-touch-icons over 10 KB or 30 KB (the saving from a 32 px or 180 px re-encode). `--no-resources`
