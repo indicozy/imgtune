@@ -387,7 +387,7 @@ export function videoRecordsOf(
       shownBytesAt.set(m, bytes);
       if (bytes <= 0) continue;
       const reason = m.video.hiddenReason ?? "display";
-      entries.push({ viewport, bytes, hidden: reason, inPanel: m.video.inPanel === true, hover: m.video.hover === true });
+      entries.push({ viewport, bytes, hidden: reason, inPanel: m.video.inPanel === true, hover: m.video.hover === true, unstable: m.video.unstable === "unknown" });
       copies.push({ viewport: viewport.name, src: m.video.currentSrc, bytes, reason });
     }
     const hiddenBase = hiddenFixCore(entries, observations.length);

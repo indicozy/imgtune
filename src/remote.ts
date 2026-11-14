@@ -1124,6 +1124,8 @@ export interface ObservedImage {
   inPanel?: true;
   /** The element is shown by a :hover rule (a hover swap): it is not shown on load. Absent otherwise. */
   hover?: true;
+  /** Hidden at the snapshot and not re-read (past REVEAL_CAP): its reason is the snapshot's, unverified. */
+  unstable?: "unknown";
 }
 
 /**
@@ -1185,6 +1187,8 @@ export interface ObservedVideo {
   inPanel?: true;
   /** The video is shown by a :hover rule (a hover swap), so it is not shown on load. */
   hover?: true;
+  /** Hidden at the snapshot and not re-read (past REVEAL_CAP): its reason is the snapshot's, unverified. */
+  unstable?: "unknown";
   locator: ObservedLocator;
 }
 
@@ -1248,8 +1252,8 @@ export interface ViewportObservation {
   nextjs: boolean;
   images: ObservedImage[];
   /**
-   * Candidates (an opacity, clipped or zero-size copy) that were not re-read after a scroll because the viewport was past
-   * REVEAL_CAP. Their hidden reason is the snapshot's. Absent in a light read.
+   * Candidates that were not re-read because the viewport was past REVEAL_CAP. Their hidden reason is the snapshot's, and
+   * each is flagged unstable: "unknown". Absent in a light read.
    */
   revealCapped?: number;
   /** The elements with a CSS background image (none in a light read). */
@@ -1377,24 +1381,27 @@ export function addMediaResponse(
   });
 }
 
-/** One read of the page as it stands: its images and whether it is a Next.js app. */
 /**
  * The most candidates per viewport that are re-read after a scroll (see readView): an opacity, clipped or zero-size copy.
  * A candidate past the cap keeps its snapshot reason, and the page counts it (ViewportObservation.revealCapped).
  */
 export const REVEAL_CAP = 60;
 
+/** The wait between the snapshot and the second read of a hidden candidate (see readView): it must span a toggle period. */
+export const REVEAL_STABLE_MS = 1000;
+
+/** The wait after the scroll pass, before the last read: a fade the scroll started has finished by then. */
+export const REVEAL_SETTLE_MS = 400;
+
 /** The candidates of a page's viewports that were past REVEAL_CAP (not re-read after a scroll), summed. */
 function revealCappedOf(observations: ViewportObservation[]): number {
   return observations.reduce((sum, obs) => sum + (obs.revealCapped ?? 0), 0);
 }
 
-/** The window scroll that brings an element's centre into view. The overflow boxes around it are not scrolled. */
-export const REVEAL_WAIT_MS = 400;
-
+/** One read of the page as it stands: its images and whether it is a Next.js app. */
 async function readView(page: Page, light = false, withVideos = false): Promise<PageView> {
   const seen = await page.evaluate(
-    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait }) => {
+    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait, revealSettle }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1722,24 +1729,32 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           });
         });
       }
-      // Scroll reveals: an opacity, clipped or zero-size copy may be a fade-in or a box that a scroll brings in. Each candidate
-      // (images, then videos, in document order) is brought to the centre of the window (the window only: an overflow box is
-      // not scrolled, so a carousel slide stays clipped), waited on for revealWait ms and two frames, and read again. A copy
-      // that is shown now is shown; one that is still hidden keeps the reason of the new read. Past revealCap per viewport a
-      // candidate keeps its snapshot reason and is counted. A display, visibility or closed-details copy is not re-read.
+      // Stability: a copy is hidden only when it reads hidden three times: the snapshot, a read REVEAL_STABLE_MS later with no
+      // scroll, and a read after a scroll to it (the same reason each time). A copy that reads shown at any read is shown: a
+      // carousel slide that auto-advances, a crossfade, or a fade-in a scroll brings in. The candidates are every hidden copy
+      // (images, then videos, in document order); past revealCap per viewport a candidate keeps its snapshot reason and is
+      // flagged unstable: "unknown". The scroll pass is one pass over the candidates: each is brought to the centre of the
+      // window (the window only, so an overflow box such as a carousel track is not scrolled), read after two frames, and
+      // the window is put back at the end. A light read does none of this.
       let revealCapped = 0;
       if (!light) {
-        const isCandidate = (reason: HiddenReason | undefined): boolean => reason === "opacity" || reason === "clipped" || reason === "zero-size";
-        const candidates: { el: Element; apply: (info: { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined) => void }[] = [];
+        interface Candidate {
+          el: Element;
+          snap: { reason: HiddenReason; inPanel: boolean; hover: boolean };
+          apply: (info: { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined, unstable: boolean) => void;
+        }
+        const candidates: Candidate[] = [];
         document.querySelectorAll("img").forEach((img, index) => {
           const obj = images[index];
-          if (obj === undefined || !isCandidate(obj.hidden)) return;
+          if (obj === undefined || obj.hidden === undefined) return;
           candidates.push({
             el: img,
-            apply: (info) => {
+            snap: { reason: obj.hidden, inPanel: obj.inPanel === true, hover: obj.hover === true },
+            apply: (info, unstable) => {
               delete obj.hidden;
               delete obj.inPanel;
               delete obj.hover;
+              if (unstable) (obj as { unstable?: "unknown" }).unstable = "unknown";
               if (info !== undefined) {
                 obj.hidden = info.reason;
                 if (info.inPanel) obj.inPanel = true;
@@ -1750,14 +1765,16 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         });
         document.querySelectorAll("video").forEach((video, index) => {
           const obj = videos.find((v) => v.index === index);
-          if (obj === undefined || !obj.hidden || !isCandidate(obj.hiddenReason)) return;
+          if (obj === undefined || !obj.hidden || obj.hiddenReason === undefined) return;
           candidates.push({
             el: video,
-            apply: (info) => {
+            snap: { reason: obj.hiddenReason, inPanel: obj.inPanel === true, hover: obj.hover === true },
+            apply: (info, unstable) => {
               delete obj.hiddenReason;
               delete obj.inPanel;
               delete obj.hover;
               obj.hidden = info !== undefined;
+              if (unstable) obj.unstable = "unknown";
               if (info !== undefined) {
                 obj.hiddenReason = info.reason;
                 if (info.inPanel) obj.inPanel = true;
@@ -1766,25 +1783,43 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
             },
           });
         });
+        const checked = candidates.slice(0, revealCap);
+        revealCapped = candidates.length - checked.length;
         const x0 = window.scrollX;
         const y0 = window.scrollY;
         const frames = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-        for (const [i, candidate] of candidates.entries()) {
-          if (i >= revealCap) {
-            revealCapped++;
-            continue;
-          }
-          const box = candidate.el.getBoundingClientRect();
+        // Read 2: a second read, revealWait ms after the snapshot, with no scroll.
+        await new Promise((resolve) => setTimeout(resolve, revealWait));
+        const second = checked.map((c) => hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
+        // Read 3: one pass, each candidate read after a scroll to it.
+        // Read 3a: each candidate right after its own scroll (a display that a scroll shows is read at its own position).
+        const third: ({ reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined)[] = [];
+        for (const c of checked) {
+          const box = c.el.getBoundingClientRect();
           window.scrollBy(box.left + box.width / 2 - window.innerWidth / 2, box.top + box.height / 2 - window.innerHeight / 2);
-          await new Promise((resolve) => setTimeout(resolve, revealWait));
           await frames();
-          candidate.apply(hiddenReasonOf(candidate.el, candidate.el.getBoundingClientRect()));
+          third.push(hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
         }
+        // Read 3b: once, after the pass, so a CSS fade started by the scroll has finished (one wait for the whole pass).
+        await new Promise((resolve) => setTimeout(resolve, revealSettle));
+        const fourth = checked.map((c) => hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
         window.scrollTo(x0, y0);
+        checked.forEach((c, i) => {
+          const a = c.snap;
+          const b = second[i];
+          const t = third[i];
+          const f = fourth[i];
+          // Hidden only when every read is hidden with the same reason; any read that shows it, or a change of reason, is
+          // shown (a toggle, a fade, or a box a scroll brings in).
+          const stable =
+            b !== undefined && t !== undefined && f !== undefined && b.reason === a.reason && t.reason === a.reason && f.reason === a.reason;
+          c.apply(stable ? f : undefined, false);
+        });
+        for (const c of candidates.slice(revealCap)) c.apply(c.snap, true);
       }
       return { nextjs, images, backgrounds, videos, revealCapped };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_WAIT_MS },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_STABLE_MS, revealSettle: REVEAL_SETTLE_MS },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };

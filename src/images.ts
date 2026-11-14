@@ -215,6 +215,8 @@ export interface HiddenFix {
   inPanel: boolean;
   /** The element is shown by a :hover rule (a hover swap) at a hidden viewport. */
   hover?: true;
+  /** A hidden viewport was not re-read (past REVEAL_CAP), so the reason is the snapshot's and unverified. */
+  unstable?: "unknown";
   /** The viewports where it is not shown on load. */
   viewports: string[];
   /** The viewports of the scan: `viewports` of them hide it. */
@@ -240,6 +242,8 @@ export interface HiddenEntry {
   hidden?: HiddenReason;
   inPanel: boolean;
   hover: boolean;
+  /** The reading was not re-read (see HiddenFix.unstable). */
+  unstable?: boolean;
 }
 
 /** The hidden fix of an element from its entries (one per viewport it was measured at), or undefined when it is shown on load everywhere. */
@@ -249,6 +253,7 @@ export function hiddenFixCore(entries: HiddenEntry[], viewportCount: number): Hi
   const reasons = [...new Set(hidden.map((e) => e.hidden).filter((r): r is HiddenReason => r !== undefined))];
   const inPanel = hidden.some((e) => e.inPanel);
   const hover = hidden.some((e) => e.hover);
+  const unstable = hidden.some((e) => e.unstable === true);
   const shownIn = entries.filter((e) => e.hidden === undefined).map((e) => e.viewport.name);
   const onlyClipped = reasons.every((r) => r === "clipped");
   // A responsive twin: shown on load somewhere, and hidden by a rule that is not a carousel's clipping.
@@ -258,6 +263,7 @@ export function hiddenFixCore(entries: HiddenEntry[], viewportCount: number): Hi
     reasons,
     inPanel,
     ...(hover ? { hover: true as const } : {}),
+    ...(unstable ? { unstable: "unknown" as const } : {}),
     viewports: hidden.map((e) => e.viewport.name),
     of: viewportCount,
     widths: Object.fromEntries(entries.map((e) => [e.viewport.name, e.viewport.width])),
@@ -276,6 +282,7 @@ export function hiddenFixOf(members: Instance[], viewportCount: number): HiddenF
       hidden: m.kind === "hidden" ? m.img.hidden : undefined,
       inPanel: m.img.inPanel === true,
       hover: m.img.hover === true,
+      unstable: m.img.unstable === "unknown",
     })),
     viewportCount,
   );

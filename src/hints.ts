@@ -421,6 +421,7 @@ export function hiddenLines(hidden: HiddenFix): string[] {
   const lines = [
     `   loaded but not shown on load: ${kb(hidden.perViewBytes)}/view, hidden at ${hidden.viewports.length} of ${hidden.of} viewport(s) (${names(hidden.viewports)}): ${safeText(reasons)}; not in the saving`,
   ];
+  if (hidden.unstable === "unknown") lines.push("   unstable: unknown (not re-read past the candidate cap): the reason is the first read's; check it in the browser");
   if (hidden.action === "responsive") {
     lines.push(
       `   responsive twin, shown on load at ${names(hidden.shownIn)}: serve one file per viewport. Replace the two elements with <picture><source media="${twinMediaOf(hidden)}" srcset="<the file shown there>"><img …></picture>, or delete the hidden copy if the design does not need it.`,
@@ -451,6 +452,7 @@ export function videoHiddenLines(hidden: HiddenFix): string[] {
   const lines = [
     `   loaded but not shown on load: ${kb(hidden.perViewBytes)}/view, hidden at ${hidden.viewports.length} of ${hidden.of} viewport(s) (${names(hidden.viewports)}): ${safeText(reasons)}; not in the savings`,
   ];
+  if (hidden.unstable === "unknown") lines.push("   unstable: unknown (not re-read past the candidate cap): the reason is the first read's; check it in the browser");
   if (hidden.action === "responsive") {
     const media = twinMediaOf(hidden);
     lines.push(
