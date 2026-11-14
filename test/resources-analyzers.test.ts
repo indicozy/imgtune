@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import sharp from "sharp";
 import { analyzer as compression, MIN_BYTES, SAMPLE_BYTES } from "../src/resources/compression.js";
 import { analyzer as favicon, largestPngFrame } from "../src/resources/favicon.js";
-import { analyzeResources, labelFinding, runPhaseWith } from "../src/resources/phase.js";
+import { analyzeResources, labelFinding, REFETCH_MAX_BYTES, runPhaseWith } from "../src/resources/phase.js";
 import { completeFontFaces, fontFaceRulesOf } from "../src/resources/capture.js";
 import { findingTier, resourceLinesOf, resourceTotalsLine } from "../src/resources/report.js";
 import { ANALYZERS } from "../src/resources/index.js";
@@ -221,6 +221,15 @@ describe("resource phase", () => {
     const findings = await analyzeResources(views, page, { fetcher, allowPrivate: false });
     expect(calls.filter((u) => u === url)).toEqual([url]);
     expect(findings.map((f) => f.kind)).toEqual(["compression"]);
+  });
+
+  it("does not fetch again a large response the capture kept no body for (over REFETCH_MAX_BYTES)", async () => {
+    const url = `${page}big.js`;
+    const calls: string[] = [];
+    const fetcher = { get: async (u: string) => (calls.push(u), textBody(10)) } as unknown as Parameters<typeof analyzeResources>[2]["fetcher"];
+    const big = recordOf({ url, bytes: REFETCH_MAX_BYTES + 1, status: 206, viewport: "desktop" });
+    await analyzeResources([{ viewport: desktop, resources: [big] }], page, { fetcher, allowPrivate: false });
+    expect(calls.filter((u) => u === url)).toEqual([]);
   });
 
   it("does not fetch again a response that no analyzer wants", async () => {

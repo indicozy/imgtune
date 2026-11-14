@@ -42,6 +42,12 @@ export interface ResourceView {
   pageContext?: PageContextData;
 }
 
+/**
+ * A response the capture kept no body for (its read timed out) is fetched again only up to this size: a larger one is not worth
+ * a second download in the phase; its analysis is left out, and its bytes are still counted from the response.
+ */
+export const REFETCH_MAX_BYTES = 1024 * 1024;
+
 export interface ResourceDeps {
   cache?: ResultCache;
   fetcher: Fetcher;
@@ -112,7 +118,7 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
     for (const view of views) {
       const records: ResourceRecord[] = [];
       for (const r of view.resources ?? []) {
-        const needsBody = r.body === undefined && r.status >= 200 && r.status < 300 && r.bytes <= RESOURCE_BODY_MAX && analyzers.some((a) => a.wants(r));
+        const needsBody = r.body === undefined && r.status >= 200 && r.status < 300 && r.bytes <= REFETCH_MAX_BYTES && analyzers.some((a) => a.wants(r));
         const blocked = deps.thirdParty !== undefined && isThirdPartyBlocked(deps.thirdParty, { pageUrl: r.pageUrl, requestUrl: r.url, resourceType: r.resourceType, subFrame: false });
         if (needsBody && !blocked) {
           const body = await bodyOf(r.url);

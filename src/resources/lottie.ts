@@ -7,7 +7,7 @@ import { readZip, type ZipEntry } from "./zip.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
 
 /** Embedded rasters per animation the analyzer decodes (largest first). The rest are skipped. */
-const MAX_RASTERS = 24;
+const MAX_RASTERS = 8;
 /** Lottie precision savings below both thresholds are noise and not reported. */
 const PRECISION_MIN_BYTES = 1024;
 const PRECISION_MIN_SHARE = 0.05;

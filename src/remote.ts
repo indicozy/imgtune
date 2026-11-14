@@ -71,6 +71,7 @@ import {
 } from "./media-phase.js";
 import { analyzeResources } from "./resources/phase.js";
 import { replayHarPath } from "./replay.js";
+import { ResourcePool } from "./resources/pool.js";
 import { RESOURCE_BODY_SETTLE_MS } from "./resources/capture.js";
 import { DEFAULT_RESOURCE_BUDGET_MS, newResourceRun, type ResourceRun } from "./resources/cache.js";
 import { resourceLinesOf, resourceTotalsLine } from "./resources/report.js";
@@ -606,6 +607,8 @@ export const DEFAULT_SVG_BUDGET = 50;
 export const MAX_SVG_BUDGET = 1000;
 /** The longest --resource-time, in seconds. */
 export const MAX_RESOURCE_TIME = 3600;
+/** The resource analyses of a scan that run at once, in the phase-1 pool (see resources/pool.ts). */
+const RESOURCE_PARALLEL = 2;
 /** The default --resource-time, in seconds: the heavy resource work of a run (see resources/cache.ts). */
 export const DEFAULT_RESOURCE_TIME_S = DEFAULT_RESOURCE_BUDGET_MS / 1000;
 
@@ -3384,7 +3387,12 @@ function referenceViewportName(viewports: Viewport[]): string {
 }
 
 /** Turns the observations of one page into the report. Fetches and local encodes happen here. */
-export async function analysePage(ctx: AnalysisContext, input: ViewportObservation[], base: PageResult): Promise<PageResult> {
+export async function analysePage(
+  ctx: AnalysisContext,
+  input: ViewportObservation[],
+  base: PageResult,
+  resourcesJob: () => Promise<ResourceFinding[] | undefined> = () => resourcesOf(ctx, input),
+): Promise<PageResult> {
   // A fetched video poster is measured as an image, sized to its video's box (see video-analysis.ts).
   const observations = withPosterImages(input);
   const refName = referenceViewportName(observations.map((o) => o.viewport));
@@ -3529,15 +3537,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
   const videoSources = await resolveVideoSources(ctx, input);
   const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS, videoSources);
   // The resource phase runs when the page was captured with resources (see readGroup); its findings are the page's.
-  const resourcesFound = observations.some((o) => o.resources !== undefined)
-    ? await measure("resources", () =>
-        analyzeResources(
-          observations.map((o) => ({ viewport: o.viewport, resources: o.resources, pageContext: o.pageContext })),
-          ctx.pageUrl,
-          { cache: ctx.deps.cache, fetcher: ctx.fetcher, allowPrivate: ctx.allowPrivate, thirdParty: ctx.thirdParty, run: ctx.deps.resourceRun },
-        ),
-      )
-    : undefined;
+  const resourcesFound = await resourcesJob();
   // An image never shown on load is reported once, as loaded-but-not-shown (its bytes are that fix's): an svg or text file
   // behind it gets no resource finding too, so the same bytes are not claimed twice. A favicon is not an image on the page.
   const neverShown = new Set(
@@ -3865,9 +3865,44 @@ async function scanPage(
   if (robotsIgnored) described.robotsIgnored = true;
   if (robotsRule !== undefined) described.robotsRule = robotsRule;
   if (finalUrl !== undefined) described.redirectNote = `the page ends on ${finalUrl}; measured there`;
-  if (run.stage === undefined) return { analyse: (store) => analysePage({ ...analysisContextOf(run, pageUrl), store }, observations, described) };
+  if (run.stage === undefined) {
+    const ctx = analysisContextOf(run, pageUrl);
+    const resources = pageResourceJob(ctx, async () => observations);
+    return {
+      resources,
+      analyse: (store, withResources = true) => analysePage({ ...ctx, store }, observations, described, withResources ? resources : NO_RESOURCES),
+    };
+  }
   return stagedMeasure(run, run.stage, pageUrl, described, observations);
 }
+
+/**
+ * The resource findings of a page's observations (see resources/), or undefined when the page was captured without resources.
+ * Never throws: a failed analysis gives undefined, so it does not fail the page.
+ */
+async function resourcesOf(ctx: Omit<AnalysisContext, "store">, observations: ViewportObservation[]): Promise<ResourceFinding[] | undefined> {
+  if (!observations.some((o) => o.resources !== undefined)) return undefined;
+  try {
+    return await measure("resources", () =>
+      analyzeResources(
+        observations.map((o) => ({ viewport: o.viewport, resources: o.resources, pageContext: o.pageContext })),
+        ctx.pageUrl,
+        { cache: ctx.deps.cache, fetcher: ctx.fetcher, allowPrivate: ctx.allowPrivate, thirdParty: ctx.thirdParty, run: ctx.deps.resourceRun },
+      ),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** A page's resource analysis, started at most once: the phase-1 pool starts it, and the estimate pass reads the same job. */
+export function pageResourceJob(ctx: Omit<AnalysisContext, "store">, observations: () => Promise<ViewportObservation[]>): () => Promise<ResourceFinding[] | undefined> {
+  let job: Promise<ResourceFinding[] | undefined> | undefined;
+  return () => (job ??= observations().then((obs) => resourcesOf(ctx, obs)).catch(() => undefined));
+}
+
+/** No resource analysis: the provisional pass of a page (its resources are replaced by the estimate pass's). */
+const NO_RESOURCES = (): Promise<undefined> => Promise.resolve(undefined);
 
 /** What analysePage reads of a page besides its observations: the run's fetcher, encoders and options, for one page. */
 type PageRun = Parameters<typeof scanPage>[1];
@@ -3894,7 +3929,10 @@ function analysisContextOf(run: PageRun, pageUrl: string): Omit<AnalysisContext,
 
 /** A page measured whose estimates are not in yet: `analyse` gives its result with the estimates of a store (see withEstimates). */
 export interface MeasuredPage {
-  analyse: (store: EstimateStore) => Promise<PageResult>;
+  /** withResources false: the provisional pass, whose resource findings are not needed (the estimate pass gives them). */
+  analyse: (store: EstimateStore, withResources?: boolean) => Promise<PageResult>;
+  /** Phase 1: the page's resource analysis, started once (see pageResourceJob). Absent when the page has no resources to analyse. */
+  resources?: () => Promise<ResourceFinding[] | undefined>;
   /** Phase 1: writes the measured state to the stage, marked incomplete (see stage.ts). Absent when the run does not stage. */
   stage?: () => Promise<void>;
   /** Phase 1: records the page's image count in its stage, once it is counted. */
@@ -3936,7 +3974,11 @@ function stagedMeasure(
   const file = join(stage.dir, pageFileName(new URL(pageUrl)));
   let pending = live;
   const ctx = analysisContextOf(run, pageUrl);
+  // The observations the resource job reads: the live ones while the page is in memory (phase 1 starts the job before the stage
+  // drops them), else the staged file's.
+  const resources = pageResourceJob(ctx, async () => pending ?? (await unstagedObservations(stage.dir, file)));
   return {
+    resources,
     stage: async () => {
       if (pending === undefined) return;
       const staged: StagedObservation[] = [];
@@ -3967,9 +4009,9 @@ function stagedMeasure(
       const state = await readStagedJson<StagedPage>(file);
       if (state !== undefined) await writeStagedJson(stage.dir, file, { ...state, images });
     },
-    analyse: async (store) => {
+    analyse: async (store, withResources = true) => {
       const observations = pending ?? (await unstagedObservations(stage.dir, file));
-      return analysePage({ ...ctx, store }, observations, described);
+      return analysePage({ ...ctx, store }, observations, described, withResources ? resources : NO_RESOURCES);
     },
     finish: async () => {
       await rm(file, { force: true });
@@ -4236,6 +4278,8 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
     const finished: PageResult[] = [];
     const registry = new EstimateRegistry();
     const collector = registry.collector();
+    // The resource analyses run in this pool while later pages are measured (see resources/pool.ts).
+    const resourcePool = new ResourcePool(RESOURCE_PARALLEL, (error) => opts.log(`resources: a page's analysis failed: ${safeText(String(error))}`));
     const measured: { index: number; url: string; page: MeasuredPage }[] = [];
     // The media assets (videos and animated images) of every measured page, from its collecting pass (see media-phase.ts).
     const mediaAssets: MediaAsset[] = [];
@@ -4263,7 +4307,7 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       // A page measured by an interrupted run: its estimates only. Its requests are collected as a measured page's are.
       const staged = opts.resume ? await resumeStaged(run, url) : undefined;
       if (staged !== undefined) {
-        const stagedProvisional = await staged.page.analyse(collector);
+        const stagedProvisional = await staged.page.analyse(collector, false);
         mediaAssets.push(...mediaAssetsOf(stagedProvisional));
         measured.push({ index, url, page: staged.page });
         images += staged.images;
@@ -4284,8 +4328,14 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
       }
       // The collecting pass: the page's estimate requests are recorded; its own numbers are provisional and replaced below.
       // Staged as soon as it is measured: the collecting pass reads it back from the stage, so no bytes are held meanwhile.
+      // The resource analysis starts now, pooled, so it overlaps the next pages' measurement. It reads the observations before the
+      // stage drops them from memory.
+      if (outcome.resources !== undefined) {
+        await resourcePool.admit();
+        void resourcePool.start(outcome.resources);
+      }
       await outcome.stage?.();
-      const provisional = await outcome.analyse(collector);
+      const provisional = await outcome.analyse(collector, false);
       mediaAssets.push(...mediaAssetsOf(provisional));
       await outcome.countImages?.(provisional.counts?.images ?? 0);
       measured.push({ index, url, page: outcome });
