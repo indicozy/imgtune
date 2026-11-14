@@ -328,6 +328,14 @@ Font findings are the `resources` entries with `kind: "font"` (the same shape as
 
 A finding's `savedBytes` is the fetched size minus the smaller of the WOFF2 and subset sizes; an unused face's is its full
 size. A family of several static faces has `savedBytes: 0` and `details.faces` and `details.weights`.
+## Resource findings: lottie and svg (0.3.0)
+
+Each finding has `id`, `kind` (`lottie` or `svg`), `url`, `bytes` (per view), `savedBytes` (per view, 0 when informational),
+`estimate`, `title`, `fix` (lines) and `details`. Lottie `details`: `layers`, `fps`, `seconds`, `width`, `height`,
+`embeddedRasters`, `displayBox` when known. Lottie raster findings: `rasters[]` with `asset`, `from`, `width`, `height`,
+`bytes`, `toWidth`, `toBytes`. SVG `details`: `rawBefore`, `rawAfter`, `brotliBefore`, `brotliAfter`, `ssimulacra2`
+(and `brotliEstimate` for large files). Ids are `lottie:<hash>` (informational), `lottie:<hash>:raster|precision|dotlottie|stored`,
+`svg:<hash>` and `svg:<hash>:raster`.
 
 ## Summary JSON
 

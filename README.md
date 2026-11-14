@@ -157,6 +157,13 @@ Every fix hint is labelled with the strength of its evidence, the rung it stands
 A ceiling is never derived from the existing `sizes` value. When a usage is measured, its `sizes` comes from the layout
 the browser resolved, not from a guess.
 
+## Lottie and SVG
+
+`scan` also reads the Lottie animations and the SVG files a page loads. A Lottie report gives the size, layers, frame rate and
+duration, and its savings: embedded rasters re-encoded to WebP at the display size, a `.lottie` repack (an estimate), and
+numbers rounded to three decimals. An SVG is optimised with SVGO and reported when the brotli size drops by 20% or more and
+the render still scores 70 or more on SSIMULACRA2 at half size. Guides: `site/guide/lottie.md` and `site/guide/svg.md`.
+
 ## GIFs and video
 
 `scan` also measures animated media: animated GIFs in an `<img>` or a CSS background, animated WebP and APNG, and
