@@ -1391,7 +1391,7 @@ export const REVEAL_CAP = 60;
 export const REVEAL_STABLE_MS = 1000;
 
 /** The wait after the scroll pass, before the last read: a fade the scroll started has finished by then. */
-export const REVEAL_SETTLE_MS = 400;
+export const REVEAL_SETTLE_MS = 800;
 
 /** The candidates of a page's viewports that were past REVEAL_CAP (not re-read after a scroll), summed. */
 function revealCappedOf(observations: ViewportObservation[]): number {
@@ -1745,9 +1745,17 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           apply: (info: { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined, unstable: boolean) => void;
         }
         const candidates: Candidate[] = [];
+        // A copy the scan's scroll pass saw visible at some step is shown (see MARK_VISIBLE_SCRIPT in measure.ts).
+        const seenVisible = (window as unknown as { __imgtuneSeen?: WeakSet<Element> }).__imgtuneSeen;
         document.querySelectorAll("img").forEach((img, index) => {
           const obj = images[index];
           if (obj === undefined || obj.hidden === undefined) return;
+          if (seenVisible?.has(img) === true) {
+            delete obj.hidden;
+            delete obj.inPanel;
+            delete obj.hover;
+            return;
+          }
           candidates.push({
             el: img,
             isVideo: false,
@@ -1768,6 +1776,13 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         document.querySelectorAll("video").forEach((video, index) => {
           const obj = videos.find((v) => v.index === index);
           if (obj === undefined || !obj.hidden || obj.hiddenReason === undefined) return;
+          if (seenVisible?.has(video) === true) {
+            delete obj.hiddenReason;
+            delete obj.inPanel;
+            delete obj.hover;
+            obj.hidden = false;
+            return;
+          }
           candidates.push({
             el: video,
             isVideo: true,
