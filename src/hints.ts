@@ -307,7 +307,7 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
       if (snapFrom !== undefined) {
         quality.snapFrom = snapFrom;
         quality.void = true;
-        if (hint.bytes.sizes !== undefined) hint.bytes = { ...hint.bytes, saved: hint.bytes.sizes, quality: 0 };
+        if (hint.bytes.sizes !== undefined) hint.bytes = { ...hint.bytes, saved: hint.bytes.sizes + (hint.bytes.resize ?? 0), quality: 0 };
       }
       hint.quality = quality;
     }
@@ -403,7 +403,7 @@ export function srcsetLineOf(srcset: NonNullable<Hint["srcset"]>): string {
  * The srcset advice of a call site, when every image in it is a plain image with no srcset: the union of their widths (at
  * most the variant limit), the largest need, and the first measured sizes value. Undefined for any other group.
  */
-export function groupSrcsetOf(group: HintGroup): NonNullable<Hint["srcset"]> | undefined {
+export function groupSrcsetOf(group: { hints: Hint[] }): NonNullable<Hint["srcset"]> | undefined {
   const all = group.hints.flatMap((h) => (h.srcset !== undefined ? [h.srcset] : []));
   if (all.length === 0 || all.length !== group.hints.length) return undefined;
   const widths = srcsetWidthsOf(all.flatMap((s) => s.widths), undefined);
@@ -806,7 +806,9 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
         : [...new Set(mine.map((h) => h.sizes.proposed ?? "-"))].map((v) => JSON.stringify(safeText(v))).join(", ");
     const widths = mine.flatMap((h) => (h.rendered ? [h.rendered.min, h.rendered.max] : []));
     const rendered = widths.length > 0 ? `${Math.min(...widths)}-${Math.max(...widths)} px` : "not rendered";
-    lines.push(`   ${JSON.stringify(pathOf(page))}  ${mine.length} image(s)  current ${current}  proposed ${proposed}  rendered ${rendered}`);
+    // A srcset group has no sizes change to print: its page line keeps the images and the rendered widths only.
+    if (srcset !== undefined) lines.push(`   ${JSON.stringify(pathOf(page))}  ${mine.length} image(s)  rendered ${rendered}`);
+    else lines.push(`   ${JSON.stringify(pathOf(page))}  ${mine.length} image(s)  current ${current}  proposed ${proposed}  rendered ${rendered}`);
   }
   const targets = group.hints.flatMap((h) => (h.quality ? [h.quality] : []));
   if (targets.length > 0) {

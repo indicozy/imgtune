@@ -29,6 +29,7 @@ import {
   isBlockedAddress,
   duplicatesOf,
   groupReports,
+  renderScan,
   makeFetcher,
   netSavings,
   neededWidth,
@@ -539,6 +540,17 @@ describe("mdText, mdCode and the Markdown summary", () => {
     // The image columns are unchanged by the resource findings.
     expect(md).toContain("| `shop.example/` | ok | 3235 |");
     expect(renderMarkdown([pageResult()], false)).not.toContain("resources:");
+  });
+
+  it("names a plain no-srcset group by its widths to serve, in the text and the Markdown, never set sizes", () => {
+    const groups = [{ key: "k", savedBytes: 2048, members: 1, samples: [], loader: "generic", srcset: { widths: [190, 270, 380] } }];
+    const md = renderMarkdown([pageResult({ groups })], false);
+    expect(md).toContain("no srcset");
+    expect(md).toContain("serve 190w, 270w, 380w + srcset/sizes");
+    expect(md).not.toContain("set sizes");
+    const text = renderScan([pageResult({ groups })], false);
+    expect(text).toContain("no srcset -> serve 190w, 270w, 380w + srcset/sizes  saves 2 KB/view");
+    expect(text).not.toContain("set sizes");
   });
 
   it("lists the top five groups as code spans, with hostile sizes escaped", () => {

@@ -199,6 +199,13 @@ describe("cleanRecord and readMeasuredScan (the scan file is untrusted)", () => 
     expect(bad?.locator.line).toBeUndefined();
   });
 
+  it("keeps the srcset advice and the resize booking of a plain image", () => {
+    const m = measured("a");
+    const record = cleanRecord({ ...m, fix: { ...m.fix, srcset: { widths: [190, 380], largest: 380 }, bytes: { saved: 1000, addedForSharpness: 0, sizes: 0, resize: 1000, quality: 0 } } });
+    expect(record?.fix.srcset).toEqual({ widths: [190, 380], largest: 380 });
+    expect(record?.fix.bytes.resize).toBe(1000);
+  });
+
   it("drops a record with a bad id, and keeps the element order only when it is an integer", () => {
     expect(cleanRecord({ ...measured("a"), id: "../x" })).toBeUndefined();
     const record = cleanRecord({ ...measured("a"), perViewport: [{ viewport: "iphone-15", renderedCssPx: 1, servedBytes: 1, domIndex: 2.5 }] });

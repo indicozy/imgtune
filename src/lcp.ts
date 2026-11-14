@@ -50,7 +50,8 @@ export function lcpImagesOf(result: PageResult): LcpImage[] {
       servedBytes: served.reduce((sum, p) => sum + p.servedBytes, 0) / served.length,
       savedBytes: record.fix.bytes.saved,
       exactBytes: record.fix.bytes.sizes ?? 0,
-      estBytes: record.fix.bytes.quality ?? 0,
+      // The resize of a plain image with no srcset is an estimate too (see ImageFix.bytes).
+      estBytes: (record.fix.bytes.quality ?? 0) + (record.fix.bytes.resize ?? 0),
       ...(skipped !== undefined ? { skipped } : {}),
     });
   }

@@ -1,7 +1,8 @@
 // The Markdown report of `imgtune check`: a pure builder over the survey results, the deep results, the route grouping and
 // the deep selection. No browser, no files. The audit mode extends it with source-aware sections; the sections below keep
 // their order so the two stay comparable. Page-derived text goes through mdText and mdCode (see text.ts).
-import { hiddenPagesLine, hiddenVideoSummaryLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
+import { groupSrcsetOf, hiddenPagesLine, hiddenVideoSummaryLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
+import { srcsetWidthLabel } from "./candidates.js";
 import { lcpLinesOf } from "./lcp.js";
 import { planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import { hasFix, type ImageRecord } from "./images.js";
@@ -101,6 +102,8 @@ export interface FixGroup {
   where: string;
   located: boolean;
   loader: string;
+  /** Plain images with no srcset: the variant widths to serve, in place of a sizes change (see groupSrcsetOf). */
+  srcset?: { widths: number[] };
   /** The image's URL pattern (the loader's URL with w, q and the CDN transform taken out), when it has one. */
   pattern?: string;
   current: string;
@@ -168,6 +171,7 @@ export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[
       current,
       proposed,
       basis: first.sizes.basis,
+      srcset: groupSrcsetOf(group),
       format: best !== undefined && best !== first.format?.current ? best : undefined,
       ...(quality !== undefined
         ? {
@@ -196,7 +200,12 @@ export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[
 /** The line of one fix: where, the sizes and quality change, the saving per view and its pages. */
 function fixLines(fix: FixGroup, rank: number): string[] {
   const where = fix.located ? mdCode(fix.where) : `${mdCode(fix.where)} (not located)`;
-  const sizes = fix.current === fix.proposed ? "sizes unchanged" : `sizes ${mdCode(fix.current)} -> ${mdCode(fix.proposed)}${fix.basis ? ` (${mdText(fix.basis)})` : ""}`;
+  const sizes =
+    fix.srcset !== undefined
+      ? `no srcset -> serve ${srcsetWidthLabel(fix.srcset.widths)} + srcset/sizes`
+      : fix.current === fix.proposed
+        ? "sizes unchanged"
+        : `sizes ${mdCode(fix.current)} -> ${mdCode(fix.proposed)}${fix.basis ? ` (${mdText(fix.basis)})` : ""}`;
   const quality =
     fix.quality === undefined
       ? "quality -"
