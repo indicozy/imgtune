@@ -218,7 +218,7 @@ describe("FlatBuffers: the browser's bytes for the vector check", () => {
     const logo = await sharp(Buffer.from(LOGO_SVG)).png().toBuffer();
     const store = new FlatBuffers(5);
     store.offer("https://site.test/k.png", logo, logo.length);
-    const fetch = vi.fn(async () => undefined);
+    const fetch = vi.fn(async (_url: string): Promise<Buffer | undefined> => undefined);
     const run = await runVectorPhase(
       [pageOf([flatRecord("k", "https://site.test/k.png", logo.length)])],
       { budget: 5, survey: false, quality: true, outDir: join(tmpdir(), "imgtune-flatbuf-test"), cwd: tmpdir(), log: () => undefined },

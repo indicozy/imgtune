@@ -298,21 +298,31 @@ export async function svgFidelity(served: Buffer, svg: string): Promise<{ score:
   const width = Math.max(1, Math.round(full.width * scale));
   const height = Math.max(1, Math.round(full.height * scale));
   const ref = await resizeTo(full, width, height);
-  const test = await decodeOnWhite(renderSvg(svg, width, height));
+  const test = await drawAt(svg, width, height);
   // ssimulacra2 needs at least 8 px a side: a smaller image is scored at the size it has.
   const value =
-    width >= 8 && height >= 8 ? await score("ssimulacra2", ref, test) : await score("ssimulacra2", full, await decodeOnWhite(renderSvg(svg, full.width, full.height)));
+    width >= 8 && height >= 8 ? await score("ssimulacra2", ref, test) : await score("ssimulacra2", full, await drawAt(svg, full.width, full.height));
   return { score: value, badPixelShare: badPixelShareOf(ref, test) };
 }
 
 /**
- * The SVG drawn at width x height, as vectors: its own size is set to the target, with a viewBox of its traced size. (Rendering
- * it at its traced size and resizing the raster would blur the edges of a trace made from a downscaled input.)
+ * The SVG drawn at width x height, the same way the served image is brought to that size (lanczos3). When the trace is
+ * smaller than the target (a large image, traced from a downscaled input), it is drawn at the target as vectors: resizing a
+ * small raster up would blur its edges.
  */
-export function renderSvg(svg: string, width: number, height: number): Sharp {
+async function drawAt(svg: string, width: number, height: number): Promise<RawImage> {
   const root = /<svg[^>]*?\swidth="([\d.]+)"\s+height="([\d.]+)"/.exec(svg);
-  const sized = root === null ? svg : svg.replace(root[0], root[0].replace(`width="${root[1]}" height="${root[2]}"`, `width="${width}" height="${height}" viewBox="0 0 ${root[1]} ${root[2]}"`));
-  return sharp(Buffer.from(sized));
+  const traced = root === null ? { width, height } : { width: Number(root[1]), height: Number(root[2]) };
+  const drawn = traced.width >= width && traced.height >= height ? traced : { width, height };
+  const vector = svgSized(svg, root, drawn.width, drawn.height, traced);
+  const raster = await decodeOnWhite(sharp(Buffer.from(vector)));
+  return drawn.width === width && drawn.height === height ? raster : resizeTo(raster, width, height);
+}
+
+/** The SVG with its own size set to width x height, and a viewBox of its traced size (vectors scale without loss). */
+function svgSized(svg: string, root: RegExpExecArray | null, width: number, height: number, traced: { width: number; height: number }): string {
+  if (root === null) return svg;
+  return svg.replace(root[0], root[0].replace(`width="${root[1]}" height="${root[2]}"`, `width="${width}" height="${height}" viewBox="0 0 ${traced.width} ${traced.height}"`));
 }
 
 async function decodeOnWhite(img: Sharp): Promise<RawImage> {
