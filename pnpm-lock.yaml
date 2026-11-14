@@ -8,18 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@gltf-transform/core':
-        specifier: ^4.5.1
-        version: 4.5.1
-      '@gltf-transform/extensions':
-        specifier: ^4.5.1
-        version: 4.5.1
-      '@gltf-transform/functions':
-        specifier: ^4.5.1
-        version: 4.5.1(@types/node@26.6.5)
-      meshoptimizer:
-        specifier: ^1.3.0
-        version: 1.3.0
       playwright:
         specifier: ^1.64.1
         version: 1.64.1
@@ -46,9 +34,21 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@26.6.5)(vite@8.3.5(@types/node@26.6.5))
     optionalDependencies:
+      '@gltf-transform/core':
+        specifier: ^4.5.1
+        version: 4.5.1
+      '@gltf-transform/extensions':
+        specifier: ^4.5.1
+        version: 4.5.1
+      '@gltf-transform/functions':
+        specifier: ^4.5.1
+        version: 4.5.1(@types/node@26.6.5)
       '@neplex/vectorizer':
         specifier: 0.1.0
         version: 0.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
+      meshoptimizer:
+        specifier: ^1.3.0
+        version: 1.3.0
 
 packages:
 
@@ -875,11 +875,13 @@ snapshots:
   '@gltf-transform/core@4.5.1':
     dependencies:
       property-graph: 4.1.0
+    optional: true
 
   '@gltf-transform/extensions@4.5.1':
     dependencies:
       '@gltf-transform/core': 4.5.1
       ktx-parse: 1.1.0
+    optional: true
 
   '@gltf-transform/functions@4.5.1(@types/node@26.6.5)':
     dependencies:
@@ -891,6 +893,7 @@ snapshots:
       ndarray-pixels: 5.2.0(@types/node@26.6.5)
     transitivePeerDependencies:
       - '@types/node'
+    optional: true
 
   '@img/colour@1.1.0': {}
 
@@ -1148,7 +1151,8 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
-  '@types/ndarray@1.1.0': {}
+  '@types/ndarray@1.1.0':
+    optional: true
 
   '@types/node@26.6.5':
     dependencies:
@@ -1205,6 +1209,7 @@ snapshots:
   cwise-compiler@1.1.3:
     dependencies:
       uniq: 1.0.1
+    optional: true
 
   detect-libc@2.1.2: {}
 
@@ -1250,11 +1255,14 @@ snapshots:
 
   harfbuzzjs@1.6.4: {}
 
-  iota-array@1.0.0: {}
+  iota-array@1.0.0:
+    optional: true
 
-  is-buffer@1.1.6: {}
+  is-buffer@1.1.6:
+    optional: true
 
-  ktx-parse@1.1.0: {}
+  ktx-parse@1.1.0:
+    optional: true
 
   lightningcss-android-arm64@1.33.0:
     optional: true
@@ -1313,7 +1321,8 @@ snapshots:
 
   mdn-data@2.27.1: {}
 
-  meshoptimizer@1.3.0: {}
+  meshoptimizer@1.3.0:
+    optional: true
 
   nanoid@3.3.20: {}
 
@@ -1321,10 +1330,12 @@ snapshots:
     dependencies:
       '@types/ndarray': 1.1.0
       ndarray: 1.1.1
+    optional: true
 
   ndarray-ops@1.2.2:
     dependencies:
       cwise-compiler: 1.1.3
+    optional: true
 
   ndarray-pixels@5.2.0(@types/node@26.6.5):
     dependencies:
@@ -1334,11 +1345,13 @@ snapshots:
       sharp: 0.35.5(@types/node@26.6.5)
     transitivePeerDependencies:
       - '@types/node'
+    optional: true
 
   ndarray@1.1.1:
     dependencies:
       iota-array: 1.0.0
       is-buffer: 1.1.6
+    optional: true
 
   nth-check@2.1.1:
     dependencies:
@@ -1368,7 +1381,8 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.2
 
-  property-graph@4.1.0: {}
+  property-graph@4.1.0:
+    optional: true
 
   rolldown@1.2.15:
     dependencies:
@@ -1464,7 +1478,8 @@ snapshots:
 
   undici-types@8.9.0: {}
 
-  uniq@1.0.1: {}
+  uniq@1.0.1:
+    optional: true
 
   vite@8.3.5(@types/node@26.6.5):
     dependencies:

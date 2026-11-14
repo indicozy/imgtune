@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import type { Document } from "@gltf-transform/core";
 import sharp from "sharp";
+import { digestOf, heavyValue } from "./cache.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
 
 const GLTF_EXTS = new Set(["glb", "gltf"]);
@@ -205,29 +206,66 @@ async function webpBytes(data: Buffer): Promise<{ bytes: number; estimate: boole
   return { bytes: Math.round(small.length / ratio), estimate: true, width, height };
 }
 
-/** The repacked (GLB) and meshopt-compressed sizes of a glTF, from gltf-transform. Undefined when it cannot be read. */
-async function measureMeshopt(body: Buffer, parsed: Parsed): Promise<{ repackBytes: number; meshBytes: number } | undefined> {
-  const [{ Logger, NodeIO }, { EXTMeshoptCompression }, { meshopt }, { MeshoptEncoder }] = await Promise.all([
+/** The packages the geometry measurement needs. They are optional dependencies: a missing one turns the measurement off. */
+export interface GltfTools {
+  Logger: typeof import("@gltf-transform/core").Logger;
+  NodeIO: typeof import("@gltf-transform/core").NodeIO;
+  EXTMeshoptCompression: typeof import("@gltf-transform/extensions").EXTMeshoptCompression;
+  meshopt: typeof import("@gltf-transform/functions").meshopt;
+  MeshoptEncoder: typeof import("meshoptimizer").MeshoptEncoder;
+}
+
+/** The note for a missing measurement package: what installing it adds (printed with the model findings). */
+export const GLTF_NOTE = "install @gltf-transform/core, @gltf-transform/extensions, @gltf-transform/functions and meshoptimizer to measure 3D compression";
+
+async function loadGltfPackages(): Promise<GltfTools> {
+  const [core, extensions, functions, meshoptimizer] = await Promise.all([
     import("@gltf-transform/core"),
     import("@gltf-transform/extensions"),
     import("@gltf-transform/functions"),
     import("meshoptimizer"),
   ]);
-  await MeshoptEncoder.ready;
-  const io = new NodeIO()
-    .setLogger(new Logger(Logger.Verbosity.ERROR))
-    .registerExtensions([EXTMeshoptCompression])
-    .registerDependencies({ "meshopt.encoder": MeshoptEncoder });
-  let doc: Document;
-  if (body.subarray(0, 4).toString("ascii") === "glTF") {
-    doc = await io.readBinary(new Uint8Array(body));
-  } else {
-    doc = await io.readJSON({ json: parsed.json as never, resources: {} });
+  return { Logger: core.Logger, NodeIO: core.NodeIO, EXTMeshoptCompression: extensions.EXTMeshoptCompression, meshopt: functions.meshopt, MeshoptEncoder: meshoptimizer.MeshoptEncoder };
+}
+
+let gltfTools: Promise<GltfTools | undefined> | undefined;
+
+/**
+ * The measurement packages, loaded once (dynamic import, so a missing optional dependency costs nothing until a model is
+ * seen). Undefined when one will not load. Never throws. `load` is the loader (tests pass a failing one).
+ */
+export function importGltfTools(load: () => Promise<GltfTools> = loadGltfPackages): Promise<GltfTools | undefined> {
+  if (load !== loadGltfPackages) return load().then((tools) => tools, () => undefined);
+  gltfTools ??= loadGltfPackages().then((tools) => tools, () => undefined);
+  return gltfTools;
+}
+
+/** The outcome of the meshopt measurement: the sizes, or why there are none (the packages are missing, or the file did not read). */
+export type MeshoptOutcome = { kind: "ok"; repackBytes: number; meshBytes: number } | { kind: "missing" } | { kind: "unreadable" };
+
+/** The repacked (GLB) and meshopt-compressed sizes of a glTF, from gltf-transform (see MeshoptOutcome). Never throws. */
+async function measureMeshopt(body: Buffer, parsed: Parsed): Promise<MeshoptOutcome> {
+  const tools = await importGltfTools();
+  if (tools === undefined) return { kind: "missing" };
+  try {
+    await tools.MeshoptEncoder.ready;
+    const io = new tools.NodeIO()
+      .setLogger(new tools.Logger(tools.Logger.Verbosity.ERROR))
+      .registerExtensions([tools.EXTMeshoptCompression])
+      .registerDependencies({ "meshopt.encoder": tools.MeshoptEncoder });
+    let doc: Document;
+    if (body.subarray(0, 4).toString("ascii") === "glTF") {
+      doc = await io.readBinary(new Uint8Array(body));
+    } else {
+      doc = await io.readJSON({ json: parsed.json as never, resources: {} });
+    }
+    const repackBytes = (await io.writeBinary(doc)).byteLength;
+    await doc.transform(tools.meshopt({ encoder: tools.MeshoptEncoder, level: "medium" }));
+    const meshBytes = (await io.writeBinary(doc)).byteLength;
+    return { kind: "ok", repackBytes, meshBytes };
+  } catch {
+    return { kind: "unreadable" };
   }
-  const repackBytes = (await io.writeBinary(doc)).byteLength;
-  await doc.transform(meshopt({ encoder: MeshoptEncoder, level: "medium" }));
-  const meshBytes = (await io.writeBinary(doc)).byteLength;
-  return { repackBytes, meshBytes };
 }
 
 function displayBox(ctx: PageContext, url: string): { selector: string; width: number; height: number } | undefined {
@@ -367,8 +405,27 @@ async function analyzeGltf(r: ResourceRecord, body: Buffer, ctx: PageContext): P
     return findings;
   }
 
-  const measured = await measureMeshopt(body, parsed);
-  if (measured === undefined) return findings;
+  // The meshopt measurement is heavy: once per run by content, and not at all once the run's budget is spent.
+  const outcome = await heavyValue(`model:meshopt:${digestOf(body)}`, () => measureMeshopt(body, parsed));
+  if (outcome === undefined || outcome.kind !== "ok") {
+    // No measurement: the model is reported with no number, and the reason (a missing package prints its one note).
+    if (outcome?.kind === "unreadable") return findings;
+    const reason = outcome === undefined ? "over the run's --resource-time budget" : GLTF_NOTE;
+    findings.push({
+      id: `${id}:geometry`,
+      kind: "model",
+      url: r.url,
+      bytes: r.bytes,
+      savedBytes: 0,
+      estimate: true,
+      title: `3D model ${name} (${fmt}): geometry not measured (${reason})`,
+      fix: [outcome === undefined ? "npx @gltf-transform/cli optimize in.glb out.glb --compress meshopt (run it on the source file)" : GLTF_NOTE],
+      details: { ...details, ...(outcome?.kind === "missing" ? { note: GLTF_NOTE } : {}) },
+      ...(locator ? { locator } : {}),
+    });
+    return findings;
+  }
+  const measured = outcome;
   const savedBytes = body.length - measured.meshBytes;
   details.repackBytes = measured.repackBytes;
   details.meshoptBytes = measured.meshBytes;

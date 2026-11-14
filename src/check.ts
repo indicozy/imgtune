@@ -14,6 +14,7 @@ import { DEFAULT_THIRD_PARTY, parseAllowHosts, thirdPartyFromFlags, type ThirdPa
 import {
   MAX_IDLE_TIMEOUT_MS,
   MAX_PAGE_CONCURRENCY,
+  MAX_RESOURCE_TIME,
   MAX_SVG_BUDGET,
   parseLimit,
   parseRange,
@@ -56,6 +57,8 @@ export interface CheckSettings {
   gpuEncode?: boolean;
   /** --no-resources: no resource capture and no resource analysis (see resources/). */
   noResources?: boolean;
+  /** --resource-time: the heavy resource work per run, in seconds. */
+  resourceTime?: number;
   ignoreRobots: boolean;
   thirdParty: ThirdPartyPolicy;
 }
@@ -104,6 +107,7 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
       arg === "--qualities" ||
       arg === "--idle-timeout" ||
       arg === "--svg-budget" ||
+      arg === "--resource-time" ||
       arg === "--storage-state" ||
       arg === "--allow-host"
     ) {
@@ -118,6 +122,7 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
       else if (arg === "--qualities") args.qualities = parseQualities(value);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--svg-budget") args.svgBudget = parseRange(arg, value, 0, MAX_SVG_BUDGET);
+    else if (arg === "--resource-time") args.resourceTime = parseRange(arg, value, 0, MAX_RESOURCE_TIME);
       else if (arg === "--storage-state") args.storageState = value;
       else allowHosts = parseAllowHosts(value);
     } else if (arg.startsWith("--")) {
@@ -278,6 +283,7 @@ export async function scanCheckPages(input: {
       ...(settings.noCache ? ["--no-cache"] : []),
       ...(settings.gpuEncode ? ["--gpu-encode"] : []),
       ...(settings.noResources ? ["--no-resources"] : []),
+      ...(settings.resourceTime !== undefined ? ["--resource-time", String(settings.resourceTime)] : []),
     ].join(" "),
   });
   log(`survey: ${urls.length} URL(s), ${routes.types.length} route type(s)`);
@@ -314,6 +320,7 @@ export async function scanCheckPages(input: {
       ...(settings.noCache ? ["--no-cache"] : []),
       ...(settings.gpuEncode ? ["--gpu-encode"] : []),
       ...(settings.noResources ? ["--no-resources"] : []),
+      ...(settings.resourceTime !== undefined ? ["--resource-time", String(settings.resourceTime)] : []),
       ...(settings.ignoreRobots ? ["--ignore-robots"] : []),
       ...(settings.pageConcurrency !== undefined ? ["--page-concurrency", String(settings.pageConcurrency)] : []),
       ...(settings.idleTimeoutMs !== undefined ? ["--idle-timeout", String(settings.idleTimeoutMs)] : []),
@@ -455,6 +462,7 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
       idleTimeoutMs: settings.idleTimeoutMs,
       noCache: settings.noCache,
       ...(settings.noResources ? { noResources: true } : {}),
+      ...(settings.resourceTime !== undefined ? { resourceTime: settings.resourceTime } : {}),
       ignoreRobots: settings.ignoreRobots,
       storageState: input.storageState,
       thirdParty: settings.thirdParty.block ? "blocked" : "allowed",

@@ -9,6 +9,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { probeAudio, probeFfmpeg, runFfmpeg, type AudioProbe } from "../ffmpeg.js";
+import { heavyValue } from "./cache.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
 
 /** File extensions treated as audio when the content type is not audio/*. */
@@ -173,9 +174,12 @@ async function analyzeOne(r: ResourceRecord, ctx: PageContext, ffmpegOk: boolean
     let reportReencode = false;
     if (wantsReencode && probe.durationS > 0 && fullBytes > 0) {
       const sampleS = Math.min(SAMPLE_S, probe.durationS);
-      const opusSample = await encodedSampleBytes(file, { codec: "opus", mono, kbps: kbpsTarget, sampleS });
+      // The sample encodes are heavy and depend on the file and the settings: once per run, and not once the budget is spent
+      // (then no re-encode is claimed for the file).
+      const sampleKey = `audio:${hashUrl(r.url)}:${r.bytes}:${mono ? 1 : 0}:${sampleS}`;
+      const opusSample = await heavyValue(`${sampleKey}:opus:${kbpsTarget}`, () => encodedSampleBytes(file, { codec: "opus", mono, kbps: kbpsTarget, sampleS }));
       const aacKbps = mono ? AAC_MONO_KBPS : AAC_KBPS;
-      const aacSample = await encodedSampleBytes(file, { codec: "aac", mono, kbps: aacKbps, sampleS });
+      const aacSample = await heavyValue(`${sampleKey}:aac:${aacKbps}`, () => encodedSampleBytes(file, { codec: "aac", mono, kbps: aacKbps, sampleS }));
       if (opusSample !== undefined) {
         encodedFull = Math.round((opusSample * probe.durationS) / sampleS);
         aacFull = aacSample === undefined ? undefined : Math.round((aacSample * probe.durationS) / sampleS);

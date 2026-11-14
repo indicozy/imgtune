@@ -13,6 +13,7 @@ import { DEFAULT_THIRD_PARTY, parseAllowHosts, thirdPartyFromFlags, type ThirdPa
 import {
   MAX_IDLE_TIMEOUT_MS,
   MAX_PAGE_CONCURRENCY,
+  MAX_RESOURCE_TIME,
   MAX_SVG_BUDGET,
   pageFileName,
   parseLimit,
@@ -54,6 +55,8 @@ export interface RunArgs {
   gpuEncode?: boolean;
   /** --no-resources: no resource capture and no resource analysis (see resources/). */
   noResources?: boolean;
+  /** --resource-time: the heavy resource work per run, in seconds. */
+  resourceTime?: number;
   /** --dev: the origin of the dev server; the deep pages are located at the same paths on it. */
   dev?: string;
   /** --qualities: the framework's allowed qualities, passed to hints. */
@@ -108,6 +111,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
       arg === "--page-concurrency" ||
       arg === "--idle-timeout" ||
       arg === "--svg-budget" ||
+      arg === "--resource-time" ||
       arg === "--dev" ||
       arg === "--qualities" ||
       arg === "--root" ||
@@ -124,6 +128,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--svg-budget") args.svgBudget = parseRange(arg, value, 0, MAX_SVG_BUDGET);
+    else if (arg === "--resource-time") args.resourceTime = parseRange(arg, value, 0, MAX_RESOURCE_TIME);
       else if (arg === "--dev") args.dev = new URL(parseHttpUrl(value, "--dev")).origin;
       else if (arg === "--qualities") args.qualities = parseQualities(value);
       else if (arg === "--root") args.root = value;
@@ -436,6 +441,7 @@ function runFlags(args: RunArgs): { survey: string[]; deep: string[] } {
   if (args.noCache) common.push("--no-cache");
   if (args.gpuEncode) common.push("--gpu-encode");
   if (args.noResources) common.push("--no-resources");
+  if (args.resourceTime !== undefined) common.push("--resource-time", String(args.resourceTime));
   if (args.pageConcurrency !== undefined) common.push("--page-concurrency", String(args.pageConcurrency));
   if (args.idleTimeoutMs !== undefined) common.push("--idle-timeout", String(args.idleTimeoutMs));
   if (args.thirdParty.block) common.push("--block-third-party");
@@ -533,6 +539,7 @@ export async function writeManifest(
       idleTimeoutMs: args.idleTimeoutMs,
       noCache: args.noCache,
       ...(args.noResources ? { noResources: true } : {}),
+      ...(args.resourceTime !== undefined ? { resourceTime: args.resourceTime } : {}),
       root: args.root,
       ignoreRobots: args.ignoreRobots,
       storageState: args.storageState !== undefined,

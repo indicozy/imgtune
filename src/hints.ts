@@ -426,7 +426,12 @@ export function hiddenLines(hidden: HiddenFix): string[] {
     );
   } else if (hidden.action === "lazy") {
     const what = hidden.hover === true ? "a hover swap" : hidden.inPanel ? "a tab panel, a hidden subtree or a closed details" : "a carousel slide or other clipped box";
-    lines.push(`   ${what} (${names(hidden.viewports)}): add loading="lazy", or load it on demand (when the tab, details or hover opens).`);
+    if (hidden.alreadyLazy === true) {
+      // loading="lazy" is already there: the browser still loads it because it is inside its lazy-load distance, so adding it again changes nothing.
+      lines.push(`   ${what} (${names(hidden.viewports)}): already lazy (loading="lazy") and still loaded, as it is within the browser's lazy-load distance of the viewport. Render it on activation (when the tab, details or hover opens), do not add lazy again.`);
+    } else {
+      lines.push(`   ${what} (${names(hidden.viewports)}): add loading="lazy", or load it on demand (when the tab, details or hover opens).`);
+    }
   } else {
     lines.push(
       `   never shown on load at any of ${hidden.of} viewport(s): remove it, or load it on demand (when the menu, modal or hover opens).`,

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import subsetFont from "subset-font";
 import * as wawoff2 from "wawoff2";
+import { digestOf, heavyValue } from "./cache.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
 import { countRanges, detectFormat, intersectRanges, inRanges, parseSfnt, toSfnt, type FontFormat, type FontInfo } from "./sfnt.js";
 
@@ -195,7 +196,13 @@ async function inspect(r: ResourceRecord, ctx: PageContext, codepoints: Set<numb
   if (format === "woff2") item.woff2Bytes = r.bytes;
   else if (sfnt.length <= WOFF2_MEASURE_MAX_BYTES) {
     try {
-      item.woff2Bytes = (await wawoff2.compress(sfnt)).length;
+      // The WOFF2 encode is heavy: once per run by content; over the run's budget the size is estimated instead.
+      const woff2 = await heavyValue(`font:woff2:${digestOf(sfnt)}`, async () => (await wawoff2.compress(sfnt)).length);
+      if (woff2 !== undefined) item.woff2Bytes = woff2;
+      else {
+        item.woff2Bytes = Math.round(sfnt.length * woff2Ratio);
+        item.woff2Estimate = true;
+      }
     } catch {
       /* no WOFF2 figure: the check is skipped for this font */
     }

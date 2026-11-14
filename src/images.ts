@@ -231,6 +231,11 @@ export interface HiddenFix {
   action: HiddenAction;
   /** The bytes per view the element downloads while it is not shown on load: the hidden viewports' bytes over all the viewports. */
   perViewBytes: number;
+  /**
+   * The element already has loading="lazy" and still downloads: it is within the browser's lazy-load distance of a hidden
+   * viewport. Its fix is to render it on activation, not to add lazy again (see hiddenLines in hints.ts).
+   */
+  alreadyLazy?: true;
 }
 
 /** One viewport's entry of an element: its bytes and, when it is hidden there, why. */
@@ -240,6 +245,8 @@ export interface HiddenEntry {
   hidden?: HiddenReason;
   inPanel: boolean;
   hover: boolean;
+  /** The element has loading="lazy" (absent for a background layer). */
+  lazy?: boolean;
 }
 
 /** The hidden fix of an element from its entries (one per viewport it was measured at), or undefined when it is shown on load everywhere. */
@@ -250,6 +257,7 @@ export function hiddenFixCore(entries: HiddenEntry[], viewportCount: number): Hi
   const inPanel = hidden.some((e) => e.inPanel);
   const hover = hidden.some((e) => e.hover);
   const shownIn = entries.filter((e) => e.hidden === undefined).map((e) => e.viewport.name);
+  const alreadyLazy = hidden.some((e) => e.lazy === true);
   const onlyClipped = reasons.every((r) => r === "clipped");
   // A responsive twin: shown on load somewhere, and hidden by a rule that is not a carousel's clipping.
   const action: HiddenAction =
@@ -263,6 +271,7 @@ export function hiddenFixCore(entries: HiddenEntry[], viewportCount: number): Hi
     widths: Object.fromEntries(entries.map((e) => [e.viewport.name, e.viewport.width])),
     shownIn,
     action,
+    ...(alreadyLazy ? { alreadyLazy: true as const } : {}),
     perViewBytes: hidden.reduce((sum, e) => sum + e.bytes, 0) / viewportCount,
   };
 }
@@ -276,6 +285,7 @@ export function hiddenFixOf(members: Instance[], viewportCount: number): HiddenF
       hidden: m.kind === "hidden" ? m.img.hidden : undefined,
       inPanel: m.img.inPanel === true,
       hover: m.img.hover === true,
+      lazy: m.img.lazy === true,
     })),
     viewportCount,
   );

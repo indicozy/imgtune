@@ -5,9 +5,9 @@ import { randomBytes } from "node:crypto";
 import sharp from "sharp";
 import { analyzer as compression, MIN_BYTES, SAMPLE_BYTES } from "../src/resources/compression.js";
 import { analyzer as favicon, largestPngFrame } from "../src/resources/favicon.js";
-import { analyzeResources, runPhaseWith } from "../src/resources/phase.js";
+import { analyzeResources, labelFinding, runPhaseWith } from "../src/resources/phase.js";
 import { completeFontFaces, fontFaceRulesOf } from "../src/resources/capture.js";
-import { resourceLinesOf, resourceTotalsLine } from "../src/resources/report.js";
+import { findingTier, resourceLinesOf, resourceTotalsLine } from "../src/resources/report.js";
 import { ANALYZERS } from "../src/resources/index.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "../src/resources/types.js";
 import type { Viewport } from "../src/types.js";
@@ -357,5 +357,45 @@ describe("the analyzer registry", () => {
     expect(line).toContain("no saving");
     expect(line).toContain("not in the image totals");
     expect(line).not.toMatch(/saves ~/);
+  });
+});
+
+describe("third-party and lead findings", () => {
+  const base = (over: Partial<ResourceFinding>): ResourceFinding => ({
+    id: "x",
+    kind: "compression",
+    url: `${page}app.js`,
+    bytes: 60_000,
+    savedBytes: 50_000,
+    estimate: false,
+    title: "a finding",
+    fix: [],
+    ...over,
+  });
+
+  it("labels a file on another registrable domain as third-party, and keeps a same-site subdomain first-party", () => {
+    const vendor = labelFinding(base({ url: "https://cdn.vendor.example/lib.js" }), "https://www.site.example/");
+    expect(vendor.title).toBe("third-party (ask the vendor): a finding");
+    expect(vendor.details?.thirdParty).toBe(true);
+    const own = labelFinding(base({ url: "https://static.site.example/app.js" }), "https://www.site.example/");
+    expect(own.title).toBe("a finding");
+    expect(own.details?.thirdParty).toBeUndefined();
+  });
+
+  it("labels a small saving of a weak kind as a lead, and leaves a real saving of that kind alone", () => {
+    const small = labelFinding(base({ kind: "svg", savedBytes: 2_000 }), page);
+    expect(small.title).toBe("lead: a finding");
+    expect(findingTier(small)).toBe(2);
+    expect(findingTier(labelFinding(base({ kind: "svg", savedBytes: 9_000 }), page))).toBe(0);
+    expect(findingTier(labelFinding(base({ kind: "compression", savedBytes: 2_000 }), page))).toBe(0);
+  });
+
+  it("totals first-party savings apart from third-party ones and leads", () => {
+    const first = base({ id: "a" });
+    const third = labelFinding(base({ id: "b", url: "https://cdn.vendor.example/lib.js", savedBytes: 20 * 1024 }), page);
+    const lead = labelFinding(base({ id: "c", kind: "favicon", savedBytes: 1024 }), page);
+    const line = resourceTotalsLine([first, third, lead]) ?? "";
+    expect(line).toBe("resources: 1 finding(s), saves ~49 KB/view; third-party 1 finding(s) ~20 KB/view (ask the vendor); 1 lead(s) ~1 KB/view (small), not in the image totals");
+    expect(resourceTotalsLine([third])).toMatch(/^resources: no first-party saving; third-party 1 finding/);
   });
 });

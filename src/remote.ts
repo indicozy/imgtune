@@ -70,6 +70,8 @@ import {
   type MediaResults,
 } from "./media-phase.js";
 import { analyzeResources } from "./resources/phase.js";
+import { replayHarPath } from "./replay.js";
+import { DEFAULT_RESOURCE_BUDGET_MS, newResourceRun, type ResourceRun } from "./resources/cache.js";
 import { resourceLinesOf, resourceTotalsLine } from "./resources/report.js";
 
 /** Resource findings listed in the PR-comment Markdown (the JSON and the text output have more). */
@@ -457,6 +459,8 @@ export interface ScanArgs {
   noCache?: boolean;
   /** --no-resources: no resource capture and no resource analysis (see resources/). Undefined: on. */
   resources?: boolean;
+  /** --resource-time: the heavy resource work per run, in seconds (see resources/cache.ts). */
+  resourceTime?: number;
   /** --gpu-encode (experimental): the media is encoded on the GPUs (NVENC, CUDA VMAF). Off by default: CPU encodes. */
   gpuEncode?: boolean;
   out: string;
@@ -599,6 +603,10 @@ export const DEFAULT_VIDEO_STILL_BAR = 65;
 /** The vector check's budget: the flat images traced per run, heaviest first (--svg-budget). */
 export const DEFAULT_SVG_BUDGET = 50;
 export const MAX_SVG_BUDGET = 1000;
+/** The longest --resource-time, in seconds. */
+export const MAX_RESOURCE_TIME = 3600;
+/** The default --resource-time, in seconds: the heavy resource work of a run (see resources/cache.ts). */
+export const DEFAULT_RESOURCE_TIME_S = DEFAULT_RESOURCE_BUDGET_MS / 1000;
 
 /** The arguments after `scan`: one or more page URLs and the options. Throws with a message the CLI prints. */
 export function parseScanArgs(argv: string[]): ScanArgs {
@@ -638,6 +646,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
       else if (arg === "--media-budget") args.mediaBudget = parseRange(arg, value, 0, MAX_MEDIA_BUDGET);
       else if (arg === "--svg-budget") args.svgBudget = parseRange(arg, value, 0, MAX_SVG_BUDGET);
+      else if (arg === "--resource-time") args.resourceTime = parseRange(arg, value, 0, MAX_RESOURCE_TIME);
       else if (arg === "--media-time") args.mediaTime = parseRange(arg, value, 1, MAX_MEDIA_TIME);
       else if (arg === "--video-bar") args.videoBar = parseRange(arg, value, 0, 100);
       else if (arg === "--video-still-bar") args.videoStillBar = parseRange(arg, value, 0, 100);
@@ -882,6 +891,8 @@ export interface QualityInput {
 
 export interface QualityDeps {
   encode?: typeof encode;
+  /** The resource analyzers' run state: the memo of their heavy steps and the --resource-time budget (see resources/cache.ts). */
+  resourceRun?: ResourceRun;
   score: Scorer;
   /** The result cache of this run (see result-cache.ts); undefined: nothing is read from or written to disk. */
   cache?: ResultCache;
@@ -2103,6 +2114,9 @@ async function readGroup(
           socket.connectToServer();
         }
       });
+      // Replay for development (IMGTUNE_REPLAY_HAR, see replay.ts): registered last, so the recorded page answers first.
+      const replayHar = replayHarPath(pageUrl, first.name);
+      if (replayHar !== undefined) await context.routeFromHAR(replayHar, { notFound: "abort" });
       context.on("requestfailed", (request) => {
         if (request.resourceType() === "stylesheet") failedSheets.add(request.url());
       });
@@ -3515,7 +3529,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
         analyzeResources(
           observations.map((o) => ({ viewport: o.viewport, resources: o.resources, pageContext: o.pageContext })),
           ctx.pageUrl,
-          { cache: ctx.deps.cache, fetcher: ctx.fetcher, allowPrivate: ctx.allowPrivate, thirdParty: ctx.thirdParty },
+          { cache: ctx.deps.cache, fetcher: ctx.fetcher, allowPrivate: ctx.allowPrivate, thirdParty: ctx.thirdParty, run: ctx.deps.resourceRun },
         ),
       )
     : undefined;
@@ -3617,6 +3631,8 @@ export interface ScanOptions {
   maxVideoWidths?: number;
   /** The vector check's budget: the flat images traced per run (--svg-budget). Undefined: DEFAULT_SVG_BUDGET. */
   svgBudget?: number;
+  /** The resource analyzers' heavy work per run, in seconds (--resource-time). Undefined: 60 s (see resources/cache.ts). */
+  resourceTime?: number;
   /** Reuse the complete pages already in outDir with the same options (--resume). */
   resume?: boolean;
   /** Stop after this many pages, scanned or resumed (--max-pages). */
@@ -4037,6 +4053,7 @@ async function withBrowser<T>(
     const deps: QualityDeps = {
       score: makeScorer("ssimulacra2", { projectDir: opts.cwd, gpu }),
       cache,
+      resourceRun: newResourceRun((opts.resourceTime ?? DEFAULT_RESOURCE_TIME_S) * 1000),
       scorerId: gpu !== undefined ? `gpu:${gpu.deviceName}` : "cpu",
       cpuScored: gpu !== undefined ? () => gpu.cpuScores : undefined,
     };
@@ -4833,6 +4850,7 @@ export async function scanCommand(
     maxImages: args.maxImages,
     mediaBudget: args.mediaBudget,
     svgBudget: args.svgBudget,
+    resourceTime: args.resourceTime,
     mediaTime: args.mediaTime,
     videoBar: args.videoBar,
     videoStillBar: args.videoStillBar,

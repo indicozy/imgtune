@@ -3,16 +3,37 @@
 // link, or /favicon.ico when none is declared) are fetched here, under the run's third-party policy, so the favicon
 // analyzer sees them the way a first visit would.
 import type { Fetcher } from "../fetch.js";
-import { measure } from "../timing.js";
+import { count, measure } from "../timing.js";
 import type { ResultCache } from "../result-cache.js";
 import { isFirstParty, isThirdPartyBlocked, type ThirdPartyPolicy } from "../third-party.js";
 import type { Viewport } from "../types.js";
-import { withResourceScope } from "./cache.js";
+import { withResourceScope, type ResourceRun } from "./cache.js";
 import { ANALYZERS } from "./index.js";
 import { ICON_READ_MAX } from "./favicon.js";
 import { completeFontFaces, fontFaceRulesOf, RESOURCE_BODY_MAX, type FontFaceRule } from "./capture.js";
 import type { PageContextData } from "./capture.js";
-import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
+import { findingTier, LEAD_BYTES } from "./report.js";
+import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceKind, ResourceRecord } from "./types.js";
+
+/** The kinds that are weak for their cost: a small saving is a lead, not a headline (the spec: svg minify, lottie, favicon). */
+const WEAK_KINDS: ReadonlySet<ResourceKind> = new Set<ResourceKind>(["svg", "lottie", "favicon"]);
+
+/**
+ * Labels a finding by where its bytes come from: a file on another registrable domain than the page is a third-party
+ * finding (the vendor fixes it), and a small saving of a weak-for-cost kind is a lead. The title gets the prefix, the
+ * details the flags. Applied once per finding, when it enters the page's findings.
+ */
+export function labelFinding(finding: ResourceFinding, pageUrl: string): ResourceFinding {
+  const thirdParty = finding.url !== "" && !isFirstParty(pageUrl, finding.url);
+  const lead = WEAK_KINDS.has(finding.kind) && finding.savedBytes > 0 && finding.savedBytes < LEAD_BYTES;
+  if (!thirdParty && !lead) return finding;
+  const prefix = `${thirdParty ? "third-party (ask the vendor): " : ""}${lead ? "lead: " : ""}`;
+  return {
+    ...finding,
+    title: `${prefix}${finding.title}`,
+    details: { ...finding.details, ...(thirdParty ? { thirdParty: true } : {}), ...(lead ? { lead: true } : {}) },
+  };
+}
 
 /** One page view as the phase reads it: the viewport, the captured resources and the page context. */
 export interface ResourceView {
@@ -26,6 +47,8 @@ export interface ResourceDeps {
   fetcher: Fetcher;
   allowPrivate: boolean;
   thirdParty?: ThirdPartyPolicy;
+  /** The run's resource state (the memo of the heavy steps and the --resource-time budget). Undefined: a fresh one per page. */
+  run?: ResourceRun;
 }
 
 const EMPTY_CONTEXT: PageContextData = { text: "", usedFonts: [], fontFaces: [], icons: [], audio: [], lottie: [], models: [] };
@@ -64,7 +87,7 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
     const fetchIcon = (url: string): Promise<Buffer | undefined> => {
       let pending = fetched.get(url);
       if (pending === undefined) {
-        pending = deps.fetcher.get(url, { maxBytes: ICON_READ_MAX, allowPrivate: deps.allowPrivate }).catch(() => undefined);
+        pending = measure("resources icon fetch", () => deps.fetcher.get(url, { maxBytes: ICON_READ_MAX, allowPrivate: deps.allowPrivate })).catch(() => undefined);
         fetched.set(url, pending);
       }
       return pending;
@@ -78,7 +101,8 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
     const bodyOf = (url: string): Promise<Buffer | undefined> => {
       let pending = bodies.get(url);
       if (pending === undefined) {
-        pending = deps.fetcher.get(url, { maxBytes: RESOURCE_BODY_MAX, allowPrivate: deps.allowPrivate }).catch(() => undefined);
+        pending = measure("resources refetch body", () => deps.fetcher.get(url, { maxBytes: RESOURCE_BODY_MAX, allowPrivate: deps.allowPrivate })).catch(() => undefined);
+        count("resources refetch bodies");
         bodies.set(url, pending);
       }
       return pending;
@@ -138,6 +162,8 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
           fetchedIcons.has(r) ? analyzer.kind === "favicon" : analyzer.wants(r),
         );
         if (wanted.length === 0) continue;
+        count(`resources ${analyzer.kind} records`, wanted.length);
+        count(`resources ${analyzer.kind} bytes in`, wanted.reduce((sum, r) => sum + (r.body?.length ?? r.bytes), 0));
         let found: ResourceFinding[] = [];
         try {
           found = await measure(`resources ${analyzer.kind}`, () => analyzer.analyze(wanted, ctx));
@@ -146,7 +172,7 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
         }
         for (const finding of found) {
           const prev = byId.get(finding.id);
-          if (prev === undefined || finding.bytes > prev.bytes) byId.set(finding.id, finding);
+          if (prev === undefined || finding.bytes > prev.bytes) byId.set(finding.id, labelFinding(finding, pageUrl));
           const seen = foundIn.get(finding.id) ?? new Set<string>();
           seen.add(view.viewport.name);
           foundIn.set(finding.id, seen);
@@ -154,8 +180,8 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
       }
     }
     // A finding about what a viewport shows (details.perViewport "all", e.g. an unused font face) is kept only when every
-    // viewport reports it. Savings come first; informational findings (no saving) sort after them.
+    // viewport reports it. Savings come first (first-party, then third-party, then leads), informational findings last.
     const kept = [...byId.values()].filter((f) => f.details?.perViewport !== "all" || (foundIn.get(f.id)?.size ?? 0) === views.length);
-    return kept.sort((a, b) => Number(b.savedBytes > 0) - Number(a.savedBytes > 0) || b.savedBytes - a.savedBytes || a.id.localeCompare(b.id));
-  });
+    return kept.sort((a, b) => findingTier(a) - findingTier(b) || b.savedBytes - a.savedBytes || a.id.localeCompare(b.id));
+  }, deps.run);
 }

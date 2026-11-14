@@ -3,7 +3,7 @@
 // Findings are grouped per host and content type: one server or CDN setting covers the group.
 import { brotliCompressSync, constants } from "node:zlib";
 import type { ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
-import { cachedValue, digestOf } from "./cache.js";
+import { digestOf, heavyValue } from "./cache.js";
 
 /** Responses smaller than this are not worth a setting: the saving is below a packet. */
 export const MIN_BYTES = 1024;
@@ -20,10 +20,13 @@ export function isTextLike(contentType: string): boolean {
   return contentType.startsWith("text/") || contentType === "image/svg+xml" || TEXT_APPLICATION.test(contentType) || contentType === "font/ttf" || contentType === "font/otf" || contentType === "font/sfnt";
 }
 
-/** The brotli-11 size of a body: exact when short, else the sample's ratio applied to the whole (`estimate` true). */
+/**
+ * The brotli-11 size of a body: exact when short, else the sample's ratio applied to the whole (`estimate` true). Over the
+ * run's resource budget it is a quick brotli (quality 4) of the same bytes, also an estimate.
+ */
 export async function brotliSizeOf(body: Buffer): Promise<{ bytes: number; estimate: boolean }> {
   const key = `compression:brotli11:${digestOf(body)}`;
-  return cachedValue(key, async () => {
+  const measured = await heavyValue(key, async () => {
     const sampled = body.length > SAMPLE_BYTES;
     const part = sampled ? body.subarray(0, SAMPLE_BYTES) : body;
     const out = brotliCompressSync(part, {
@@ -35,6 +38,10 @@ export async function brotliSizeOf(body: Buffer): Promise<{ bytes: number; estim
     const bytes = sampled ? Math.round((out.length / part.length) * body.length) : out.length;
     return { bytes, estimate: sampled };
   });
+  if (measured !== undefined) return measured;
+  const part = body.length > SAMPLE_BYTES ? body.subarray(0, SAMPLE_BYTES) : body;
+  const quick = brotliCompressSync(part, { params: { [constants.BROTLI_PARAM_QUALITY]: 4, [constants.BROTLI_PARAM_SIZE_HINT]: part.length } });
+  return { bytes: Math.round((quick.length / part.length) * body.length), estimate: true };
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;

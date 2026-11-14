@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { buildImageRecords, hiddenFixOf, hiddenTotalsOf, type HiddenFix, type ImageRecord } from "../src/images.js";
+import { buildImageRecords, hiddenFixCore, hiddenFixOf, hiddenTotalsOf, type HiddenFix, type ImageRecord } from "../src/images.js";
 import { hiddenLines, hiddenPagesLine, hiddenSummaryLine, hintsOf } from "../src/hints.js";
 import { runScan, type Instance, type ObservedImage } from "../src/remote.js";
 import type { Viewport } from "../src/types.js";
@@ -150,6 +150,23 @@ describe("buildImageRecords and the hints of a hidden image", () => {
     expect(hiddenLines({ ...twin, viewports: ["desktop"], shownIn: ["mobile"], widths: { mobile: 390, desktop: 1280 } }).join("\n")).toMatch(/media="\(max-width: 390px\)"/);
     expect(hiddenLines({ reasons: ["clipped"], inPanel: false, viewports: ["mobile"], shownIn: [], of: 2, widths: { mobile: 390 }, action: "lazy", perViewBytes: 1 }).join("\n")).toMatch(/loading="lazy"/);
     expect(hiddenLines({ reasons: ["opacity"], inPanel: false, viewports: ["mobile", "desktop"], shownIn: [], of: 2, widths: { mobile: 390, desktop: 1280 }, action: "never-shown-on-load", perViewBytes: 1 }).join("\n")).toMatch(/remove it, or load it on demand/);
+  });
+
+
+  it("never advises lazy for an image that already has loading=lazy: it says why it still loads", () => {
+    const entries = [
+      { viewport: { name: "mobile", width: 390 }, bytes: 90_000, hidden: "clipped" as const, inPanel: false, hover: false, lazy: true },
+      { viewport: { name: "desktop", width: 1280 }, bytes: 90_000, inPanel: false, hover: false, lazy: true },
+    ];
+    const fix = hiddenFixCore(entries, 2);
+    expect(fix?.action).toBe("lazy");
+    expect(fix?.alreadyLazy).toBe(true);
+    const text = hiddenLines(fix as NonNullable<typeof fix>).join("\n");
+    expect(text).toMatch(/already lazy \(loading="lazy"\) and still loaded/);
+    expect(text).not.toMatch(/add loading="lazy"/);
+    const plain = hiddenFixCore(entries.map((e) => ({ ...e, lazy: false })), 2);
+    expect(plain?.alreadyLazy).toBeUndefined();
+    expect(hiddenLines(plain as NonNullable<typeof plain>).join("\n")).toMatch(/add loading="lazy"/);
   });
 
   it("gives an animated image that is never shown on load no encode (the media phase reads only the records that have one)", () => {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { optimize } from "svgo";
 import { brotliSize } from "./brotli.js";
+import { digestOf, heavyValue } from "./cache.js";
 import { score } from "../metric.js";
 import type { RawImage } from "../ssim.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
@@ -95,6 +96,17 @@ function embeddedRasters(text: string): { format: string; bytes: number }[] {
   return out;
 }
 
+/** The measurement of one SVG: its optimised length and both brotli sizes, and the render's fidelity when the saving is worth a look. */
+async function measureSvg(body: Buffer, text: string): Promise<{ before: { bytes: number; estimate: boolean }; after: { bytes: number; estimate: boolean }; quality: number; optimisedBytes: number; saved: number }> {
+  const optimised = optimizeSvg(text);
+  const before = brotliSize(body);
+  const after = brotliSize(Buffer.from(optimised));
+  const saved = before.bytes - after.bytes;
+  // A saving under the bar is not worth the render: the fidelity is not computed (quality 0 reads as no claim).
+  const quality = saved < before.bytes * MIN_SAVING_SHARE ? 0 : await fidelity(body, Buffer.from(optimised));
+  return { before, after, quality, optimisedBytes: optimised.length, saved };
+}
+
 async function analyzeOne(record: ResourceRecord, body: Buffer): Promise<ResourceFinding[]> {
   const url = record.url;
   const name = basename(url);
@@ -121,14 +133,13 @@ async function analyzeOne(record: ResourceRecord, body: Buffer): Promise<Resourc
     });
   }
 
-  const optimised = optimizeSvg(text);
-  const before = brotliSize(body);
-  const after = brotliSize(Buffer.from(optimised));
+  // The measurement (SVGO, both brotli sizes, the render) is heavy and depends only on the content: once per run, and not at
+  // all once the run's resource budget is spent (then the file is not measured and claims no saving).
+  const measured = await heavyValue(`svg:measure:${digestOf(body)}`, () => measureSvg(body, text));
+  if (measured === undefined) return findings;
+  const { before, after, quality, optimisedBytes } = measured;
   const saved = before.bytes - after.bytes;
-  if (saved < before.bytes * MIN_SAVING_SHARE) return findings;
-
-  const quality = await fidelity(body, Buffer.from(optimised));
-  if (!(quality >= FIDELITY_BAR)) return findings;
+  if (saved < before.bytes * MIN_SAVING_SHARE || !(quality >= FIDELITY_BAR)) return findings;
 
   findings.unshift({
     id,
@@ -137,14 +148,14 @@ async function analyzeOne(record: ResourceRecord, body: Buffer): Promise<Resourc
     bytes: body.length,
     savedBytes: saved,
     estimate: false,
-    title: `svg ${name}: SVGO (floatPrecision 2) ${kb(body.length)} → ${kb(optimised.length)}, brotli ${kb(before.bytes)} → ${kb(after.bytes)}, render SSIMULACRA2 ${quality.toFixed(1)}`,
+    title: `svg ${name}: SVGO (floatPrecision 2) ${kb(body.length)} → ${kb(optimisedBytes)}, brotli ${kb(before.bytes)} → ${kb(after.bytes)}, render SSIMULACRA2 ${quality.toFixed(1)}`,
     fix: [
       `npx svgo --precision=2 <file>.svg -o <file>.min.svg  (default preset; check the render at display size)`,
       `expected brotli ${kb(after.bytes)} (now ${kb(before.bytes)}); serve the optimised file, keep the original under version control`,
     ],
     details: {
       rawBefore: body.length,
-      rawAfter: optimised.length,
+      rawAfter: optimisedBytes,
       brotliBefore: before.bytes,
       brotliAfter: after.bytes,
       ssimulacra2: quality,

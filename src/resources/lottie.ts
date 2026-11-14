@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { brotliSize } from "./brotli.js";
+import { digestOf, heavyValue } from "./cache.js";
 import sharp from "sharp";
 import { readZip, type ZipEntry } from "./zip.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "./types.js";
@@ -168,14 +169,17 @@ async function rasterFixes(anim: LottieAnimation, box: Box | undefined): Promise
       if (meta.width === undefined || meta.height === undefined || (meta.pages ?? 1) > 1) continue;
       const assetW = typeof a.w === "number" && a.w > 0 ? a.w : meta.width;
       const toW = rasterTargetWidth(assetW, meta.width, anim, box);
-      const webp = await sharp(src, { limitInputPixels: 100_000_000 })
-        .resize({ width: toW, withoutEnlargement: true })
-        .webp({ quality: WEBP_QUALITY })
-        .toBuffer();
+      // The re-encode is heavy and depends on the source and the target width: once per run, and skipped once the budget is spent.
+      const webp = await heavyValue(`lottie:raster:${digestOf(src)}:${toW}`, async () => {
+        const out = await sharp(src, { limitInputPixels: 100_000_000 }).resize({ width: toW, withoutEnlargement: true }).webp({ quality: WEBP_QUALITY }).toBuffer();
+        return out.toString("base64");
+      });
+      if (webp === undefined) continue;
+      const webpBytes = Buffer.from(webp, "base64");
       const prefix = "data:image/webp;base64,";
-      const newLen = prefix.length + Math.ceil(webp.length / 3) * 4;
+      const newLen = prefix.length + Math.ceil(webpBytes.length / 3) * 4;
       const savedBytes = p.length - newLen;
-      if (!rasterWorthIt(fmt, src.length, webp.length, toW < meta.width)) continue;
+      if (!rasterWorthIt(fmt, src.length, webpBytes.length, toW < meta.width)) continue;
       const id = typeof a.id === "string" || typeof a.id === "number" ? String(a.id) : String(index);
       out.push({
         index,
@@ -185,7 +189,7 @@ async function rasterFixes(anim: LottieAnimation, box: Box | undefined): Promise
         fromH: meta.height,
         fromBytes: src.length,
         toW,
-        toBytes: webp.length,
+        toBytes: webpBytes.length,
         savedBytes,
       });
     } catch {
@@ -350,7 +354,9 @@ async function analyzeJson(record: ResourceRecord, body: Buffer, anim: LottieAni
   });
   const raster = rasterFinding(url, body.length, rasters, box, shown?.selector, false);
   if (raster) findings.push(raster);
-  const precision = precisionFinding(url, body, anim);
+  // The precision trim re-serialises and brotli-sizes the JSON: once per run by content and URL, and not once the budget is spent.
+  const precisionValue = await heavyValue(`lottie:precision:${digestOf(body)}:${url}`, async () => precisionFinding(url, body, anim) ?? null);
+  const precision = precisionValue ?? undefined;
   if (precision) findings.push(precision);
   const embedded = (anim.assets ?? [])
     .map((a, index) => ({ index, p: (a as { p?: unknown }).p }))

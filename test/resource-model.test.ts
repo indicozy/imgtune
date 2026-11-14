@@ -212,3 +212,11 @@ describe("model analyzer", () => {
     expect(tex?.locator?.selector).toBe("model-viewer#hero");
   });
 });
+
+describe("the optional 3D measurement packages", () => {
+  it("loads them when installed, and gives undefined (never throws) when one will not load", async () => {
+    const { importGltfTools } = await import("../src/resources/model.js");
+    expect(await importGltfTools(() => Promise.reject(new Error("@gltf-transform/core is not installed")))).toBeUndefined();
+    expect(await importGltfTools(() => Promise.reject(new Error("x")))).toBeUndefined();
+  });
+});

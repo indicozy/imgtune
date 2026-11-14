@@ -24,6 +24,7 @@ const OPTION_HELP = {
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
   noCache: ["--no-cache", "do not read or write the result cache in .imgtune/cache (the numbers are computed again)"],
   noResources: ["--no-resources", "skip the resource phase: no capture of the non-image responses, so no compression or favicon findings"],
+  resourceTime: ["--resource-time <s>", "time limit of the heavy resource work (3D, fonts, SVG, audio, lottie re-encodes), in seconds, 0 to 3600 (default 60); items over it are reported as not measured"],
   gpuEncode: [
     "--gpu-encode",
     "EXPERIMENTAL: encode the videos and animated images on the GPU (NVENC, CUDA VMAF); off by default (CPU encodes). Bytes are scaled to a CPU encode (÷1.4)",
@@ -165,6 +166,7 @@ const SCAN_HELP = commandHelp(
     "root",
     "noCache",
     "noResources",
+    "resourceTime",
     "gpuEncode",
     "aggressive",
     "viewports",
