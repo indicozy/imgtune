@@ -156,7 +156,7 @@ imgtune 0.2.0, scanned {{ mediaWhen }}. The sites are anonymous: M001 onward, ra
 
 **Method.** Per view follows the rules in [Animated media and video](/guide/video-and-gifs): an autoplay video counts its full
 file, `preload="metadata"` or `"none"` counts 0, and `preload="auto"` counts the bytes the scan saw. Per play is the full file.
-Videos are re-encoded on 2-second samples with SVT-AV1 or x264, heaviest first, within the default time limit of 600 s per run.
+Videos are re-encoded on 2-second samples with SVT-AV1 or x264, heaviest first. The survey raised the limits to `--media-budget 300` and `--media-time 3600` (defaults: 20 assets, 600 s).
 The CRF is bisected until VMAF reaches 93 against the served file at its display size, and a still-frame SSIMULACRA2 guard must
 pass too. Bytes are extrapolated to the full file and labelled
 as estimates. A file used by several elements counts once.
@@ -169,7 +169,7 @@ as estimates. A file used by several elements counts once.
 - **Sites with video:** {{ ms.sitesWithVideo }} of {{ ms.sites }} ({{ pct(ms.sitesWithVideo, ms.sites) }}%).
 - **Videos:** {{ ms.videos }} in all. {{ ms.autoplay }} autoplay ({{ pct(ms.autoplay, ms.videos) }}%), {{ ms.noPoster }} with no poster
   ({{ pct(ms.noPoster, ms.videos) }}%), and {{ ms.noAv1 }} with no AV1 source ({{ pct(ms.noAv1, ms.videos) }}%).
-- **Video outweighs all images** on {{ ms.videoOutweighsImages }} sites ({{ pct(ms.videoOutweighsImages, ms.sites) }}%).
+- **Video outweighs all images** on {{ ms.videoOutweighsImages }} of the {{ ms.sitesWithVideo }} sites with video ({{ pct(ms.videoOutweighsImages, ms.sitesWithVideo) }}%).
 - **Per play,** the video total is {{ fmt(ms.videoMbPerPlay) }} MB, about {{ videoPlayRatio }} times the per-view figure. Click-to-play
   files are big, which is why both are shown.
 
@@ -194,7 +194,7 @@ as estimates. A file used by several elements counts once.
 ## Limits
 
 - **Six deciders** is a signal, not proof. The sample leans toward sites without bot walls.
-- **Video savings are a floor.** Some videos were not encoded within the time limit (600 s per run), so their saving is not
+- **Video savings are a floor.** Some videos were not encoded within the time limit (3600 s per run in this survey), so their saving is not
   counted. Their bytes are still in the totals.
 - **Video is homepage only.** The video study scanned one page per site, so inner pages may weigh more.
 - **Per-view bytes for `preload="auto"` depend on the browser.** The scan counts the bytes it saw, which another browser may

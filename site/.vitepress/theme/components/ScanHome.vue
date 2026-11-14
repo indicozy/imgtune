@@ -41,7 +41,7 @@ function copy() {
         <p class="fine">Built for image-heavy sites: e-commerce catalogs, media, marketplaces.</p>
         <p class="fine">
           <strong>New in 0.2:</strong> animated GIF, animated WebP and APNG, and self-hosted <code>&lt;video&gt;</code> are measured
-          too, with the same kind of hints. <a href="/imgtune/guide/video-and-gifs">Video and animated images</a>
+          too, with the same kind of hints. See <a href="/imgtune/guide/video-and-gifs">Video and animated images</a>.
         </p>
         <div class="cmd">
           <span><span class="p">$</span> npx imgtune scan https://your-site</span>
