@@ -3355,6 +3355,19 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
       }
     }
   }
+  // A hidden layer whose file a shown element also loads adds no bytes of its own: it is not a hidden copy (skipped).
+  const shownUrls = new Set([
+    ...instances.filter((i) => i.kind !== "hidden" && i.url !== "").map((i) => i.url),
+    ...bgInstances.filter((i) => i.hidden === undefined && i.url !== "").map((i) => i.url),
+  ]);
+  for (const inst of bgInstances) {
+    if (inst.hidden !== undefined && shownUrls.has(inst.url)) {
+      inst.hidden = undefined;
+      inst.inPanel = undefined;
+      inst.hover = undefined;
+      inst.skipped = "hidden: file shared with a shown image";
+    }
+  }
   const bgSources = await resolveBackgroundSources(ctx, observations);
 
   const perViewport: Record<string, ViewportReport> = {};
