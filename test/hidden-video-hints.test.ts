@@ -97,9 +97,9 @@ describe("the totals and summary lines of hidden videos", () => {
   it("keeps the claim to the shown copies and adds the hidden bytes as their own part of the totals", () => {
     const records = twin();
     const total = videoTotalsLine(records) ?? "";
-    // The claim: each record's shown copy (18 KB and 6 KB); the hidden copies (18 KB at mobile, 6 KB at desktop) are apart from it,
-    // averaged over the two viewports as an image's hidden bytes are: 12 KB per view.
-    expect(total).toMatch(/^video: 23 KB\/view, .*; loaded but not shown 12 KB\/view in 2 video\(s\)/);
+    // The claim is per viewport, averaged: desktop shows 18 KB, mobile 6 KB, so 12 KB per view. The hidden copies (18 KB at
+    // mobile, 6 KB at desktop) are averaged the same way: 12 KB per view, apart from the claim.
+    expect(total).toMatch(/^video: 12 KB\/view, .*; loaded but not shown 12 KB\/view in 2 video\(s\)/);
   });
 
   it("prints one summary line for a page, and one for the PR comment over all pages", () => {

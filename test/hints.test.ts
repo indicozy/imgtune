@@ -1309,7 +1309,7 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
     const needs = [{ viewport: "desktop", viewportWidth: 1280, boxWidth: 1280, dpr: 1 }];
     const video = encodedVideo({
       widths: clusterVideoWidths(needs, 2, 480),
-      perViewport: [{ viewport: "desktop", boxWidth: 1280, dpr: 1, inFirstViewport: true }],
+      perViewport: [{ viewport: "desktop", boxWidth: 1280, dpr: 1, inFirstViewport: true, bytes: 0 }],
       probe: { durationS: 8, width: 480, height: 270, fps: 30, videoCodec: "h264" },
     });
     expect(videoSourceCapLine(video)).toBe("   source is 480px wide; needed 1280px: serve 480px (upscaling adds bytes, not detail)");

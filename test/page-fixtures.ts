@@ -71,7 +71,7 @@ export function videoOf(over: Partial<VideoRecord> = {}): VideoRecord {
     sources: [],
     attributes: { autoplay: false, muted: true, loop: false, playsinline: true, preload: "metadata" },
     bytes: { perView: 0, perPlay: 2000 * 1024, perViewBasis: "none", browserDependent: false, fullBytesKnown: true },
-    perViewport: [{ viewport: "desktop", boxWidth: 480, dpr: 2, inFirstViewport: true }],
+    perViewport: [{ viewport: "desktop", boxWidth: 480, dpr: 2, inFirstViewport: true, bytes: 0 }],
     levers: { info: [] },
     ...over,
   };

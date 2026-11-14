@@ -66,8 +66,8 @@ describe("a hidden video in the records", () => {
     expect(mob?.hidden?.perViewBytes).toBe(3000);
     expect(mob?.perViewport.find((p) => p.viewport === "desktop")?.hidden).toBe("display");
     expect(mob?.perViewport.find((p) => p.viewport === "mobile")?.hidden).toBeUndefined();
-    // The claim: the shown copy only, its width needed at the mobile viewport alone.
-    expect(mob?.bytes.perView).toBe(6000);
+    // The claim: the shown copy's bytes at its viewport, averaged over the two viewports (6000 at mobile, nothing at desktop).
+    expect(mob?.bytes.perView).toBe(3000);
     expect(mob?.widths?.perViewport.map((p) => p.viewport)).toEqual(["mobile"]);
   });
 
@@ -151,3 +151,37 @@ describe("the media phase and a video no viewport shows", () => {
   });
 });
 
+
+describe("per-view bytes are per viewport, averaged over the viewports", () => {
+  it("a desktop and mobile twin pair of equal copies: each viewport loads one copy, so the page's per-view total is one copy", () => {
+    const observations = [
+      observation(desktop, "fresh", [video("heroDesk", "/a.mp4"), video("heroMob", "/b.mp4", { hiddenReason: "display" })], { "/a.mp4": 10_000, "/b.mp4": 10_000 }),
+      observation(mobile, "fresh", [video("heroDesk", "/a.mp4", { hiddenReason: "display" }), video("heroMob", "/b.mp4")], { "/a.mp4": 10_000, "/b.mp4": 10_000 }),
+    ];
+    const list = records(observations);
+    const total = list.reduce((sum, r) => sum + r.bytes.perView, 0);
+    expect(total).toBe(10_000);
+    // Each copy's claim is its shown viewport's bytes, averaged over the two viewports.
+    expect(byId(list, "heroDesk")?.bytes.perView).toBe(5000);
+    expect(byId(list, "heroMob")?.bytes.perView).toBe(5000);
+  });
+
+  it("a per-viewport row carries the bytes that viewport loads for the copy, shown or hidden", () => {
+    const observations = [
+      observation(desktop, "fresh", [video("heroDesk", "/a.mp4"), video("heroMob", "/b.mp4", { hiddenReason: "display" })], { "/a.mp4": 18_000, "/b.mp4": 6_000 }),
+      observation(mobile, "fresh", [video("heroDesk", "/a.mp4", { hiddenReason: "display" }), video("heroMob", "/b.mp4")], { "/a.mp4": 18_000, "/b.mp4": 6_000 }),
+    ];
+    const mob = byId(records(observations), "heroMob");
+    expect(mob?.perViewport.find((p) => p.viewport === "desktop")?.bytes).toBe(6000);
+    expect(mob?.perViewport.find((p) => p.viewport === "mobile")?.bytes).toBe(6000);
+  });
+
+  it("gives each hidden copy its URL and its bytes at the viewport, so the JSON can be checked", () => {
+    const observations = [
+      observation(desktop, "fresh", [video("heroDesk", "/a.mp4"), video("heroMob", "/b.mp4", { hiddenReason: "display" })], { "/a.mp4": 18_000, "/b.mp4": 6_000 }),
+      observation(mobile, "fresh", [video("heroDesk", "/a.mp4", { hiddenReason: "display" }), video("heroMob", "/b.mp4")], { "/a.mp4": 18_000, "/b.mp4": 6_000 }),
+    ];
+    const desk = byId(records(observations), "heroDesk");
+    expect(desk?.hidden?.copies).toEqual([{ viewport: "mobile", src: "/a.mp4", bytes: 18_000, reason: "display" }]);
+  });
+});

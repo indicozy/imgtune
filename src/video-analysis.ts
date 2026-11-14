@@ -50,6 +50,19 @@ export interface AnimatedFix {
   sourceWidth?: number;
 }
 
+/** A hidden copy that the browser fetched bytes for: its URL, the viewport, the bytes there, and why it is hidden there. */
+export interface HiddenCopy {
+  viewport: string;
+  src: string;
+  bytes: number;
+  reason: HiddenReason;
+}
+
+/** A video's loaded-but-not-shown fix: the shared fields of an image's (HiddenFix), and each hidden copy (see HiddenCopy). */
+export interface VideoHiddenFix extends HiddenFix {
+  copies: HiddenCopy[];
+}
+
 /** One `<video>` element of the page, with its bytes, widths and the levers it has. */
 export interface VideoRecord {
   id: string;
@@ -66,14 +79,17 @@ export interface VideoRecord {
      */
     fullBytesKnown: boolean;
   };
-  /** One row per viewport the video is in. `hidden` is the reason it is not shown there (see HiddenReason). */
-  perViewport: { viewport: string; boxWidth: number; dpr: number; inFirstViewport: boolean; hidden?: HiddenReason }[];
+  /**
+   * One row per viewport the video is in: its box, and `bytes`, what that viewport loads for the video (the claim's bytes when
+   * the copy is shown there, the hidden copy's bytes when it is not). `hidden` is the reason it is not shown there.
+   */
+  perViewport: { viewport: string; boxWidth: number; dpr: number; inFirstViewport: boolean; hidden?: HiddenReason; bytes: number }[];
   /**
    * Loaded but not shown: the browser fetched bytes for a copy of this video that no viewport shows in full. Its bytes are
    * reported apart from the claim (bytes above), and the case is the same as an image's (see HiddenFix). Absent when no copy
    * was fetched while hidden.
    */
-  hidden?: HiddenFix;
+  hidden?: VideoHiddenFix;
   probe?: MediaProbe;
   /** Scan mode: the widths the viewports are served (at most `maxWidths`). */
   widths?: WidthPlan;
@@ -349,9 +365,18 @@ export function videoRecordsOf(
     );
     const none = videoBytes({ kind: "none", playing: false, observedBytes: 0, fullBytes: full, visible: false });
     const heaviest = views.length > 0 ? views.reduce((best, cur) => (cur.perView > best.perView ? cur : best)) : none;
+    // The claim is per viewport, averaged over the viewports (as an image's is): each viewport loads its own shown copy, so a
+    // twin pair counts once, not twice. Bounded by the file's own length (perPlay), as the single-copy figure is.
+    const shownBytesAt = new Map<Seen, number>();
+    shown.forEach((m, i) => shownBytesAt.set(m, views[i].perView));
+    const claimPerView = Math.min(
+      heaviest.perPlay,
+      observations.length > 0 ? views.reduce((sum, v) => sum + v.perView, 0) / observations.length : 0,
+    );
 
     // The hidden fix: one entry per viewport the video is in, shown or hidden. A hidden copy with no bytes is not reported.
     const entries: HiddenEntry[] = [];
+    const copies: HiddenCopy[] = [];
     for (const m of members) {
       const viewport = { name: m.obs.viewport.name, width: m.obs.viewport.width };
       if (!m.video.hidden) {
@@ -359,16 +384,14 @@ export function videoRecordsOf(
         continue;
       }
       const bytes = hiddenBytesOf(m, shownAt.get(m.obs.viewport.name) ?? new Set<string>(), freshOf);
+      shownBytesAt.set(m, bytes);
       if (bytes <= 0) continue;
-      entries.push({
-        viewport,
-        bytes,
-        hidden: m.video.hiddenReason ?? "display",
-        inPanel: m.video.inPanel === true,
-        hover: m.video.hover === true,
-      });
+      const reason = m.video.hiddenReason ?? "display";
+      entries.push({ viewport, bytes, hidden: reason, inPanel: m.video.inPanel === true, hover: m.video.hover === true });
+      copies.push({ viewport: viewport.name, src: m.video.currentSrc, bytes, reason });
     }
-    const hidden = hiddenFixCore(entries, observations.length);
+    const hiddenBase = hiddenFixCore(entries, observations.length);
+    const hidden: VideoHiddenFix | undefined = hiddenBase !== undefined ? { ...hiddenBase, copies } : undefined;
 
     const shownNow = shown.length > 0;
     const info: string[] = [];
@@ -391,8 +414,8 @@ export function videoRecordsOf(
     const belowFold = shown.every((m) => !m.video.inFirstViewport);
     const levers: VideoRecord["levers"] = { info: shownNow ? info : [] };
     if (shownNow) {
-      if (heaviest.perView > 0 && (belowFold || ref.preload === "auto")) {
-        levers.loading = { perViewBytes: heaviest.perView, belowFold };
+      if (claimPerView > 0 && (belowFold || ref.preload === "auto")) {
+        levers.loading = { perViewBytes: claimPerView, belowFold };
       }
       if (handled === undefined && !hasAv1(ref)) levers.codec = { missing: "av1" };
       if (ref.poster === undefined) levers.posterMissing = true;
@@ -429,13 +452,14 @@ export function videoRecordsOf(
         preload: ref.preload,
         ...(ref.poster !== undefined ? { poster: ref.poster } : {}),
       },
-      bytes: { ...heaviest, fullBytesKnown: false },
+      bytes: { ...heaviest, perView: claimPerView, fullBytesKnown: false },
       perViewport: members.map((m) => ({
         viewport: m.obs.viewport.name,
         boxWidth: m.video.renderedWidth,
         dpr: m.obs.viewport.dpr,
         inFirstViewport: m.video.inFirstViewport,
         ...(m.video.hidden ? { hidden: m.video.hiddenReason ?? "display" } : {}),
+        bytes: shownBytesAt.get(m) ?? 0,
       })),
       levers,
       ...(hidden !== undefined ? { hidden } : {}),
