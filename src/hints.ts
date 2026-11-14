@@ -457,7 +457,7 @@ export function videoHiddenLines(hidden: HiddenFix): string[] {
       `   responsive twin, shown on load at ${names(hidden.shownIn)}: one <video> for both viewports, not two: <video autoplay muted playsinline poster="<first frame>"> with <source media="${media}" src="<the file shown at ${names(hidden.viewports)}>" type="video/mp4"> first, then <source src="<the file shown at ${names(hidden.shownIn)}>" type="video/mp4"> with no media. Or delete the hidden copy if the design does not need it.`,
     );
     lines.push(
-      `     <source media> on video works in Chrome 120+ and Safari. A browser that ignores it takes the first source, so the fallback is a script that sets src from matchMedia("${media}") and reloads on change.`,
+      `     <source media> on video: Chrome 120 and Firefox 120 (a 2023 report; check chromestatus), and Safari supports it (version not verified). A browser that ignores it takes the first source, so the fallback is a script that sets src from matchMedia("${media}") and reloads on change.`,
     );
   } else if (hidden.action === "lazy") {
     const what = hidden.hover === true ? "a hover swap" : hidden.inPanel ? "a tab panel, a hidden subtree or a closed details" : "a carousel slide or other clipped box";
