@@ -46,7 +46,14 @@ export interface Flatness {
 export type Vectorizer = typeof import("@neplex/vectorizer");
 
 /** Why a flat image has no traced SVG (see VectorFix.notChecked). */
-export type VectorNotChecked = "over --svg-budget" | "vectorizer not installed" | "timeout" | "trace failed";
+export type VectorNotChecked =
+  | "survey"
+  | "quality off"
+  | "svg-budget 0"
+  | "over --svg-budget"
+  | "vectorizer not installed"
+  | "timeout"
+  | "trace failed";
 
 /**
  * The vector check of one image record (images.ts, fix.vector). Numbers only, so the JSON stays small. The saving is the

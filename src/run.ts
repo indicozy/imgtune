@@ -13,6 +13,7 @@ import { DEFAULT_THIRD_PARTY, parseAllowHosts, thirdPartyFromFlags, type ThirdPa
 import {
   MAX_IDLE_TIMEOUT_MS,
   MAX_PAGE_CONCURRENCY,
+  MAX_SVG_BUDGET,
   pageFileName,
   parseLimit,
   parseRange,
@@ -39,6 +40,8 @@ export const DEFAULT_DEEP = 20;
 
 export interface RunArgs {
   urls: string[];
+  /** --svg-budget: the flat images of the deep pages traced to SVG (see vector-phase.ts). */
+  svgBudget?: number;
   urlsFrom?: string;
   samplePerPattern?: number;
   out?: string;
@@ -101,6 +104,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
       arg === "--deep" ||
       arg === "--page-concurrency" ||
       arg === "--idle-timeout" ||
+      arg === "--svg-budget" ||
       arg === "--dev" ||
       arg === "--qualities" ||
       arg === "--root" ||
@@ -116,6 +120,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
       else if (arg === "--deep") args.deep = parseLimit(arg, value);
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
+      else if (arg === "--svg-budget") args.svgBudget = parseRange(arg, value, 0, MAX_SVG_BUDGET);
       else if (arg === "--dev") args.dev = new URL(parseHttpUrl(value, "--dev")).origin;
       else if (arg === "--qualities") args.qualities = parseQualities(value);
       else if (arg === "--root") args.root = value;
@@ -335,6 +340,7 @@ export async function runCommand(
     pageConcurrency: fullPlan.pageConcurrency,
     idleTimeoutMs: fullPlan.idleTimeoutMs,
     gpu: args.gpu,
+    svgBudget: args.svgBudget,
     expectImages: (url) => expected.get(url),
   });
   phases.push(phaseOf("deep", deepStart, deep));
@@ -429,6 +435,7 @@ function runFlags(args: RunArgs): { survey: string[]; deep: string[] } {
   if (args.thirdParty.allowHosts.length > 0) common.push("--allow-host", shellWord(args.thirdParty.allowHosts.join(",")));
   const deep = [...common];
   if (args.gpu !== undefined) deep.push("--gpu-device", args.gpu.devices.join(","));
+  if (args.svgBudget !== undefined) deep.push("--svg-budget", String(args.svgBudget));
   return { survey: common, deep };
 }
 
@@ -463,7 +470,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Every file of the run directory, relative to it, by the folder it is in. */
+/** Every file of the run directory, relative to it, by the folder it is in (folders inside them are not listed). */
 export async function filesOf(outRoot: string): Promise<RunManifest["files"]> {
   const files: RunManifest["files"] = [{ path: "urls.txt", kind: "urls" }];
   const folders: [string, RunManifest["files"][number]["kind"]][] = [
@@ -473,7 +480,9 @@ export async function filesOf(outRoot: string): Promise<RunManifest["files"]> {
   ];
   for (const [folder, kind] of folders) {
     if (!(await exists(join(outRoot, folder)))) continue;
-    for (const name of (await readdir(join(outRoot, folder))).sort()) files.push({ path: `${folder}/${name}`, kind });
+    // Files only: a folder in it (the traced SVGs of the vector check, under svg/) is not a page file.
+    const entries = await readdir(join(outRoot, folder), { withFileTypes: true });
+    for (const entry of entries.filter((e) => e.isFile()).sort((a, b) => a.name.localeCompare(b.name))) files.push({ path: `${folder}/${entry.name}`, kind });
   }
   if (await exists(join(outRoot, "hints.json"))) files.push({ path: "hints.json", kind: "hints" });
   if (await exists(join(outRoot, "report.md"))) files.push({ path: "report.md", kind: "report" });

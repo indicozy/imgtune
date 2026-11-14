@@ -14,6 +14,7 @@ import { DEFAULT_THIRD_PARTY, parseAllowHosts, thirdPartyFromFlags, type ThirdPa
 import {
   MAX_IDLE_TIMEOUT_MS,
   MAX_PAGE_CONCURRENCY,
+  MAX_SVG_BUDGET,
   parseLimit,
   parseRange,
   readStorageState,
@@ -48,6 +49,8 @@ export interface CheckSettings {
   /** The framework's allowed qualities (--qualities): targets are snapped up to them. */
   qualities?: number[];
   idleTimeoutMs?: number;
+  /** --svg-budget: the flat images of the deep pages traced to SVG (see vector-phase.ts). Undefined: the default. */
+  svgBudget?: number;
   noCache: boolean;
   /** --gpu-encode (experimental): the media is encoded on the GPUs. Off by default: CPU encodes. */
   gpuEncode?: boolean;
@@ -97,6 +100,7 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
       arg === "--page-concurrency" ||
       arg === "--qualities" ||
       arg === "--idle-timeout" ||
+      arg === "--svg-budget" ||
       arg === "--storage-state" ||
       arg === "--allow-host"
     ) {
@@ -110,6 +114,7 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
       else if (arg === "--page-concurrency") args.pageConcurrency = parseRange(arg, value, 1, MAX_PAGE_CONCURRENCY);
       else if (arg === "--qualities") args.qualities = parseQualities(value);
       else if (arg === "--idle-timeout") args.idleTimeoutMs = parseRange(arg, value, 0, MAX_IDLE_TIMEOUT_MS);
+      else if (arg === "--svg-budget") args.svgBudget = parseRange(arg, value, 0, MAX_SVG_BUDGET);
       else if (arg === "--storage-state") args.storageState = value;
       else allowHosts = parseAllowHosts(value);
     } else if (arg.startsWith("--")) {
@@ -306,6 +311,7 @@ export async function scanCheckPages(input: {
       ...(settings.ignoreRobots ? ["--ignore-robots"] : []),
       ...(settings.pageConcurrency !== undefined ? ["--page-concurrency", String(settings.pageConcurrency)] : []),
       ...(settings.idleTimeoutMs !== undefined ? ["--idle-timeout", String(settings.idleTimeoutMs)] : []),
+      ...(settings.svgBudget !== undefined ? ["--svg-budget", String(settings.svgBudget)] : []),
     ];
     commands.push({ phase: "deep", command: ["imgtune scan", ...deepUrls.map(shellWord), "--out", shellWord(deepDir), ...flags].join(" ") });
     log(`deep: ${deepUrls.length} page(s), full scan`);
@@ -317,6 +323,7 @@ export async function scanCheckPages(input: {
       pageConcurrency: fullPlan.pageConcurrency,
       idleTimeoutMs: fullPlan.idleTimeoutMs,
       gpu: settings.gpu,
+      svgBudget: settings.svgBudget,
       expectImages: (url: string) => expected.get(url),
     };
     const deepStart = performance.now();
