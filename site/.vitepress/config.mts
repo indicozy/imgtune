@@ -56,6 +56,7 @@ export default defineConfig({
             { text: "CI action", link: "/guide/ci-action" },
             { text: "How it measures", link: "/guide/how-it-measures" },
             { text: "Video and animated images", link: "/guide/video-and-gifs" },
+            { text: "3D models and audio", link: "/guide/model-and-audio" },
             { text: "Image loaders and CDNs", link: "/guide/loaders-and-cdns" },
             { text: "Limitations and FAQ", link: "/guide/limitations-and-faq" },
             { text: "Compared with other tools", link: "/guide/compared-with-other-tools" },

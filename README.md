@@ -143,6 +143,13 @@ Every fix hint is labelled with the strength of its evidence, the rung it stands
 A ceiling is never derived from the existing `sizes` value. When a usage is measured, its `sizes` comes from the layout
 the browser resolved, not from a guess.
 
+## 3D models and audio
+
+`scan` also reads the 3D models and audio files a page loads. A glTF or GLB gets a measured meshopt saving (the file is
+repacked with gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. An audio
+file that is lossless, above 128 kbps stereo, or stereo with identical channels gets an Opus re-encode, measured on a 10 s
+sample with ffmpeg. See the [guide](site/guide/model-and-audio.md).
+
 ## GIFs and video
 
 `scan` also measures animated media: animated GIFs in an `<img>` or a CSS background, animated WebP and APNG, and

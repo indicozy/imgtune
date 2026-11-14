@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- 3D models. `scan` checks glTF and GLB files: the geometry saving with meshopt is measured (the file is repacked and
+  run through gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. Draco and
+  meshopt files are reported as compressed. USDZ, OBJ, FBX, KTX2, splats and PLY are informational.
+- Audio. `scan` probes each audio file with ffprobe. WAV and FLAC, lossy files above 128 kbps stereo (64 kbps mono), and
+  stereo files with identical channels get an Opus re-encode, measured on a 10 s sample. A file loaded on page load gets the
+  `preload="none"` fix. Without ffmpeg only the bytes are reported.
+
 ## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and

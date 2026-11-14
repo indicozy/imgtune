@@ -292,6 +292,18 @@ neither field and is read as having no media.
 
 Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
 
+## Models and audio (0.3.0)
+
+Each 3D model and audio file is a `ResourceFinding` (`kind` `model` or `audio`) in the `resources` list. The fields are
+`id`, `url`, `bytes` (bytes per view), `savedBytes`, `estimate`, `title`, `fix` and `locator`. The `details` object holds:
+
+| kind | details fields |
+| --- | --- |
+| `model` | `format` (`glTF` or `GLB`), `extensionsUsed`, `geometryBytes`, `textures`, `textureBytes`, `textureDetails` (per image: `width`, `height`, `bytes`, `webpBytes`, `estimate`), `repackBytes`, `repackSavedBytes`, `meshoptBytes`, `externalBuffers` |
+| `audio` | `codec`, `channels`, `sampleRate`, `durationS`, `bitrateKbps`, `lossless`, `nearMono`, `fetchedBytes`, `fullBytes`, `eager`, `preload`, `autoplay`, `opusFullBytes`, `aacFullBytes`, `targetKbps`, `targetChannels` |
+
+`estimate` is `false` for a measured model geometry saving; the texture and audio savings are estimates.
+
 ## Summary JSON
 
 `--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,
