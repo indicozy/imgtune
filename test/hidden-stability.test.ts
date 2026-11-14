@@ -120,3 +120,39 @@ describe("a copy is hidden only when it stays hidden across reads", () => {
     expect(twin?.hidden?.unstable).toBeUndefined();
   });
 });
+
+describe("the candidate cap does not leave a video unverified", () => {
+  it("re-reads a hidden video before the images when more than the cap are hidden (videos are the heavy copies)", async () => {
+    const images = Array.from({ length: 62 }, (_, i) => `<img id="hi${i}" src="/still.png?c=hi${i}" style="display:none">`).join("");
+    const page = `<!doctype html><html><head><meta charset="utf-8"><style>
+      .opa { opacity: 0; width: 320px; height: 180px; }
+    </style></head><body>${images}<video id="capVid" class="opa" muted playsinline src="/hidden.mp4?c=cap"></video></body></html>`;
+    const files: Record<string, Buffer> = { "/still.png": readFileSync(join(FIXTURES, "still.png")), "/hidden.mp4": readFileSync(join(FIXTURES, "hidden.mp4")) };
+    const cap = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const path = (req.url ?? "").split("?")[0];
+      if (path === "/") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end(page);
+      }
+      const file = files[path];
+      if (!file) {
+        res.writeHead(404);
+        return res.end();
+      }
+      res.writeHead(200, { "content-type": path.endsWith(".mp4") ? "video/mp4" : "image/png", "content-length": file.length });
+      res.end(file);
+    });
+    await new Promise<void>((resolve) => cap.listen(0, "127.0.0.1", () => resolve()));
+    const capBase = `http://127.0.0.1:${(cap.address() as AddressInfo).port}`;
+    try {
+      const out = mkdtempSync(join(tmpdir(), "imgtune-cap-"));
+      const [r] = await runScan([`${capBase}/`], { outDir: out, cwd: out, aggressive: false, quality: false, mediaBudget: 0, viewports: [VIEWS.desktop], log: () => {} });
+      const vid = (r?.videos ?? []).find((v) => v.locator.selector.includes("#capVid"));
+      expect(vid?.hidden?.reasons).toEqual(["opacity"]);
+      expect(vid?.hidden?.unstable).toBeUndefined();
+    } finally {
+      cap.closeAllConnections();
+      await new Promise<void>((resolve) => cap.close(() => resolve()));
+    }
+  }, 180_000);
+});

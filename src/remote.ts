@@ -1729,7 +1729,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           });
         });
       }
-      // Stability: a copy is hidden only when it reads hidden three times: the snapshot, a read REVEAL_STABLE_MS later with no
+      // Stability: a copy is hidden only when it reads hidden on every read: the snapshot, a read REVEAL_STABLE_MS later with no
       // scroll, and a read after a scroll to it (the same reason each time). A copy that reads shown at any read is shown: a
       // carousel slide that auto-advances, a crossfade, or a fade-in a scroll brings in. The candidates are every hidden copy
       // (images, then videos, in document order); past revealCap per viewport a candidate keeps its snapshot reason and is
@@ -1740,6 +1740,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
       if (!light) {
         interface Candidate {
           el: Element;
+          isVideo: boolean;
           snap: { reason: HiddenReason; inPanel: boolean; hover: boolean };
           apply: (info: { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined, unstable: boolean) => void;
         }
@@ -1749,6 +1750,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           if (obj === undefined || obj.hidden === undefined) return;
           candidates.push({
             el: img,
+            isVideo: false,
             snap: { reason: obj.hidden, inPanel: obj.inPanel === true, hover: obj.hover === true },
             apply: (info, unstable) => {
               delete obj.hidden;
@@ -1768,6 +1770,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           if (obj === undefined || !obj.hidden || obj.hiddenReason === undefined) return;
           candidates.push({
             el: video,
+            isVideo: true,
             snap: { reason: obj.hiddenReason, inPanel: obj.inPanel === true, hover: obj.hover === true },
             apply: (info, unstable) => {
               delete obj.hiddenReason;
@@ -1783,13 +1786,30 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
             },
           });
         });
+        // Videos first: they are the heavy copies, so the cap never leaves a video unverified while images are checked.
+        candidates.sort((a, b) => Number(b.isVideo) - Number(a.isVideo));
         const checked = candidates.slice(0, revealCap);
         revealCapped = candidates.length - checked.length;
         const x0 = window.scrollX;
         const y0 = window.scrollY;
         const frames = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-        // Read 2: a second read, revealWait ms after the snapshot, with no scroll.
+        // Read 2: a second read, revealWait ms after the snapshot, with no scroll. Attribute changes in that window are recorded
+        // too: a toggle whose two reads happen to agree (a period that fits twice in the window) still shows as a change.
+        const touched: Node[] = [];
+        const watch = new MutationObserver((records) => {
+          for (const record of records) touched.push(record.target);
+        });
+        watch.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["style", "class", "hidden", "open", "aria-hidden"] });
         await new Promise((resolve) => setTimeout(resolve, revealWait));
+        watch.disconnect();
+        // A change on the copy, its descendants, or one of its three nearest ancestors (a carousel's track or slide wrapper).
+        const changedNear = (el: Element): boolean =>
+          touched.some((node) => {
+            if (node === el || el.contains(node)) return true;
+            let up: Element | null = el;
+            for (let level = 0; level < 3 && up !== null; level++, up = up.parentElement) if (up === node) return true;
+            return false;
+          });
         const second = checked.map((c) => hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
         // Read 3: one pass, each candidate read after a scroll to it.
         // Read 3a: each candidate right after its own scroll (a display that a scroll shows is read at its own position).
@@ -1812,7 +1832,13 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           // Hidden only when every read is hidden with the same reason; any read that shows it, or a change of reason, is
           // shown (a toggle, a fade, or a box a scroll brings in).
           const stable =
-            b !== undefined && t !== undefined && f !== undefined && b.reason === a.reason && t.reason === a.reason && f.reason === a.reason;
+            b !== undefined &&
+            t !== undefined &&
+            f !== undefined &&
+            b.reason === a.reason &&
+            t.reason === a.reason &&
+            f.reason === a.reason &&
+            !changedNear(c.el);
           c.apply(stable ? f : undefined, false);
         });
         for (const c of candidates.slice(revealCap)) c.apply(c.snap, true);
