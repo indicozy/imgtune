@@ -24,11 +24,21 @@ importers:
       vitest:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@26.6.5)(vite@8.3.5(@types/node@26.6.5))
+    optionalDependencies:
+      '@neplex/vectorizer':
+        specifier: 0.1.0
+        version: 0.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
 
 packages:
 
+  '@emnapi/core@1.11.3':
+    resolution: {integrity: sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg==}
+
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
+
+  '@emnapi/wasi-threads@1.2.3':
+    resolution: {integrity: sha512-ELEBe8PsLvvJ6QMr0zLt8ffvOHW/dc1m3CEzNMg7aJUv3bMaoDtw2TXyDAwkYBuroxxuHEwhRTLJSe5sya547g==}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -186,6 +196,101 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
+  '@napi-rs/wasm-runtime@1.2.7':
+    resolution: {integrity: sha512-zJccwplOAbgfZju95IUHazLnx9RAPtPN2YGJXI6UbrgeaR9QfPjGrQL6ERkSAtnVCA4Q+83ApGyaX5zdpCaKkQ==}
+    engines: {node: ^20.19.0 || ^22.13.0 || >=23.5.0}
+    peerDependencies:
+      '@emnapi/core': ^1.7.1 || 2.0.0-beta.2 || 2.0.0-beta.3
+      '@emnapi/runtime': ^1.7.1 || 2.0.0-beta.2 || 2.0.0-beta.3
+
+  '@neplex/vectorizer-android-arm-eabi@0.1.0':
+    resolution: {integrity: sha512-QFCkiMEahk0zatLuEtUaTCLPfF6YfoPVSUPjxgkuNQJUc9By4s00Bk9LZK1DcM4O404MQauGxQPZF8r8U7NwWg==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm]
+    os: [android]
+
+  '@neplex/vectorizer-android-arm64@0.1.0':
+    resolution: {integrity: sha512-+o3+9ahO14z+8lLQ/wZ9bY2DKZsyLtwqabaglfYXjXb8gV+cwNV0UBCEDvd2k21WXb/aYrar55Ayf8cNa+79Sg==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm64]
+    os: [android]
+
+  '@neplex/vectorizer-darwin-arm64@0.1.0':
+    resolution: {integrity: sha512-6nPJgRwm+tZj4b4X8GEcKJUzPgrZaixYo5MLZ1/H40Vp5+UI4Ma9qx0ZsIyh/zhENddYPb7me7EjH0U3O9+JCA==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@neplex/vectorizer-darwin-x64@0.1.0':
+    resolution: {integrity: sha512-WnEtZLR1WG9satz3ZJ791nu7SCCDU7p00egqqGZFhQAmNRM3D0dC4bSfeJmLPvGifvCY9dqQo1XNswgpb0rPzg==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@neplex/vectorizer-freebsd-x64@0.1.0':
+    resolution: {integrity: sha512-OSANfJirQvS9iyHbZFMoa8gT9Ife1YIhyWeAvLUqniUmQ1q3lAcONKPP14xClhznDI2a0m51H6NvCjvXMgBDrQ==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [x64]
+    os: [freebsd]
+
+  '@neplex/vectorizer-linux-arm-gnueabihf@0.1.0':
+    resolution: {integrity: sha512-5Wm7rkYY6G6oSdb6Ee3LKtUkzYjtUvIUiIR80FtVNW6S3/d0HHzePKXljtric24fJsKPb/aWJzHZDqWy1T+bVQ==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm]
+    os: [linux]
+
+  '@neplex/vectorizer-linux-arm64-gnu@0.1.0':
+    resolution: {integrity: sha512-7mvnTzzUW02tFx/Qun7FpO8d81g5xj05a+sd88s38VngE10euzQCiDgGRApxfHSBuiZ2pY7BDmEiZP5FKN8dvg==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@neplex/vectorizer-linux-arm64-musl@0.1.0':
+    resolution: {integrity: sha512-+WecJ4zyeVQgT1ZIJNH5z6IomkKeTQKWlq8W2eYLfKNKv/UZ0Wj09ANnkFPoZeagk6jH4WdPs/L/Ot6MwO44Dg==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@neplex/vectorizer-linux-x64-gnu@0.1.0':
+    resolution: {integrity: sha512-ZZOdYvIdygg61c1eSXdBDxPKLrVDAYLaPX7mJtgAM+3C3kSuiDKQHWUGqhcFTlo2oDSWA93Bc0pqaVJBdGW3tA==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [x64]
+    os: [linux]
+
+  '@neplex/vectorizer-linux-x64-musl@0.1.0':
+    resolution: {integrity: sha512-T9QgcxddN7mF/8JrA1FNr7F3EwKKwWFFl2v8tndRtDU1N/2wLj+1drSzgJZjxcTjlMG3yOcLhDqFXq7Nsxwwkg==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [x64]
+    os: [linux]
+
+  '@neplex/vectorizer-wasm32-wasi@0.1.0':
+    resolution: {integrity: sha512-rEQs14UTfQqh69uxwRo2aJiDzymdOx+j/5pl7sDuEITsx/6nb60dsZkd8gkyuNzBeYSTt8lSSL3sxEmHXQauPw==}
+    engines: {node: '>=14.0.0'}
+    cpu: [wasm32]
+
+  '@neplex/vectorizer-win32-arm64-msvc@0.1.0':
+    resolution: {integrity: sha512-QdzriEzZHlzaCFZKw4GgMZ2cUomD+fAgOFs4qYVFQ9K2weyJzTNsCam3gb6xZFhFJ/REPVbNdAB46W6RyAjLBA==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@neplex/vectorizer-win32-ia32-msvc@0.1.0':
+    resolution: {integrity: sha512-z6E5GQcFCQMdJ5HeoHg5KpJJSuq0MPxW2HhPgOjWYnykF4aIwtLAqQdnNTQtKpuunsjoLtK9iqx82+BYX/f64w==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [ia32]
+    os: [win32]
+
+  '@neplex/vectorizer-win32-x64-msvc@0.1.0':
+    resolution: {integrity: sha512-OuFcznF1+CIs09X94PsfiyxwgkPpH8ZQQ81aPRjexFdLLLt5UpIOlsbUK2Ypb5u/bC/lCOpuUfP/bVP205YinQ==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    cpu: [x64]
+    os: [win32]
+
+  '@neplex/vectorizer@0.1.0':
+    resolution: {integrity: sha512-J2cfkJG0hmOsC+QiPfkNSe8U68vW5SdaM8PjLMVgacmKfOtZKbU5syz3BqlfYoMlPjJlfzYdxwfH4GiAz5vLUQ==}
+    engines: {node: '>= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0'}
+    hasBin: true
+
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
 
@@ -282,6 +387,9 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
+  '@tybys/wasm-util@0.10.4':
+    resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
+
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
 
@@ -315,6 +423,10 @@ packages:
   chai@6.3.0:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
+
+  commander@14.0.3:
+    resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
+    engines: {node: '>=20'}
 
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
@@ -587,7 +699,18 @@ packages:
 
 snapshots:
 
+  '@emnapi/core@1.11.3':
+    dependencies:
+      '@emnapi/wasi-threads': 1.2.3
+      tslib: 2.8.1
+    optional: true
+
   '@emnapi/runtime@1.11.3':
+    dependencies:
+      tslib: 2.8.1
+    optional: true
+
+  '@emnapi/wasi-threads@1.2.3':
     dependencies:
       tslib: 2.8.1
     optional: true
@@ -707,6 +830,84 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
+  '@napi-rs/wasm-runtime@1.2.7(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
+    dependencies:
+      '@emnapi/core': 1.11.3
+      '@emnapi/runtime': 1.11.3
+      '@tybys/wasm-util': 0.10.4
+    optional: true
+
+  '@neplex/vectorizer-android-arm-eabi@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-android-arm64@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-darwin-arm64@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-darwin-x64@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-freebsd-x64@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-linux-arm-gnueabihf@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-linux-arm64-gnu@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-linux-arm64-musl@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-linux-x64-gnu@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-linux-x64-musl@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-wasm32-wasi@0.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
+    dependencies:
+      '@napi-rs/wasm-runtime': 1.2.7(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
+    transitivePeerDependencies:
+      - '@emnapi/core'
+      - '@emnapi/runtime'
+    optional: true
+
+  '@neplex/vectorizer-win32-arm64-msvc@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-win32-ia32-msvc@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer-win32-x64-msvc@0.1.0':
+    optional: true
+
+  '@neplex/vectorizer@0.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
+    dependencies:
+      commander: 14.0.3
+      picocolors: 1.1.1
+    optionalDependencies:
+      '@neplex/vectorizer-android-arm-eabi': 0.1.0
+      '@neplex/vectorizer-android-arm64': 0.1.0
+      '@neplex/vectorizer-darwin-arm64': 0.1.0
+      '@neplex/vectorizer-darwin-x64': 0.1.0
+      '@neplex/vectorizer-freebsd-x64': 0.1.0
+      '@neplex/vectorizer-linux-arm-gnueabihf': 0.1.0
+      '@neplex/vectorizer-linux-arm64-gnu': 0.1.0
+      '@neplex/vectorizer-linux-arm64-musl': 0.1.0
+      '@neplex/vectorizer-linux-x64-gnu': 0.1.0
+      '@neplex/vectorizer-linux-x64-musl': 0.1.0
+      '@neplex/vectorizer-wasm32-wasi': 0.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
+      '@neplex/vectorizer-win32-arm64-msvc': 0.1.0
+      '@neplex/vectorizer-win32-ia32-msvc': 0.1.0
+      '@neplex/vectorizer-win32-x64-msvc': 0.1.0
+    transitivePeerDependencies:
+      - '@emnapi/core'
+      - '@emnapi/runtime'
+    optional: true
+
   '@oxc-project/types@0.155.0': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.15':
@@ -756,6 +957,11 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@tybys/wasm-util@0.10.4':
+    dependencies:
+      tslib: 2.8.1
+    optional: true
+
   '@types/chai@5.2.3':
     dependencies:
       '@types/deep-eql': 4.0.2
@@ -783,6 +989,9 @@ snapshots:
   assertion-error@2.0.1: {}
 
   chai@6.3.0: {}
+
+  commander@14.0.3:
+    optional: true
 
   detect-libc@2.1.2: {}
 
