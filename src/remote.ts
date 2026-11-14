@@ -1497,7 +1497,9 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           if (s.display === "none") displayNone = true;
           if (s.opacity === "0") opacityZero = true;
           if (el.getAttribute("role") === "tabpanel" || el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") inPanel = true;
-          if (el !== img && (s.overflowX === "hidden" || s.overflowY === "hidden" || s.overflowX === "clip" || s.overflowY === "clip")) {
+          // The root's overflow is the viewport's (it propagates from html or body), so it clips nothing: only the ancestors between.
+          const root = el === document.documentElement || el === document.body;
+          if (!root && el !== img && (s.overflowX === "hidden" || s.overflowY === "hidden" || s.overflowX === "clip" || s.overflowY === "clip")) {
             const box = el.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0 && (rect.right <= box.left || rect.left >= box.right || rect.bottom <= box.top || rect.top >= box.bottom)) clipped = true;
           }

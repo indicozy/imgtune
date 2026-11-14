@@ -137,6 +137,7 @@ describe("buildImageRecords and the hints of a hidden image", () => {
 describe("scan of loaded-but-not-shown images", () => {
   let base = "";
   let server: Server | undefined;
+  let bodyPage = "";
   const names = ["twinDesk", "twinMob", "slide1", "slide2", "slide3", "tabImg", "opaImg", "visImg", "zeroImg", "shownImg", "tinyImg"];
 
   beforeAll(async () => {
@@ -147,6 +148,10 @@ describe("scan of loaded-but-not-shown images", () => {
         .toBuffer();
     }
     const img = (name: string) => `<img id="${name}" src="/${name}.png" alt="">`;
+    bodyPage = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>body</title><style>
+      html, body { overflow: hidden; height: 100px; }
+      .below { margin-top: 900px; }
+    </style></head><body><div class="below">${img("shownImg")}</div></body></html>`;
     const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>hidden</title><style>
       .desktop-only { width: 600px; height: 400px; }
       .mobile-only { width: 300px; height: 200px; }
@@ -179,6 +184,10 @@ describe("scan of loaded-but-not-shown images", () => {
           res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
           return res.end(page);
         }
+        if (url === "/body") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          return res.end(bodyPage);
+        }
         res.writeHead(404);
         res.end();
       });
@@ -192,6 +201,13 @@ describe("scan of loaded-but-not-shown images", () => {
     server?.closeAllConnections();
     await new Promise<void>((resolve) => server?.close(() => resolve()));
   });
+
+  // A page whose body clips to 100 px: its overflow propagates to the viewport, so the content below is scrolled, not clipped.
+  const scanBody = async () => {
+    const out = mkdtempSync(join(tmpdir(), "imgtune-hidden-"));
+    const [result] = await runScan([`${base}/body`], { outDir: out, cwd: out, aggressive: false, quality: false, viewports: [VIEWS.desktop], log: () => {} });
+    return result;
+  };
 
   const scan = async () => {
     const out = mkdtempSync(join(tmpdir(), "imgtune-hidden-"));
@@ -233,6 +249,12 @@ describe("scan of loaded-but-not-shown images", () => {
     expect(named(result.images, "shownImg")?.perViewport.every((p) => p.hidden === undefined)).toBe(true);
     expect(named(result.images, "tinyImg")?.hidden).toBeUndefined();
     expect(named(result.images, "tinyImg")?.perViewport[0].skipped).toBe("under 16 px");
+  }, 180_000);
+
+  it("does not call an image hidden by a body or html that clips to its own height (the overflow goes to the viewport)", async () => {
+    const result = await scanBody();
+    expect(result.status).toBe("ok");
+    expect(named(result.images, "shownImg")?.hidden).toBeUndefined();
   }, 180_000);
 
   it("adds the page's hidden bytes apart from the savings, and gives no sizes claim to a hidden copy", async () => {
