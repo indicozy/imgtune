@@ -22,7 +22,7 @@ function image(id: string, bytes: number, vector: ImageRecord["fix"]["vector"], 
   } as unknown as ImageRecord;
 }
 
-const flat = { uniqueColors: 4, top16Share: 1, alphaBinaryShare: 1, flat: true };
+const flat = { uniqueColors: 4, top16Share: 1, alphaBinaryShare: 1, smoothShare: 0, megapixels: 0.1, flat: true };
 
 function pageOf(images: ImageRecord[]): PageResult {
   return { url: "https://site.test/", host: "site.test", viewports: ["desktop"], images, status: "ok" } as unknown as PageResult;

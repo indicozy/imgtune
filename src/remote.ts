@@ -16,7 +16,7 @@ export { mdCode, mdText, safeText };
 export { MAX_INPUT_PIXELS, openImage };
 import { isLocalTarget, systemResolver, type Resolver } from "./address.js";
 import { loadVectorizer, stillFlatness, type Flatness } from "./vector-art.js";
-import { applyVector, runVectorPhase } from "./vector-phase.js";
+import { applyVector, FlatBuffers, runVectorPhase } from "./vector-phase.js";
 import { startEgressProxy, type EgressPolicy, type EgressProxy } from "./egress-proxy.js";
 import { makeFetcher, MAX_IMAGE_BYTES, type Fetcher, type FetchOptions } from "./fetch.js";
 import { sameSite } from "./site.js";
@@ -2276,6 +2276,8 @@ export interface AnalysisContext {
   /** The page is on a loopback or private host, so its candidates and originals may be too. */
   allowPrivate: boolean;
   deps: QualityDeps;
+  /** The browser's bytes of the flat images, kept for the vector check (see FlatBuffers). */
+  flatBuffers?: FlatBuffers;
   quality: boolean;
   /**
    * False in a survey: no local resize estimate (est.) for a plain image or a background layer either, so the numbers are
@@ -2516,6 +2518,7 @@ async function measureBackground(
   if (animated !== undefined) instance.animated = animated;
   const flatness = await stillFlatness(response, served, animated !== undefined);
   if (flatness !== undefined) instance.flatness = flatness;
+  if (flatness?.flat === true) ctx.flatBuffers?.offer(chosen.url, response.buffer as Buffer, response.bytes);
   if (ctx.estimates !== false && animated === undefined && served.width > PLAIN_RESIZE_RATIO * needed && served.format) {
     const resized = await measure("background resize estimate", () => resizeEstimateOf(ctx, response.buffer as Buffer, served.format as string, needed));
     if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
@@ -2562,6 +2565,7 @@ async function baseline(ctx: AnalysisContext, obs: ViewportObservation, img: Obs
   if (animated !== undefined) instance.animated = animated;
   const flatness = await stillFlatness(response, served, animated !== undefined);
   if (flatness !== undefined) instance.flatness = flatness;
+  if (flatness?.flat === true) ctx.flatBuffers?.offer(img.currentSrc, response.buffer as Buffer, response.bytes);
 
   const candidates = parseSrcset(img.srcset, ctx.pageUrl);
   if (candidates.length > 0) {
@@ -3490,6 +3494,8 @@ async function scanPage(
     harness: boolean;
     /** Source maps read in this scan, shared by its pages (see MAX_MAPS_PER_SCAN). */
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
+    /** The browser's bytes of the flat images, for the vector check (see FlatBuffers). */
+    flatBuffers: FlatBuffers;
     /** The run's stage (see stage.ts and runScan): the measured pages are written here before their analysis. */
     stage?: { dir: string; options: ScanRecordOptions };
     storageState?: StorageState;
@@ -3648,6 +3654,7 @@ function analysisContextOf(run: PageRun, pageUrl: string): Omit<AnalysisContext,
     sourceMaps: run.sourceMaps,
     projectDir: run.projectDir,
     projectRoot: run.projectRoot,
+    flatBuffers: run.flatBuffers,
   };
 }
 
@@ -3810,6 +3817,8 @@ async function withBrowser<T>(
       ignoreRobots: opts.ignoreRobots === true,
       harness: opts.harness === true,
       sourceMaps: new Map(),
+      // The browser's own bytes of the flat images the vector check may trace (see FlatBuffers); none without the check.
+      flatBuffers: new FlatBuffers(opts.quality && opts.survey !== true ? (opts.svgBudget ?? DEFAULT_SVG_BUDGET) : 0),
       storageState: opts.storageState,
       thirdParty: opts.thirdParty ?? DEFAULT_THIRD_PARTY,
       qualityFor: opts.qualityFor,
@@ -4054,7 +4063,10 @@ export async function runScan(urls: string[], opts: ScanOptions): Promise<PageRe
           cache: run.deps.cache,
           log: opts.log,
         },
-        { fetch: (url) => run.fetcher.get(url, { maxBytes: MAX_IMAGE_BYTES, allowPrivate }) },
+        {
+          // The browser's own bytes when they were kept (the same file the page got); else fetched, as before.
+          fetch: async (url) => run.flatBuffers.get(url) ?? run.fetcher.get(url, { maxBytes: MAX_IMAGE_BYTES, allowPrivate }),
+        },
       );
       for (const entry of analysedPages) entry.analysed = applyVector(entry.analysed, vector);
       // The media phase runs once for every page's assets (see runMediaFor); each page is then written again, complete.

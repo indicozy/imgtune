@@ -4,6 +4,8 @@
 // image at half size: an antialiased raster is not ground truth, and the traced SVG is sharper at the edges. Nothing here
 // throws on a bad image or a missing vectorizer: the caller gets undefined and says why.
 
+import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants } from "node:zlib";
 import sharp, { type Sharp } from "sharp";
 import { openImage } from "./image-open.js";
@@ -19,15 +21,23 @@ export const VECTOR_MIN_SAVING = 0.3;
 /** The side of the square the flatness is read at (nearest kernel). */
 export const FLAT_SIZE = 256;
 /** A flat image: the 16 most common colours cover at least this share of its pixels... */
-export const FLAT_TOP16_MIN = 0.9;
+export const FLAT_TOP16_MIN = 0.97;
 /** ...and it has at most this many colours (after 5-bit quantisation of each channel). */
 export const FLAT_MAX_COLORS = 256;
+/**
+ * ...and at most this share of its neighbouring pixel pairs differ by a small step (1 to 8 levels in some channel). Soft
+ * shading and photo-like gradients are made of small steps; flat art has none, or hard edges.
+ */
+export const FLAT_SMOOTH_MAX = 0.12;
+/** A larger image is not traced at all (decoding and tracing it cost seconds, and the screens it comes from are not art). */
+export const VECTOR_MAX_MEGAPIXELS = 5;
+/** The trace input: at most this many pixels, and this long side. */
+export const TRACE_MAX_PIXELS = 1_000_000;
+export const TRACE_MAX_SIDE = 1024;
 /** Smaller files are not worth a vector check: their bytes are too few to matter. */
 export const VECTOR_MIN_BYTES = 2048;
 /** A flat image this big or bigger in bytes gets the "looks like vector art" note when no SVG was traced. */
 export const VECTOR_LOOKS_MIN_BYTES = 10 * 1024;
-/** The most pixels traced: a larger image is downscaled to this first. */
-export const VECTOR_MAX_PIXELS = 2_000_000;
 /** The time allowed for one image's trace and fidelity check, in ms. The trace cannot be stopped: a late result is dropped. */
 export const VECTOR_CAP_MS = 2000;
 /** The most pixels the fidelity check scores: the half-size pair is scaled down to this (both images alike). */
@@ -42,6 +52,10 @@ export interface Flatness {
   top16Share: number;
   /** Share of pixels whose alpha is exactly 0 or 255. */
   alphaBinaryShare: number;
+  /** Share of neighbouring pixel pairs (at FLAT_SIZE) that differ by a small step (see FLAT_SMOOTH_MAX). */
+  smoothShare: number;
+  /** The image's own size in megapixels (as displayed). */
+  megapixels: number;
   flat: boolean;
 }
 
@@ -128,12 +142,53 @@ async function computeFlatness(buffer: Buffer): Promise<Flatness | undefined> {
     const top16 = [...counts.values()].sort((a, b) => b - a).slice(0, 16).reduce((sum, n) => sum + n, 0);
     const top16Share = top16 / pixels;
     const uniqueColors = counts.size;
+    const smoothShare = smallStepShare(data, info.width, info.height);
+    const size = await displayedSize(buffer);
+    const megapixels = size === undefined ? 0 : round3((size.width * size.height) / 1e6);
     return {
       uniqueColors,
       top16Share: round3(top16Share),
       alphaBinaryShare: round3(binary / pixels),
-      flat: top16Share >= FLAT_TOP16_MIN && uniqueColors <= FLAT_MAX_COLORS,
+      smoothShare: round3(smoothShare),
+      megapixels,
+      flat: top16Share >= FLAT_TOP16_MIN && uniqueColors <= FLAT_MAX_COLORS && smoothShare <= FLAT_SMOOTH_MAX && megapixels <= VECTOR_MAX_MEGAPIXELS,
     };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The share of horizontal and vertical neighbour pairs whose largest channel difference is a small step (1 to 8). */
+function smallStepShare(data: Buffer, width: number, height: number): number {
+  let small = 0;
+  let pairs = 0;
+  const diff = (i: number, j: number): number =>
+    Math.max(Math.abs(data[i] - data[j]), Math.abs(data[i + 1] - data[j + 1]), Math.abs(data[i + 2] - data[j + 2]));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (x + 1 < width) {
+        const d = diff(i, i + 4);
+        pairs++;
+        if (d >= 1 && d <= 8) small++;
+      }
+      if (y + 1 < height) {
+        const d = diff(i, i + width * 4);
+        pairs++;
+        if (d >= 1 && d <= 8) small++;
+      }
+    }
+  }
+  return pairs === 0 ? 0 : small / pairs;
+}
+
+/** The size of an image as it is displayed (orientation applied), from its header. Undefined when it cannot be read. */
+export async function displayedSize(buffer: Buffer): Promise<{ width: number; height: number } | undefined> {
+  try {
+    const meta = await openImage(buffer).metadata();
+    if (!meta.width || !meta.height) return undefined;
+    const turned = (meta.orientation ?? 1) >= 5;
+    return turned ? { width: meta.height, height: meta.width } : { width: meta.width, height: meta.height };
   } catch {
     return undefined;
   }
@@ -151,32 +206,65 @@ export function loadVectorizer(): Promise<Vectorizer | undefined> {
 }
 
 /**
- * The SVG traced from an image, with the Poster preset, after a downscale to at most VECTOR_MAX_PIXELS and the cleanup.
+ * The SVG traced from an image, with the Poster preset, after the trace input is downscaled (traceInput) and the cleanup.
  * Undefined when the vectorizer is missing or the trace fails. Never throws.
  */
-export async function traceSvg(buffer: Buffer): Promise<string | undefined> {
-  const mod = await loadVectorizer();
-  if (mod === undefined) return undefined;
+export async function traceSvg(buffer: Buffer, signal?: AbortSignal): Promise<string | undefined> {
+  if (signal?.aborted || (await loadVectorizer()) === undefined) return undefined;
   try {
-    const svg = await mod.vectorize(await traceInput(buffer), mod.Preset.Poster);
-    return cleanSvg(svg);
+    const svg = await traceInWorker(await traceInput(buffer), signal);
+    return svg === undefined ? undefined : cleanSvg(svg);
   } catch {
     return undefined;
   }
 }
 
-/** The image as a PNG at most VECTOR_MAX_PIXELS big, rotated as displayed. */
+/**
+ * The vectorizer runs in a worker thread, so an abort really stops it: the native trace does not honour an AbortSignal once it
+ * has started, and only ending the thread stops the CPU. A worker is started per trace (a few per run, under the budget).
+ * Undefined when the trace fails, the worker dies, or the signal aborts (the worker is then terminated).
+ */
+const TRACE_WORKER = `
+const { parentPort, workerData } = require("node:worker_threads");
+const vectorizer = require(workerData.entry);
+vectorizer.vectorize(Buffer.from(workerData.png), vectorizer.Preset.Poster).then(
+  (svg) => parentPort.postMessage({ svg }),
+  () => parentPort.postMessage({ error: true }),
+);
+`;
+
+function traceInWorker(png: Buffer, signal?: AbortSignal): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const entry = createRequire(import.meta.url).resolve("@neplex/vectorizer");
+    const worker = new Worker(TRACE_WORKER, { eval: true, workerData: { entry, png } });
+    let settled = false;
+    const finish = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      void worker.terminate();
+      resolve(value);
+    };
+    const onAbort = (): void => finish(undefined);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    worker.on("message", (message: { svg?: unknown }) => finish(typeof message.svg === "string" ? message.svg : undefined));
+    worker.on("error", () => finish(undefined));
+    worker.on("exit", () => finish(undefined));
+    if (signal?.aborted) onAbort();
+  });
+}
+
+/**
+ * The image as a PNG for the trace, rotated as displayed and downscaled to at most TRACE_MAX_PIXELS with a long side of at most
+ * TRACE_MAX_SIDE: a bigger input costs seconds of tracing for no gain in a vector.
+ */
 async function traceInput(buffer: Buffer): Promise<Buffer> {
-  const meta = await openImage(buffer).metadata();
-  const turned = (meta.orientation ?? 1) >= 5;
-  const width = (turned ? meta.height : meta.width) ?? 0;
-  const height = (turned ? meta.width : meta.height) ?? 0;
-  const pixels = width * height;
+  const size = await displayedSize(buffer);
+  if (size === undefined) throw new Error("not an image");
+  const { width, height } = size;
+  const scale = Math.min(1, Math.sqrt(TRACE_MAX_PIXELS / (width * height)), TRACE_MAX_SIDE / Math.max(width, height));
   let img = openImage(buffer).rotate();
-  if (pixels > VECTOR_MAX_PIXELS) {
-    const scale = Math.sqrt(VECTOR_MAX_PIXELS / pixels);
-    img = img.resize(Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale)), { kernel: "lanczos3" });
-  }
+  if (scale < 1) img = img.resize(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)), { kernel: "lanczos3" });
   return img.png().toBuffer();
 }
 
@@ -210,10 +298,21 @@ export async function svgFidelity(served: Buffer, svg: string): Promise<{ score:
   const width = Math.max(1, Math.round(full.width * scale));
   const height = Math.max(1, Math.round(full.height * scale));
   const ref = await resizeTo(full, width, height);
-  const test = await decodeOnWhite(sharp(Buffer.from(svg)).resize(width, height, { fit: "fill", kernel: "lanczos3" }));
+  const test = await decodeOnWhite(renderSvg(svg, width, height));
   // ssimulacra2 needs at least 8 px a side: a smaller image is scored at the size it has.
-  const value = width >= 8 && height >= 8 ? await score("ssimulacra2", ref, test) : await score("ssimulacra2", full, await decodeOnWhite(sharp(Buffer.from(svg)).resize(full.width, full.height, { fit: "fill" })));
+  const value =
+    width >= 8 && height >= 8 ? await score("ssimulacra2", ref, test) : await score("ssimulacra2", full, await decodeOnWhite(renderSvg(svg, full.width, full.height)));
   return { score: value, badPixelShare: badPixelShareOf(ref, test) };
+}
+
+/**
+ * The SVG drawn at width x height, as vectors: its own size is set to the target, with a viewBox of its traced size. (Rendering
+ * it at its traced size and resizing the raster would blur the edges of a trace made from a downscaled input.)
+ */
+export function renderSvg(svg: string, width: number, height: number): Sharp {
+  const root = /<svg[^>]*?\swidth="([\d.]+)"\s+height="([\d.]+)"/.exec(svg);
+  const sized = root === null ? svg : svg.replace(root[0], root[0].replace(`width="${root[1]}" height="${root[2]}"`, `width="${width}" height="${height}" viewBox="0 0 ${root[1]} ${root[2]}"`));
+  return sharp(Buffer.from(sized));
 }
 
 async function decodeOnWhite(img: Sharp): Promise<RawImage> {

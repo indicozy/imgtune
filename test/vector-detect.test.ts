@@ -82,6 +82,6 @@ describe("the vector check in a scan", () => {
     const result = await scanOnce(`${base}/`, options());
     const logo = (result.images ?? []).find((r) => r.current.src?.endsWith("/logo.png"));
     expect(Object.keys(logo?.fix.vector ?? {})).toEqual(["flatness"]);
-    expect(Object.keys(logo?.fix.vector?.flatness ?? {}).sort()).toEqual(["alphaBinaryShare", "flat", "top16Share", "uniqueColors"]);
+    expect(Object.keys(logo?.fix.vector?.flatness ?? {}).sort()).toEqual(["alphaBinaryShare", "flat", "megapixels", "smoothShare", "top16Share", "uniqueColors"]);
   });
 });

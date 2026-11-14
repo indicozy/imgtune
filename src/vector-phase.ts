@@ -81,6 +81,38 @@ interface CachedNumbers {
 
 const TIMED_OUT = Symbol("timed out");
 
+/**
+ * The served bytes of the flat images, as the browser got them, for the vector check: the check traces the file the page
+ * used, not a fresh download. Bounded: it keeps the `capacity` largest files seen (the ones the budget would trace), so
+ * the memory is the budget times a file, whatever the site has. A URL it does not keep is fetched instead.
+ */
+export class FlatBuffers {
+  private readonly entries = new Map<string, { buffer: Buffer; bytes: number }>();
+
+  constructor(private readonly capacity: number) {}
+
+  /** Keeps `buffer` for `url` when it is among the `capacity` largest seen so far. */
+  offer(url: string, buffer: Buffer | undefined, bytes: number): void {
+    if (this.capacity <= 0 || buffer === undefined || this.entries.has(url)) return;
+    if (this.entries.size < this.capacity) {
+      this.entries.set(url, { buffer, bytes });
+      return;
+    }
+    let smallest: string | undefined;
+    for (const [key, entry] of this.entries) {
+      if (smallest === undefined || entry.bytes < (this.entries.get(smallest)?.bytes ?? Infinity)) smallest = key;
+    }
+    if (smallest !== undefined && bytes > (this.entries.get(smallest)?.bytes ?? 0)) {
+      this.entries.delete(smallest);
+      this.entries.set(url, { buffer, bytes });
+    }
+  }
+
+  get(url: string): Buffer | undefined {
+    return this.entries.get(url)?.buffer;
+  }
+}
+
 /** The bytes per page view of an image: the mean over its viewports. */
 export function perViewBytesOf(record: ImageRecord): number {
   return record.perViewport.reduce((sum, p) => sum + p.servedBytes, 0) / Math.max(1, record.perViewport.length);
@@ -134,9 +166,12 @@ async function traceOne(url: string, id: string, opts: VectorPhaseOptions, deps:
   let numbers = isCachedNumbers(cached) ? cached : undefined;
   let svg: string | undefined;
   if (numbers === undefined) {
+    // The cap aborts the trace itself (the vectorizer stops, and stops using CPU); the score is dropped with it.
+    const controller = new AbortController();
     const traced = await within(
-      measure("vector: trace and score", () => measureOne(buffer)),
+      measure("vector: trace and score", () => measureOne(buffer, controller.signal)),
       VECTOR_CAP_MS,
+      controller,
     );
     if (traced === TIMED_OUT) return { notChecked: "timeout" };
     if (traced === undefined) return { notChecked: "trace failed" };
@@ -145,7 +180,8 @@ async function traceOne(url: string, id: string, opts: VectorPhaseOptions, deps:
     await opts.cache?.putJson(key, numbers);
   } else if (numbers.passed) {
     // The numbers say it passes, but its file is written from a trace: a trace is cheap, the score is not repeated.
-    const traced = await within(traceSvg(buffer), VECTOR_CAP_MS);
+    const controller = new AbortController();
+    const traced = await within(traceSvg(buffer, controller.signal), VECTOR_CAP_MS, controller);
     if (traced === TIMED_OUT) return { notChecked: "timeout" };
     if (traced === undefined) return { notChecked: "trace failed" };
     svg = traced;
@@ -167,20 +203,26 @@ async function traceOne(url: string, id: string, opts: VectorPhaseOptions, deps:
 }
 
 /** The trace of an image and its numbers: the SVG, its brotli size, and the fidelity against the served bytes. */
-async function measureOne(buffer: Buffer): Promise<{ svg: string; numbers: CachedNumbers } | undefined> {
-  const svg = await traceSvg(buffer);
-  if (svg === undefined) return undefined;
+async function measureOne(buffer: Buffer, signal: AbortSignal): Promise<{ svg: string; numbers: CachedNumbers } | undefined> {
+  const svg = await traceSvg(buffer, signal);
+  if (svg === undefined || signal.aborted) return undefined;
   const bytes = svgBytes(svg);
   const fidelity = await svgFidelity(buffer, svg);
   const passed = fidelity.score >= VECTOR_BAR && bytes <= buffer.length * (1 - VECTOR_MIN_SAVING);
   return { svg, numbers: { svgBytes: bytes, score: Math.round(fidelity.score * 10) / 10, badPixelShare: fidelity.badPixelShare, passed } };
 }
 
-/** The value, or TIMED_OUT when it is not ready in `ms`, or undefined when it fails. A late value is dropped. */
-async function within<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT | undefined> {
+/**
+ * The value, or TIMED_OUT when it is not ready in `ms` (the controller is then aborted, so the work stops), or undefined when
+ * it fails.
+ */
+async function within<T>(work: Promise<T>, ms: number, controller: AbortController): Promise<T | typeof TIMED_OUT | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(TIMED_OUT);
+    }, ms);
   });
   try {
     return await Promise.race([work.catch(() => undefined), timeout]);
