@@ -197,6 +197,19 @@ self-hosted `<video>` elements with a plain file source. Static GIFs get the nor
 - **Check an agent's output** with `imgtune image <candidate> --reference <original>`: the same VMAF and still-frame bar,
   exit 0 on pass and 1 on fail (see the table below).
 
+## Fonts
+
+`scan` reports each web font file the page downloads: its bytes per view, and what it could save.
+
+- **WOFF2:** a TTF, OTF or WOFF that is not WOFF2 is re-encoded (measured for small files, estimated for large ones).
+- **Subsetting:** a font with far more glyphs than the page's scripts need (the Unicode blocks its text uses, plus Basic
+  Latin, Latin-1, punctuation and currency) is subset to them. The fix gives the `pyftsubset` command.
+- **Unused faces:** a face the browser downloaded but no rendered text uses is wasted bytes. Icon fonts, and faces the
+  browser rendered with (even as a fallback), are never called unused.
+- **Static weights:** three or more static faces of one family are noted as a candidate for one variable font (no saving).
+
+See [the Fonts guide](https://indicozy.github.io/imgtune/guide/fonts).
+
 ## Commands
 
 | command | what it does |

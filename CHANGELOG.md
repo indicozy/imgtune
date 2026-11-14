@@ -8,6 +8,11 @@
   turns them off. Neither is in the image totals.
 - Measuring browser: `--disable-software-rasterizer` is no longer passed to Chromium (`--disable-gpu` stays). With it WebGL
   was off, so a page with a 3D viewer never requested its model. Only WebGL pages pay the extra CPU.
+- Fonts. `scan` reports each web font file's bytes per view and its savings: a re-encode to WOFF2 (measured for small files,
+  estimated for large ones), a subset to the Unicode scripts the page's text uses (the subset keeps Basic Latin, Latin-1,
+  punctuation and currency), and faces the browser downloaded but no rendered text uses. Icon fonts are not subset, and a
+  family of several static weights is noted as a candidate for one variable font. Each finding names the command and the
+  expected bytes. See the Fonts guide.
 
 ## 0.2.0 (2026-11-14)
 
