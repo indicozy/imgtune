@@ -16,6 +16,9 @@ const DOTLOTTIE_MIN_SHARE = 0.1;
 /** Overhead per zip entry (local header, central directory entry, name). */
 const ZIP_ENTRY_OVERHEAD = 80;
 const WEBP_QUALITY = 80;
+/** A raster re-encode is reported when it saves this much, or when it also downscales. Below that it is noise. */
+const RASTER_MIN_BYTES = 1024;
+const RASTER_MIN_SHARE = 0.1;
 const DATA_IMAGE = /^data:image\/([a-z0-9.+-]+);base64,/i;
 
 export interface LottieAnimation {
@@ -131,11 +134,22 @@ interface RasterFix {
   fromBytes: number;
   toW: number;
   toBytes: number;
-  /** Bytes saved in the JSON text (base64 length before minus after). */
-  savedBytesText: number;
+  /** Bytes saved: base64 text for an embedded data URI, file bytes for an archive entry. */
+  savedBytes: number;
 }
 
 const kb = (n: number): string => `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+
+/**
+ * Whether a re-encode is worth reporting: it must shrink the file, and either downscale it or save a real share of it.
+ * A WebP or AVIF source that keeps its size is already lossy and modern: a second lossy pass gains nothing.
+ */
+export function rasterWorthIt(fromFormat: string, srcBytes: number, dstBytes: number, downscaled: boolean): boolean {
+  if (dstBytes >= srcBytes) return false;
+  if (downscaled) return true;
+  if (fromFormat === "webp" || fromFormat === "avif") return false;
+  return srcBytes - dstBytes >= RASTER_MIN_BYTES && srcBytes - dstBytes >= srcBytes * RASTER_MIN_SHARE;
+}
 
 /** Decodes and re-encodes embedded data-URI rasters at the display size. Animated sources are skipped. */
 async function rasterFixes(anim: LottieAnimation, box: Box | undefined): Promise<RasterFix[]> {
@@ -160,8 +174,8 @@ async function rasterFixes(anim: LottieAnimation, box: Box | undefined): Promise
         .toBuffer();
       const prefix = "data:image/webp;base64,";
       const newLen = prefix.length + Math.ceil(webp.length / 3) * 4;
-      const savedBytesText = p.length - newLen;
-      if (savedBytesText <= 0) continue;
+      const savedBytes = p.length - newLen;
+      if (!rasterWorthIt(fmt, src.length, webp.length, toW < meta.width)) continue;
       const id = typeof a.id === "string" || typeof a.id === "number" ? String(a.id) : String(index);
       out.push({
         index,
@@ -172,7 +186,7 @@ async function rasterFixes(anim: LottieAnimation, box: Box | undefined): Promise
         fromBytes: src.length,
         toW,
         toBytes: webp.length,
-        savedBytesText,
+        savedBytes,
       });
     } catch {
       // A raster sharp cannot read is left alone.
@@ -189,11 +203,11 @@ function rasterFinding(
   selector: string | undefined,
   inArchive: boolean,
 ): ResourceFinding | undefined {
-  const saved = fixes.reduce((s, f) => s + f.savedBytesText, 0);
+  const saved = fixes.reduce((s, f) => s + f.savedBytes, 0);
   if (fixes.length === 0 || saved <= 0) return undefined;
   const name = basename(url);
-  const shown = box !== undefined ? ` at ${Math.round(box.w)}×${Math.round(box.h)} px` : "";
   const label = inArchive ? "image file" : "embedded raster";
+  const shownAt = box !== undefined ? ` shown at ${Math.round(box.w)}×${Math.round(box.h)} px` : "";
   const fix = fixes.slice(0, 5).map((f) =>
     inArchive
       ? `file ${f.id}: ${f.fromFormat} ${f.fromW}×${f.fromH} (${kb(f.fromBytes)}) → WebP q${WEBP_QUALITY} at ${f.toW} px wide (${kb(f.toBytes)}): ` +
@@ -210,7 +224,7 @@ function rasterFinding(
     bytes,
     savedBytes: saved,
     estimate: false,
-    title: `lottie ${name}: ${fixes.length} ${label}${fixes.length === 1 ? "" : "s"} shown${shown}, re-encode to WebP saves ${kb(saved)}`,
+    title: `lottie ${name}: ${fixes.length} ${label}${fixes.length === 1 ? "" : "s"}${shownAt}, re-encode to WebP saves ${kb(saved)}`,
     fix,
     details: {
       rasters: fixes.map((f) => ({ asset: f.id, from: f.fromFormat, width: f.fromW, height: f.fromH, bytes: f.fromBytes, toWidth: f.toW, toBytes: f.toBytes })),
@@ -403,7 +417,7 @@ async function analyzeDotLottie(record: ResourceRecord, body: Buffer, ctx: PageC
       const toW = rasterTargetWidth(meta.width, meta.width, first, box);
       const webp = await sharp(src, { limitInputPixels: 100_000_000 }).resize({ width: toW, withoutEnlargement: true }).webp({ quality: WEBP_QUALITY }).toBuffer();
       const saved = entry.compressedSize - webp.length;
-      if (saved <= 0) continue;
+      if (!rasterWorthIt(meta.format ?? "", entry.compressedSize, webp.length, toW < meta.width)) continue;
       fixes.push({
         index: fixes.length,
         id: entry.name,
@@ -413,7 +427,7 @@ async function analyzeDotLottie(record: ResourceRecord, body: Buffer, ctx: PageC
         fromBytes: entry.compressedSize,
         toW,
         toBytes: webp.length,
-        savedBytesText: saved,
+        savedBytes: saved,
       });
     } catch {
       // Unreadable image: left alone.

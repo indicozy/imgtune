@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { analyzer, animationStats, countLayers, parseAnimation, rasterTargetWidth, roundNumbers } from "../../src/resources/lottie.js";
+import { analyzer, animationStats, countLayers, parseAnimation, rasterTargetWidth, rasterWorthIt, roundNumbers } from "../../src/resources/lottie.js";
 import { readZip } from "../../src/resources/zip.js";
 import type { PageContext, ResourceRecord } from "../../src/resources/types.js";
 
@@ -147,6 +147,14 @@ describe("lottie analyzer on JSON", () => {
     expect(r!.fix.join("\n")).toContain("WebP");
     expect(r!.fix.join("\n")).toContain("width: 250");
     expect(r!.locator).toEqual({ selector });
+  });
+
+  it("does not re-encode a WebP or AVIF raster at the same size, or a PNG that would save almost nothing", () => {
+    expect(rasterWorthIt("webp", 10_000, 9_500, false)).toBe(false);
+    expect(rasterWorthIt("png", 500, 300, false)).toBe(false);
+    expect(rasterWorthIt("png", 100_000, 80_000, false)).toBe(true);
+    expect(rasterWorthIt("webp", 10_000, 6_000, true)).toBe(true);
+    expect(rasterWorthIt("png", 100_000, 120_000, true)).toBe(false);
   });
 
   it("does not suggest a .lottie repack for a small animation (brotli JSON is already close)", async () => {
