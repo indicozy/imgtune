@@ -21,6 +21,8 @@
 #   clip-noaudio.mp4  the same picture as clip.mp4 with no audio track (muted-video tests).
 #   clip60.mp4     640x360, 3 s, 60 fps, H.264 CRF 40 (frame-rate informational tests).
 #   clip.webm      640x360, 4 s, 30 fps, VP9 at CRF 45 (second codec for `<source>` tests).
+#   hidden.mp4     320x180, 2 s, 25 fps, H.264 CRF 35, no audio (a hidden video's bytes in the hidden-video tests).
+#   hidden-mob.mp4 180x320, 2 s, 25 fps, H.264 CRF 35, no audio (the mobile twin's file).
 #
 # Usage: bash scripts/make-media-fixtures.sh   (wrap in: nice -n 19 taskset -c 8-19 ...)
 
@@ -71,6 +73,13 @@ ff -f lavfi -i "testsrc2=size=640x360:rate=60:duration=3" \
   -c:v libx264 -preset slower -crf 40 -pix_fmt yuv420p -movflags +faststart -an "$OUT/clip60.mp4"
 ff -f lavfi -i "testsrc2=size=640x360:rate=30:duration=4" \
   -c:v libvpx-vp9 -crf 45 -b:v 0 -deadline good -cpu-used 5 -row-mt 1 -an "$OUT/clip.webm"
+
+# Hidden video (hidden-video tests): two short clips for the desktop and mobile twins, 320x180 and 180x320, H.264 CRF 35
+# with no audio, so a hidden copy's bytes are small and the tests stay fast.
+ff -f lavfi -i "testsrc2=size=320x180:rate=25:duration=2" \
+  -c:v libx264 -preset slower -crf 35 -pix_fmt yuv420p -movflags +faststart -an "$OUT/hidden.mp4"
+ff -f lavfi -i "testsrc=size=180x320:rate=25:duration=2" \
+  -c:v libx264 -preset slower -crf 35 -pix_fmt yuv420p -movflags +faststart -an "$OUT/hidden-mob.mp4"
 
 # Report the sizes and fail if a fixture is over its budget: 300 KB, or 600 KB for the two 8 s clips.
 status=0

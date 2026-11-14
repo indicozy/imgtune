@@ -1171,8 +1171,18 @@ export interface ObservedVideo {
   /** The intrinsic width of the file the browser plays (videoWidth). Absent when no metadata was loaded. */
   videoWidth?: number;
   inFirstViewport: boolean;
-  /** Not displayed: display none, visibility hidden, or no box. */
+  /**
+   * Not displayed at this viewport: display none, visibility hidden, opacity 0, a zero-size box, a box clipped by an overflow
+   * ancestor, or inside a closed details, a tab panel or a hidden subtree (see hiddenReasonOf). A light read reads the
+   * display, visibility and box only.
+   */
   hidden: boolean;
+  /** Why the video is not shown, when it is hidden (see HiddenReason). Absent for a shown video and in a light read. */
+  hiddenReason?: HiddenReason;
+  /** The video is in a tab panel, a hidden subtree, an aria-hidden one or a closed details, at this viewport. */
+  inPanel?: true;
+  /** The video is shown by a :hover rule (a hover swap), so it is not shown on load. */
+  hover?: true;
   locator: ObservedLocator;
 }
 
@@ -1653,6 +1663,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           if (OUT_OF_SCOPE(playing)) return;
           const cs = getComputedStyle(video);
           const rect = video.getBoundingClientRect();
+          const hiddenInfo = light ? undefined : hiddenReasonOf(video, rect);
           videos.push({
             index,
             currentSrc: shortUrl(playing),
@@ -1677,7 +1688,11 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
             renderedHeight: rect.height,
             ...(video.videoWidth > 0 ? { videoWidth: video.videoWidth } : {}),
             inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
-            hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
+            // A full read uses the same check as an image (hiddenReasonOf); a light read keeps the display and box check only.
+            hidden: hiddenInfo !== undefined || (light && (cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0)),
+            ...(hiddenInfo !== undefined
+              ? { hiddenReason: hiddenInfo.reason, ...(hiddenInfo.inPanel ? { inPanel: true as const } : {}), ...(hiddenInfo.hover ? { hover: true as const } : {}) }
+              : {}),
             locator: {
               testid: video.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
               selector: cssPath(video),
