@@ -632,7 +632,14 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       if (m.qualityInfo?.target === undefined || m.format === undefined) continue;
       own.set(m.format, Math.max(own.get(m.format) ?? -Infinity, m.qualityInfo.target));
     }
-    if (hiddenFix !== undefined) record.hidden = hiddenFix;
+    // A loaded-but-not-shown element has no vector claim (the vector check and the hidden fix never stack), and a copy that
+    // is never shown on load has no sizes claim either: its bytes are the hidden fix's. A responsive twin keeps the sizes of
+    // the viewports that show it (see the hidden-images tests).
+    if (hiddenFix !== undefined) {
+      record.hidden = hiddenFix;
+      delete record.fix.vector;
+      if (hiddenFix.shownIn.length === 0) delete record.fix.sizes;
+    }
     targets.set(record, own);
     records.push(record);
   }

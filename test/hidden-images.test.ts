@@ -121,6 +121,27 @@ describe("buildImageRecords and the hints of a hidden image", () => {
     expect(record.fix.bytes.saved).toBe(0);
   });
 
+  it("gives a copy that is never shown on load no sizes claim, and no vector claim even when flat", () => {
+    const desk = instanceOf(VIEWS.desktop, 1, true, 8000);
+    const mob = instanceOf(VIEWS.mobile, 1, true, 12_000);
+    const observations = [
+      { viewport: VIEWS.desktop, responses: new Map(), images: [], load: "fresh", blocked: false, blockedRequests: 0, nextjs: false },
+      { viewport: VIEWS.mobile, responses: new Map(), images: [], load: "fresh", blocked: false, blockedRequests: 0, nextjs: false },
+    ] as never[];
+    const flat = { flat: true, colors: 4, edgeRatio: 0.01 } as never;
+    const [record] = buildImageRecords({
+      pageUrl: "https://example.test/",
+      observations,
+      instances: [{ ...desk, flatness: flat }, { ...mob, flatness: flat }],
+      refName: "desktop",
+      resolved: new Map(),
+      currentQuality: () => ({ quality: 75, assumed: true }),
+    });
+    expect(record.hidden?.shownIn).toEqual([]);
+    expect(record.fix.vector).toBeUndefined();
+    expect(record.fix.sizes).toBeUndefined();
+  });
+
   it("names the fix in its lines, and the media condition of a responsive twin from the viewport widths", () => {
     const twin = { reasons: ["display" as const], inPanel: false, viewports: ["mobile"], shownIn: ["desktop"], of: 2, widths: { mobile: 390, desktop: 1280 }, action: "responsive" as const, perViewBytes: 6000 };
     const text = hiddenLines(twin).join("\n");
