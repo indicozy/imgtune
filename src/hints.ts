@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { hasFix, OWNER_PLACEHOLDERS } from "./images.js";
+import { hasFix, OWNER_PLACEHOLDERS, type ImageRecord } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
 import { cleanLocate } from "./locate-join.js";
@@ -14,6 +14,8 @@ import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, ty
 import type { CandidateResult, MediaCodec } from "./media-encode.js";
 import { reasonText, type WidthPlan } from "./media-model.js";
 import type { AnimatedFix, VideoRecord } from "./video-analysis.js";
+import { VECTOR_BAR, VECTOR_LOOKS_MIN_BYTES, type VectorFix } from "./vector-art.js";
+import { perViewBytesOf } from "./vector-phase.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
@@ -38,6 +40,11 @@ export interface HintsArgs {
   top?: number;
   /** `--max-qualities N`: the most values the next/image `images.qualities` list may have (1 to 4; default 2). */
   maxQualities?: number;
+}
+
+/** The vector check of one image, as a hint: the record's fix.vector, and its served bytes per view. */
+export interface VectorHint extends VectorFix {
+  servedPerView: number;
 }
 
 /** One hint: an image record reduced to what an agent needs to make the fix. */
@@ -101,6 +108,11 @@ export interface Hint {
   animated?: AnimatedFix;
   /** The image's served URL, named by the animated hint's fallback. Set with `animated`. */
   src?: string;
+  /**
+   * The vector check of a flat image (see vector-art.ts): a passing SVG is the lead, and a flat image that was not traced
+   * gets one note. `servedPerView` is the image's served bytes per view, the figure the SVG is compared with.
+   */
+  vector?: VectorHint;
   rung: string;
   notes: string[];
 }
@@ -186,7 +198,7 @@ export function parseHintsArgs(argv: string[]): HintsArgs {
  */
 export function hintsOf(result: PageResult, qualities?: number[], plan?: QualityCapPlan): Hint[] {
   // An animated image is a hint even without a sizes or byte saving: its saving is an encode (see animatedLines).
-  return (result.images ?? []).filter((record) => hasFix(record) || record.fix.animated !== undefined).map((record) => {
+  return (result.images ?? []).filter((record) => hasFix(record) || record.fix.animated !== undefined || vectorHinted(record)).map((record) => {
     const served = record.current.format;
     const rawTarget = served !== undefined ? record.fix.quality?.perFormat[served] : undefined;
     // With the framework's allowed qualities, the target goes up to one of them. The quality saving was estimated at the
@@ -283,6 +295,7 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
       hint.quality = quality;
     }
     if (record.fix.format !== undefined || served !== undefined) hint.format = { current: served, best: record.fix.format };
+    if (record.fix.vector !== undefined) hint.vector = { ...record.fix.vector, servedPerView: Math.round(perViewBytesOf(record)) };
     if (record.fix.animated !== undefined) {
       hint.animated = record.fix.animated;
       if (record.current.src !== undefined) hint.src = record.current.src;
@@ -294,6 +307,29 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
     }
     return hint;
   });
+}
+
+/**
+ * An image gets a vector hint when its SVG passed the check (a claim), or when it is flat, was not traced to a passing SVG,
+ * and is big enough to matter (an informational note with no byte claim).
+ */
+export function vectorHinted(record: ImageRecord): boolean {
+  const vector = record.fix.vector;
+  if (vector === undefined) return false;
+  if (vector.passed === true) return true;
+  return perViewBytesOf(record) >= VECTOR_LOOKS_MIN_BYTES;
+}
+
+/** The vector check's lines of a hint: the SVG that passed, or the note on a flat image with no passing SVG. */
+export function vectorLines(vector: VectorHint): string[] {
+  if (vector.passed === true && vector.svgBytes !== undefined && vector.score !== undefined) {
+    const traced = vector.tracedFile !== undefined ? `, traced one: ${safeText(vector.tracedFile)}` : "";
+    return [
+      `   vector art: serve SVG, ~${kb1(vector.svgBytes)} (br) vs ${kb1(vector.servedPerView)} now, sharp at every DPR; fidelity ${Math.round(vector.score)} at half size (bar ${VECTOR_BAR}); prefer your source SVG${traced}`,
+    ];
+  }
+  if (vector.servedPerView >= VECTOR_LOOKS_MIN_BYTES) return ["   looks like vector art (flat colors); if a source SVG exists, serve it"];
+  return [];
 }
 
 /** The hints an argument set asks for: filtered, sorted by bytes saved (largest first), then offset and limited. */
@@ -312,6 +348,7 @@ export function selectHints(hints: Hint[], args: Pick<HintsArgs, "page" | "compo
 }
 
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(0)} KB`;
+const kb1 = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
 
 /** The mark after a hint's file:line: an owner call site, or an unverified source. */
 export function locationNote(hint: Hint): string {
@@ -354,6 +391,9 @@ export function renderHint(hint: Hint, rank: number): string[] {
     hint.classes !== undefined ? `class ${JSON.stringify(hint.classes)}` : undefined,
   ].filter((a): a is string => a !== undefined);
   if (attributes.length > 0) lines.push(`   ${attributes.join("  ")}`);
+  // A vector check that wins leads the hint; otherwise it follows the raster fixes (see below).
+  const vector = hint.vector !== undefined ? vectorLines(hint.vector) : [];
+  if (hint.vector?.wins === true) lines.push(...vector);
   // The name is an identifier (COMPONENT_NAME), so it prints bare; the glob is built from the same name.
   if (hint.kind === "owner") {
     const name = hint.component[0];
@@ -386,6 +426,7 @@ export function renderHint(hint: Hint, rank: number): string[] {
   lines.push(
     `   ${savesText(hint)}${animated ? " est." : ""}, +${kb(hint.bytes.addedForSharpness)} sharpness (separate)  rung ${animated ? "estimate" : hint.rung}`,
   );
+  if (hint.vector !== undefined && hint.vector.wins !== true) lines.push(...vector);
   return lines;
 }
 

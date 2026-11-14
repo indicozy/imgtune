@@ -245,6 +245,8 @@ export function buildCheckReport(input: CheckReportInput): string {
   // The media phase's note is printed once, at the top (the same note is on each page that has media).
   const media = [...input.survey, ...input.deep].find((p) => p.mediaNote !== undefined)?.mediaNote;
   if (media !== undefined) out(mdText(media), "");
+  const vectorNote = input.deep.find((p) => p.vectorNote !== undefined)?.vectorNote;
+  if (vectorNote !== undefined) out(mdText(vectorNote), "");
 
   if (input.stop !== undefined) {
     out("## Stopped before the deep phase", "", `${mdText(input.stop.reason)}`, `Fix: ${mdText(input.stop.fix)}`, "");
