@@ -131,3 +131,23 @@ describe("a hidden video in the records", () => {
     expect(withPosters[0].images.filter((i) => i.posterOf !== undefined)).toEqual([]);
   });
 });
+
+describe("the media phase and a video no viewport shows", () => {
+  it("is an asset that is never encoded: its record has no shown copy, so the split keeps it out of the encode list", async () => {
+    const { splitNeverShown, NEVER_SHOWN, videoAssetOf } = await import("../src/media-phase.js");
+    const { reasonText } = await import("../src/media-model.js");
+    const observations = [
+      observation(desktop, "fresh", [video("twinDesk", "/a.mp4"), video("modal", "/m.mp4", { hiddenReason: "display" })], { "/a.mp4": 18_000, "/m.mp4": 9_000 }),
+      observation(mobile, "fresh", [video("twinDesk", "/a.mp4", { hiddenReason: "display" }), video("modal", "/m.mp4", { hiddenReason: "display" })], {
+        "/a.mp4": 18_000,
+        "/m.mp4": 9_000,
+      }),
+    ];
+    const { encode, neverShown } = splitNeverShown(records(observations).map((record) => videoAssetOf(record)));
+    expect(encode.map((a) => a.url)).toEqual(["/a.mp4"]);
+    expect(neverShown.map((a) => a.url)).toEqual(["/m.mp4"]);
+    expect(NEVER_SHOWN).toBe("never-shown");
+    expect(reasonText(NEVER_SHOWN)).toBe("never shown on load");
+  });
+});
+

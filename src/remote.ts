@@ -61,11 +61,13 @@ import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeS
 import {
   attachMediaResults,
   mediaAssetsOf,
+  NEVER_SHOWN,
   partitionByPolicy,
   probeLengths,
   refineAssetLength,
   runMediaPhase,
   skippedMedia,
+  splitNeverShown,
   type MediaAsset,
   type MediaResults,
 } from "./media-phase.js";
@@ -4173,7 +4175,9 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
     if (opts.quality !== true || opts.survey === true) {
       return { ...skippedMedia(sized, opts.survey === true ? "survey" : "quality off"), lengths };
     }
-    return await runMediaPhase(
+    // A video no viewport shows is not encoded: its record keeps the probe's bytes, and the reason is printed (see splitNeverShown).
+    const { encode, neverShown } = splitNeverShown(sized);
+    const encoded = await runMediaPhase(
       sized,
       {
         budget: opts.mediaBudget ?? DEFAULT_MEDIA_BUDGET,
@@ -4196,7 +4200,8 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         fetch: (url, maxBytes, hop) =>
           run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate, allowHop: hop?.allowHop, allowHopKey: hop?.page }),
       },
-    ).then((results) => ({ ...results, lengths }));
+    );
+    return { ...encoded, byKey: new Map([...encoded.byKey, ...skippedMedia(neverShown, NEVER_SHOWN).byKey]), lengths };
   } catch (err) {
     const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
     return { ...skippedMedia(assets, `media error: ${message}`), lengths };
