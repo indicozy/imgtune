@@ -9,6 +9,7 @@ import { APPROX_MARK, siteNumbers, type PageResult } from "./remote.js";
 import type { RouteGrouping } from "./routes.js";
 import type { DeepRetry, DeepSelection, LeftOutType } from "./deep.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
+import { resourceTotalsLine } from "./resources/report.js";
 
 /** How many fixes, heavy pages, sharpness images and survey route types the report lists in full. */
 export const REPORT_FIXES = 15;
@@ -298,6 +299,20 @@ export function buildCheckReport(input: CheckReportInput): string {
     const ranked = [...videos].sort((a, b) => videoSavingOf(b.video).view - videoSavingOf(a.video).view || a.page.localeCompare(b.page));
     for (const row of ranked.slice(0, REPORT_FIXES)) {
       out(`- ${mdCode(videoRowOf(row.video, (text) => JSON.stringify(safeText(text))))} on ${mdCode(pathOf(row.page))}`);
+    }
+    out("");
+  }
+
+  // 3c. Resources: the deep pages' non-image findings (compression, favicons), largest saving first (see resources/).
+  const resourceRows = deepOk.flatMap((p) => (p.resources ?? []).map((finding) => ({ page: p.url, finding })));
+  if (resourceRows.length > 0) {
+    out("## Resources", "");
+    out(mdText(resourceTotalsLine(resourceRows.map((r) => r.finding)) ?? ""), "");
+    const ranked = [...resourceRows].sort((a, b) => b.finding.savedBytes - a.finding.savedBytes || a.page.localeCompare(b.page));
+    for (const row of ranked.slice(0, REPORT_FIXES)) {
+      const saved = row.finding.savedBytes > 0 ? `, saves ${kb(row.finding.savedBytes / 1024)} KB/view${row.finding.estimate ? " (est.)" : ""}` : "";
+      out(`- ${mdText(row.finding.kind)}: ${mdText(row.finding.title)}${saved} on ${mdCode(pathOf(row.page))}`);
+      if (row.finding.fix[0] !== undefined) out(`  - fix: ${mdText(row.finding.fix[0])}`);
     }
     out("");
   }

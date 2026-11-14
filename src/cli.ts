@@ -23,6 +23,7 @@ const progress = (message: string) => {
 const OPTION_HELP = {
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
   noCache: ["--no-cache", "do not read or write the result cache in .imgtune/cache (the numbers are computed again)"],
+  noResources: ["--no-resources", "skip the resource phase: no capture of the non-image responses, so no compression or favicon findings"],
   gpuEncode: [
     "--gpu-encode",
     "EXPERIMENTAL: encode the videos and animated images on the GPU (NVENC, CUDA VMAF); off by default (CPU encodes). Bytes are scaled to a CPU encode (÷1.4)",
@@ -159,6 +160,7 @@ const SCAN_HELP = commandHelp(
     "out",
     "root",
     "noCache",
+    "noResources",
     "gpuEncode",
     "aggressive",
     "viewports",

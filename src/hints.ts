@@ -14,6 +14,7 @@ import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, ty
 import type { CandidateResult, MediaCodec } from "./media-encode.js";
 import { reasonText, type WidthPlan } from "./media-model.js";
 import type { AnimatedFix, VideoRecord } from "./video-analysis.js";
+import { resourceLinesOf } from "./resources/report.js";
 
 export const DEFAULT_HINT_LIMIT = 10;
 
@@ -1076,6 +1077,19 @@ function videosOf(results: PageResult[], args: HintsArgs): VideoRecord[] {
   return results.flatMap((r) => r.videos ?? []).filter((v) => page === undefined || v.page.toLowerCase().includes(page));
 }
 
+/** The resource findings of the selected pages, one row per finding with its page (the JSON's `resources`). */
+function resourceRowsOf(results: PageResult[]): { page: string; kind: string; url: string; bytes: number; savedBytes: number; estimate: boolean; title: string; fix: string[] }[] {
+  return results.flatMap((r) => (r.resources ?? []).map((f) => ({ page: r.url, kind: f.kind, url: f.url, bytes: f.bytes, savedBytes: f.savedBytes, estimate: f.estimate, title: f.title, fix: f.fix })));
+}
+
+/** The text block of the resource findings, one heading per page that has any (none when no page has any). */
+function renderResourceHints(results: PageResult[]): string {
+  const pages = results.filter((r) => (r.resources ?? []).length > 0);
+  if (pages.length === 0) return "";
+  const body = pages.flatMap((r) => [`${pathOf(r.url)} (resources)`, ...resourceLinesOf(r.resources ?? [], (text) => safeText(text))]);
+  return `${body.join("\n")}\n`;
+}
+
 /** `imgtune hints <scan.json> [<scan.json> ...] ...`: reads the pages' scan files, returns the text or JSON to print. */
 export async function hintsCommand(argv: string[], cwd: string): Promise<{ output: string; exitCode: number }> {
   const args = parseHintsArgs(argv);
@@ -1104,12 +1118,13 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   if (dropped > 0) notes.push(`${dropped} sizes proposal(s) left out: no saving (their predicted outcome adds bytes or changes nothing)`);
   const filtered = selectHints(all, { ...args, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
   const videos = videosOf(results, args);
+  const resourceRows = resourceRowsOf(results);
   if (args.top !== undefined) {
     const top = groupHints(filtered).slice(0, args.top);
     if (args.format === "json") {
       return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g) })), qualities: planJson(plan) }, null, 2)}\n`, exitCode: 0 };
     }
-    return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}${renderVideoHints(videos)}`, exitCode: 0 };
+    return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}${renderVideoHints(videos)}${renderResourceHints(results)}`, exitCode: 0 };
   }
   // JSON is not cut to the text default: it is all of it unless --limit is passed, and `truncated` says whether it is.
   const jsonLimit = args.limitGiven ? args.limit : Number.MAX_SAFE_INTEGER;
@@ -1143,10 +1158,11 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
           hints: group.hints,
         })),
         ...(videos.length > 0 ? { videos } : {}),
+        ...(resourceRows.length > 0 ? { resources: resourceRows } : {}),
       };
       return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
     }
-    const text = `${renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page)}${renderVideoHints(videos)}`;
+    const text = `${renderGroups(selectedGroups, groups.length, filtered.length, args.offset, args.page)}${renderVideoHints(videos)}${renderResourceHints(results)}`;
     return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
   }
   const selected = selectHints(all, args.format === "json" ? { ...args, limit: jsonLimit } : args);
@@ -1162,10 +1178,11 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
       qualities: planJson(plan),
       hints: selected,
       ...(videos.length > 0 ? { videos } : {}),
+      ...(resourceRows.length > 0 ? { resources: resourceRows } : {}),
     };
     return { output: `${JSON.stringify(body, null, 2)}\n`, exitCode: 0 };
   }
-  const text = `${renderHints(selected, filtered.length, args.offset, args.page)}${renderVideoHints(videos)}`;
+  const text = `${renderHints(selected, filtered.length, args.offset, args.page)}${renderVideoHints(videos)}${renderResourceHints(results)}`;
   return { output: notes.length > 0 ? `${notes.join("\n")}\n${text}` : text, exitCode: 0 };
 }
 

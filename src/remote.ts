@@ -65,6 +65,10 @@ import {
   type MediaAsset,
   type MediaResults,
 } from "./media-phase.js";
+import { analyzeResources } from "./resources/phase.js";
+import { resourceLinesOf } from "./resources/report.js";
+import { readPageContext, readResourceBody, resourceRecordOf, type PageContextData } from "./resources/capture.js";
+import type { ResourceFinding, ResourceRecord } from "./resources/types.js";
 import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
 import { EstimateRegistry, hashOf, withEstimates, type EstimateStore } from "./estimate-jobs.js";
 import { isFolder, sourceRootOf, unreadSourceNote } from "./source-root.js";
@@ -444,6 +448,8 @@ export interface ScanArgs {
   root?: string;
   /** --no-cache: encode and score everything again, and keep nothing on disk. */
   noCache?: boolean;
+  /** --no-resources: no resource capture and no resource analysis (see resources/). Undefined: on. */
+  resources?: boolean;
   /** --gpu-encode (experimental): the media is encoded on the GPUs (NVENC, CUDA VMAF). Off by default: CPU encodes. */
   gpuEncode?: boolean;
   out: string;
@@ -597,6 +603,7 @@ export function parseScanArgs(argv: string[]): ScanArgs {
     else if (arg === "--resume") args.resume = true;
     else if (arg === "--gpu") args.gpu ??= gpuSettingOne(0);
     else if (arg === "--no-cache") args.noCache = true;
+    else if (arg === "--no-resources") args.resources = false;
     else if (arg === "--gpu-encode") args.gpuEncode = true;
     else if (arg === "--harness") args.harness = true;
     else if (arg === "--survey") args.survey = true;
@@ -1218,6 +1225,10 @@ export interface ViewportObservation {
   stylesheetHosts?: string[];
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
+  /** Every other response of the page view (not media, not a light read): the resource analyzers' input (see resources/). */
+  resources?: ResourceRecord[];
+  /** What the page shows, read once after the scroll (see resources/capture.ts). Absent in a light read. */
+  pageContext?: PageContextData;
 }
 
 /**
@@ -1891,12 +1902,16 @@ async function readGroup(
   functionsWanted: ((img: ObservedImage) => boolean) | undefined,
   idleTimeoutMs: number,
   withVideos = false,
+  captureResources = false,
 ): Promise<{ outcomes: ViewportOutcome[]; fresh: Viewport[] }> {
   const first = viewports[0];
   const outcomes: ViewportOutcome[] = [];
   let fresh: Viewport[] = [];
   // Every image response of the document, by URL (the latest one for a URL fetched twice).
   const fetched = new Map<string, ResponseRecord>();
+  // Every other response of the page load (not media, not in a light read), by URL: the resource analyzers' records. The
+  // records are kept across the viewport steps, since a resized viewport is the same page and its resources stay loaded.
+  const others = new Map<string, ResourceRecord>();
   // Every media (video) response of the page load, by URL: its bytes from the headers, never from the body.
   const media = new Map<string, MediaRecord>();
   const bodyReads: Promise<void>[] = [];
@@ -2007,11 +2022,16 @@ async function readGroup(
           const headers = response.headers();
           const headerBytes = mediaBytesOf(headers) ?? 0;
           const { start, total } = contentRangeOf(headers);
+          // A media file is a resource record too, without a body: the resource phase fetches it again when it is wanted
+          // (Chromium gives no body for a range response, see resources/phase.ts).
+          const resourceRecord = captureResources ? resourceRecordOf(response, pageUrl, "", contentType) : undefined;
+          if (resourceRecord !== undefined) others.set(url, resourceRecord);
           let counted = false;
           const count = (bytes: number): void => {
             if (counted) return;
             counted = true;
             addMediaResponse(media, { url, status, contentType, bytes, start, total });
+            if (resourceRecord !== undefined) resourceRecord.bytes = bytes;
           };
           mediaReads.push(
             (async () => {
@@ -2028,6 +2048,12 @@ async function readGroup(
           // Still streaming at the settle: the bytes that have arrived so far (or the header bytes, when those are more).
           mediaFallbacks.push(() => count(Math.max(headerBytes, streamedBytesOf(url))));
           return;
+        }
+        // Every other response is a resource record (see resources/): its body is read only when an analyzer wants it.
+        if (captureResources && !light) {
+          const record = resourceRecordOf(response, pageUrl, "", contentType);
+          others.set(response.url(), record);
+          bodyReads.push(readResourceBody(record, response).catch(() => {}));
         }
         const isImage = response.request().resourceType() === "image" || (contentType ?? "").toLowerCase().startsWith("image/");
         if (!isImage) return;
@@ -2118,6 +2144,8 @@ async function readGroup(
             fresh = viewports.slice(step);
             break;
           }
+          // What the page shows, once it has settled (the resource analyzers read it; a light read takes none).
+          const pageContext = captureResources && !light ? await measure("page context", () => readPageContext(page)) : undefined;
           const status = loaded?.response?.status();
           if (debug !== undefined && functionsWanted !== undefined) {
             for (const img of seen.images) {
@@ -2160,6 +2188,9 @@ async function readGroup(
               stylesheetsFailed: failedSheets.size,
               stylesheetHosts: hostsOf(failedSheets),
               responses,
+              ...(captureResources && !light
+                ? { resources: [...others.values()].map((record) => ({ ...record, viewport: viewport.name })), ...(pageContext !== undefined ? { pageContext } : {}) }
+                : {}),
             },
           });
         } catch (error) {
@@ -2192,10 +2223,11 @@ export async function observeLoads(
   functionsWanted?: (img: ObservedImage) => boolean,
   idleTimeoutMs = NETWORK_IDLE_TIMEOUT_MS,
   withVideos = false,
+  captureResources = false,
 ): Promise<ViewportOutcome[]> {
-  const { outcomes, fresh } = await readGroup(browser, pageUrl, viewports, guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos);
+  const { outcomes, fresh } = await readGroup(browser, pageUrl, viewports, guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos, captureResources);
   for (const viewport of fresh) {
-    const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos);
+    const [outcome] = await observeLoads(browser, pageUrl, [viewport], guard, loadCapMs, storageState, light, functionsWanted, idleTimeoutMs, withVideos, captureResources);
     outcomes.push(outcome);
   }
   return outcomes;
@@ -2293,6 +2325,8 @@ export interface AnalysisContext {
   projectRoot?: string;
   /** The pages are harness routes (--harness): the records are measured-harness whatever their URL. */
   harness?: boolean;
+  /** The run's third-party policy: the resource phase fetches no icon the policy blocks. */
+  thirdParty?: ThirdPartyPolicy;
 }
 
 /** Largest source map read for a chunk: the scanned site is untrusted, so a map is capped in size. */
@@ -2908,6 +2942,8 @@ export interface PageResult {
   videos?: VideoRecord[];
   /** The media phase's note for the run (the missing-ffmpeg note), on a page that has media (see media-phase.ts). */
   mediaNote?: string;
+  /** The resource findings of the page (sorted by saving), when the resource phase ran (see resources/phase.ts). */
+  resources?: ResourceFinding[];
   scannedAt: string;
   imgtuneVersion: string;
   metric: "ssimulacra2";
@@ -2990,6 +3026,11 @@ export interface ScanRecordOptions {
   videoStillBar?: number;
   maxVideoWidths?: number;
   ffmpeg?: boolean;
+  /**
+   * The resource capture and analysis (--no-resources turns both off). Recorded as it is, so a page scanned without them
+   * is not resumed by a scan with them (its page has no resource findings). Absent in scans from before 0.3.
+   */
+  resources?: boolean;
   /** The hosts kept while blocking (--allow-host), sorted. Absent when there are none. */
   allowHosts?: string[];
   /**
@@ -3003,7 +3044,7 @@ export interface ScanRecordOptions {
 export function recordOptionsOf(
   opts: Pick<
     ScanOptions,
-    "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "thirdParty" | "sharedLoads" | "mediaBudget" | "mediaTime" | "videoBar" | "videoStillBar" | "maxVideoWidths"
+    "aggressive" | "quality" | "viewports" | "ignoreRobots" | "storageState" | "gpu" | "harness" | "idleTimeoutMs" | "survey" | "thirdParty" | "sharedLoads" | "mediaBudget" | "mediaTime" | "videoBar" | "videoStillBar" | "maxVideoWidths" | "resources"
   >,
   ffmpeg?: boolean,
 ): ScanRecordOptions {
@@ -3030,6 +3071,7 @@ export function recordOptionsOf(
     ignoreRobots: opts.ignoreRobots === true,
     storageState: opts.storageState !== undefined,
     scorer: opts.gpu !== undefined ? "gpu" : "cpu",
+    resources: opts.resources !== false,
     ...(opts.harness === true ? { harness: true as const } : {}),
     ...(opts.survey === true ? { survey: true as const } : {}),
     ...(opts.sharedLoads === true ? { loads: "shared" as const } : {}),
@@ -3292,10 +3334,21 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
   });
   const videoSources = await resolveVideoSources(ctx, input);
   const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS, videoSources);
+  // The resource phase runs when the page was captured with resources (see readGroup); its findings are the page's.
+  const resources = observations.some((o) => o.resources !== undefined)
+    ? await measure("resources", () =>
+        analyzeResources(
+          observations.map((o) => ({ viewport: o.viewport, resources: o.resources, pageContext: o.pageContext })),
+          ctx.pageUrl,
+          { cache: ctx.deps.cache, fetcher: ctx.fetcher, allowPrivate: ctx.allowPrivate, thirdParty: ctx.thirdParty },
+        ),
+      )
+    : undefined;
   return {
     ...base,
     nextjs: observations.some((o) => o.nextjs),
     ...(videos.length > 0 ? { videos } : {}),
+    ...(resources !== undefined ? { resources } : {}),
     perViewport,
     page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
     groups: measure("aggregate", () => groupReports(instances, observations.length)),
@@ -3405,6 +3458,8 @@ export interface ScanOptions {
   survey?: boolean;
   /** --shared-loads: a class of viewports is one page load, the others resize its open page (see loadGroups). Off by default. */
   sharedLoads?: boolean;
+  /** Capture every response and read the page context, and run the resource analyzers (--no-resources: off). Undefined: on. */
+  resources?: boolean;
   /** Filled with why the run stopped early, if it did. */
   report?: ScanReport;
   /** The pages are harness routes measured in isolation (--harness): records carry the measured-harness rung. */
@@ -3467,6 +3522,8 @@ async function scanPage(
     sourceMaps: Map<string, Promise<SourceMapData | undefined>>;
     /** The run's stage (see stage.ts and runScan): the measured pages are written here before their analysis. */
     stage?: { dir: string; options: ScanRecordOptions };
+    /** Capture the resources of each page and run the resource phase (see resources/). */
+    resources: boolean;
     storageState?: StorageState;
     thirdParty: ThirdPartyPolicy;
     qualityFor?: (inst: Instance) => boolean;
@@ -3551,7 +3608,7 @@ async function scanPage(
   const groupOutcomes = await settleLimit(groups, run.viewportConcurrency, (group) => {
     count("page loads");
     count("viewport loads", group.length);
-    return observeLoads(browser, pageUrl, group, guard, run.loadCapMs, run.storageState, false, undefined, run.idleTimeoutMs);
+    return observeLoads(browser, pageUrl, group, guard, run.loadCapMs, run.storageState, false, undefined, run.idleTimeoutMs, false, run.resources);
   });
   const outcomes = run.viewports.map((viewport) => {
     const index = groups.findIndex((group) => group.includes(viewport));
@@ -3623,6 +3680,7 @@ function analysisContextOf(run: PageRun, pageUrl: string): Omit<AnalysisContext,
     sourceMaps: run.sourceMaps,
     projectDir: run.projectDir,
     projectRoot: run.projectRoot,
+    thirdParty: run.thirdParty,
   };
 }
 
@@ -3648,8 +3706,10 @@ interface StagedPage {
   images?: number;
 }
 
-interface StagedObservation extends Omit<ViewportObservation, "responses" | "media"> {
+interface StagedObservation extends Omit<ViewportObservation, "responses" | "media" | "resources"> {
   responses: { url: string; record: Omit<ResponseRecord, "buffer">; blob?: string }[];
+  /** The resource records without their bodies; a body is a blob (see stagedMeasure). */
+  resources?: { record: Omit<ResourceRecord, "body">; blob?: string }[];
   /** The media responses by URL, as entries: a Map does not survive JSON. */
   media?: [string, MediaRecord][];
 }
@@ -3673,13 +3733,23 @@ function stagedMeasure(
       if (pending === undefined) return;
       const staged: StagedObservation[] = [];
       for (const obs of pending) {
-        const { responses, media, ...rest } = obs;
+        const { responses, media, resources, ...rest } = obs;
         const records: StagedObservation["responses"] = [];
         for (const [url, record] of responses) {
           const { buffer, ...meta } = record;
           records.push({ url, record: meta, blob: buffer === undefined ? undefined : await putBlob(stage.dir, buffer) });
         }
-        staged.push({ ...rest, responses: records, ...(media !== undefined ? { media: [...media] } : {}) });
+        const stagedResources: NonNullable<StagedObservation["resources"]> = [];
+        for (const resource of resources ?? []) {
+          const { body, ...meta } = resource;
+          stagedResources.push({ record: meta, blob: body === undefined ? undefined : await putBlob(stage.dir, body) });
+        }
+        staged.push({
+          ...rest,
+          responses: records,
+          ...(media !== undefined ? { media: [...media] } : {}),
+          ...(resources !== undefined ? { resources: stagedResources } : {}),
+        });
       }
       const state: StagedPage = { version: 1, url: pageUrl, options: stage.options, described, observations: staged };
       await writeStagedJson(stage.dir, file, state);
@@ -3705,12 +3775,21 @@ async function unstagedObservations(stageDir: string, file: string): Promise<Vie
   if (state === undefined) throw new Error(`staged page is missing or unreadable: ${safeText(file)}`);
   const observations: ViewportObservation[] = [];
   for (const staged of state.observations) {
-    const { responses: records, media, ...rest } = staged;
+    const { responses: records, media, resources, ...rest } = staged;
     const responses = new Map<string, ResponseRecord>();
     for (const { url, record, blob } of records) {
       responses.set(url, blob === undefined ? { ...record } : { ...record, buffer: await getBlob(stageDir, blob) });
     }
-    observations.push({ ...rest, responses, ...(media !== undefined ? { media: new Map(media) } : {}) });
+    const resourceRecords: ResourceRecord[] = [];
+    for (const { record, blob } of resources ?? []) {
+      resourceRecords.push(blob === undefined ? { ...record } : { ...record, body: await getBlob(stageDir, blob) });
+    }
+    observations.push({
+      ...rest,
+      responses,
+      ...(media !== undefined ? { media: new Map(media) } : {}),
+      ...(resources !== undefined ? { resources: resourceRecords } : {}),
+    });
   }
   return observations;
 }
@@ -3725,9 +3804,10 @@ async function resumeStaged(run: PageRun, url: string): Promise<{ page: Measured
   const state = await readStagedJson<StagedPage>(join(stage.dir, pageFileName(new URL(url))));
   if (state === undefined || state.url !== url || state.images === undefined || !sameRecordOptions(state.options, stage.options)) return undefined;
   for (const obs of state.observations) {
-    for (const response of obs.responses) {
-      if (response.blob === undefined) continue;
-      if (!(await stat(join(stage.dir, "blobs", response.blob)).then(() => true, () => false))) return undefined;
+    const blobs = [...obs.responses, ...(obs.resources ?? [])].map((entry) => entry.blob);
+    for (const blob of blobs) {
+      if (blob === undefined) continue;
+      if (!(await stat(join(stage.dir, "blobs", blob)).then(() => true, () => false))) return undefined;
     }
   }
   return { page: stagedMeasure(run, stage, url, state.described), images: state.images };
@@ -3794,6 +3874,7 @@ async function withBrowser<T>(
       viewportConcurrency: opts.viewportConcurrency ?? VIEWPORT_CONCURRENCY,
       idleTimeoutMs: opts.idleTimeoutMs ?? NETWORK_IDLE_TIMEOUT_MS,
       sharedLoads: opts.sharedLoads === true,
+      resources: opts.resources !== false,
       estimates: opts.survey !== true,
       log: opts.log,
       gpu,
@@ -4207,6 +4288,8 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
     lines.push(`  ${totals}`);
     for (const video of videos) lines.push(`    ${videoRowOf(video, (text) => JSON.stringify(safeText(text)))}`);
   }
+  // The Resources section: the page's non-image findings, ranked by saving (see resources/).
+  lines.push(...resourceLinesOf(result.resources ?? [], (text) => safeText(text)));
   return lines;
 }
 
@@ -4519,6 +4602,7 @@ export async function scanCommand(
     gpu: args.gpu,
     gpuEncode: args.gpuEncode,
     cache: args.noCache !== true,
+    resources: args.resources !== false,
     report,
     thirdParty: args.thirdParty,
   });
