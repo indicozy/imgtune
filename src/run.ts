@@ -49,6 +49,8 @@ export interface RunArgs {
   noCache: boolean;
   /** --gpu-encode (experimental): the media is encoded on the GPUs. Off by default: CPU encodes. */
   gpuEncode?: boolean;
+  /** --no-resources: no resource capture and no resource analysis (see resources/). */
+  noResources?: boolean;
   /** --dev: the origin of the dev server; the deep pages are located at the same paths on it. */
   dev?: string;
   /** --qualities: the framework's allowed qualities, passed to hints. */
@@ -85,6 +87,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
     const arg = argv[i];
     if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--gpu-encode") args.gpuEncode = true;
+    else if (arg === "--no-resources") args.noResources = true;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--block-third-party") blockThirdParty = true;
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
@@ -203,6 +206,8 @@ export interface RunManifest {
     pageConcurrency?: number;
     idleTimeoutMs?: number;
     noCache: boolean;
+    /** --no-resources: the resource phase was skipped. Absent when it ran. */
+    noResources?: boolean;
     root?: string;
     ignoreRobots: boolean;
     storageState: boolean;
@@ -261,6 +266,7 @@ export async function runCommand(
     ignoreRobots: args.ignoreRobots,
     aggressive: false,
     thirdParty: args.thirdParty,
+    resources: args.noResources !== true,
   };
   const base: ScanArgs = { urls: [], out: outRoot, aggressive: false, quality: true, thirdParty: DEFAULT_THIRD_PARTY };
   const surveyPlan = scanPlan({ ...base, survey: true, pageConcurrency: args.pageConcurrency, idleTimeoutMs: args.idleTimeoutMs });
@@ -423,6 +429,7 @@ function runFlags(args: RunArgs): { survey: string[]; deep: string[] } {
   if (args.ignoreRobots) common.push("--ignore-robots");
   if (args.noCache) common.push("--no-cache");
   if (args.gpuEncode) common.push("--gpu-encode");
+  if (args.noResources) common.push("--no-resources");
   if (args.pageConcurrency !== undefined) common.push("--page-concurrency", String(args.pageConcurrency));
   if (args.idleTimeoutMs !== undefined) common.push("--idle-timeout", String(args.idleTimeoutMs));
   if (args.thirdParty.block) common.push("--block-third-party");
@@ -516,6 +523,7 @@ export async function writeManifest(
       pageConcurrency: args.pageConcurrency,
       idleTimeoutMs: args.idleTimeoutMs,
       noCache: args.noCache,
+      ...(args.noResources ? { noResources: true } : {}),
       root: args.root,
       ignoreRobots: args.ignoreRobots,
       storageState: args.storageState !== undefined,

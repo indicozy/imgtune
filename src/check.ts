@@ -51,6 +51,8 @@ export interface CheckSettings {
   noCache: boolean;
   /** --gpu-encode (experimental): the media is encoded on the GPUs. Off by default: CPU encodes. */
   gpuEncode?: boolean;
+  /** --no-resources: no resource capture and no resource analysis (see resources/). */
+  noResources?: boolean;
   ignoreRobots: boolean;
   thirdParty: ThirdPartyPolicy;
 }
@@ -80,6 +82,7 @@ export function parseCheckFlags(argv: string[]): CheckArgs {
     const arg = argv[i];
     if (arg === "--no-cache") args.noCache = true;
     else if (arg === "--gpu-encode") args.gpuEncode = true;
+    else if (arg === "--no-resources") args.noResources = true;
     else if (arg === "--ignore-robots") args.ignoreRobots = true;
     else if (arg === "--block-third-party") blockThirdParty = true;
     // --allow-third-party: deprecated, accepted as a no-op (the note is printed by the CLI).
@@ -244,6 +247,7 @@ export async function scanCheckPages(input: {
     ignoreRobots: settings.ignoreRobots,
     aggressive: false,
     thirdParty: settings.thirdParty,
+    resources: settings.noResources !== true,
   };
   const base = { urls: [], out: outRoot, aggressive: false, quality: true, thirdParty: settings.thirdParty };
   const surveyPlan = scanPlan({ ...base, survey: true });
@@ -268,6 +272,7 @@ export async function scanCheckPages(input: {
       ...(settings.thirdParty.block ? ["--block-third-party"] : []),
       ...(settings.noCache ? ["--no-cache"] : []),
       ...(settings.gpuEncode ? ["--gpu-encode"] : []),
+      ...(settings.noResources ? ["--no-resources"] : []),
     ].join(" "),
   });
   log(`survey: ${urls.length} URL(s), ${routes.types.length} route type(s)`);
@@ -303,6 +308,7 @@ export async function scanCheckPages(input: {
       ...(settings.thirdParty.allowHosts.length > 0 ? ["--allow-host", shellWord(settings.thirdParty.allowHosts.join(","))] : []),
       ...(settings.noCache ? ["--no-cache"] : []),
       ...(settings.gpuEncode ? ["--gpu-encode"] : []),
+      ...(settings.noResources ? ["--no-resources"] : []),
       ...(settings.ignoreRobots ? ["--ignore-robots"] : []),
       ...(settings.pageConcurrency !== undefined ? ["--page-concurrency", String(settings.pageConcurrency)] : []),
       ...(settings.idleTimeoutMs !== undefined ? ["--idle-timeout", String(settings.idleTimeoutMs)] : []),
@@ -441,6 +447,7 @@ export async function finishCheck(input: FinishInput): Promise<{ output: string;
       pageConcurrency: settings.pageConcurrency,
       idleTimeoutMs: settings.idleTimeoutMs,
       noCache: settings.noCache,
+      ...(settings.noResources ? { noResources: true } : {}),
       ignoreRobots: settings.ignoreRobots,
       storageState: input.storageState,
       thirdParty: settings.thirdParty.block ? "blocked" : "allowed",

@@ -228,6 +228,7 @@ Options:
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
   --allow-host <h1,h2>            with --block-third-party: keep the requests to these hosts
   --no-cache                      do not read or write the result cache
+  --no-resources                skip the resource phase (compression and favicon findings; no capture of the other responses)
   --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)
   --storage-state <file>          a logged-in session (holds cookies: never commit it)
   -h, --help                      show this help
@@ -265,6 +266,7 @@ Options:
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
   --allow-host <h1,h2>            with --block-third-party: keep the requests to these hosts
   --no-cache                      do not read or write the result cache
+  --no-resources                skip the resource phase (compression and favicon findings; no capture of the other responses)
   --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)
   --storage-state <file>          a logged-in session (holds cookies: never commit it)
   -h, --help                      show this help
@@ -295,6 +297,7 @@ Options:
   --page-concurrency <N>          pages at once in the survey (default 4) and in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait (default 3000 in the survey, 10000 in the deep phase)
   --no-cache                      do not read or write the result cache
+  --no-resources                skip the resource phase (compression and favicon findings; no capture of the other responses)
   --root <dir>                    the source folder for --dev (a monorepo sub-folder)
   --storage-state <file>          a logged-in session (holds cookies: never commit it)
   --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)

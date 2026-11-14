@@ -21,6 +21,8 @@ describe("parseRunArgs", () => {
     expect(args.deep).toBe(3);
     expect(args.dev).toBe("http://localhost:3000");
     expect(args.qualities).toEqual([75, 85, 100]);
+    expect(args.noResources).toBeUndefined();
+    expect(parseRunArgs(["https://a.example/", "--no-resources"]).noResources).toBe(true);
     expect(args.noCache).toBe(false);
   });
 

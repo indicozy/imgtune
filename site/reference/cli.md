@@ -42,7 +42,7 @@ The production check. It needs a browser and the URLs, and no source, dev server
    estimate, heaviest types first, up to `--deep <N>` (default 20). The types the cap leaves out are named in the report.
    A deep page the browser could not load is retried once: the next-heaviest measured page of its route type is scanned in
    its place, and the report names both. The failed page still counts as failed.
-   `--gpu`, `--gpu-device`, `--gpu-encode`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--ignore-robots`,
+   `--gpu`, `--gpu-device`, `--gpu-encode`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--no-resources`, `--ignore-robots`,
    `--storage-state`, `--block-third-party` and `--allow-host` apply here.
 3. **report**: `report.md`, built from the two phases.
 
@@ -135,7 +135,7 @@ One command for the agent flow. It runs, in order:
    ordered by their total KB per view. `--deep <N>` (default 20) types are chosen; the summary names the types left out.
    Broken pages are not ranked.
 3. **deep**: a full scan of those pages (six viewports, exact and est.). `--gpu`, `--gpu-device`, `--gpu-encode`,
-   `--page-concurrency`, `--idle-timeout`, `--no-cache`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party`
+   `--page-concurrency`, `--idle-timeout`, `--no-cache`, `--no-resources`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party`
    and `--allow-host` pass through.
 4. **locate** (with `--dev <origin>`): each deep page at the same path on the dev server (`scan --locate-only`).
 5. **hints**: the fix hints of the deep pages (or of their located copies), grouped by call site, as `hints.json`.

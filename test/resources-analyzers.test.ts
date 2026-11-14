@@ -8,6 +8,7 @@ import { analyzer as favicon, largestPngFrame } from "../src/resources/favicon.j
 import { analyzeResources, runPhaseWith } from "../src/resources/phase.js";
 import { completeFontFaces, fontFaceRulesOf } from "../src/resources/capture.js";
 import { resourceLinesOf, resourceTotalsLine } from "../src/resources/report.js";
+import { ANALYZERS } from "../src/resources/index.js";
 import type { PageContext, ResourceAnalyzer, ResourceFinding, ResourceRecord } from "../src/resources/types.js";
 import type { Viewport } from "../src/types.js";
 
@@ -330,5 +331,31 @@ describe("resource report lines", () => {
     expect(lines[1]).toMatch(/^ {4}compression: 1 text\/javascript/);
     expect(lines[2]).toMatch(/^ {6}fix: enable brotli/);
     expect(resourceLinesOf([], (text) => text)).toEqual([]);
+  });
+});
+
+describe("the analyzer registry", () => {
+  it("registers one analyzer per kind, and each wants at least its own kind of response", () => {
+    expect(ANALYZERS.map((a) => a.kind).sort()).toEqual(["audio", "compression", "favicon", "font", "lottie", "model", "svg"]);
+    const fontFile: ResourceRecord = {
+      url: "https://shop.example/inter.woff2",
+      pageUrl: "https://shop.example/",
+      viewport: "desktop",
+      resourceType: "font",
+      contentType: "font/woff2",
+      bytes: 40_000,
+      status: 200,
+      thirdParty: false,
+    };
+    expect(ANALYZERS.find((a) => a.kind === "font")?.wants(fontFile)).toBe(true);
+    expect(ANALYZERS.find((a) => a.kind === "model")?.wants(fontFile)).toBe(false);
+  });
+
+  it("adds no bytes for an informational finding (no saving) to the totals", () => {
+    const info: ResourceFinding = { id: "favicon:x", kind: "favicon", url: "https://shop.example/favicon.ico", bytes: 50_000, savedBytes: 0, estimate: false, title: "favicon", fix: [] };
+    const line = resourceTotalsLine([info]) ?? "";
+    expect(line).toContain("no saving");
+    expect(line).toContain("not in the image totals");
+    expect(line).not.toMatch(/saves ~/);
   });
 });

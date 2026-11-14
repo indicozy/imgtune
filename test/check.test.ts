@@ -59,6 +59,8 @@ describe("parseCheckArgs", () => {
 
   it("refuses --sample-per-pattern without a list or sitemap, when the target is one page", () => {
     expect(parseCheckArgs(["https://shop.example/sitemap.xml", "--sample-per-pattern", "3"]).samplePerPattern).toBe(3);
+    expect(parseCheckArgs(["https://shop.example"]).noResources).toBeUndefined();
+    expect(parseCheckArgs(["https://shop.example", "--no-resources"]).noResources).toBe(true);
     expect(parseCheckArgs(["--urls-from", "u.txt", "--sample-per-pattern", "3"]).samplePerPattern).toBe(3);
   });
 

@@ -66,7 +66,10 @@ import {
   type MediaResults,
 } from "./media-phase.js";
 import { analyzeResources } from "./resources/phase.js";
-import { resourceLinesOf } from "./resources/report.js";
+import { resourceLinesOf, resourceTotalsLine } from "./resources/report.js";
+
+/** Resource findings listed in the PR-comment Markdown (the JSON and the text output have more). */
+const RESOURCE_MARKDOWN_ROWS = 5;
 import { readPageContext, readResourceBody, resourceRecordOf, type PageContextData } from "./resources/capture.js";
 import type { ResourceFinding, ResourceRecord } from "./resources/types.js";
 import { BROKEN_EXIT, withBroken, type BrokenInfo } from "./broken.js";
@@ -4420,6 +4423,17 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
     if (totals !== undefined) {
       lines.push("", totals, "");
       for (const video of videos) lines.push(`- ${mdCode(videoRowOf(video, (text) => JSON.stringify(safeText(text))))}`);
+    }
+  }
+  // Resources (see resources/): the totals, then the largest findings. They are not in the image totals above.
+  const resourceRows = results.filter((r) => r.status === "ok").flatMap((r) => r.resources ?? []);
+  const resourceTotals = resourceTotalsLine(resourceRows);
+  if (resourceTotals !== undefined) {
+    lines.push("", mdText(resourceTotals));
+    const largest = [...resourceRows].sort((a, b) => b.savedBytes - a.savedBytes).slice(0, RESOURCE_MARKDOWN_ROWS);
+    for (const finding of largest) {
+      const saved = finding.savedBytes > 0 ? ` saves ${kbNumber(finding.savedBytes)} KB${finding.estimate ? APPROX_MARK : ""}` : "";
+      lines.push(`- ${mdCode(`${finding.kind}: ${safeText(finding.title)}`)}${saved}`);
     }
   }
   const plan = planQualityCap(results, maxQualities);

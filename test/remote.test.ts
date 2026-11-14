@@ -518,6 +518,29 @@ describe("mdText, mdCode and the Markdown summary", () => {
     expect(md).toContain("Viewports: `iphone-15`, `desktop`.");
   });
 
+  it("gives the PR comment a Resources block: the totals, then the largest findings, outside the image totals", () => {
+    const finding = (id: string, savedBytes: number, title: string) => ({
+      id,
+      kind: "compression" as const,
+      url: `https://shop.example/${id}.js`,
+      bytes: 90_000,
+      savedBytes,
+      estimate: false,
+      title,
+      fix: ["enable brotli"],
+    });
+    const withResources = pageResult({
+      resources: [finding("a", 40_000, "text/javascript on shop.example: 90 KB"), finding("b", 0, "favicon 12 KB, per first visit")],
+    });
+    const md = renderMarkdown([withResources], false);
+    // mdText escapes ":" and "~" as entities (as in the other Markdown lines).
+    expect(md).toContain("resources&#58; 1 finding(s), saves &#126;39 KB/view, 1 informational, not in the image totals");
+    expect(md).toContain("- `compression: text/javascript on shop.example: 90 KB` saves 39 KB");
+    // The image columns are unchanged by the resource findings.
+    expect(md).toContain("| `shop.example/` | ok | 3235 |");
+    expect(renderMarkdown([pageResult()], false)).not.toContain("resources:");
+  });
+
   it("lists the top five groups as code spans, with hostile sizes escaped", () => {
     const groups = Array.from({ length: 6 }, (_, i) => ({
       key: `k${i}`,

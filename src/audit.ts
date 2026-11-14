@@ -244,6 +244,7 @@ async function preflight(
     ignoreRobots: settings.ignoreRobots,
     aggressive: false,
     quality: false,
+    resources: false,
     thirdParty: settings.thirdParty,
     outDir: join(outRoot, "preflight"),
     viewports: viewportsOf(plan.viewports),
