@@ -18,11 +18,11 @@ export function mapLaunchError(err: unknown): unknown {
 }
 
 /**
- * Chromium flags for measuring. `--disable-software-rasterizer` stops Chrome from starting SwiftShader. Its worker
- * threads get a CPU set of their own from Chrome, which can fall outside the CPUs the CLI was started on.
- * Measurements (layout, rendered sizes, transferred bytes, image decoding) do not depend on the rasterizer.
+ * Chromium flags for measuring. `--disable-gpu` keeps the GPU process out. The software rasterizer (SwiftShader) is left
+ * on: with `--disable-software-rasterizer` WebGL is off, and a page with a 3D viewer never requests its model (a census
+ * site made 5 model requests with the default flags and none without). Only WebGL pages pay the extra CPU for it.
  */
-export const CHROMIUM_ARGS: readonly string[] = ["--disable-gpu", "--disable-software-rasterizer"];
+export const CHROMIUM_ARGS: readonly string[] = ["--disable-gpu"];
 
 /** The headless Chromium every measuring command uses. */
 export async function launchChromium(): Promise<Browser> {

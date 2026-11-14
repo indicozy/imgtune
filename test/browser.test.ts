@@ -24,8 +24,8 @@ describe("mapLaunchError", () => {
 });
 
 describe("CHROMIUM_ARGS", () => {
-  it("keeps the GPU process and SwiftShader out of the measuring browser", () => {
+  it("keeps the GPU process out, and leaves the software rasterizer on so WebGL pages load their models", () => {
     expect(CHROMIUM_ARGS).toContain("--disable-gpu");
-    expect(CHROMIUM_ARGS).toContain("--disable-software-rasterizer");
+    expect(CHROMIUM_ARGS).not.toContain("--disable-software-rasterizer");
   });
 });
