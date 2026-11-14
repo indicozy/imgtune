@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Resources. `scan` records every non-image response of a page and reports two checks in a Resources section (after
+  Video, and in the JSON as `resources`): text served without compression (brotli-11 saving, grouped per host and content
+  type), and favicons or apple-touch-icons over 10 KB or 30 KB (the saving from a 32 px or 180 px re-encode). `--no-resources`
+  turns them off. Neither is in the image totals.
+- Measuring browser: `--disable-software-rasterizer` is no longer passed to Chromium (`--disable-gpu` stays). With it WebGL
+  was off, so a page with a 3D viewer never requested its model. Only WebGL pages pay the extra CPU.
+
 ## 0.2.0 (2026-11-14)
 
 - Animated media and video. `scan` measures animated GIFs (in an `<img>` or a CSS background), animated WebP and APNG, and

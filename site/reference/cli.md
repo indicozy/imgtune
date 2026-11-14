@@ -198,6 +198,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--resume` | reuse the complete pages already in `--out` that were scanned with the same options. A page measured by an interrupted run (staged in `--out/.staged`) is not measured again: only its analysis runs |
 | `--max-pages <N>` | stop after N pages (scanned or resumed); run again with `--resume` to continue |
 | `--no-cache` | do not read or write `.imgtune/cache`. The cache keeps the local encode sizes and scores, so a rescan or a second run reuses them; the numbers are the same either way |
+| `--no-resources` | skip the resource phase: no capture of the non-image responses and no compression or favicon findings (see [Resources](/guide/resources)). The page is recorded with `resources: false`, so `--resume` does not reuse it for a scan that has them |
 | `--max-images <N>` | stop after the page that brings the images counted to N (checked between pages) |
 | `--max-qualities <N>` | the most values for `images.qualities` in `next.config`, 1 to 4 (default 2): the site-level line of the output, the Markdown report and the PR comment |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file (one per line, `#` comments), a local `sitemap.xml`, or a remote sitemap (same domain only) |

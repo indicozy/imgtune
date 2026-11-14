@@ -292,6 +292,25 @@ neither field and is read as having no media.
 
 Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
 
+## Resources (0.3)
+
+A page file gains `resources`: one finding per resource problem, sorted by `savedBytes`, on the page as a whole (not in
+the image totals). It is absent when the scan ran with `--no-resources`. Each finding:
+
+| field | meaning |
+| --- | --- |
+| `id` | stable across viewports: `compression:<hash>` (a host and content type group) or `favicon:<hash>` (the icon URL) |
+| `kind` | `compression` (text served without `Content-Encoding`) or `favicon` (an icon over its size limit) |
+| `url` | the file (for a compression group, its largest member) |
+| `bytes` | bytes per view, as fetched (decoded) |
+| `savedBytes` | bytes per view the fix saves: measured by a brotli-11 encode (compression) or a PNG re-encode at 32 px or 180 px (favicon); `0` when none |
+| `estimate` | `true` when the saving comes from a sample (a compression body over 1 MB is encoded in part and extrapolated) |
+| `title` | one line for people: the files, the sizes and the saving |
+| `fix` | concrete lines: the setting or the re-encode, and the expected bytes |
+| `details` | the numbers behind it: for compression `host`, `contentType`, `files`, `bytes`, `brotliBytes` and `urls`; for favicon `role`, `source` (the decoded size), `px` and `rebuiltBytes` |
+
+`imgtune hints --format json` gives the same findings as a top-level `resources` array, each with its `page`.
+
 ## Summary JSON
 
 `--summary-json` holds `imgtuneVersion`, `scorer` (the run's scorer: the GPU when any page used it, with `cpuFallbacks` summed) and `pages`: one entry per page with `url`, `host`, `status`, and, when present,

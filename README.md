@@ -129,6 +129,20 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Production check: `imgtune check` (see [Two ways to measure](#two-ways-to-measure)) and `imgtune audit` do the same
   survey and deep scan for a whole site, with no source needed for `check`.
 
+## Resources (0.3)
+
+`scan` also reads the page's other responses (not images). Two checks run by default and are reported on their own, not
+in the image totals:
+
+- **Compression.** Text served with no `Content-Encoding` (JavaScript, CSS, HTML, JSON, SVG, XML, WASM, TTF and OTF). The
+  saving is the brotli-11 size taken away from the file, measured on the bytes the page got. The fix is the server or CDN
+  setting, grouped per host and content type.
+- **Favicons.** A favicon over 10 KB, or an apple-touch-icon over 30 KB. The fix is a 32 px (favicon) or 180 px
+  (apple-touch) PNG, or an SVG favicon, with its size from a real re-encode. Favicons are fetched once per site, so these
+  bytes are paid on a first visit.
+
+`--no-resources` turns both off. See the [resources guide](https://indicozy.github.io/imgtune/guide/resources).
+
 ## The evidence ladder
 
 Every fix hint is labelled with the strength of its evidence, the rung it stands on:
