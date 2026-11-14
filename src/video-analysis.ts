@@ -8,7 +8,7 @@ import type { AnimationInfo } from "./animated.js";
 import type { CandidateResult } from "./media-encode.js";
 import type { MediaProbe } from "./ffmpeg.js";
 import { COMPONENT_NAME, sanitizeText, type OwnerTrace } from "./locate.js";
-import type { ImageLocator, ResolvedSource } from "./images.js";
+import { hiddenFixCore, type HiddenEntry, type HiddenFix, type ImageLocator, type ResolvedSource } from "./images.js";
 import { adapterFor, formatAutoOf } from "./loaders.js";
 import {
   clusterVideoWidths,
@@ -21,7 +21,7 @@ import {
   type WidthNeed,
   type WidthPlan,
 } from "./media-model.js";
-import type { ObservedImage, ObservedVideo, ViewportObservation } from "./remote.js";
+import type { HiddenReason, ObservedImage, ObservedVideo, ViewportObservation } from "./remote.js";
 
 /** Widths kept per video in scan mode (`--max-video-widths`, before the flag is wired). */
 export const SCAN_MAX_VIDEO_WIDTHS = 2;
@@ -50,6 +50,19 @@ export interface AnimatedFix {
   sourceWidth?: number;
 }
 
+/** A hidden copy that the browser fetched bytes for: its URL, the viewport, the bytes there, and why it is hidden there. */
+export interface HiddenCopy {
+  viewport: string;
+  src: string;
+  bytes: number;
+  reason: HiddenReason;
+}
+
+/** A video's loaded-but-not-shown fix: the shared fields of an image's (HiddenFix), and each hidden copy (see HiddenCopy). */
+export interface VideoHiddenFix extends HiddenFix {
+  copies: HiddenCopy[];
+}
+
 /** One `<video>` element of the page, with its bytes, widths and the levers it has. */
 export interface VideoRecord {
   id: string;
@@ -66,7 +79,17 @@ export interface VideoRecord {
      */
     fullBytesKnown: boolean;
   };
-  perViewport: { viewport: string; boxWidth: number; dpr: number; inFirstViewport: boolean }[];
+  /**
+   * One row per viewport the video is in: its box, and `bytes`, what that viewport loads for the video (the claim's bytes when
+   * the copy is shown there, the hidden copy's bytes when it is not). `hidden` is the reason it is not shown there.
+   */
+  perViewport: { viewport: string; boxWidth: number; dpr: number; inFirstViewport: boolean; hidden?: HiddenReason; bytes: number }[];
+  /**
+   * Loaded but not shown: the browser fetched bytes for a copy of this video that no viewport shows in full. Its bytes are
+   * reported apart from the claim (bytes above), and the case is the same as an image's (see HiddenFix). Absent when no copy
+   * was fetched while hidden.
+   */
+  hidden?: VideoHiddenFix;
   probe?: MediaProbe;
   /** Scan mode: the widths the viewports are served (at most `maxWidths`). */
   widths?: WidthPlan;
@@ -236,10 +259,65 @@ function hasAv1(video: ObservedVideo): boolean {
 }
 
 /**
+ * The fresh load's media bytes behind each observation. A resized viewport shares its group's page load, so its media map
+ * holds the bytes of every earlier step too. A hidden copy's bytes at a resized viewport are taken from the fresh load's map
+ * (see hiddenBytesOf), so a file fetched only for another viewport is not counted there.
+ */
+function freshMediaOf(observations: ViewportObservation[]): Map<ViewportObservation, ViewportObservation> {
+  const fresh = new Map<ViewportObservation, ViewportObservation>();
+  let current: ViewportObservation | undefined;
+  for (const obs of observations) {
+    if (obs.load === "fresh" || current === undefined) current = obs;
+    fresh.set(obs, current);
+  }
+  return fresh;
+}
+
+/** The poster URL of a video that is a file the page can fetch (not a data: URI), or undefined. */
+function fetchablePosterOf(video: ObservedVideo): string | undefined {
+  return video.poster !== undefined && !video.poster.startsWith("data:") ? video.poster : undefined;
+}
+
+/**
+ * The bytes a hidden copy costs per view at its viewport: the file the browser fetched for it (the same preload rules as a
+ * shown video, see videoBytes), plus its poster when the poster was fetched in the fresh load and no shown image of the
+ * viewport uses that URL. Zero when the copy's file is also shown at the viewport (one fetch, counted there), or when a
+ * resized viewport's copy does not fetch on load (its bytes are not the fresh load's).
+ */
+function hiddenBytesOf(member: Seen, shownUrls: Set<string>, freshOf: Map<ViewportObservation, ViewportObservation>): number {
+  const { obs, video } = member;
+  const url = video.currentSrc;
+  if (shownUrls.has(url)) return 0;
+  const kind = preloadKindOf(video);
+  const fresh = freshOf.get(obs) ?? obs;
+  // A copy that does not fetch on load (preload none or metadata) has nothing of the page load to count at a resized viewport.
+  const fetchesOnLoad = kind === "autoplay" || kind === "auto" || kind === "default";
+  if (obs.load !== "fresh" && !fetchesOnLoad) return 0;
+  const observed = observedBytesOf(obs.load === "fresh" ? obs : fresh, url);
+  const bytes = videoBytes({
+    kind,
+    playing: !video.paused || video.errorCode === 4,
+    observedBytes: observed,
+    fullBytes: observed,
+    visible: true,
+  }).perView;
+  const poster = fetchablePosterOf(video);
+  const posterBytes =
+    poster !== undefined && obs.load === "fresh" && !obs.images.some((img) => img.currentSrc === poster && img.hidden === undefined)
+      ? (obs.responses.get(poster)?.bytes ?? 0)
+      : 0;
+  return bytes + posterBytes;
+}
+
+/**
  * The VideoRecords of a page, from its observations. Each `<video>` is one record across the viewports it appears in.
  *
- * Bytes: the record takes the viewport where the video costs most per view, so the claim is never low. The full file is
- * `fullBytes` (see fullBytesOf) and is shown per play for every video.
+ * Bytes: the claim is the shown copies only. The record takes the viewport where a shown copy costs most per view, so the
+ * claim is never low. The full file is `fullBytes` (see fullBytesOf) and is shown per play for every video.
+ *
+ * Hidden: a copy that is not shown at a viewport (see ObservedVideo.hidden) is a loaded-but-not-shown fix when the browser
+ * fetched bytes for it (hiddenBytesOf). Its bytes are the fix's, apart from the claim. A video shown at no viewport is never
+ * shown on load: it has no width, no levers and no claim.
  *
  * Widths: the viewports the video is shown in (hidden ones are left out) are clustered to at most `maxWidths` widths in
  * scan mode, and the plans for one, two and three widths are kept in audit mode, where the agent chooses.
@@ -258,25 +336,67 @@ export function videoRecordsOf(
   const records: VideoRecord[] = [];
   // The records of each file so far: a file's videos are told apart by their document order (see videoIdOf).
   const perFile = new Map<string, number>();
+  const freshOf = freshMediaOf(observations);
+  // The file each viewport shows in full, over every video of the page: a hidden copy of one of them adds no bytes there.
+  const shownAt = new Map<string, Set<string>>();
+  for (const obs of observations) {
+    const urls = shownAt.get(obs.viewport.name) ?? new Set<string>();
+    for (const video of obs.videos ?? []) if (!video.hidden) urls.add(video.currentSrc);
+    shownAt.set(obs.viewport.name, urls);
+  }
   for (const [key, members] of groupVideos(observations)) {
-    const ref = members[0].video;
+    const shown = members.filter((m) => !m.video.hidden);
+    // The record's own file and attributes come from a shown copy when there is one.
+    const ref = (shown[0] ?? members[0]).video;
     const source = sources?.get(ref);
     const src = ref.currentSrc;
     const observedMax = Math.max(0, ...members.map((m) => observedBytesOf(m.obs, m.video.currentSrc)));
     const full = fullBytes.get(src) ?? observedMax;
 
-    const views = members.map((m) =>
+    // The claim: the shown copies. A video shown nowhere costs nothing in the claim.
+    const views = shown.map((m) =>
       videoBytes({
         kind: preloadKindOf(m.video),
         playing: !m.video.paused || m.video.errorCode === 4,
         observedBytes: observedBytesOf(m.obs, m.video.currentSrc),
         fullBytes: full,
-        visible: !m.video.hidden,
+        visible: true,
       }),
     );
-    const heaviest = views.reduce((best, cur) => (cur.perView > best.perView ? cur : best));
+    const none = videoBytes({ kind: "none", playing: false, observedBytes: 0, fullBytes: full, visible: false });
+    const heaviest = views.length > 0 ? views.reduce((best, cur) => (cur.perView > best.perView ? cur : best)) : none;
+    // The claim is per viewport, averaged over the viewports (as an image's is): each viewport loads its own shown copy, so a
+    // twin pair counts once, not twice. Bounded by the file's own length (perPlay), as the single-copy figure is.
+    const shownBytesAt = new Map<Seen, number>();
+    shown.forEach((m, i) => shownBytesAt.set(m, views[i].perView));
+    const claimPerView = Math.min(
+      heaviest.perPlay,
+      observations.length > 0 ? views.reduce((sum, v) => sum + v.perView, 0) / observations.length : 0,
+    );
 
-    const shown = members.filter((m) => !m.video.hidden);
+    // The hidden fix: one entry per viewport the video is in, shown or hidden. A hidden copy with no bytes is not reported.
+    const entries: HiddenEntry[] = [];
+    const copies: HiddenCopy[] = [];
+    for (const m of members) {
+      const viewport = { name: m.obs.viewport.name, width: m.obs.viewport.width };
+      if (!m.video.hidden) {
+        entries.push({ viewport, bytes: 0, inPanel: false, hover: false });
+        continue;
+      }
+      const bytes = hiddenBytesOf(m, shownAt.get(m.obs.viewport.name) ?? new Set<string>(), freshOf);
+      shownBytesAt.set(m, bytes);
+      if (bytes <= 0) continue;
+      const reason = m.video.hiddenReason ?? "display";
+      entries.push({ viewport, bytes, hidden: reason, inPanel: m.video.inPanel === true, hover: m.video.hover === true, unstable: m.video.unstable === "unknown" });
+      copies.push({ viewport: viewport.name, src: m.video.currentSrc, bytes, reason });
+    }
+    const hiddenBase = hiddenFixCore(entries, observations.length);
+    const hidden: VideoHiddenFix | undefined = hiddenBase !== undefined ? { ...hiddenBase, copies } : undefined;
+
+    const shownNow = shown.length > 0;
+    const info: string[] = [];
+    const handled = formatHandledNote(src, page);
+    if (handled !== undefined) info.push(handled);
     const knownWidth = shown.map((m) => m.video.videoWidth).find((w): w is number => w !== undefined && w > 0);
     const needs: WidthNeed[] = shown.map((m) => ({
       viewport: m.obs.viewport.name,
@@ -284,23 +404,22 @@ export function videoRecordsOf(
       boxWidth: m.video.renderedWidth,
       dpr: m.obs.viewport.dpr,
     }));
-    const info: string[] = [];
-    const handled = formatHandledNote(src, page);
-    if (handled !== undefined) info.push(handled);
     let sourceWidth = knownWidth;
     if (sourceWidth === undefined) {
       // Without the source width the widths are capped at the largest display need, which is all the page shows.
       sourceWidth = Math.max(1, ...shown.map((m) => Math.ceil(m.video.renderedWidth * m.obs.viewport.dpr)));
-      if (shown.length > 0) info.push("source width not read: widths are capped at the largest display need");
+      if (shownNow) info.push("source width not read: widths are capped at the largest display need");
     }
 
-    const belowFold = members.every((m) => !m.video.inFirstViewport);
-    const levers: VideoRecord["levers"] = { info };
-    if (heaviest.perView > 0 && (belowFold || ref.preload === "auto")) {
-      levers.loading = { perViewBytes: heaviest.perView, belowFold };
+    const belowFold = shown.every((m) => !m.video.inFirstViewport);
+    const levers: VideoRecord["levers"] = { info: shownNow ? info : [] };
+    if (shownNow) {
+      if (claimPerView > 0 && (belowFold || ref.preload === "auto")) {
+        levers.loading = { perViewBytes: claimPerView, belowFold };
+      }
+      if (handled === undefined && !hasAv1(ref)) levers.codec = { missing: "av1" };
+      if (ref.poster === undefined) levers.posterMissing = true;
     }
-    if (handled === undefined && !hasAv1(ref)) levers.codec = { missing: "av1" };
-    if (ref.poster === undefined) levers.posterMissing = true;
 
     const locator: ImageLocator = {
       component: source?.component.length ? source.component : componentsOf(ref.locator.owners),
@@ -333,14 +452,17 @@ export function videoRecordsOf(
         preload: ref.preload,
         ...(ref.poster !== undefined ? { poster: ref.poster } : {}),
       },
-      bytes: { ...heaviest, fullBytesKnown: false },
+      bytes: { ...heaviest, perView: claimPerView, fullBytesKnown: false },
       perViewport: members.map((m) => ({
         viewport: m.obs.viewport.name,
         boxWidth: m.video.renderedWidth,
         dpr: m.obs.viewport.dpr,
         inFirstViewport: m.video.inFirstViewport,
+        ...(m.video.hidden ? { hidden: m.video.hiddenReason ?? "display" } : {}),
+        bytes: shownBytesAt.get(m) ?? 0,
       })),
       levers,
+      ...(hidden !== undefined ? { hidden } : {}),
     };
     if (mode === "audit") record.widthOptions = widthOptions(needs, sourceWidth);
     else record.widths = clusterVideoWidths(needs, maxWidths, sourceWidth);

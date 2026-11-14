@@ -8,7 +8,7 @@ import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { MAX_INPUT_PIXELS, openImage } from "./image-open.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
-import { hiddenPagesLine, commentHints, hiddenSummaryLine, videoRowOf, videoTotalsLine } from "./hints.js";
+import { hiddenPagesLine, hiddenVideoPagesLine, commentHints, hiddenSummaryLine, videoRowOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
@@ -61,11 +61,13 @@ import { cacheScope, CACHE_DIR, CACHE_VERSION, contentHash, ResultCache, resizeS
 import {
   attachMediaResults,
   mediaAssetsOf,
+  NEVER_SHOWN,
   partitionByPolicy,
   probeLengths,
   refineAssetLength,
   runMediaPhase,
   skippedMedia,
+  splitNeverShown,
   type MediaAsset,
   type MediaResults,
 } from "./media-phase.js";
@@ -1137,6 +1139,8 @@ export interface ObservedImage {
   inPanel?: true;
   /** The element is shown by a :hover rule (a hover swap): it is not shown on load. Absent otherwise. */
   hover?: true;
+  /** Hidden at the snapshot and not re-read (past REVEAL_CAP): its reason is the snapshot's, unverified. */
+  unstable?: "unknown";
 }
 
 /**
@@ -1186,8 +1190,20 @@ export interface ObservedVideo {
   /** The intrinsic width of the file the browser plays (videoWidth). Absent when no metadata was loaded. */
   videoWidth?: number;
   inFirstViewport: boolean;
-  /** Not displayed: display none, visibility hidden, or no box. */
+  /**
+   * Not displayed at this viewport: display none, visibility hidden, opacity 0, a zero-size box, a box clipped by an overflow
+   * ancestor, or inside a closed details, a tab panel or a hidden subtree (see hiddenReasonOf). A light read reads the
+   * display, visibility and box only.
+   */
   hidden: boolean;
+  /** Why the video is not shown, when it is hidden (see HiddenReason). Absent for a shown video and in a light read. */
+  hiddenReason?: HiddenReason;
+  /** The video is in a tab panel, a hidden subtree, an aria-hidden one or a closed details, at this viewport. */
+  inPanel?: true;
+  /** The video is shown by a :hover rule (a hover swap), so it is not shown on load. */
+  hover?: true;
+  /** Hidden at the snapshot and not re-read (past REVEAL_CAP): its reason is the snapshot's, unverified. */
+  unstable?: "unknown";
   locator: ObservedLocator;
 }
 
@@ -1250,6 +1266,16 @@ export interface ViewportObservation {
   thirdPartyBlocked?: number;
   nextjs: boolean;
   images: ObservedImage[];
+  /**
+   * Candidates that were not re-read because the viewport was past REVEAL_CAP. Their hidden reason is the snapshot's, and
+   * each is flagged unstable: "unknown". Absent in a light read.
+   */
+  revealCapped?: number;
+  /**
+   * The hosts the egress proxy could not resolve during this page load (a name a browser may still load). Their pages' hidden
+   * copies are unverified (unstable: "unknown"). Absent when every name resolved.
+   */
+  unresolvedHosts?: string[];
   /** The elements with a CSS background image (none in a light read). */
   backgrounds?: ObservedBackground[];
   /** The page's <video> elements with a file source, in document order (none in a light read). */
@@ -1292,7 +1318,7 @@ function isNavigationError(err: unknown): boolean {
 }
 
 interface PageView {
-  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[]; videos: ObservedVideo[] };
+  seen: { nextjs: boolean; images: ObservedImage[]; backgrounds: ObservedBackground[]; videos: ObservedVideo[]; revealCapped: number };
   html: string;
   /** The LCP read before the scroll (fresh loads only). */
   lcp?: LcpObservation;
@@ -1375,10 +1401,27 @@ export function addMediaResponse(
   });
 }
 
+/**
+ * The most candidates per viewport that are re-read after a scroll (see readView): an opacity, clipped or zero-size copy.
+ * A candidate past the cap keeps its snapshot reason, and the page counts it (ViewportObservation.revealCapped).
+ */
+export const REVEAL_CAP = 60;
+
+/** The wait between the snapshot and the second read of a hidden candidate (see readView): it must span a toggle period. */
+export const REVEAL_STABLE_MS = 1000;
+
+/** The wait after the scroll pass, before the last read: a fade the scroll started has finished by then. */
+export const REVEAL_SETTLE_MS = 800;
+
+/** The candidates of a page's viewports that were past REVEAL_CAP (not re-read after a scroll), summed. */
+function revealCappedOf(observations: ViewportObservation[]): number {
+  return observations.reduce((sum, obs) => sum + (obs.revealCapped ?? 0), 0);
+}
+
 /** One read of the page as it stands: its images and whether it is a Next.js app. */
 async function readView(page: Page, light = false, withVideos = false): Promise<PageView> {
   const seen = await page.evaluate(
-    ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos }) => {
+    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait, revealSettle }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1668,6 +1711,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           if (OUT_OF_SCOPE(playing)) return;
           const cs = getComputedStyle(video);
           const rect = video.getBoundingClientRect();
+          const hiddenInfo = light ? undefined : hiddenReasonOf(video, rect);
           videos.push({
             index,
             currentSrc: shortUrl(playing),
@@ -1692,7 +1736,11 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
             renderedHeight: rect.height,
             ...(video.videoWidth > 0 ? { videoWidth: video.videoWidth } : {}),
             inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
-            hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
+            // A full read uses the same check as an image (hiddenReasonOf); a light read keeps the display and box check only.
+            hidden: hiddenInfo !== undefined || (light && (cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0)),
+            ...(hiddenInfo !== undefined
+              ? { hiddenReason: hiddenInfo.reason, ...(hiddenInfo.inPanel ? { inPanel: true as const } : {}), ...(hiddenInfo.hover ? { hover: true as const } : {}) }
+              : {}),
             locator: {
               testid: video.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
               selector: cssPath(video),
@@ -1701,9 +1749,138 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           });
         });
       }
-      return { nextjs, images, backgrounds, videos };
+      // Stability: a copy is hidden only when it reads hidden on every read: the snapshot, a read REVEAL_STABLE_MS later with no
+      // scroll, and a read after a scroll to it (the same reason each time). A copy that reads shown at any read is shown: a
+      // carousel slide that auto-advances, a crossfade, or a fade-in a scroll brings in. The candidates are every hidden copy
+      // (images, then videos, in document order); past revealCap per viewport a candidate keeps its snapshot reason and is
+      // flagged unstable: "unknown". The scroll pass is one pass over the candidates: each is brought to the centre of the
+      // window (the window only, so an overflow box such as a carousel track is not scrolled), read after two frames, and
+      // the window is put back at the end. A light read does none of this.
+      let revealCapped = 0;
+      if (!light) {
+        interface Candidate {
+          el: Element;
+          isVideo: boolean;
+          snap: { reason: HiddenReason; inPanel: boolean; hover: boolean };
+          apply: (info: { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined, unstable: boolean) => void;
+        }
+        const candidates: Candidate[] = [];
+        // A copy the scan's scroll pass saw visible at some step is shown (see MARK_VISIBLE_SCRIPT in measure.ts).
+        const seenVisible = (window as unknown as { __imgtuneSeen?: WeakSet<Element> }).__imgtuneSeen;
+        document.querySelectorAll("img").forEach((img, index) => {
+          const obj = images[index];
+          if (obj === undefined || obj.hidden === undefined) return;
+          if (seenVisible?.has(img) === true) {
+            delete obj.hidden;
+            delete obj.inPanel;
+            delete obj.hover;
+            return;
+          }
+          candidates.push({
+            el: img,
+            isVideo: false,
+            snap: { reason: obj.hidden, inPanel: obj.inPanel === true, hover: obj.hover === true },
+            apply: (info, unstable) => {
+              delete obj.hidden;
+              delete obj.inPanel;
+              delete obj.hover;
+              if (unstable) (obj as { unstable?: "unknown" }).unstable = "unknown";
+              if (info !== undefined) {
+                obj.hidden = info.reason;
+                if (info.inPanel) obj.inPanel = true;
+                if (info.hover) obj.hover = true;
+              }
+            },
+          });
+        });
+        document.querySelectorAll("video").forEach((video, index) => {
+          const obj = videos.find((v) => v.index === index);
+          if (obj === undefined || !obj.hidden || obj.hiddenReason === undefined) return;
+          if (seenVisible?.has(video) === true) {
+            delete obj.hiddenReason;
+            delete obj.inPanel;
+            delete obj.hover;
+            obj.hidden = false;
+            return;
+          }
+          candidates.push({
+            el: video,
+            isVideo: true,
+            snap: { reason: obj.hiddenReason, inPanel: obj.inPanel === true, hover: obj.hover === true },
+            apply: (info, unstable) => {
+              delete obj.hiddenReason;
+              delete obj.inPanel;
+              delete obj.hover;
+              obj.hidden = info !== undefined;
+              if (unstable) obj.unstable = "unknown";
+              if (info !== undefined) {
+                obj.hiddenReason = info.reason;
+                if (info.inPanel) obj.inPanel = true;
+                if (info.hover) obj.hover = true;
+              }
+            },
+          });
+        });
+        // Videos first: they are the heavy copies, so the cap never leaves a video unverified while images are checked.
+        candidates.sort((a, b) => Number(b.isVideo) - Number(a.isVideo));
+        const checked = candidates.slice(0, revealCap);
+        revealCapped = candidates.length - checked.length;
+        const x0 = window.scrollX;
+        const y0 = window.scrollY;
+        const frames = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        // Read 2: a second read, revealWait ms after the snapshot, with no scroll. Attribute changes in that window are recorded
+        // too: a toggle whose two reads happen to agree (a period that fits twice in the window) still shows as a change.
+        const touched: Node[] = [];
+        const watch = new MutationObserver((records) => {
+          for (const record of records) touched.push(record.target);
+        });
+        watch.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["style", "class", "hidden", "open", "aria-hidden"] });
+        await new Promise((resolve) => setTimeout(resolve, revealWait));
+        watch.disconnect();
+        // A change on the copy, its descendants, or one of its three nearest ancestors (a carousel's track or slide wrapper).
+        const changedNear = (el: Element): boolean =>
+          touched.some((node) => {
+            if (node === el || el.contains(node)) return true;
+            let up: Element | null = el;
+            for (let level = 0; level < 3 && up !== null; level++, up = up.parentElement) if (up === node) return true;
+            return false;
+          });
+        const second = checked.map((c) => hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
+        // Read 3: one pass, each candidate read after a scroll to it.
+        // Read 3a: each candidate right after its own scroll (a display that a scroll shows is read at its own position).
+        const third: ({ reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined)[] = [];
+        for (const c of checked) {
+          const box = c.el.getBoundingClientRect();
+          window.scrollBy(box.left + box.width / 2 - window.innerWidth / 2, box.top + box.height / 2 - window.innerHeight / 2);
+          await frames();
+          third.push(hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
+        }
+        // Read 3b: once, after the pass, so a CSS fade started by the scroll has finished (one wait for the whole pass).
+        await new Promise((resolve) => setTimeout(resolve, revealSettle));
+        const fourth = checked.map((c) => hiddenReasonOf(c.el, c.el.getBoundingClientRect()));
+        window.scrollTo(x0, y0);
+        checked.forEach((c, i) => {
+          const a = c.snap;
+          const b = second[i];
+          const t = third[i];
+          const f = fourth[i];
+          // Hidden only when every read is hidden with the same reason; any read that shows it, or a change of reason, is
+          // shown (a toggle, a fade, or a box a scroll brings in).
+          const stable =
+            b !== undefined &&
+            t !== undefined &&
+            f !== undefined &&
+            b.reason === a.reason &&
+            t.reason === a.reason &&
+            f.reason === a.reason &&
+            !changedNear(c.el);
+          c.apply(stable ? f : undefined, false);
+        });
+        for (const c of candidates.slice(revealCap)) c.apply(c.snap, true);
+      }
+      return { nextjs, images, backgrounds, videos, revealCapped };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_STABLE_MS, revealSettle: REVEAL_SETTLE_MS },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -2047,6 +2224,8 @@ async function readGroup(
   // costs BODY_READ_TIMEOUT_MS once per page, not once per viewport.
   let mediaDeadline: number | undefined;
   let blockedRequests = 0;
+  // The names the egress proxy could not resolve during this page load (see startEgressProxy).
+  const unresolvedHosts = new Set<string>();
   let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
   const failedSheets = new Set<string>();
@@ -2058,8 +2237,10 @@ async function readGroup(
   // Every request the browser makes goes through this proxy, so each redirect hop and each tunnel is checked at connect
   // time. Chromium gives the route handler no route for a redirect hop, so the route guard alone would miss them.
   const egress = await measure("egress proxy start", () =>
-    startEgressProxy(guard.policy, () => {
+    startEgressProxy(guard.policy, (host) => {
       blockedRequests++;
+      // A name the proxy could not resolve (not a refused address): the page's own scripts for it may not run here.
+      if (host !== undefined) unresolvedHosts.add(host);
     }),
   );
   try {
@@ -2094,6 +2275,13 @@ async function readGroup(
           blocked = /^https?:/i.test(url) ? await guard.isBlocked(url) : true;
         } catch {
           blocked = true;
+          // The guard could not resolve the name (it throws on a failed lookup, not on a refused address): a name a browser
+          // may still load (see unresolvedHosts).
+          try {
+            unresolvedHosts.add(new URL(url).hostname);
+          } catch {
+            // Not a URL the guard looked at.
+          }
         }
         if (blocked) {
           blockedRequests++;
@@ -2288,11 +2476,18 @@ async function readGroup(
             decoded.add(record);
             record.pixels = await measure("decode: pixel size", () => pixelSize(record.buffer as Buffer));
           }
+          // A page with a name the proxy could not resolve may not run its own scripts as a visitor's browser runs them: its
+          // hidden copies are not verified (unstable: "unknown"), and the page says which names (unresolvedHosts).
+          if (unresolvedHosts.size > 0) {
+            for (const image of seen.images) if (image.hidden !== undefined) image.unstable = "unknown";
+            for (const video of seen.videos) if (video.hidden && video.hiddenReason !== undefined) video.unstable = "unknown";
+          }
           outcomes.push({
             ok: true,
             value: {
               viewport,
               load: step === 0 ? "fresh" : "resized",
+              ...(unresolvedHosts.size > 0 ? { unresolvedHosts: [...unresolvedHosts].slice(0, 20) } : {}),
               status,
               finalUrl: page.url(),
               ...(step === 0 && loaded !== undefined ? { loadTimedOut: loaded.loadTimedOut } : {}),
@@ -2302,6 +2497,7 @@ async function readGroup(
               thirdPartyBlocked: thirdPartyBlocked - thirdBefore,
               nextjs: seen.nextjs,
               images: seen.images,
+              revealCapped: seen.revealCapped,
               backgrounds: seen.backgrounds,
               videos: seen.videos,
               // A copy: the page load's records keep growing for the viewports after this one.
@@ -3154,6 +3350,11 @@ export interface PageResult {
    * Absent when there are none.
    */
   hidden?: HiddenPage;
+  /**
+   * The candidates (an opacity, clipped or zero-size copy) of the viewports that were past REVEAL_CAP: not re-read after a
+   * scroll, so their hidden reason is the snapshot's. Absent when every candidate was re-read.
+   */
+  revealCapped?: number;
   /** Scanned with --harness: measured in isolation (the rung of every record is measured-harness). */
   harness?: true;
   /** Written once the page is done: a page without it (an interrupted run) is scanned again by --resume. */
@@ -3563,6 +3764,7 @@ export async function analysePage(
     images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
     ...(hiddenTotals !== undefined ? { hidden: hiddenTotals } : {}),
+    ...(revealCappedOf(input) > 0 ? { revealCapped: revealCappedOf(input) } : {}),
     ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
     ...(ctx.harness === true ? { harness: true as const } : {}),
   };
@@ -4222,7 +4424,9 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
     if (opts.quality !== true || opts.survey === true) {
       return { ...skippedMedia(sized, opts.survey === true ? "survey" : "quality off"), lengths };
     }
-    return await runMediaPhase(
+    // A video no viewport shows is not encoded: its record keeps the probe's bytes, and the reason is printed (see splitNeverShown).
+    const { encode, neverShown } = splitNeverShown(sized);
+    const encoded = await runMediaPhase(
       sized,
       {
         budget: opts.mediaBudget ?? DEFAULT_MEDIA_BUDGET,
@@ -4245,7 +4449,8 @@ async function mediaPhaseFor(assets: MediaAsset[], run: PageRun, opts: ScanOptio
         fetch: (url, maxBytes, hop) =>
           run.fetcher.get(url, { maxBytes: maxBytes ?? MAX_IMAGE_BYTES, allowPrivate, allowHop: hop?.allowHop, allowHopKey: hop?.page }),
       },
-    ).then((results) => ({ ...results, lengths }));
+    );
+    return { ...encoded, byKey: new Map([...encoded.byKey, ...skippedMedia(neverShown, NEVER_SHOWN).byKey]), lengths };
   } catch (err) {
     const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
     return { ...skippedMedia(assets, `media error: ${message}`), lengths };
@@ -4736,7 +4941,9 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   const plan = planQualityCap(results, maxQualities);
   if (plan !== undefined) lines.push("", mdCode(qualitiesLine(plan)));
   const hiddenLine = hiddenPagesLine(results);
-  if (hiddenLine !== undefined) lines.push("", mdCode(hiddenLine));
+  const hiddenVideoLine = hiddenVideoPagesLine(results);
+  const hiddenRows = [hiddenLine, hiddenVideoLine].flatMap((line) => (line !== undefined ? [mdCode(line)] : []));
+  if (hiddenRows.length > 0) lines.push("", ...hiddenRows);
   if (withHints) {
     const hints = commentHints(results, undefined, maxQualities);
     if (hints.lines.length > 0) {

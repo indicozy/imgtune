@@ -56,7 +56,7 @@ function endToEnd(headers: IncomingMessage["headers"] | OutgoingHttpHeaders): Ou
  * connect time by a checked lookup (every answer must be allowed, and the socket gets the checked answers, so both
  * families are tried as usual). A refused destination is reported through onRefused and yields undefined.
  */
-function connectionFor(hostname: string, policy: EgressPolicy, onRefused: () => void): { host: string; lookup?: LookupFunction } | undefined {
+function connectionFor(hostname: string, policy: EgressPolicy, onRefused: (host?: string) => void): { host: string; lookup?: LookupFunction } | undefined {
   const bare = hostname.replace(/^\[|\]$/g, "");
   if (isIP(bare) !== 0) {
     if (refusedAddress(bare, policy.allowPrivate)) {
@@ -68,7 +68,8 @@ function connectionFor(hostname: string, policy: EgressPolicy, onRefused: () => 
   const checked = guardedLookup(policy.resolver, policy.allowPrivate, policy.connectAddress);
   const lookup = ((name: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
     checked(name, options, (err: unknown, ...rest: unknown[]) => {
-      if (err) onRefused();
+      // The name a lookup could not resolve: the page may still load it in a browser (see the scan's unresolved hosts).
+      if (err) onRefused(name);
       callback(err, ...rest);
     });
   }) as unknown as LookupFunction;
@@ -88,7 +89,7 @@ function parseAuthority(authority: string): { host: string; port: number } | und
   }
 }
 
-export async function startEgressProxy(policy: EgressPolicy, onRefused: () => void = () => {}): Promise<EgressProxy> {
+export async function startEgressProxy(policy: EgressPolicy, onRefused: (host?: string) => void = () => {}): Promise<EgressProxy> {
   const sockets = new Set<Socket>();
   const track = (socket: Socket): void => {
     sockets.add(socket);

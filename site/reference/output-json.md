@@ -310,14 +310,19 @@ neither field and is read as having no media.
 
 | field | meaning |
 | --- | --- |
-| `videos[].bytes.perView` | bytes per view: an autoplay video counts its full file; `preload="auto"` counts the bytes seen (`observed`, browser-dependent); `metadata` or `none` counts 0 (`perViewBasis`: `full-file`, `observed`, `none`) |
+| `videos[].bytes.perView` | bytes per view, per viewport and averaged over the viewports (a twin pair counts once): each viewport's shown copy counts its full file (autoplay), the bytes seen (`preload="auto"`, `observed`, browser-dependent), or 0 (`metadata`, `none`). `perViewBasis` names the rule of the heaviest viewport |
 | `videos[].bytes.perPlay` | the full file, for every video (estimated when `fullBytesKnown` is `false`) |
 | `videos[].perViewport` | each viewport's box width and DPR, and whether it is in the first view |
 | `videos[].widths` (scan) / `widthOptions` (audit) | the kept widths (at most `--max-video-widths`) and the width each viewport gets; audit gives the plans at one, two and three widths |
 | `videos[].levers` | the audio track, the loading cost, a missing AV1 codec, a missing poster, and `info` (frame rate, duration, source width: informational, never in the claim) |
 | `videos[].estimate` | the chosen candidate: `codec`, `width`, `quality`, `bytes` (an estimate from 2 s samples; `measuredBytes` is what the encoder wrote, which differs for an NVENC encode) |
 | `videos[].steps` | the lever steps, which sum to the claimed saving |
-| `videos[].notEncoded` | why no encode was made (for example `over --media-budget` or `third-party blocked`) |
+| `videos[].notEncoded` | why no encode was made (for example `over --media-budget` or `third-party blocked`, or `never-shown` for a video no viewport shows) |
+| `videos[].hidden` (0.3) | loaded but not shown: the copies the browser fetched bytes for while hidden. The same fields as `images[].hidden` (`reasons`, `inPanel`, `viewports`, `shownIn`, `of`, `widths`, `action` as `responsive`, `lazy` or `never-shown-on-load`, `perViewBytes`). Not part of `bytes.perView`. Absent when no copy was fetched while hidden |
+| `videos[].hidden.copies` (0.3) | each hidden copy the browser fetched bytes for: `viewport`, `src` (its URL), `bytes` (what that viewport loaded for it) and `reason`. The copies' bytes at a viewport add up to the fix's `perViewBytes` times the viewport count, over the viewports they hide |
+| `videos[].perViewport[].hidden` (0.3) | the reason the video is not shown at that viewport (`display`, `visibility`, `opacity`, `zero-size`, `clipped`); absent when shown |
+| `videos[].perViewport[].bytes` (0.3) | what that viewport loads for the video: the claim's bytes when it is shown there, the hidden copy's bytes when it is not |
+| `revealCapped` (0.3) | the page's candidates (an opacity, clipped or zero-size copy) that were past 60 per viewport and were not re-read after a scroll: their reason is the snapshot's. Absent when all were re-read |
 
 Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
 

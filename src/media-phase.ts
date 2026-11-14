@@ -69,6 +69,8 @@ export interface MediaAsset {
   perViewBasis?: VideoBytes["perViewBasis"];
   /** The bytes already read, when the caller has them. Otherwise the phase fetches them (see MediaDeps.fetch). */
   buffer?: Buffer;
+  /** A video no viewport shows on load: its bytes are a loaded-but-not-shown fix, so it is never encoded (see splitNeverShown). */
+  neverShown?: true;
 }
 
 export interface MediaOptions {
@@ -194,9 +196,24 @@ export function mediaKeyOf(kind: MediaAsset["kind"], context: MediaAsset["contex
   return `${kind}|${context}|${widths.join(",")}|${url}`;
 }
 
+/** The notEncoded reason of a video no viewport shows on load (its text is in media-model.ts reasonText). */
+export const NEVER_SHOWN = "never-shown";
+
+/**
+ * The assets to encode, and the ones that are never shown on load. A never-shown video has no claim to encode (no viewport
+ * displays it), so it keeps its probe (per-play bytes) and is marked NEVER_SHOWN instead of taking an encode budget slot.
+ */
+export function splitNeverShown(assets: MediaAsset[]): { encode: MediaAsset[]; neverShown: MediaAsset[] } {
+  const encode: MediaAsset[] = [];
+  const neverShown: MediaAsset[] = [];
+  for (const asset of assets) (asset.neverShown === true ? neverShown : encode).push(asset);
+  return { encode, neverShown };
+}
+
 /** The asset of a `<video>` record: its widths are the kept widths of the scan. */
 export function videoAssetOf(record: VideoRecord): MediaAsset {
   const widths = record.widths?.widths ?? [];
+  const neverShown = record.hidden !== undefined && record.hidden.shownIn.length === 0;
   return {
     key: mediaKeyOf("video", "video", record.src, widths),
     url: record.src,
@@ -207,6 +224,7 @@ export function videoAssetOf(record: VideoRecord): MediaAsset {
     perView: record.bytes.perView,
     perPlay: record.bytes.perPlay,
     perViewBasis: record.bytes.perViewBasis,
+    ...(neverShown ? { neverShown: true as const } : {}),
   };
 }
 

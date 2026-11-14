@@ -268,14 +268,53 @@ export async function settleWithin(promises: Promise<void>[], ms: number): Promi
   clearTimeout(timer);
 }
 
-/** Scrolls one viewport height at a time until the bottom, so lazy images start loading. */
+/**
+ * Marks, on the page, every image and video that is visible at this scroll position: not display:none, not
+ * visibility hidden, opacity above 0, a box inside the viewport, and not outside an overflow-hidden ancestor (a carousel slide
+ * off its track is not visible). The marks live in window.__imgtuneSeen (a WeakSet of elements) for the page's read (see
+ * readView): a copy seen visible at any scroll step of the scan's own pass is shown, whatever its state at the read.
+ */
+export const MARK_VISIBLE_SCRIPT = `(() => {
+  const seen = window.__imgtuneSeen || (window.__imgtuneSeen = new WeakSet());
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  for (const el of document.querySelectorAll("img, video")) {
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden" || cs.visibility === "collapse") continue;
+    if (!(parseFloat(cs.opacity) > 0)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0 || r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
+    // The same rules as the hidden check (readView): content-visibility hidden, a closed details (except its summary), a
+    // display:none ancestor, and an overflow-hidden ancestor the box lies outside of.
+    let clipped = false;
+    for (let a = el.parentElement; a && !clipped; a = a.parentElement) {
+      const s = getComputedStyle(a);
+      if (s.display === "none" || s.getPropertyValue("content-visibility") === "hidden") clipped = true;
+      else if (a.tagName === "DETAILS" && !a.hasAttribute("open") && el.closest("summary") === null) clipped = true;
+      else if (/hidden|clip/.test(s.overflowX + " " + s.overflowY)) {
+        const b = a.getBoundingClientRect();
+        if (r.right <= b.left || r.left >= b.right || r.bottom <= b.top || r.top >= b.bottom) clipped = true;
+      }
+    }
+    if (!clipped) seen.add(el);
+  }
+})()`;
+
+/**
+ * Scrolls one viewport height at a time until the bottom, so lazy images start loading. After each step the copies visible at
+ * that position are marked (see MARK_VISIBLE_SCRIPT): a copy shown at any step of the pass is not a hidden copy.
+ */
 async function scrollThrough(page: Page): Promise<void> {
+  await page.evaluate(MARK_VISIBLE_SCRIPT);
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     const atBottom = await page.evaluate(() => {
       window.scrollBy(0, window.innerHeight);
       return window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
     });
     count("scroll steps");
+    // Two frames: the scroll events the step fired have run, so a state a scroll listener sets is the one marked.
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await page.evaluate(MARK_VISIBLE_SCRIPT);
     await new Promise((resolve) => setTimeout(resolve, SCROLL_STEP_WAIT_MS));
     if (atBottom) return;
   }

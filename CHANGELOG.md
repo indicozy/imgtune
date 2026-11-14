@@ -12,6 +12,12 @@
   reported as not measured, with one install note.
 - A hidden image that already has `loading="lazy"` is no longer advised to get it: the hint says it is within the browser's
   lazy-load distance and to render it on activation.
+- Loaded but not shown: videos. `scan` checks each `<video>` at each viewport with the image rules (display, visibility,
+  opacity, zero size, clipped, closed details, tab panels). A copy the browser fetched bytes for while not shown is reported
+  apart from the claim: a responsive twin (one `<video>` with `<source media>`), a lazy copy (`preload="none"`), or a copy
+  never shown on load (remove it, or load it on demand). It is in the Video section, the summary, the check report and the
+  PR comment, and in the JSON as `videos[].hidden` and `videos[].perViewport[].hidden`. A video no viewport shows is not
+  encoded (`never-shown`). See the Hidden images guide.
 - Resources. `scan` records every non-image response of a page and reports two checks in a Resources section (after
   Video, and in the JSON as `resources`): text served without compression (brotli-11 saving, grouped per host and content
   type), and favicons or apple-touch-icons over 10 KB or 30 KB (the saving from a 32 px or 180 px re-encode). `--no-resources`

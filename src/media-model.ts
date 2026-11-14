@@ -18,6 +18,7 @@ const REASON_TEXT: Record<string, string> = {
   "probe-failed": "ffprobe could not read the file",
   "score-failed": "the quality scorer failed",
   aborted: "aborted",
+  "never-shown": "never shown on load",
 };
 
 /** The text of a not-encoded reason (see REASON_TEXT). */
