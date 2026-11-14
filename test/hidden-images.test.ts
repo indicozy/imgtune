@@ -131,6 +131,21 @@ describe("buildImageRecords and the hints of a hidden image", () => {
     expect(hiddenLines({ reasons: ["opacity"], inPanel: false, viewports: ["mobile", "desktop"], shownIn: [], of: 2, widths: { mobile: 390, desktop: 1280 }, action: "never-shown-on-load", perViewBytes: 1 }).join("\n")).toMatch(/remove it, or load it on demand/);
   });
 
+  it("gives an animated image that is never shown on load no encode (the media phase reads only the records that have one)", () => {
+    const base = instanceOf(VIEWS.desktop, 7, true, 50_000);
+    const hiddenAnimated = { ...base, img: { ...base.img, inPanel: undefined }, animated: { format: "gif", frames: 10, durationMs: 1000, loop: 0, width: 300, height: 200, alpha: false } } as unknown as Instance;
+    const [record] = buildImageRecords({
+      pageUrl: "https://example.test/",
+      observations: [{ viewport: VIEWS.desktop, responses: new Map(), images: [] } as never],
+      instances: [hiddenAnimated],
+      refName: "desktop",
+      resolved: new Map(),
+      currentQuality: () => ({ quality: 75, assumed: true }),
+    });
+    expect(record.hidden?.action).toBe("never-shown-on-load");
+    expect(record.fix.animated).toBeUndefined();
+  });
+
   it("gives a hidden-only image a hint with no saving and no sizes line", () => {
     const hidden = { reasons: ["opacity"] as const, inPanel: false, viewports: ["desktop"], shownIn: [], of: 1, widths: { desktop: 1280 }, action: "never-shown-on-load" as const, perViewBytes: 10_000 };
     const record = { id: "h1", page: "https://example.test/", locator: { component: [], selector: "img#x", classes: "", loader: "plain-img" }, tunable: { width: true, quality: true }, current: { sizes: undefined, srcsetCandidates: [] }, perViewport: [], fix: { bytes: { saved: 0, addedForSharpness: 0 } }, evidence: { rung: "measured-page", notes: [] }, hidden } as unknown as ImageRecord;

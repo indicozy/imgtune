@@ -414,7 +414,7 @@ export function buildBackgroundRecords(input: {
       evidence: { rung: rungOfPage(pageUrl, input.harness), notes },
     };
     if (best !== undefined) record.fix.format = best;
-    if (animatedMember?.animated !== undefined) {
+    if (animatedMember?.animated !== undefined && hiddenFix?.shownIn.length !== 0) {
       record.fix.animated = {
         info: animatedMember.animated,
         context: "css-background",

@@ -548,10 +548,12 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const lossless = losslessServed(served, animatedMember !== undefined);
     const best = lossless ? (saved > 0 ? "avif" : served) : served;
 
+    // A hidden fix first: an element never shown on load gets no animated encode either (its bytes are not a saving).
+    const hiddenFix = hiddenFixOf(members, viewportCount);
     const fix: ImageFix = { bytes: { saved: savedEff, addedForSharpness, sizes: savedSizesEff, quality: savedEff - savedSizesEff } };
     if (member.cdnQuality !== undefined) fix.cdnQuality = { ...member.cdnQuality };
     if (member.formatAuto === true && lossless) fix.formatHandled = true;
-    if (animatedMember?.animated !== undefined) {
+    if (animatedMember?.animated !== undefined && hiddenFix?.shownIn.length !== 0) {
       fix.animated = {
         info: animatedMember.animated,
         context: "img",
@@ -621,7 +623,6 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       if (m.qualityInfo?.target === undefined || m.format === undefined) continue;
       own.set(m.format, Math.max(own.get(m.format) ?? -Infinity, m.qualityInfo.target));
     }
-    const hiddenFix = hiddenFixOf(members, viewportCount);
     if (hiddenFix !== undefined) record.hidden = hiddenFix;
     targets.set(record, own);
     records.push(record);
