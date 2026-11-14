@@ -9,7 +9,7 @@ import { ResultCache } from "../src/result-cache.js";
 import { parseScanArgs, DEFAULT_SVG_BUDGET } from "../src/remote.js";
 import type { ImageRecord } from "../src/images.js";
 import type { PageResult } from "../src/remote.js";
-import { applyVector, runVectorPhase, type VectorRun } from "../src/vector-phase.js";
+import { applyVector, FlatBuffers, runVectorPhase, type VectorRun } from "../src/vector-phase.js";
 import { VECTOR_BAR, traceSvg } from "../src/vector-art.js";
 import { gradientNoise, rawToPng } from "./image-fixtures.js";
 
@@ -185,5 +185,47 @@ describe("runVectorPhase", () => {
     const a = await traceSvg(logo);
     const b = await traceSvg(logo);
     expect(a).toBe(b);
+  });
+});
+
+describe("FlatBuffers: the browser's bytes for the vector check", () => {
+  it("keeps the largest files up to its capacity, and gives back what it kept", () => {
+    const store = new FlatBuffers(2);
+    const a = Buffer.from("a");
+    const b = Buffer.from("b");
+    const c = Buffer.from("c");
+    store.offer("https://site.test/a.png", a, 100);
+    store.offer("https://site.test/b.png", b, 300);
+    store.offer("https://site.test/c.png", c, 50); // smaller than both: not kept
+    expect(store.get("https://site.test/a.png")).toBe(a);
+    expect(store.get("https://site.test/b.png")).toBe(b);
+    expect(store.get("https://site.test/c.png")).toBeUndefined();
+    store.offer("https://site.test/d.png", c, 200); // larger than a: a goes
+    expect(store.get("https://site.test/a.png")).toBeUndefined();
+    expect(store.get("https://site.test/d.png")).toBe(c);
+  });
+
+  it("keeps nothing with no capacity, and nothing for an absent buffer", () => {
+    const none = new FlatBuffers(0);
+    none.offer("https://site.test/a.png", Buffer.from("a"), 100);
+    expect(none.get("https://site.test/a.png")).toBeUndefined();
+    const store = new FlatBuffers(1);
+    store.offer("https://site.test/b.png", undefined, 100);
+    expect(store.get("https://site.test/b.png")).toBeUndefined();
+  });
+
+  it("traces the browser's bytes when they are kept, and does not fetch them", async () => {
+    const logo = await sharp(Buffer.from(LOGO_SVG)).png().toBuffer();
+    const store = new FlatBuffers(5);
+    store.offer("https://site.test/k.png", logo, logo.length);
+    const fetch = vi.fn(async () => undefined);
+    const run = await runVectorPhase(
+      [pageOf([flatRecord("k", "https://site.test/k.png", logo.length)])],
+      { budget: 5, survey: false, quality: true, outDir: join(tmpdir(), "imgtune-flatbuf-test"), cwd: tmpdir(), log: () => undefined },
+      { fetch: async (url) => store.get(url) ?? (await fetch(url)) },
+    );
+    expect(run.byUrl.get("https://site.test/k.png")?.passed).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    await rm(join(tmpdir(), "imgtune-flatbuf-test"), { recursive: true, force: true });
   });
 });
