@@ -13,6 +13,11 @@ import { countRanges, detectFormat, intersectRanges, inRanges, parseSfnt, toSfnt
 /** Fonts above this size are not subsetted or re-encoded within the per-resource budget. */
 const MEASURE_MAX_BYTES = 12 * 1024 * 1024;
 /**
+ * The subset is cut in WASM (harfbuzz) only up to this size: a big CJK face takes seconds to subset, and the scaled estimate
+ * (the share of code points kept, of the WOFF2 size) agrees with a measured subset on the census fonts (within 10%).
+ */
+const SUBSET_MEASURE_MAX_BYTES = 2 * 1024 * 1024;
+/**
  * WOFF2 is measured (brotli 11 in WASM, about 3 s for 0.6 MB, about 1 s for 0.25 MB) only up to this size. Above it the
  * size is estimated from the ratio of a typical WOFF2. On the census fonts a sfnt compresses to 0.37–0.56 of its size.
  */
@@ -208,7 +213,7 @@ async function inspect(r: ResourceRecord, ctx: PageContext, codepoints: Set<numb
     const keep = intersectRanges(info.ranges, toRanges(blocks));
     const kept = countRanges(keep);
     if (kept > 0 && kept < info.codepoints) {
-      if (sfnt.length <= MEASURE_MAX_BYTES) {
+      if (sfnt.length <= SUBSET_MEASURE_MAX_BYTES) {
         // The sfnt subset is fast; only its WOFF2 encode is slow, so that is measured for small subsets only.
         let text = "";
         for (const [a, b] of keep) for (let cp = a; cp <= b; cp++) text += String.fromCodePoint(cp);

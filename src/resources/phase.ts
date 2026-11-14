@@ -3,6 +3,7 @@
 // link, or /favicon.ico when none is declared) are fetched here, under the run's third-party policy, so the favicon
 // analyzer sees them the way a first visit would.
 import type { Fetcher } from "../fetch.js";
+import { measure } from "../timing.js";
 import type { ResultCache } from "../result-cache.js";
 import { isFirstParty, isThirdPartyBlocked, type ThirdPartyPolicy } from "../third-party.js";
 import type { Viewport } from "../types.js";
@@ -139,7 +140,7 @@ export async function runPhaseWith(analyzers: ResourceAnalyzer[], views: Resourc
         if (wanted.length === 0) continue;
         let found: ResourceFinding[] = [];
         try {
-          found = await analyzer.analyze(wanted, ctx);
+          found = await measure(`resources ${analyzer.kind}`, () => analyzer.analyze(wanted, ctx));
         } catch {
           found = [];
         }
