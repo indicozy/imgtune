@@ -317,7 +317,9 @@ neither field and is read as having no media.
 | `videos[].levers` | the audio track, the loading cost, a missing AV1 codec, a missing poster, and `info` (frame rate, duration, source width: informational, never in the claim) |
 | `videos[].estimate` | the chosen candidate: `codec`, `width`, `quality`, `bytes` (an estimate from 2 s samples; `measuredBytes` is what the encoder wrote, which differs for an NVENC encode) |
 | `videos[].steps` | the lever steps, which sum to the claimed saving |
-| `videos[].notEncoded` | why no encode was made (for example `over --media-budget` or `third-party blocked`) |
+| `videos[].notEncoded` | why no encode was made (for example `over --media-budget` or `third-party blocked`, or `never-shown` for a video no viewport shows) |
+| `videos[].hidden` (0.3) | loaded but not shown: the copies the browser fetched bytes for while hidden. The same fields as `images[].hidden` (`reasons`, `inPanel`, `viewports`, `shownIn`, `of`, `widths`, `action` as `responsive`, `lazy` or `never-shown-on-load`, `perViewBytes`). Not part of `bytes.perView`. Absent when no copy was fetched while hidden |
+| `videos[].perViewport[].hidden` (0.3) | the reason the video is not shown at that viewport (`display`, `visibility`, `opacity`, `zero-size`, `clipped`); absent when shown |
 
 Media results are cached by URL and content hash. Cache version 3 (0.2.0) does not reuse 0.1 cache entries.
 
