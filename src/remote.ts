@@ -28,7 +28,7 @@ import { adapterFor, formatAutoOf, originalOf, type QualityParam } from "./loade
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwnerChain, resolveOwners } from "./locate.js";
-import { buildImageRecords, hasFix, hiddenTotalsOf, rungOfPage, type HiddenPage, type ImageRecord, type ResolvedSource } from "./images.js";
+import { buildImageRecords, hasFix, hiddenTotalsOf, isPlainNoSrcset, rungOfPage, type HiddenPage, type ImageRecord, type ResolvedSource } from "./images.js";
 import { animationOf, type AnimationInfo } from "./animated.js";
 import { fullBytesOf, SCAN_MAX_VIDEO_WIDTHS, videoRecordsOf, withPosterImages, type VideoRecord } from "./video-analysis.js";
 import {
@@ -235,7 +235,7 @@ function decidingRule(robotsTxt: string, target: string): RobotsRule | undefined
 // ---------------------------------------------------------------------------------------------------------------------
 
 
-import { UNDERSIZED_RATIO, isUndersized, neededWidth, rightCandidate, undersizedProposal } from "./candidates.js";
+import { UNDERSIZED_RATIO, isUndersized, neededWidth, rightCandidate, srcsetWidthLabel, srcsetWidthsOf, undersizedProposal } from "./candidates.js";
 export { isUndersized, neededWidth, rightCandidate } from "./candidates.js";
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -3262,6 +3262,8 @@ export interface GroupReport {
   members: number;
   samples: string[];
   hint?: string;
+  /** Plain images with no srcset (see isPlainNoSrcset): the variant widths to serve, in place of a sizes change. */
+  srcset?: { widths: number[] };
 }
 
 /**
@@ -3526,7 +3528,7 @@ function toReport(inst: Instance): ImageReport {
  * Groups by saving: the group's exact + est. bytes per page view, summed over the page's viewports and divided by their
  * count (as pageNumbers does), with two sample URLs and a sizes hint.
  */
-export function groupReports(instances: Instance[], viewportCount: number): GroupReport[] {
+export function groupReports(instances: Instance[], viewportCount: number, framework = false): GroupReport[] {
   const byKey = new Map<string, Instance[]>();
   for (const inst of instances) {
     // A hidden file is not a group member: its saving is none, and its size is not a size the page shows.
@@ -3538,11 +3540,15 @@ export function groupReports(instances: Instance[], viewportCount: number): Grou
   const reports: GroupReport[] = [];
   for (const [key, members] of byKey) {
     const sizes = members[0].img.sizes;
+    // Plain images with no srcset: a sizes proposal does nothing there, so the group is told the variant widths instead.
+    const plainGroup = members.every((m) => isPlainNoSrcset(m.kind, m.img.srcset, m.loader, framework));
+    const naturals = members.map((m) => m.pixelWidth).filter((w) => w > 0);
+    const srcsetWidths = plainGroup ? srcsetWidthsOf(members.map((m) => m.needed), naturals.length > 0 ? Math.min(...naturals) : undefined) : [];
     const points: SizePoint[] = members
       .filter((m) => m.renderedWidth >= 1)
       .map((m) => ({ viewportWidth: m.viewport.width, renderedWidth: m.renderedWidth, mobile: m.viewport.mobile }));
     // A proposal that leaves any measured viewport undersized is not a saving: it is dropped, with its exact bytes.
-    const proposed = deriveSizes(points);
+    const proposed = plainGroup ? undefined : deriveSizes(points);
     const undersized =
       proposed === undefined
         ? undefined
@@ -3577,6 +3583,7 @@ export function groupReports(instances: Instance[], viewportCount: number): Grou
       members: new Set(members.map((m) => m.element)).size,
       samples,
       hint: suggestedSizes && suggestedSizes !== sizes ? `set sizes="${suggestedSizes}"` : undefined,
+      ...(srcsetWidths.length > 0 ? { srcset: { widths: srcsetWidths } } : {}),
     });
   }
   return reports.sort((a, b) => b.savedBytes - a.savedBytes).slice(0, TOP_GROUPS);
@@ -3719,6 +3726,7 @@ export async function analysePage(
     refName,
     resolved: sources,
     currentQuality,
+    nextjs: observations.some((o) => o.nextjs),
   });
   // A proposed sizes is a saving only when its predicted outcome saves more bytes than it adds (sizes-outcome.ts).
   const widths = new Map(observations.map((o) => [o.viewport.name, o.viewport.width]));
@@ -3752,7 +3760,7 @@ export async function analysePage(
     ...(resources !== undefined ? { resources } : {}),
     perViewport,
     page: ctx.aggressive ? { ...withoutAggressive, aggressiveExactEstPct } : withoutAggressive,
-    groups: measure("aggregate", () => groupReports(instances, observations.length)),
+    groups: measure("aggregate", () => groupReports(instances, observations.length, observations.some((o) => o.nextjs))),
     counts: {
       images: elements.size,
       qualityNA: naElements.size,
@@ -4776,7 +4784,8 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
       const loader = g.loader ? `  loader: ${safeText(g.loader)}` : "";
       const sizes = g.sizes === undefined ? "no sizes" : safeText(g.sizes);
       const suggested = g.suggestedSizes === undefined ? "-" : safeText(g.suggestedSizes);
-      lines.push(`    ${sizes} -> ${suggested}  saves ${kb(g.savedBytes)}/view${loader}${hint}${qualityHint}`);
+      const head = g.srcset !== undefined ? srcsetGroupText(g.srcset.widths) : `${sizes} -> ${suggested}`;
+      lines.push(`    ${head}  saves ${kb(g.savedBytes)}/view${loader}${hint}${qualityHint}`);
     }
   }
   // The Video section: the page's <video> files, per view and per play, with each one's encode or the reason it has none.
@@ -4793,6 +4802,11 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
 
 /** The most loaded-but-not-shown images the page's text output lists (the rest are in the hints). */
 const HIDDEN_ROWS = 10;
+
+/** The top-groups line of a plain image group with no srcset: what to serve, in place of a sizes change. */
+export function srcsetGroupText(widths: number[]): string {
+  return `no srcset -> serve ${srcsetWidthLabel(widths)} + srcset/sizes`;
+}
 
 /** Per-site line for hosts with two or more scanned pages. */
 export function renderScan(results: PageResult[], aggressive: boolean, hintsFile?: (result: PageResult) => string, maxQualities?: number): string {
@@ -4914,8 +4928,8 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
       lines.push(mdRow(["current sizes", "suggested", "saves KB/view", "loader", "hint"], 5));
       lines.push(mdRow(["---", "---", "---:", "---", "---"], 5));
       for (const g of result.groups.slice(0, SUMMARY_GROUPS)) {
-        const current = g.sizes === undefined ? "no sizes" : mdCode(g.sizes);
-        const suggested = g.suggestedSizes === undefined ? "-" : mdCode(g.suggestedSizes);
+        const current = g.srcset !== undefined ? "no srcset" : g.sizes === undefined ? "no sizes" : mdCode(g.sizes);
+        const suggested = g.srcset !== undefined ? mdText(`serve ${srcsetWidthLabel(g.srcset.widths)} + srcset/sizes`) : g.suggestedSizes === undefined ? "-" : mdCode(g.suggestedSizes);
         const loader = g.loader ? mdCode(g.loader) : "-";
         const hint = [g.hint, g.qualityHint].filter((h): h is string => h !== undefined).map((h) => mdCode(h)).join("; ");
         lines.push(mdRow([current, suggested, `${kbNumber(g.savedBytes)}${g.estApprox === true ? APPROX_MARK : ""}`, loader, hint || "-"], 5));

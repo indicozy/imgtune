@@ -249,7 +249,12 @@ export function compareImage(
     `  hint   sizes ${sizesBefore} -> ${sizesAfter}  saves ${kb(savedBefore)} -> ${kb(savedAfter)}${reused}`,
   );
   // Predicted (the hint, per view, averaged over viewports) next to measured (served bytes at the same viewports).
-  const split = before.fix.bytes.sizes !== undefined ? ` (sizes ${kb(before.fix.bytes.sizes)}, quality ${kb(before.fix.bytes.quality ?? 0)})` : "";
+  const split =
+    before.fix.bytes.resize !== undefined
+      ? ` (sizes ${kb(before.fix.bytes.sizes ?? 0)}, resize ${kb(before.fix.bytes.resize)}, quality ${kb(before.fix.bytes.quality ?? 0)})`
+      : before.fix.bytes.sizes !== undefined
+        ? ` (sizes ${kb(before.fix.bytes.sizes)}, quality ${kb(before.fix.bytes.quality ?? 0)})`
+        : "";
   const predicted = `predicted ${saving(savedBefore)}/view${split}`;
   const mean = measured.length > 0 ? measured.reduce((sum, b) => sum + b, 0) / measured.length : undefined;
   if (mean !== undefined) lines.push(`  ${predicted}; measured ${saving(mean)}/view (served bytes, mean of ${measured.length} viewport(s))`);

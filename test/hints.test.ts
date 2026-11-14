@@ -1369,6 +1369,7 @@ describe("plain images with no srcset: resized variants, booked as resize", () =
   it("keeps the loader's own advice for a known loader with no srcset", () => {
     const known = plain("k1");
     known.locator.loader = "next-default";
+    known.current = { ...known.current, sizes: "33vw" };
     known.fix = { ...record("k1").fix, bytes: { saved: 12 * 1024, addedForSharpness: 0, sizes: 12 * 1024, quality: 0 } };
     const text = renderHint(hintsOf(page([known]))[0], 1).join("\n");
     expect(text).toContain("sizes 33vw -> calc((100vw - 24px - 8px) / 2)");

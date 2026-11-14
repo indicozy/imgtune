@@ -11,6 +11,7 @@ import { cleanLocate } from "./locate-join.js";
 import type { OwnerSource } from "./locate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
 import { fitSizes, maxPerWidth, type SizePoint } from "./group-sizes.js";
+import { srcsetWidthLabel, srcsetWidthsOf } from "./candidates.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine, type QualityCapPlan } from "./qualities-cap.js";
 import type { CandidateResult, MediaCodec } from "./media-encode.js";
 import { reasonText, type WidthPlan } from "./media-model.js";
@@ -69,6 +70,11 @@ export interface Hint {
   find?: { component: string; glob: string };
   /** A CSS background layer: there is no sizes attribute, so the fix is a file at the width, or image-set(). */
   background?: true;
+  /**
+   * A plain image with no srcset (see isPlainNoSrcset): serve variants at these device-pixel widths and add a srcset and a
+   * sizes. `largest` is the largest device px any viewport needs; `sizes` is the measured value, when one passed the check.
+   */
+  srcset?: { widths: number[]; largest: number; sizes?: string };
   /** How the file:line was found (see ImageLocator.via). */
   via?: string;
   /** The project owner chain above the element, nearest first; its first entry is file:line (see ImageLocator.ownerChain). */
@@ -97,7 +103,8 @@ export interface Hint {
     void?: boolean;
   };
   format?: { current?: string; best?: string };
-  bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number };
+  /** `saved` = sizes + resize + quality (see ImageFix.bytes). `resize` is set only for a plain image with no srcset. */
+  bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number; resize?: number };
   /** The element is the page's largest contentful paint at some viewport (`lcpViewports`): sorted first (see lcp.ts). */
   lcp?: true;
   lcpViewports?: string[];
@@ -227,7 +234,7 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
       // A raise (the list has no lower value for this usage) adds bytes: its quality saving is then none, not negative.
       bytes:
         capped !== undefined
-          ? { ...record.fix.bytes, saved: (record.fix.bytes.sizes ?? 0) + Math.max(0, capped.saved), quality: Math.max(0, capped.saved) }
+          ? { ...record.fix.bytes, saved: (record.fix.bytes.sizes ?? 0) + (record.fix.bytes.resize ?? 0) + Math.max(0, capped.saved), quality: Math.max(0, capped.saved) }
           : { ...record.fix.bytes },
       rung: record.evidence.rung,
       notes: record.evidence.notes,
@@ -268,6 +275,7 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
     });
     if (measured.length > 0) hint.measured = measured;
     if (record.fix.width !== undefined) hint.width = record.fix.width;
+    if (record.fix.srcset !== undefined) hint.srcset = { ...record.fix.srcset };
     const cdn = record.fix.cdnQuality;
     if (cdn !== undefined) {
       hint.qualityNote = cdn.handled
@@ -384,12 +392,35 @@ export function qualityTarget(quality: NonNullable<Hint["quality"]>): string {
   return quality.snapFrom !== undefined ? ` q${quality.snapFrom} -> ${quality.target}${allowed}` : ` -> ${quality.target}${allowed}`;
 }
 
+/** The srcset advice of a plain image with no srcset: the variants to serve, and the srcset and sizes to add. */
+export function srcsetLineOf(srcset: NonNullable<Hint["srcset"]>): string {
+  const candidates = srcset.widths.map((w) => `… ${w}w`).join(", ");
+  const sizes = srcset.sizes !== undefined ? safeText(srcset.sizes) : "the rendered CSS width per viewport";
+  return `srcset: no srcset today; serve variants at ${srcsetWidthLabel(srcset.widths)} (largest needed ${srcset.largest} px) and add srcset="${candidates}" sizes="${sizes}"`;
+}
+
+/**
+ * The srcset advice of a call site, when every image in it is a plain image with no srcset: the union of their widths (at
+ * most the variant limit), the largest need, and the first measured sizes value. Undefined for any other group.
+ */
+export function groupSrcsetOf(group: HintGroup): NonNullable<Hint["srcset"]> | undefined {
+  const all = group.hints.flatMap((h) => (h.srcset !== undefined ? [h.srcset] : []));
+  if (all.length === 0 || all.length !== group.hints.length) return undefined;
+  const widths = srcsetWidthsOf(all.flatMap((s) => s.widths), undefined);
+  const sizes = all.find((s) => s.sizes !== undefined)?.sizes;
+  return { widths, largest: Math.max(...all.map((s) => s.largest)), ...(sizes !== undefined ? { sizes } : {}) };
+}
+
 /**
  * The saving of one image or one call site, per view, split into its parts when the scan gave them: "saves 15 KB/view =
  * sizes 12 KB + quality 3 KB". A quality part that a snap voided is printed as void, not as a number.
  */
 export function savesText(hint: Hint): string {
-  const { saved, sizes, quality } = hint.bytes;
+  const { saved, sizes, quality, resize } = hint.bytes;
+  if (resize !== undefined) {
+    const parts = [sizes !== undefined && sizes > 0 ? `sizes ${kb(sizes)}` : undefined, `resize ${kb(resize)}`, (quality ?? 0) > 0 ? `quality ${kb(quality ?? 0)}` : undefined];
+    return `saves ${kb(saved)}/view = ${parts.filter((p): p is string => p !== undefined).join(" + ")}`;
+  }
   if (sizes === undefined) return `saves ${kb(saved)}/view`;
   const qualityPart = hint.quality?.void === true ? "quality void after snap" : `quality ${kb(quality ?? 0)}`;
   return `saves ${kb(saved)}/view = sizes ${kb(sizes)} + ${qualityPart}`;
@@ -514,7 +545,8 @@ export function renderHint(hint: Hint, rank: number): string[] {
     return lines;
   }
   if (hint.width !== undefined) lines.push(`   width ${hint.width}px (device pixels needed)`);
-  else if (hint.animated === undefined || hint.sizes.proposed !== undefined) {
+  if (hint.srcset !== undefined) lines.push(`   ${srcsetLineOf(hint.srcset)}`);
+  else if (hint.width === undefined && (hint.animated === undefined || hint.sizes.proposed !== undefined)) {
     lines.push(`   sizes ${safeText(hint.sizes.current ?? "none")} -> ${safeText(hint.sizes.proposed ?? "-")} (${hint.sizes.basis ?? "-"})`);
   }
   if (hint.sizesAuto !== undefined) lines.push(`   alternative: sizes="${safeText(hint.sizesAuto)}" (Chrome, Edge, Firefox 150+; Safari falls back to ${safeText(hint.sizes.proposed ?? "-")})`);
@@ -697,6 +729,7 @@ export function groupSizesOf(group: HintGroup): GroupSizes | undefined {
  * otherwise the pages' values: when they differ, the component is shared and each caller passes its own sizes.
  */
 export function combinedSizes(group: HintGroup): string {
+  if (groupSrcsetOf(group) !== undefined) return "no sizes: the images have no srcset (see srcset)";
   const fitted = groupSizesOf(group);
   if (fitted?.mode === "one") {
     return `${fitted.value} (one formula over ${group.hints.length} image(s), checked at ${fitted.views} viewport(s): never below a measured width)`;
@@ -719,7 +752,14 @@ export function groupHeadLine(group: HintGroup, rank: number): string {
       : JSON.stringify(first.component[0] ?? first.selector);
   const name = first.file !== undefined && first.component[0] !== undefined ? ` (${JSON.stringify(first.component[0])})` : "";
   const sizes = group.hints.every((h) => h.bytes.sizes !== undefined) ? group.hints.reduce((sum, h) => sum + (h.bytes.sizes ?? 0), 0) : undefined;
-  const split = sizes !== undefined ? ` = sizes ${kb(sizes)} + quality ${kb(group.saved - sizes)}` : "";
+  const resize = group.hints.every((h) => h.bytes.resize !== undefined) ? group.hints.reduce((sum, h) => sum + (h.bytes.resize ?? 0), 0) : undefined;
+  let split = sizes !== undefined ? ` = sizes ${kb(sizes)} + quality ${kb(group.saved - sizes)}` : "";
+  if (resize !== undefined) {
+    const sized = sizes ?? 0;
+    const quality = Math.max(0, group.saved - sized - resize);
+    const parts = [sized > 0 ? `sizes ${kb(sized)}` : undefined, `resize ${kb(resize)}`, quality > 0 ? `quality ${kb(quality)}` : undefined];
+    split = ` = ${parts.filter((p): p is string => p !== undefined).join(" + ")}`;
+  }
   const lcp = group.hints.find((h) => h.lcp === true);
   const lcpPrefix = lcp !== undefined ? `LCP image (${(lcp.lcpViewports ?? []).map((v) => safeText(v)).join(", ")}): ` : "";
   return `${rank}. ${lcpPrefix}${where}${name}  ${group.hints.length} image(s), ${group.pages.length} page(s)  saves ${kb(group.saved)}/view${split}`;
@@ -754,7 +794,8 @@ export function renderGroup(group: HintGroup, rank: number): string[] {
     }
   }
   const fitted = groupSizesOf(group);
-  lines.push(`   sizes: ${safeText(combinedSizes(group))}`);
+  const srcset = groupSrcsetOf(group);
+  lines.push(srcset !== undefined ? `   ${srcsetLineOf(srcset)}` : `   sizes: ${safeText(combinedSizes(group))}`);
   for (const page of group.pages) {
     const mine = group.hints.filter((h) => h.page === page);
     const current = [...new Set(mine.map((h) => h.sizes.current ?? "none"))].map((v) => JSON.stringify(safeText(v))).join(", ");
@@ -1304,7 +1345,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
   if (args.top !== undefined) {
     const top = groupHints(filtered).slice(0, args.top);
     if (args.format === "json") {
-      return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g) })), qualities: planJson(plan) }, null, 2)}\n`, exitCode: 0 };
+      return { output: `${JSON.stringify({ top: top.map((g, i) => ({ rank: i + 1, key: g.key, saved: g.saved, images: g.hints.length, pages: g.pages.map((p) => pathOf(p)), file: g.hints[0].file ?? null, line: g.hints[0].line ?? null, component: g.hints[0].component, sizes: combinedSizes(g), srcset: groupSrcsetOf(g) ?? null })), qualities: planJson(plan) }, null, 2)}\n`, exitCode: 0 };
     }
     return { output: `${notes.length > 0 ? `${notes.join("\n")}\n` : ""}${renderTop(top)}${renderVideoHints(videos)}${renderResourceHints(results)}`, exitCode: 0 };
   }
@@ -1335,6 +1376,7 @@ export async function hintsCommand(argv: string[], cwd: string): Promise<{ outpu
           saved: group.saved,
           sizes: combinedSizes(group),
           sizesFitted: groupSizesOf(group) ?? null,
+          srcset: groupSrcsetOf(group) ?? null,
           callers: callerMapOf(group) ?? null,
           ids: group.hints.map((h) => h.id),
           hints: group.hints,
@@ -1416,9 +1458,11 @@ function commentLine(hint: Hint): string {
       : quoted(hint.component[0] ?? hint.selector);
   const component = hint.file !== undefined && hint.component[0] !== undefined ? ` (${quoted(hint.component[0])})` : "";
   const sizes =
-    hint.width !== undefined
-      ? `width ${hint.width}px`
-      : `sizes ${quoted(hint.sizes.current ?? "none")} -> ${quoted(hint.sizes.proposed ?? "-")}`;
+    hint.srcset !== undefined
+      ? `serve variants at ${srcsetWidthLabel(hint.srcset.widths)}`
+      : hint.width !== undefined
+        ? `width ${hint.width}px`
+        : `sizes ${quoted(hint.sizes.current ?? "none")} -> ${quoted(hint.sizes.proposed ?? "-")}`;
   const parts: (string | undefined)[] = [
     hint.lcp === true ? `LCP image (${(hint.lcpViewports ?? []).map((v) => quoted(v)).join(", ")})` : undefined,
     `${savesText(hint)}, +${kb(hint.bytes.addedForSharpness)} sharpness`,

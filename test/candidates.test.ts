@@ -85,6 +85,8 @@ describe("isPlainNoSrcset (the gate of the no-srcset advice)", () => {
     expect(isPlainNoSrcset("plain", "", "plain-img", false)).toBe(true);
     expect(isPlainNoSrcset("plain", "", "cdn:images.example.net", false)).toBe(true);
     expect(isPlainNoSrcset("plain", "", "unknown", false)).toBe(true);
+    // Instance.loader names an origin no adapter matched "generic" (the locator names it plain-img or cdn:<host>).
+    expect(isPlainNoSrcset("plain", "", "generic", false)).toBe(true);
   });
 
   it("is false for a srcset image, a known loader, a non-plain kind, or a detected Next.js page", () => {

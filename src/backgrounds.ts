@@ -412,7 +412,8 @@ export function buildBackgroundRecords(input: {
       perViewport,
       fix: {
         width: member.hidden === undefined && member.needed > 0 ? member.needed : undefined,
-        bytes: { saved, addedForSharpness: 0, sizes: 0, quality: saved },
+        // A layer's saving is a resize to its needed width (est.), not a re-encode: booked as resize.
+        bytes: { saved, addedForSharpness: 0, sizes: 0, resize: saved, quality: 0 },
       },
       evidence: { rung: rungOfPage(pageUrl, input.harness), notes },
     };
