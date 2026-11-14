@@ -146,54 +146,6 @@ export interface ImagePerViewport {
   hidden?: HiddenReason;
 }
 
-/**
- * An image the browser loaded that is not shown at some viewports (see HiddenFix on ImageRecord). Its bytes are the page's
- * image bytes, and they are reported apart from the savings: the saving of a hidden file is not counted in the page numbers.
- */
-export interface HiddenFix {
-  /** The reasons the element is hidden, over its hidden viewports, each once. */
-  reasons: HiddenReason[];
-  /** The element is in a tab panel, a hidden subtree or an aria-hidden one, at a hidden viewport. */
-  inPanel: boolean;
-  /** The viewports where it is not shown. */
-  viewports: string[];
-  /** The viewports of the scan: `viewports` of them hide it. */
-  of: number;
-  /** The width of each viewport the element was seen at, by viewport name (the media condition of a responsive twin uses it). */
-  widths: Record<string, number>;
-  /** The viewports where it is shown. */
-  shownIn: string[];
-  /**
-   * The fix, by case: `responsive` (shown at some viewports, hidden at others: a responsive twin), `lazy` (a carousel
-   * slide or a tab panel: lazy loading, or render it on activation), `remove` (never shown at any viewport).
-   */
-  action: "responsive" | "lazy" | "remove";
-  /** The bytes per view the element downloads while it is not shown: the hidden viewports' bytes over all the viewports. */
-  perViewBytes: number;
-}
-
-/** The hidden fix of an element from its instances (one per viewport), or undefined when it is shown at every viewport. */
-export function hiddenFixOf(members: Instance[], viewportCount: number): HiddenFix | undefined {
-  const hidden = members.filter((m) => m.kind === "hidden");
-  if (hidden.length === 0) return undefined;
-  const reasons = [...new Set(hidden.map((m) => m.img.hidden).filter((r): r is HiddenReason => r !== undefined))];
-  const inPanel = hidden.some((m) => m.img.inPanel === true);
-  const shownIn = members.filter((m) => m.kind !== "hidden").map((m) => m.viewport.name);
-  const onlyClipped = reasons.length > 0 && reasons.every((r) => r === "clipped");
-  // A responsive twin: shown somewhere, and hidden by a CSS rule (not only by clipping). A clipped or panel copy is lazy.
-  const action: HiddenFix["action"] = shownIn.length > 0 && !onlyClipped ? "responsive" : reasons.includes("clipped") || inPanel ? "lazy" : "remove";
-  return {
-    reasons,
-    inPanel,
-    viewports: hidden.map((m) => m.viewport.name),
-    of: viewportCount,
-    widths: Object.fromEntries(members.map((m) => [m.viewport.name, m.viewport.width])),
-    shownIn,
-    action,
-    perViewBytes: hidden.reduce((sum, m) => sum + m.bytes, 0) / viewportCount,
-  };
-}
-
 export interface ImageFix {
   sizes?: { value: string; basis: SizesBasis; rung: MeasuredRung; branches: SizesBranch[] };
   /** Plain images: the device pixel width the file needs at the reference viewport. */
@@ -241,6 +193,111 @@ export interface ImageFix {
  */
 export function losslessServed(format: string | undefined, animated: boolean): boolean {
   return format === "jpeg" || format === "png" || (format === "gif" && !animated);
+}
+
+/** The fix of a loaded-but-not-shown element, by case (see HiddenFix.action). */
+export type HiddenAction = "responsive" | "lazy" | "never-shown-on-load";
+
+/**
+ * An element (an image, or a CSS background layer) the browser loaded that is not shown on load at some viewports. Its bytes
+ * are reported apart from the savings: the saving of a hidden file is not counted in the page numbers.
+ */
+export interface HiddenFix {
+  /** The reasons the element is hidden, over its hidden viewports, each once. */
+  reasons: HiddenReason[];
+  /** The element is in a tab panel, a hidden subtree, an aria-hidden one or a closed <details>, at a hidden viewport. */
+  inPanel: boolean;
+  /** The element is shown by a :hover rule (a hover swap) at a hidden viewport. */
+  hover?: true;
+  /** The viewports where it is not shown on load. */
+  viewports: string[];
+  /** The viewports of the scan: `viewports` of them hide it. */
+  of: number;
+  /** The width of each viewport the element was seen at, by viewport name (the media condition of a responsive twin uses it). */
+  widths: Record<string, number>;
+  /** The viewports where it is shown on load (empty when it is never shown on load). */
+  shownIn: string[];
+  /**
+   * The fix, by case: `responsive` (shown on load at some viewports and hidden at others: a responsive twin, serve one file per
+   * viewport), `lazy` (a carousel slide, a tab copy or a closed details, or a hover swap: loading="lazy", or load on demand),
+   * `never-shown-on-load` (no viewport shows it on load: remove it, or load it on demand when the menu, modal or hover opens).
+   */
+  action: HiddenAction;
+  /** The bytes per view the element downloads while it is not shown on load: the hidden viewports' bytes over all the viewports. */
+  perViewBytes: number;
+}
+
+/** One viewport's entry of an element: its bytes and, when it is hidden there, why. */
+export interface HiddenEntry {
+  viewport: { name: string; width: number };
+  bytes: number;
+  hidden?: HiddenReason;
+  inPanel: boolean;
+  hover: boolean;
+}
+
+/** The hidden fix of an element from its entries (one per viewport it was measured at), or undefined when it is shown on load everywhere. */
+export function hiddenFixCore(entries: HiddenEntry[], viewportCount: number): HiddenFix | undefined {
+  const hidden = entries.filter((e) => e.hidden !== undefined);
+  if (hidden.length === 0) return undefined;
+  const reasons = [...new Set(hidden.map((e) => e.hidden).filter((r): r is HiddenReason => r !== undefined))];
+  const inPanel = hidden.some((e) => e.inPanel);
+  const hover = hidden.some((e) => e.hover);
+  const shownIn = entries.filter((e) => e.hidden === undefined).map((e) => e.viewport.name);
+  const onlyClipped = reasons.every((r) => r === "clipped");
+  // A responsive twin: shown on load somewhere, and hidden by a rule that is not a carousel's clipping.
+  const action: HiddenAction =
+    shownIn.length > 0 && !onlyClipped ? "responsive" : reasons.includes("clipped") || inPanel || hover ? "lazy" : "never-shown-on-load";
+  return {
+    reasons,
+    inPanel,
+    ...(hover ? { hover: true as const } : {}),
+    viewports: hidden.map((e) => e.viewport.name),
+    of: viewportCount,
+    widths: Object.fromEntries(entries.map((e) => [e.viewport.name, e.viewport.width])),
+    shownIn,
+    action,
+    perViewBytes: hidden.reduce((sum, e) => sum + e.bytes, 0) / viewportCount,
+  };
+}
+
+/** The hidden fix of an image element from its instances (one per viewport). */
+export function hiddenFixOf(members: Instance[], viewportCount: number): HiddenFix | undefined {
+  return hiddenFixCore(
+    members.map((m) => ({
+      viewport: { name: m.viewport.name, width: m.viewport.width },
+      bytes: m.bytes,
+      hidden: m.kind === "hidden" ? m.img.hidden : undefined,
+      inPanel: m.img.inPanel === true,
+      hover: m.img.hover === true,
+    })),
+    viewportCount,
+  );
+}
+
+/**
+ * The page's loaded-but-not-shown totals, counted over the records (one record per element or background layer, so the
+ * count and the cases are the same unit). Undefined when no record is hidden.
+ */
+export function hiddenTotalsOf(records: ImageRecord[], viewportCount: number): HiddenPage | undefined {
+  const hidden = records.flatMap((r) => (r.hidden !== undefined ? [r.hidden] : []));
+  if (hidden.length === 0) return undefined;
+  const cases: Record<HiddenAction, number> = { responsive: 0, lazy: 0, "never-shown-on-load": 0 };
+  for (const fix of hidden) cases[fix.action]++;
+  return {
+    images: hidden.length,
+    bytesPerView: hidden.reduce((sum, fix) => sum + fix.perViewBytes, 0),
+    cases,
+  };
+}
+
+/** The loaded-but-not-shown totals of a page: the records that are hidden, their count, bytes per view and cases. */
+export interface HiddenPage {
+  /** The records (elements and background layers) that are hidden at some viewport. Equals the sum of `cases`. */
+  images: number;
+  /** Their files' bytes per view, summed over the records (not in the savings). */
+  bytesPerView: number;
+  cases: Record<HiddenAction, number>;
 }
 
 export interface ImageRecord {

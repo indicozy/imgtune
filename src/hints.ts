@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { hasFix, OWNER_PLACEHOLDERS, type HiddenFix } from "./images.js";
 import { safeText } from "./text.js";
 import type { PageResult } from "./remote.js";
+import type { HiddenPage } from "./images.js";
 import { cleanLocate } from "./locate-join.js";
 import type { OwnerSource } from "./locate.js";
 import { DEFAULT_VIEWPORTS } from "./config.js";
@@ -303,6 +304,16 @@ export function hintsOf(result: PageResult, qualities?: number[], plan?: Quality
   });
 }
 
+/**
+ * The one-line summary of a page's loaded-but-not-shown images: the count, bytes per view and the cases, as the text, Markdown
+ * and check outputs all print it. Undefined when there are none.
+ */
+export function hiddenSummaryLine(hidden: HiddenPage | undefined): string | undefined {
+  if (hidden === undefined || hidden.images === 0) return undefined;
+  const { responsive, lazy, "never-shown-on-load": never } = hidden.cases;
+  return `loaded but not shown: ${hidden.images} image(s), ${kb(hidden.bytesPerView)}/view (responsive ${responsive}, lazy ${lazy}, never shown on load ${never}); not in the savings`;
+}
+
 /** The hints an argument set asks for: filtered, sorted by bytes saved (largest first), then offset and limited. */
 export function selectHints(hints: Hint[], args: Pick<HintsArgs, "page" | "component" | "minKb" | "limit" | "offset">): Hint[] {
   const page = args.page?.toLowerCase();
@@ -363,20 +374,25 @@ function twinMediaOf(hidden: HiddenFix): string {
  */
 export function hiddenLines(hidden: HiddenFix): string[] {
   const names = (list: string[]): string => list.map((v) => JSON.stringify(safeText(v))).join(", ");
-  const reasons = [...hidden.reasons, ...(hidden.inPanel ? ["in a tab panel or hidden subtree" as const] : [])].join(", ");
+  const reasons = [
+    ...hidden.reasons,
+    ...(hidden.inPanel ? ["in a tab panel, a hidden subtree or a closed details"] : []),
+    ...(hidden.hover === true ? ["shown on hover"] : []),
+  ].join(", ");
   const lines = [
-    `   loaded but not shown: ${kb(hidden.perViewBytes)}/view, hidden at ${hidden.viewports.length} of ${hidden.of} viewport(s) (${names(hidden.viewports)}): ${safeText(reasons)}; not in the saving`,
+    `   loaded but not shown on load: ${kb(hidden.perViewBytes)}/view, hidden at ${hidden.viewports.length} of ${hidden.of} viewport(s) (${names(hidden.viewports)}): ${safeText(reasons)}; not in the saving`,
   ];
   if (hidden.action === "responsive") {
     lines.push(
-      `   responsive twin, shown at ${names(hidden.shownIn)}: serve one file per viewport. Replace the two elements with <picture><source media="${twinMediaOf(hidden)}" srcset="<the file shown there>"><img …></picture>, or delete the hidden copy if the design does not need it.`,
+      `   responsive twin, shown on load at ${names(hidden.shownIn)}: serve one file per viewport. Replace the two elements with <picture><source media="${twinMediaOf(hidden)}" srcset="<the file shown there>"><img …></picture>, or delete the hidden copy if the design does not need it.`,
     );
   } else if (hidden.action === "lazy") {
-    lines.push(
-      `   not shown at ${names(hidden.viewports)} (${hidden.inPanel ? "a tab panel" : "a carousel slide or other clipped box"}): add loading="lazy", or render it when the slide or tab opens.`,
-    );
+    const what = hidden.hover === true ? "a hover swap" : hidden.inPanel ? "a tab panel, a hidden subtree or a closed details" : "a carousel slide or other clipped box";
+    lines.push(`   ${what} (${names(hidden.viewports)}): add loading="lazy", or load it on demand (when the tab, details or hover opens).`);
   } else {
-    lines.push(`   never shown at any of ${hidden.of} viewports: remove the element, or render it only when the part of the page it belongs to opens.`);
+    lines.push(
+      `   never shown on load at any of ${hidden.of} viewport(s): remove it, or load it on demand (when the menu, modal or hover opens).`,
+    );
   }
   return lines;
 }
@@ -1233,6 +1249,20 @@ export function commentHints(results: PageResult[], limit = COMMENT_HINTS, maxQu
   const all = ok.flatMap((r) => hintsOf(r, undefined, plan));
   const top = selectHints(all, { limit, offset: 0 });
   return { total: all.length, lines: top.map((hint, i) => `${i + 1}. ${commentLine(hint)}`) };
+}
+
+/** The loaded-but-not-shown line of the PR comment: all ok pages together (the same numbers as the text output). */
+export function hiddenPagesLine(results: PageResult[]): string | undefined {
+  const pages = results.filter((r) => r.status === "ok" && r.hidden !== undefined);
+  if (pages.length === 0) return undefined;
+  const totals: HiddenPage = { images: 0, bytesPerView: 0, cases: { responsive: 0, lazy: 0, "never-shown-on-load": 0 } };
+  for (const page of pages) {
+    const hidden = page.hidden as HiddenPage;
+    totals.images += hidden.images;
+    totals.bytesPerView += hidden.bytesPerView;
+    for (const key of Object.keys(totals.cases) as (keyof HiddenPage["cases"])[]) totals.cases[key] += hidden.cases[key];
+  }
+  return hiddenSummaryLine(totals);
 }
 
 /**

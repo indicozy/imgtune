@@ -1,7 +1,7 @@
 // The Markdown report of `imgtune check`: a pure builder over the survey results, the deep results, the route grouping and
 // the deep selection. No browser, no files. The audit mode extends it with source-aware sections; the sections below keep
 // their order so the two stay comparable. Page-derived text goes through mdText and mdCode (see text.ts).
-import { hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
+import { hiddenPagesLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import { hasFix, type ImageRecord } from "./images.js";
@@ -270,6 +270,8 @@ export function buildCheckReport(input: CheckReportInput): string {
       `  - exact + est.: ${APPROX_MARK.trim()} ${kb(exactEst)} KB/view (${pct(numbers.exactEstPct)})${approx ? " (some estimates are approximate)" : ""}`,
       `  - sharpness: +${kb(mean(deepTotals.map((t) => t.sharpnessKB)))} KB/view, a separate number: it is never netted against the saving`,
     );
+    const hiddenLine = hiddenPagesLine(deepOk);
+    if (hiddenLine !== undefined) out(`  - ${mdText(hiddenLine)}`);
     // The LCP image is the one the first paint waits for: its line, per page, before the ranked fixes.
     for (const page of deepOk) {
       for (const line of lcpLinesOf(page, mdCode)) out(`  - ${mdCode(pathOf(page.url))}: ${line}`);

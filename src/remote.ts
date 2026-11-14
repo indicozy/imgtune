@@ -7,7 +7,7 @@ import { launchChromium } from "./browser.js";
 import sharp, { type Sharp } from "sharp";
 import { writeFileAtomic, sha1 } from "./atomic.js";
 import { errorLine, mdCode, mdText, safeText } from "./text.js";
-import { commentHints, videoRowOf, videoTotalsLine } from "./hints.js";
+import { hiddenPagesLine, commentHints, hiddenSummaryLine, videoRowOf, videoTotalsLine } from "./hints.js";
 import { lcpLinesOf } from "./lcp.js";
 import { MAX_MAX_QUALITIES, MIN_MAX_QUALITIES, planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import type { LocateSummary } from "./locate-join.js";
@@ -24,7 +24,7 @@ import { adapterFor, formatAutoOf, originalOf, type QualityParam } from "./loade
 import type { LayoutChainData, LayoutNode } from "./layout.js";
 import type { LocatorKind, LocatorVia, OwnerSource, OwnerTrace, SourceMapData, StackFrame } from "./locate.js";
 import { COMPONENT_NAME, MAX_SOURCE_READ, imageAtLine, parseSourceMap, resolveFunctionLocations, resolveOwnerChain, resolveOwners } from "./locate.js";
-import { buildImageRecords, hasFix, rungOfPage, type ImageRecord, type ResolvedSource } from "./images.js";
+import { buildImageRecords, hasFix, hiddenTotalsOf, rungOfPage, type HiddenPage, type ImageRecord, type ResolvedSource } from "./images.js";
 import { animationOf, type AnimationInfo } from "./animated.js";
 import { fullBytesOf, SCAN_MAX_VIDEO_WIDTHS, videoRecordsOf, withPosterImages, type VideoRecord } from "./video-analysis.js";
 import {
@@ -1107,6 +1107,8 @@ export interface ObservedImage {
   hidden?: HiddenReason;
   /** The element is inside a tab panel, a hidden subtree or an aria-hidden one (see hiddenReasonOf). Absent otherwise. */
   inPanel?: true;
+  /** The element is shown by a :hover rule (a hover swap): it is not shown on load. Absent otherwise. */
+  hover?: true;
 }
 
 /**
@@ -1487,7 +1489,36 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
       };
       const nextjs = document.querySelector('img[data-nimg], script[src*="/_next/"], link[href*="/_next/"]') !== null;
       // Why an image is not shown, if it is not (see HiddenReason). Read in full reads only: a light read has no use for it.
-      const hiddenReasonOf = (img: Element, rect: DOMRect): { reason: HiddenReason; inPanel: boolean } | undefined => {
+      // The selectors of the :hover rules that swap what is shown (a rule setting display, visibility or opacity), with the
+      // :hover taken out: an element they match is shown on hover, not on load.
+      const hoverSelectors: string[] = [];
+      const collectHover = (rules: CSSRuleList): void => {
+        for (const rule of Array.from(rules)) {
+          if (hoverSelectors.length >= 2000) return;
+          if (rule instanceof CSSStyleRule) {
+            if (rule.selectorText.includes(":hover") && (rule.style.display || rule.style.visibility || rule.style.opacity)) {
+              hoverSelectors.push(rule.selectorText.replace(/:hover/g, ""));
+            }
+          } else if ("cssRules" in rule) {
+            collectHover((rule as CSSGroupingRule).cssRules);
+          }
+        }
+      };
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          collectHover(sheet.cssRules);
+        } catch {
+          // A cross-origin sheet has no readable rules.
+        }
+      }
+      const hoverSwap = (el: Element): boolean => hoverSelectors.some((selector) => {
+        try {
+          return el.matches(selector);
+        } catch {
+          return false;
+        }
+      });
+      const hiddenReasonOf = (img: Element, rect: DOMRect): { reason: HiddenReason; inPanel: boolean; hover: boolean } | undefined => {
         let displayNone = false;
         let opacityZero = false;
         let inPanel = false;
@@ -1524,7 +1555,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
                 : clipped
                   ? "clipped"
                   : undefined;
-        return reason === undefined ? undefined : { reason, inPanel };
+        return reason === undefined ? undefined : { reason, inPanel, hover: hoverSwap(img) };
       };
       const images = Array.from(document.querySelectorAll("img"), (img, index) => {
         const rect = img.getBoundingClientRect();
@@ -1540,7 +1571,9 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           nextImage: img.hasAttribute("data-nimg"),
           inFirstViewport: rect.bottom > 0 && rect.top < window.innerHeight,
           lazy: img.loading === "lazy",
-          ...(hidden !== undefined ? { hidden: hidden.reason, ...(hidden.inPanel ? { inPanel: true as const } : {}) } : {}),
+          ...(hidden !== undefined
+            ? { hidden: hidden.reason, ...(hidden.inPanel ? { inPanel: true as const } : {}), ...(hidden.hover ? { hover: true as const } : {}) }
+            : {}),
           layout: light ? undefined : layoutOf(img),
           locator: {
             testid: img.closest("[data-testid]")?.getAttribute("data-testid") ?? undefined,
@@ -1562,6 +1595,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
           const value = cs.backgroundImage;
           if (!value || value === "none" || !/url\(|image-set\(/.test(value)) continue;
           const rect = el.getBoundingClientRect();
+          const hiddenInfo = hiddenReasonOf(el, rect);
           // The element's own fiber only: an ancestor's owner would name a component that does not draw this background.
           const fiberKey = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
           backgrounds.push({
@@ -1572,7 +1606,11 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
             owners: ownersOf(fiberKey ? (el as unknown as Record<string, Fiber>)[fiberKey] : undefined),
             width: rect.width,
             height: rect.height,
-            hidden: cs.display === "none" || cs.visibility === "hidden" || rect.width === 0 || rect.height === 0,
+            // Hidden: the reason (see hiddenReasonOf). A hidden layer is measured only when its file was downloaded.
+            hidden: hiddenInfo !== undefined,
+            ...(hiddenInfo !== undefined
+              ? { hiddenReason: hiddenInfo.reason, ...(hiddenInfo.inPanel ? { inPanel: true as const } : {}), ...(hiddenInfo.hover ? { hover: true as const } : {}) }
+              : {}),
             // Capped here as well: one character over the cap is enough for Node to skip the element.
             backgroundImage: (value.length > maxValue ? value.slice(0, maxValue + 1) : value).replace(/url\((["']?)data:[^)]*\)/g, 'url("data:")'),
             backgroundSize: cs.backgroundSize.slice(0, maxValue + 1),
@@ -1917,7 +1955,6 @@ function responsesOfStep(
   for (const url of answered) keep(url);
   for (const img of seen.images) if (img.currentSrc) keep(img.currentSrc);
   for (const bg of seen.backgrounds) {
-    if (bg.hidden) continue;
     for (const layer of parseBackgroundImage(bg.backgroundImage)) {
       if (layer.dataUri) continue;
       const chosen = pickLoaded(layer.candidates, (url) => fetched.get(url)?.buffer !== undefined, dpr);
@@ -2545,7 +2582,22 @@ async function measureBackground(
     size,
   };
   const skip = (reason: string): BackgroundInstance => ({ ...instance, skipped: reason });
-  if (bg.hidden) return skip("hidden");
+  if (bg.hidden) {
+    // Not shown on load. Its file is measured only if the browser downloaded it (display:none usually does not download).
+    const loaded = layer.dataUri ? undefined : pickLoaded(layer.candidates, (url) => obs.responses.get(url)?.buffer !== undefined, dpr);
+    if (!loaded) return skip("hidden");
+    const downloaded = obs.responses.get(loaded.url) as ResponseRecord;
+    return {
+      ...instance,
+      url: loaded.url,
+      bytes: downloaded.bytes,
+      pixelWidth: downloaded.pixels?.width ?? 0,
+      format: formatName(downloaded.pixels?.format),
+      hidden: bg.hiddenReason,
+      ...(bg.inPanel === true ? { inPanel: true as const } : {}),
+      ...(bg.hover === true ? { hover: true as const } : {}),
+    };
+  }
   if (bg.width < MIN_RENDERED_PX || bg.height < MIN_RENDERED_PX) return skip("under 16 px");
   if (layer.dataUri) return skip("data URI");
   const chosen = pickLoaded(layer.candidates, (url) => obs.responses.get(url)?.buffer !== undefined, dpr);
@@ -2574,22 +2626,6 @@ async function measureBackground(
     if (resized) Object.assign(instance, approxEst(Math.max(0, response.bytes - resized.bytes), resized.approx));
   }
   return instance;
-}
-
-/**
- * The page's hidden images: the elements with a hidden instance, and the bytes per view of those files (each URL once per
- * viewport, then the mean over the viewports). Undefined when no image is hidden.
- */
-export function hiddenPageOf(instances: Instance[], viewportCount: number): HiddenPage | undefined {
-  const hidden = instances.filter((i) => i.kind === "hidden");
-  if (hidden.length === 0) return undefined;
-  let bytes = 0;
-  for (const view of new Set(hidden.map((i) => i.viewport.name))) {
-    const urls = new Map<string, number>();
-    for (const inst of hidden) if (inst.viewport.name === view) urls.set(inst.url, inst.bytes);
-    bytes += [...urls.values()].reduce((sum, b) => sum + b, 0);
-  }
-  return { images: new Set(hidden.map((i) => i.element)).size, bytesPerView: bytes / viewportCount };
 }
 
 /** The est. fields of an instance: the saving, and the approx marker when the estimate is one. */
@@ -2986,11 +3022,8 @@ export interface PageScorer {
   cpuFallbacks?: number;
 }
 
-/** The page's loaded-but-not-shown images: how many elements, and their bytes per view (the mean over the viewports). */
-export interface HiddenPage {
-  images: number;
-  bytesPerView: number;
-}
+
+export type { HiddenPage } from "./images.js";
 
 export interface PageResult {
   url: string;
@@ -3387,7 +3420,8 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     refName,
     sources: bgSources,
   });
-  const hidden = hiddenPageOf(instances, observations.length);
+  // The page's loaded-but-not-shown numbers are counted over the same records the report lists (images and background layers).
+  const hiddenTotals = hiddenTotalsOf([...images, ...backgroundRecords], observations.length);
   const videoSources = await resolveVideoSources(ctx, input);
   const videos = videoRecordsOf(ctx.pageUrl, input, fullBytesOf(input), "scan", ctx.maxVideoWidths ?? SCAN_MAX_VIDEO_WIDTHS, videoSources);
   return {
@@ -3407,7 +3441,7 @@ export async function analysePage(ctx: AnalysisContext, input: ViewportObservati
     thirdPartyBlocked: observations.reduce((sum, o) => sum + (o.thirdPartyBlocked ?? 0), 0),
     images: [...images, ...backgroundRecords],
     notLoaded: images.filter((r) => r.lazy === true && !r.perViewport.some((p) => p.loaded)).length,
-    ...(hidden !== undefined ? { hidden } : {}),
+    ...(hiddenTotals !== undefined ? { hidden: hiddenTotals } : {}),
     ...(bgInstances.length > 0 ? { backgrounds: backgroundPage(bgInstances, observations.length, backgroundRecords) } : {}),
     ...(ctx.harness === true ? { harness: true as const } : {}),
   };
@@ -4288,7 +4322,7 @@ export function renderPage(result: PageResult, aggressive: boolean, hintsFile?: 
   }
   // The Loaded but not shown group: the images the browser downloaded that no viewport shows in full, by bytes per view.
   if (result.hidden !== undefined) {
-    lines.push(`  loaded but not shown: ${result.hidden.images} image(s), ${kb(result.hidden.bytesPerView)}/view (not in the savings)`);
+    lines.push(`  ${hiddenSummaryLine(result.hidden) ?? ""}`);
     const hiddenRecords = (result.images ?? []).filter((r) => r.hidden !== undefined);
     const rows = hiddenRecords.sort((a, b) => (b.hidden?.perViewBytes ?? 0) - (a.hidden?.perViewBytes ?? 0)).slice(0, HIDDEN_ROWS);
     for (const record of rows) {
@@ -4455,6 +4489,8 @@ function markdownBody(results: PageResult[], aggressive: boolean, withHints: boo
   }
   const plan = planQualityCap(results, maxQualities);
   if (plan !== undefined) lines.push("", mdCode(qualitiesLine(plan)));
+  const hiddenLine = hiddenPagesLine(results);
+  if (hiddenLine !== undefined) lines.push("", mdCode(hiddenLine));
   if (withHints) {
     const hints = commentHints(results, undefined, maxQualities);
     if (hints.lines.length > 0) {

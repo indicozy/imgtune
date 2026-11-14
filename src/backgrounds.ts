@@ -7,7 +7,8 @@
 // built in buildBackgroundRecords below.
 
 import { sha1 } from "./atomic.js";
-import { losslessServed, rungOfPage, searchHintsOf, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
+import { hiddenFixCore, losslessServed, rungOfPage, searchHintsOf, type HiddenEntry, type ImageLocator, type ImageRecord, type ImagePerViewport, type ResolvedSource } from "./images.js";
+import type { HiddenReason } from "./remote.js";
 import type { AnimationInfo } from "./animated.js";
 import { animatedTarget } from "./media-model.js";
 import { loaderName, sanitizeText, urlPattern, type OwnerTrace } from "./locate.js";
@@ -54,8 +55,14 @@ export interface ObservedBackground {
   /** Border box, CSS px. */
   width: number;
   height: number;
-  /** Not displayed: display none, visibility hidden, or no box. */
+  /** Not displayed: display none, visibility hidden, opacity 0, a zero-size box, or clipped (see hiddenReasonOf in remote.ts). */
   hidden: boolean;
+  /** Why it is not displayed, when it is not (see HiddenReason). */
+  hiddenReason?: HiddenReason;
+  /** In a tab panel, a hidden subtree, an aria-hidden one or a closed details. */
+  inPanel?: true;
+  /** Shown by a :hover rule (a hover swap). */
+  hover?: true;
   /** The computed background-image (inline data: URIs replaced by a placeholder before they leave the browser). */
   backgroundImage: string;
   /** The computed background-size, one entry per layer. */
@@ -86,6 +93,13 @@ export interface BackgroundInstance {
   size: string;
   /** The served file is animated (see animated.ts). Absent for a still image. */
   animated?: AnimationInfo;
+  /**
+   * The layer is not shown on load at this viewport, but its file was downloaded: measured for its bytes only (no saving, no
+   * sizes). Absent for a shown layer and for a hidden one that was not downloaded (skipped "hidden").
+   */
+  hidden?: HiddenReason;
+  inPanel?: true;
+  hover?: true;
 }
 
 /** Splits at the top-level separator: not inside parentheses or quotes. */
@@ -328,7 +342,8 @@ export function buildBackgroundRecords(input: {
 
   const records: ImageRecord[] = [];
   for (const [key, members] of byKey) {
-    const member = members.find((m) => m.viewport.name === refName) ?? members[0];
+    // The reference member is shown when some viewport shows the layer: a hidden copy names no size.
+    const member = members.find((m) => m.viewport.name === refName && m.hidden === undefined) ?? members.find((m) => m.hidden === undefined) ?? members[0];
     const source = sources.get(member.bg.index);
     const url = member.url;
     const perViewport: ImagePerViewport[] = [];
@@ -347,8 +362,21 @@ export function buildBackgroundRecords(input: {
       if (inst.pixelWidth > 0) entry.servedPx = inst.pixelWidth;
       if (inst.pixelWidth > 0 && inst.needed > 0) entry.overFetchRatio = Math.round((inst.pixelWidth / inst.needed) * 100) / 100;
       if (inst.skipped !== undefined) entry.skipped = inst.skipped;
+      if (inst.hidden !== undefined) entry.hidden = inst.hidden;
       perViewport.push(entry);
     }
+    // A layer's entries: the viewports it is shown at, and those it is hidden at with its file downloaded (a hidden layer that
+    // was not downloaded is not an entry: there are no bytes to report).
+    const entries: HiddenEntry[] = members
+      .filter((m) => m.hidden !== undefined || m.skipped !== "hidden")
+      .map((m) => ({
+        viewport: { name: m.viewport.name, width: m.viewport.width },
+        bytes: m.bytes,
+        hidden: m.hidden,
+        inPanel: m.inPanel === true,
+        hover: m.hover === true,
+      }));
+    const hiddenFix = hiddenFixCore(entries, input.viewports.length);
     const saved = members.reduce((sum, m) => sum + m.est, 0) / viewportCount;
     const served = member.format;
     const animatedMember = members.find((m) => m.animated !== undefined);
@@ -380,7 +408,7 @@ export function buildBackgroundRecords(input: {
       },
       perViewport,
       fix: {
-        width: member.needed > 0 ? member.needed : undefined,
+        width: member.hidden === undefined && member.needed > 0 ? member.needed : undefined,
         bytes: { saved, addedForSharpness: 0, sizes: 0, quality: saved },
       },
       evidence: { rung: rungOfPage(pageUrl, input.harness), notes },
@@ -394,6 +422,7 @@ export function buildBackgroundRecords(input: {
         perViewBytes: members.reduce((sum, m) => sum + m.bytes, 0) / viewportCount,
       };
     }
+    if (hiddenFix !== undefined) record.hidden = hiddenFix;
     records.push(record);
   }
   return records.filter((r) => r.perViewport.some((p) => p.loaded || p.skipped !== undefined));
@@ -408,7 +437,7 @@ export interface BackgroundTotals {
 }
 
 export function backgroundTotals(instances: BackgroundInstance[]): BackgroundTotals {
-  const measured = instances.filter((i) => i.skipped === undefined);
+  const measured = instances.filter((i) => i.skipped === undefined && i.hidden === undefined);
   return {
     measured: measured.length,
     servedBytes: measured.reduce((sum, i) => sum + i.bytes, 0),
@@ -428,7 +457,7 @@ export interface BackgroundPage {
 }
 
 export function backgroundPage(instances: BackgroundInstance[], viewportCount: number, records: ImageRecord[]): BackgroundPage {
-  const measured = instances.filter((i) => i.skipped === undefined);
+  const measured = instances.filter((i) => i.skipped === undefined && i.hidden === undefined);
   return {
     layers: records.filter((r) => r.perViewport.some((p) => p.loaded)).length,
     servedBytes: measured.reduce((sum, i) => sum + i.bytes, 0) / viewportCount,

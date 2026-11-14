@@ -5,9 +5,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { buildImageRecords, hiddenFixOf, type ImageRecord } from "../src/images.js";
-import { hiddenLines, hintsOf } from "../src/hints.js";
-import { hiddenPageOf, runScan, type Instance, type ObservedImage } from "../src/remote.js";
+import { buildImageRecords, hiddenFixOf, hiddenTotalsOf, type HiddenFix, type ImageRecord } from "../src/images.js";
+import { hiddenLines, hiddenPagesLine, hiddenSummaryLine, hintsOf } from "../src/hints.js";
+import { runScan, type Instance, type ObservedImage } from "../src/remote.js";
 import type { Viewport } from "../src/types.js";
 
 const VIEWS = { desktop: { name: "desktop", width: 1280, height: 800, dpr: 1, mobile: false }, mobile: { name: "mobile", width: 390, height: 844, dpr: 2, mobile: true } } as const;
@@ -74,19 +74,27 @@ describe("hiddenFixOf", () => {
       [{ ...instanceOf(VIEWS.desktop, 4, true), img: { ...instanceOf(VIEWS.desktop, 4, true).img, hidden: "opacity", inPanel: undefined } as ObservedImage }],
       1,
     );
-    expect(never?.action).toBe("remove");
+    expect(never?.action).toBe("never-shown-on-load");
     expect(never?.perViewBytes).toBe(10_000);
   });
 });
 
-describe("hiddenPageOf", () => {
-  it("counts the elements hidden at a viewport and the bytes per view, once per URL", () => {
-    const a = instanceOf(VIEWS.desktop, 1, true, 4000);
-    // The same file under a second element: its bytes count once per viewport.
-    const b = { ...instanceOf(VIEWS.desktop, 2, true, 4000), url: a.url };
-    const m = instanceOf(VIEWS.mobile, 1, false, 9000);
-    expect(hiddenPageOf([a, b, m], 2)).toEqual({ images: 2, bytesPerView: 2000 });
-    expect(hiddenPageOf([m], 2)).toBeUndefined();
+describe("hiddenTotalsOf", () => {
+  const recordOf = (fix: HiddenFix): ImageRecord => ({ id: "x", page: "p", locator: { component: [], selector: "img", classes: "", loader: "plain-img" }, tunable: { width: true, quality: true }, current: { srcsetCandidates: [] }, perViewport: [], fix: { bytes: { saved: 0, addedForSharpness: 0 } }, evidence: { rung: "measured-page", notes: [] }, hidden: fix }) as unknown as ImageRecord;
+  const fixOf = (action: HiddenFix["action"], perViewBytes: number): HiddenFix => ({ reasons: ["display"], inPanel: false, viewports: ["mobile"], of: 2, widths: {}, shownIn: [], action, perViewBytes });
+
+  it("counts the hidden records, so the cases add up to the count, and sums their bytes per view", () => {
+    const totals = hiddenTotalsOf([recordOf(fixOf("lazy", 1000)), recordOf(fixOf("never-shown-on-load", 500)), { ...recordOf(fixOf("lazy", 0)), hidden: undefined } as ImageRecord], 2);
+    expect(totals).toEqual({ images: 2, bytesPerView: 1500, cases: { responsive: 0, lazy: 1, "never-shown-on-load": 1 } });
+    expect(hiddenTotalsOf([{ ...recordOf(fixOf("lazy", 1)), hidden: undefined } as ImageRecord], 2)).toBeUndefined();
+  });
+
+  it("prints the summary line with the cases, and the PR-comment line over the pages", () => {
+    const hidden = { images: 3, bytesPerView: 2048, cases: { responsive: 1, lazy: 1, "never-shown-on-load": 1 } };
+    expect(hiddenSummaryLine(hidden)).toBe("loaded but not shown: 3 image(s), 2 KB/view (responsive 1, lazy 1, never shown on load 1); not in the savings");
+    const page = (images: number) => ({ url: "https://example.test/", status: "ok", hidden: { images, bytesPerView: 1024, cases: { responsive: images, lazy: 0, "never-shown-on-load": 0 } } }) as never;
+    expect(hiddenPagesLine([page(2), page(1)])).toMatch(/^loaded but not shown: 3 image\(s\), 2 KB\/view \(responsive 3/);
+    expect(hiddenPagesLine([{ url: "u", status: "ok" } as never])).toBeUndefined();
   });
 });
 
@@ -116,18 +124,18 @@ describe("buildImageRecords and the hints of a hidden image", () => {
   it("names the fix in its lines, and the media condition of a responsive twin from the viewport widths", () => {
     const twin = { reasons: ["display" as const], inPanel: false, viewports: ["mobile"], shownIn: ["desktop"], of: 2, widths: { mobile: 390, desktop: 1280 }, action: "responsive" as const, perViewBytes: 6000 };
     const text = hiddenLines(twin).join("\n");
-    expect(text).toMatch(/loaded but not shown: 6 KB\/view, hidden at 1 of 2 viewport\(s\)/);
+    expect(text).toMatch(/loaded but not shown on load: 6 KB\/view, hidden at 1 of 2 viewport\(s\)/);
     expect(text).toMatch(/media="\(min-width: 1280px\)"/);
     expect(hiddenLines({ ...twin, viewports: ["desktop"], shownIn: ["mobile"], widths: { mobile: 390, desktop: 1280 } }).join("\n")).toMatch(/media="\(max-width: 390px\)"/);
     expect(hiddenLines({ reasons: ["clipped"], inPanel: false, viewports: ["mobile"], shownIn: [], of: 2, widths: { mobile: 390 }, action: "lazy", perViewBytes: 1 }).join("\n")).toMatch(/loading="lazy"/);
-    expect(hiddenLines({ reasons: ["opacity"], inPanel: false, viewports: ["mobile", "desktop"], shownIn: [], of: 2, widths: { mobile: 390, desktop: 1280 }, action: "remove", perViewBytes: 1 }).join("\n")).toMatch(/remove the element/);
+    expect(hiddenLines({ reasons: ["opacity"], inPanel: false, viewports: ["mobile", "desktop"], shownIn: [], of: 2, widths: { mobile: 390, desktop: 1280 }, action: "never-shown-on-load", perViewBytes: 1 }).join("\n")).toMatch(/remove it, or load it on demand/);
   });
 
   it("gives a hidden-only image a hint with no saving and no sizes line", () => {
-    const hidden = { reasons: ["opacity"] as const, inPanel: false, viewports: ["desktop"], shownIn: [], of: 1, widths: { desktop: 1280 }, action: "remove" as const, perViewBytes: 10_000 };
+    const hidden = { reasons: ["opacity"] as const, inPanel: false, viewports: ["desktop"], shownIn: [], of: 1, widths: { desktop: 1280 }, action: "never-shown-on-load" as const, perViewBytes: 10_000 };
     const record = { id: "h1", page: "https://example.test/", locator: { component: [], selector: "img#x", classes: "", loader: "plain-img" }, tunable: { width: true, quality: true }, current: { sizes: undefined, srcsetCandidates: [] }, perViewport: [], fix: { bytes: { saved: 0, addedForSharpness: 0 } }, evidence: { rung: "measured-page", notes: [] }, hidden } as unknown as ImageRecord;
     const [hint] = hintsOf({ url: "https://example.test/", images: [record] } as never);
-    expect(hint.hidden?.action).toBe("remove");
+    expect(hint.hidden?.action).toBe("never-shown-on-load");
     expect(hint.bytes.saved).toBe(0);
     expect(hint.sizes.proposed).toBeUndefined();
   });
@@ -138,7 +146,7 @@ describe("scan of loaded-but-not-shown images", () => {
   let base = "";
   let server: Server | undefined;
   let bodyPage = "";
-  const names = ["twinDesk", "twinMob", "slide1", "slide2", "slide3", "tabImg", "detailsImg", "opaImg", "visImg", "zeroImg", "shownImg", "tinyImg"];
+  const names = ["twinDesk", "twinMob", "slide1", "slide2", "slide3", "tabImg", "detailsImg", "opaImg", "visImg", "zeroImg", "shownImg", "tinyImg", "shownCard", "hoverAlt"];
 
   beforeAll(async () => {
     const files: Record<string, Buffer> = {};
@@ -147,6 +155,8 @@ describe("scan of loaded-but-not-shown images", () => {
         .png()
         .toBuffer();
     }
+    files.bgVis = await sharp({ create: { width: 800, height: 500, channels: 3, background: "#7a3" } }).png().toBuffer();
+    files.bgNone = await sharp({ create: { width: 800, height: 500, channels: 3, background: "#37a" } }).png().toBuffer();
     const img = (name: string) => `<img id="${name}" src="/${name}.png" alt="">`;
     bodyPage = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>body</title><style>
       html, body { overflow: hidden; height: 100px; }
@@ -165,7 +175,13 @@ describe("scan of loaded-but-not-shown images", () => {
       #zeroImg { width: 0; height: 0; }
       #shownImg { width: 300px; height: 200px; }
       #tinyImg { width: 8px; height: 8px; }
+      .alt { display: none; width: 300px; height: 200px; }
+      .card:hover .alt { display: block; }
+      #bgVis { visibility: hidden; width: 300px; height: 100px; background: url(/bgVis.png) center / cover; }
+      #bgNone { display: none; width: 300px; height: 100px; background: url(/bgNone.png) center / cover; }
     </style></head><body>
+      <div class="card">${img("shownCard")}${img("hoverAlt").replace("<img", '<img class="alt"')}</div>
+      <div id="bgVis"></div><div id="bgNone"></div>
       ${img("twinDesk").replace("<img", '<img class="desktop-only"')}
       ${img("twinMob").replace("<img", '<img class="mobile-only"')}
       <div id="carousel"><div id="track">${img("slide1")}${img("slide2")}${img("slide3")}</div></div>
@@ -242,9 +258,21 @@ describe("scan of loaded-but-not-shown images", () => {
     expect(named(result.images, "detailsImg")?.hidden?.action).toBe("lazy");
     expect(named(result.images, "detailsImg")?.hidden?.inPanel).toBe(true);
     expect(named(result.images, "opaImg")?.hidden?.reasons).toEqual(["opacity"]);
-    expect(named(result.images, "opaImg")?.hidden?.action).toBe("remove");
+    expect(named(result.images, "opaImg")?.hidden?.action).toBe("never-shown-on-load");
     expect(named(result.images, "visImg")?.hidden?.reasons).toEqual(["visibility"]);
     expect(named(result.images, "zeroImg")?.hidden?.reasons).toEqual(["zero-size"]);
+    // A hover swap: a sibling shown by a :hover rule is on demand, not removable.
+    expect(named(result.images, "hoverAlt")?.hidden?.hover).toBe(true);
+    expect(named(result.images, "hoverAlt")?.hidden?.action).toBe("lazy");
+    expect(named(result.images, "shownCard")?.hidden).toBeUndefined();
+    // A hidden CSS background is reported when its file was downloaded, and not when it was not.
+    const bgVis = named(result.images, "bgVis");
+    expect(bgVis?.kind).toBe("css-background");
+    expect(bgVis?.hidden?.reasons).toEqual(["visibility"]);
+    expect(bgVis?.perViewport[0].hidden).toBe("visibility");
+    expect(bgVis?.perViewport[0].servedBytes).toBeGreaterThan(0);
+    expect(bgVis?.fix.width).toBeUndefined();
+    expect(named(result.images, "bgNone")?.hidden).toBeUndefined();
   }, 180_000);
 
   it("never calls a shown image hidden, and keeps the tiny visible one as under 16 px", async () => {
@@ -263,7 +291,10 @@ describe("scan of loaded-but-not-shown images", () => {
 
   it("adds the page's hidden bytes apart from the savings, and gives no sizes claim to a hidden copy", async () => {
     const result = await scan();
-    expect(result.hidden?.images).toBe(9);
+    // Ten image elements and one hidden background layer (bgNone was never downloaded, so it is not counted).
+    expect(result.hidden?.images).toBe(11);
+    const cases = result.hidden?.cases ?? { responsive: 0, lazy: 0, "never-shown-on-load": 0 };
+    expect(cases.responsive + cases.lazy + cases["never-shown-on-load"]).toBe(result.hidden?.images);
     expect(result.hidden?.bytesPerView).toBeGreaterThan(0);
     expect(named(result.images, "opaImg")?.fix.bytes.saved).toBe(0);
     expect(named(result.images, "opaImg")?.fix.quality).toBeUndefined();
