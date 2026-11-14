@@ -6,6 +6,7 @@ import { hasFix, searchHintsOf, type ImageRecord } from "../src/images.js";
 import {
   callerMapOf,
   combinedSizes,
+  groupHeadLine,
   groupHints,
   groupSizesOf,
   renderTop,
@@ -1313,5 +1314,64 @@ describe("the animated and video hints: source cap, alt text, recipes and reason
       probe: { durationS: 8, width: 480, height: 270, fps: 30, videoCodec: "h264" },
     });
     expect(videoSourceCapLine(video)).toBe("   source is 480px wide; needed 1280px: serve 480px (upscaling adds bytes, not detail)");
+  });
+});
+
+describe("plain images with no srcset: resized variants, booked as resize", () => {
+  // A 1200 px JPEG from a CDN host the tool does not know, rendered at 88 px on phones and 190 px on desktop.
+  const plain = (id: string, component = ["Card"]): ImageRecord => {
+    const base = record(id, { saved: 289323, component });
+    return {
+      ...base,
+      locator: { ...base.locator, loader: "cdn:images.example.net", component },
+      current: { ...base.current, sizes: undefined, srcsetCandidates: [], format: "jpeg", naturalWidth: 1200 },
+      fix: {
+        width: 264,
+        srcset: { widths: [190, 270, 380], largest: 380, sizes: "(max-width: 640px) 88px, 190px" },
+        bytes: { saved: 289323, addedForSharpness: 0, sizes: 0, resize: 289323, quality: 0 },
+        format: "avif",
+      },
+    };
+  };
+
+  it("says to serve the variants and add srcset and sizes, never a bare sizes change", () => {
+    const [hint] = hintsOf(page([plain("p1")]));
+    const text = renderHint(hint, 1).join("\n");
+    expect(text).toContain("serve variants at 190w, 270w, 380w (largest needed 380 px)");
+    expect(text).toContain('srcset="… 190w, … 270w, … 380w"');
+    expect(text).toContain('sizes="(max-width: 640px) 88px, 190px"');
+    expect(text).not.toMatch(/set sizes|sizes .* -> /);
+  });
+
+  it("books the saving under resize, not quality, and keeps the format advice on its own line", () => {
+    const [hint] = hintsOf(page([plain("p1")]));
+    expect(savesText(hint)).toBe("saves 283 KB/view = resize 283 KB");
+    expect(renderHint(hint, 1).join("\n")).toContain("format jpeg -> avif");
+  });
+
+  it("writes the group's head and its srcset line the same way", () => {
+    const hints = hintsOf(page([plain("p1"), plain("p2")]));
+    const [group] = groupHints(hints);
+    expect(groupHeadLine(group, 1)).toContain("= resize 565 KB");
+    const text = renderGroup(group, 1).join("\n");
+    expect(text).toContain("srcset: no srcset today; serve variants at 190w, 270w, 380w");
+    expect(text).not.toContain("sizes:");
+  });
+
+  it("keeps the sizes advice for an image that has a srcset", () => {
+    const withSrcset = record("s1", { saved: 12 * 1024, sizes: "33vw" });
+    withSrcset.fix.bytes = { saved: 12 * 1024, addedForSharpness: 0, sizes: 12 * 1024, quality: 0 };
+    const text = renderHint(hintsOf(page([withSrcset]))[0], 1).join("\n");
+    expect(text).toContain('sizes 33vw -> calc((100vw - 24px - 8px) / 2)');
+    expect(text).not.toContain("srcset: ");
+  });
+
+  it("keeps the loader's own advice for a known loader with no srcset", () => {
+    const known = plain("k1");
+    known.locator.loader = "next-default";
+    known.fix = { ...record("k1").fix, bytes: { saved: 12 * 1024, addedForSharpness: 0, sizes: 12 * 1024, quality: 0 } };
+    const text = renderHint(hintsOf(page([known]))[0], 1).join("\n");
+    expect(text).toContain("sizes 33vw -> calc((100vw - 24px - 8px) / 2)");
+    expect(text).not.toContain("srcset");
   });
 });

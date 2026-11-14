@@ -1801,3 +1801,46 @@ describe("the AVIF search at the fast effort, confirmed at effort 4", () => {
     }
   });
 });
+
+describe("groupReports for plain images with no srcset", () => {
+  const phone = (name: string): Viewport => ({ name, width: 390, height: 844, dpr: 3, mobile: true });
+  const plainMember = (viewport: Viewport, needed: number, est: number): Instance => ({
+    viewport,
+    element: 0,
+    img: { index: 0, currentSrc: "https://cdn.example.net/a.jpg", renderedWidth: 88, renderedHeight: 60, srcset: "", classes: "", nextImage: false, inFirstViewport: false },
+    url: "https://cdn.example.net/a.jpg",
+    bytes: 90_000,
+    pixelWidth: 1200,
+    renderedWidth: 88,
+    needed,
+    kind: "plain",
+    exact: 0,
+    est,
+    estAggressive: est,
+    growth: 0,
+    group: "card",
+    loader: "cdn:cdn.example.net",
+    qualityParam: "none",
+  });
+
+  it("says no srcset and the widths to serve, not set sizes, and books the resize saving", () => {
+    const members = [plainMember(phone("iphone-15"), 264, 1000), plainMember(phone("pixel-7"), 231, 1000)];
+    const [report] = groupReports(members, 2);
+    expect(report.srcset?.widths).toEqual([240, 270]);
+    expect(report.hint).toBeUndefined();
+    expect(report.suggestedSizes).toBeUndefined();
+    expect(report.savedBytes).toBeCloseTo(1000, 10);
+  });
+
+  it("keeps the set-sizes advice when the image has a srcset", () => {
+    const members = [plainMember(phone("iphone-15"), 264, 0)].map((m) => ({ ...m, kind: "srcset" as const, img: { ...m.img, srcset: "a.jpg 320w" }, exact: 1000, est: 0 }));
+    const [report] = groupReports(members, 1);
+    expect(report.srcset).toBeUndefined();
+  });
+
+  it("keeps the old advice when the page is a detected Next.js page", () => {
+    const members = [plainMember(phone("iphone-15"), 264, 1000)];
+    const [report] = groupReports(members, 1, true);
+    expect(report.srcset).toBeUndefined();
+  });
+});

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { evalSizesSlot, sizesPxAt, undersizedProposal, type ProposalPoint } from "../src/candidates.js";
+import { evalSizesSlot, sizesPxAt, srcsetWidthsOf, undersizedProposal, type ProposalPoint } from "../src/candidates.js";
+import { isPlainNoSrcset } from "../src/images.js";
 import { parseSrcset } from "../src/srcset-parse.js";
 
 const SRCSET = "http://127.0.0.1:3300/p-320.jpg 320w, http://127.0.0.1:3300/p-640.jpg 640w, http://127.0.0.1:3300/p-1280.jpg 1280w";
@@ -53,5 +54,44 @@ describe("undersizedProposal", () => {
 
   it("skips viewports where the element did not render", () => {
     expect(undersizedProposal("160px", [{ ...desktop, renderedWidth: 0 }], parse)).toBeUndefined();
+  });
+});
+
+describe("srcsetWidthsOf (the variants a plain image needs)", () => {
+  it("rounds each need up to 10 px, keeps the largest, and merges to at most three widths", () => {
+    // Needs from six viewports of a 1200 px file: 176, 264, 231, 264, 380, 190.
+    expect(srcsetWidthsOf([176, 264, 231, 264, 380, 190], 1200)).toEqual([190, 270, 380]);
+  });
+
+  it("keeps every need covered: a merged width is the larger one", () => {
+    const widths = srcsetWidthsOf([100, 120, 300, 900, 2000], 2400);
+    expect(widths).toHaveLength(3);
+    expect(Math.max(...widths)).toBe(2000);
+    for (const need of [100, 120, 300, 900, 2000]) expect(widths.some((w) => w >= need)).toBe(true);
+  });
+
+  it("never asks for a width above the file's own width", () => {
+    expect(srcsetWidthsOf([380, 1500], 1200)).toEqual([380, 1200]);
+  });
+
+  it("is empty when no need is known", () => {
+    expect(srcsetWidthsOf([0], 1200)).toEqual([]);
+    expect(srcsetWidthsOf([], undefined)).toEqual([]);
+  });
+});
+
+describe("isPlainNoSrcset (the gate of the no-srcset advice)", () => {
+  it("is true for a plain image with an empty srcset on a same-origin file or an unknown CDN host", () => {
+    expect(isPlainNoSrcset("plain", "", "plain-img", false)).toBe(true);
+    expect(isPlainNoSrcset("plain", "", "cdn:images.example.net", false)).toBe(true);
+    expect(isPlainNoSrcset("plain", "", "unknown", false)).toBe(true);
+  });
+
+  it("is false for a srcset image, a known loader, a non-plain kind, or a detected Next.js page", () => {
+    expect(isPlainNoSrcset("plain", "a.jpg 1x, b.jpg 2x", "plain-img", false)).toBe(false);
+    expect(isPlainNoSrcset("plain", "", "next-default", false)).toBe(false);
+    expect(isPlainNoSrcset("plain", "", "cloudinary", false)).toBe(false);
+    expect(isPlainNoSrcset("srcset", "", "plain-img", false)).toBe(false);
+    expect(isPlainNoSrcset("plain", "", "plain-img", true)).toBe(false);
   });
 });
