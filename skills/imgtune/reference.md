@@ -336,4 +336,4 @@ failed, skipped and unmatched usages).
 ## Top call sites
 
 `imgtune hints <scan.json> --top 10` prints the ten call sites with the most saving per view, one line each (where, the
-images and pages, the saving split into sizes and quality). Several scan files group across pages.
+images and pages, the saving split into sizes, resize and quality). Several scan files group across pages.

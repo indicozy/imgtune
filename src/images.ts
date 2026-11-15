@@ -14,7 +14,7 @@ import {
   type SizesResult,
 } from "./layout.js";
 import { COMPONENT_NAME, loaderName, sanitizeText, urlPattern, type LocatorKind, type LocatorVia, type OwnerSource } from "./locate.js";
-import { undersizedProposal, type ProposalPoint } from "./candidates.js";
+import { srcsetWidthsOf, undersizedProposal, type ProposalPoint } from "./candidates.js";
 import { sizesBranchAt, sizesSlotAt } from "./sizes.js";
 import { parseSrcset } from "./srcset-parse.js";
 import type { HiddenReason, Instance, ObservedImage, ViewportObservation } from "./remote.js";
@@ -151,6 +151,12 @@ export interface ImageFix {
   sizes?: { value: string; basis: SizesBasis; rung: MeasuredRung; branches: SizesBranch[] };
   /** Plain images: the device pixel width the file needs at the reference viewport. */
   width?: number;
+  /**
+   * A plain image with no srcset (see isPlainNoSrcset): the saving is a resize, and the fix is variant files at these widths
+   * (device px) with a srcset and a sizes value. `largest` is the largest device px any viewport needs; `sizes` is the
+   * measured sizes value, when one passed the check.
+   */
+  srcset?: { widths: number[]; largest: number; sizes?: string };
   quality?: {
     /** The max of the per-image targets of the group, per served format (the group rule). */
     perFormat: Record<string, number>;
@@ -164,10 +170,11 @@ export interface ImageFix {
   format?: string;
   /**
    * Two numbers, never netted: bytes the fix saves per page view, and sharpness bytes it adds on undersized images. The
-   * saving is split: `sizes` is the measured saving of the smaller srcset candidate (exact), `quality` the estimated
-   * quality and format saving on top of it (est.). sizes + quality = saved.
+   * saving is split: `sizes` is the measured saving of the smaller srcset candidate (exact), `resize` the saving of a
+   * smaller file at the same format for a plain image with no srcset (est.), and `quality` the estimated quality and
+   * format saving on top of it (est.). sizes + resize + quality = saved; resize is absent except for those plain images.
    */
-  bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number };
+  bytes: { saved: number; addedForSharpness: number; sizes?: number; quality?: number; resize?: number };
   /**
    * Set when the proposed sizes was dropped: its predicted outcome adds at least as many bytes as it saves (or saves none), so
    * it is not a saving. `sizes` is then absent (see sizes-outcome.ts).
@@ -386,6 +393,8 @@ export interface BuildInput {
   refName: string;
   resolved: Map<ObservedImage, ResolvedSource>;
   currentQuality: (src: string, pageUrl: string) => { quality: number; assumed: boolean };
+  /** A page with Next.js detected (see ObservedPage.nextjs): its plain images keep the existing advice. */
+  nextjs?: boolean;
 }
 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
@@ -464,6 +473,17 @@ function sizesOf(measured: { viewportWidth: number; renderedWidth: number; chain
 /** An image record that has something to fix: bytes saved, or a sizes value that differs from the current one. */
 export function hasFix(record: ImageRecord): boolean {
   return record.fix.bytes.saved > 0 || (record.fix.sizes !== undefined && record.fix.sizes.value !== record.current.sizes);
+}
+
+/**
+ * A plain image with no srcset at all, from a same-origin file or a CDN host no adapter knows: its saving is a resize, and
+ * its fix is variant files with a srcset (see srcsetWidthsOf). A known loader (next/image, a named CDN adapter) keeps its own
+ * advice, and so does a page with Next.js detected.
+ */
+export function isPlainNoSrcset(kind: string | undefined, srcset: string, loader: string, framework: boolean): boolean {
+  if (kind !== "plain" || framework || srcset.trim() !== "") return false;
+  // "generic" is the adapter name of an origin no adapter matched (Instance.loader); the locator names it plain-img or cdn:<host>.
+  return loader === "plain-img" || loader === "unknown" || loader === "generic" || loader.startsWith("cdn:");
 }
 
 /** Builds the image records of one page from its analysed instances. */
@@ -566,6 +586,9 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
     const keepSizes = sizes !== undefined && left === undefined;
     const savedEff = keepSizes ? saved : saved - savedSizes;
     const savedSizesEff = keepSizes ? savedSizes : 0;
+    // A plain image with no srcset: the sizes attribute does nothing without one, so no sizes proposal; its saving is the
+    // resize (est.), not a re-encode.
+    const plainNoSrcset = isPlainNoSrcset(member.kind, member.img.srcset, locator.loader, input.nextjs === true);
     const served = member.format;
     const animatedMember = members.find((m) => m.animated !== undefined);
     const lossless = losslessServed(served, animatedMember !== undefined);
@@ -573,7 +596,11 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
 
     // A hidden fix first: an element never shown on load gets no animated encode either (its bytes are not a saving).
     const hiddenFix = hiddenFixOf(members, viewportCount);
-    const fix: ImageFix = { bytes: { saved: savedEff, addedForSharpness, sizes: savedSizesEff, quality: savedEff - savedSizesEff } };
+    const fix: ImageFix = {
+      bytes: plainNoSrcset
+        ? { saved: savedEff, addedForSharpness, sizes: 0, resize: savedEff, quality: 0 }
+        : { saved: savedEff, addedForSharpness, sizes: savedSizesEff, quality: savedEff - savedSizesEff },
+    };
     if (member.cdnQuality !== undefined) fix.cdnQuality = { ...member.cdnQuality };
     if (member.formatAuto === true && lossless) fix.formatHandled = true;
     if (animatedMember?.animated !== undefined && hiddenFix?.shownIn.length !== 0) {
@@ -588,7 +615,15 @@ export function buildImageRecords(input: BuildInput): ImageRecord[] {
       fix.noSaving = `sizes proposal left out: ${left}`;
       notes.push(`sizes proposal left out: ${left}`);
     }
-    if (keepSizes) {
+    if (plainNoSrcset && savedEff > 0) {
+      const naturalWidth = member.pixelWidth > 0 ? member.pixelWidth : undefined;
+      const needs = members.map((m) => m.needed);
+      const widths = srcsetWidthsOf(needs, naturalWidth);
+      if (widths.length > 0) {
+        fix.srcset = { widths, largest: Math.max(...needs), ...(keepSizes && sizes !== undefined ? { sizes: sizes.value } : {}) };
+        notes.push(`srcset: no srcset today; variants at ${widths.join("w, ")}w (the saving is a resize)`);
+      }
+    } else if (keepSizes && !plainNoSrcset) {
       fix.sizes = { value: sizes.value, basis: sizes.basis, rung, branches: sizes.branches };
       const sized = sizes.branches.map((b) => b.basis);
       const formulas = sized.filter((b) => b === "layout-formula").length;

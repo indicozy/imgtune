@@ -294,6 +294,9 @@ numbers. A lazy image whose only fix is its sizes also gets `alternative: sizes=
 150 or later; Safari falls back to the proposed value). The explicit value stays the fix. A CDN's auto quality (`q_auto`) is
 reported as `quality handled by <loader> (q_auto)`, or as the explicit `q_<Q>` it would need, and a CDN that negotiates the
 format (`f_auto`) gets no format change. The `images.qualities` line comes first when the site has next/image images.
+A plain image with no `srcset` (a same-origin file, or a CDN host no adapter knows) gets `srcset: no srcset today; serve
+variants at <widths>` with the `srcset="…"` and `sizes="…"` to add, and its saving is printed as `resize`, not `quality`.
+Known loaders, and pages with Next.js detected, keep their own advice.
 
 | flag | meaning |
 | --- | --- |
@@ -314,12 +317,12 @@ count, its pages, each page's current and proposed sizes and rendered widths, th
 The sizes of a call site are fitted to its measured widths: one formula (`one formula over N image(s)`), or, when the pages
 need different widths, `shared component: pass sizes per caller` with each page's own formula. Proposals that would add
 bytes are left out (the scan's `no saving` note; the count is printed). Each
-entry's saving is split into sizes and quality when the scan gave the split. With `--format json` the default output is an
+entry's saving is split into sizes, resize and quality when the scan gave the split. With `--format json` the default output is an
 object with `page`, `groups`, `images`, `offset`, `limit` and `callSites` (each with `key`, `file`, `line`, `component`,
 `count`, `pages`, `saved`, `sizes`, `ids` and its `hints`). With `--flat`, it is `page`, `total`, `offset`, `limit` and
 `hints`. Each hint has the fields `id`, `page`, `component`, `file`, `line`, `kind`, `verified`, `testid`, `alt`, `classes`,
-`find`, `selector`, `sizes`, `rendered`, `width`, `quality`, `format`, `bytes`, `rung` and `notes`. The `bytes` field has
-`saved` and `addedForSharpness` (both per page view), and `sizes` and `quality` when the scan gave the split. See
+`find`, `selector`, `sizes`, `srcset`, `rendered`, `width`, `quality`, `format`, `bytes`, `rung` and `notes`. The `bytes` field
+has `saved` and `addedForSharpness` (both per page view), and `sizes`, `resize` and `quality` when the scan gave the split. See
 [Output JSON fields](./output-json).
 
 ## compare

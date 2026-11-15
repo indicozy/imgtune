@@ -88,7 +88,9 @@ describe("harness scan of a component whose image renders only in one state", ()
     expect(records).toHaveLength(1);
     const [record] = records;
     expect(record.evidence.rung).toBe("measured-harness");
-    expect(record.fix.sizes).toMatchObject({ value: "300px", rung: "measured-harness" });
+    // A plain image with no srcset: sizes does nothing there, so no sizes proposal; the fix is the variant at its needed width.
+    expect(record.fix.sizes).toBeUndefined();
+    expect(record.fix.srcset).toMatchObject({ widths: [300], largest: 300 });
     expect(record.perViewport[0]).toMatchObject({ renderedCssPx: 300, servedPx: 1200, loaded: true });
     expect(record.evidence.notes[0]).toMatch(/^measured in isolation: harness \/__imgtune\/ProductCard/);
     expect(record.fix.bytes.saved).toBeGreaterThan(0);

@@ -19,6 +19,35 @@ export function rightCandidate(candidates: Candidate[], needed: number): Candida
   return sorted.find((c) => c.width >= needed) ?? sorted[sorted.length - 1];
 }
 
+/** The device-pixel step a plain image's variant widths are rounded up to. */
+export const SRCSET_WIDTH_STEP = 10;
+
+/** A plain image gets at most this many variant widths, one file each. */
+export const SRCSET_MAX_WIDTHS = 3;
+
+/** The widths of a srcset as printed: "190w, 270w, 380w". */
+export function srcsetWidthLabel(widths: number[]): string {
+  return widths.map((w) => `${w}w`).join(", ");
+}
+
+/**
+ * The widths the variants of a plain image (no srcset today) need: each device-pixel need rounded up to SRCSET_WIDTH_STEP
+ * and capped at the file's own width. More than SRCSET_MAX_WIDTHS are merged by joining the closest pair and keeping the
+ * larger, so every need is still covered by a file at least as wide. Sorted ascending; empty when no need is known.
+ */
+export function srcsetWidthsOf(needs: number[], naturalWidth: number | undefined): number[] {
+  const cap = naturalWidth !== undefined && naturalWidth > 0 ? naturalWidth : Infinity;
+  const widths = [...new Set(needs.filter((n) => n > 0).map((n) => Math.min(Math.ceil(n / SRCSET_WIDTH_STEP) * SRCSET_WIDTH_STEP, cap)))].sort(
+    (a, b) => a - b,
+  );
+  while (widths.length > SRCSET_MAX_WIDTHS) {
+    let at = 0;
+    for (let i = 1; i < widths.length - 1; i++) if (widths[i + 1] - widths[i] < widths[at + 1] - widths[at]) at = i;
+    widths.splice(at, 1);
+  }
+  return widths;
+}
+
 /** The served file is undersized: its pixels are below 0.9 x need, and a larger candidate exists. */
 export function isUndersized(servedWidth: number, needed: number, largest: number): boolean {
   return servedWidth < UNDERSIZED_RATIO * needed && servedWidth < largest;

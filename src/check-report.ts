@@ -1,7 +1,8 @@
 // The Markdown report of `imgtune check`: a pure builder over the survey results, the deep results, the route grouping and
 // the deep selection. No browser, no files. The audit mode extends it with source-aware sections; the sections below keep
 // their order so the two stay comparable. Page-derived text goes through mdText and mdCode (see text.ts).
-import { hiddenPagesLine, hiddenVideoSummaryLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
+import { groupSrcsetOf, hiddenPagesLine, hiddenVideoSummaryLine, hintsOf, type Hint, videoRowOf, videoSavingOf, videoTotalsLine } from "./hints.js";
+import { srcsetWidthLabel } from "./candidates.js";
 import { lcpLinesOf } from "./lcp.js";
 import { planQualityCap, qualitiesLine } from "./qualities-cap.js";
 import { hasFix, type ImageRecord } from "./images.js";
@@ -101,6 +102,8 @@ export interface FixGroup {
   where: string;
   located: boolean;
   loader: string;
+  /** Plain images with no srcset: the variant widths to serve, in place of a sizes change (see groupSrcsetOf). */
+  srcset?: { widths: number[] };
   /** The image's URL pattern (the loader's URL with w, q and the CDN transform taken out), when it has one. */
   pattern?: string;
   current: string;
@@ -116,6 +119,8 @@ export interface FixGroup {
   /** Per page the fix applies to: the mean saving per view, and its sizes and quality parts. */
   savedKBPerPage: number;
   sizesKBPerPage: number;
+  /** The resize part (a plain image with no srcset, est.): zero for any other fix. */
+  resizeKBPerPage: number;
   qualityKBPerPage: number;
   /** Sharpness bytes the fix adds per view (separate: never netted). */
   sharpnessKBPerPage: number;
@@ -149,6 +154,7 @@ export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[
     const pages = [...new Set(group.hints.map((h) => h.page))];
     const saved = group.hints.reduce((sum, h) => sum + h.bytes.saved, 0) / 1024;
     const sizes = group.hints.reduce((sum, h) => sum + (h.bytes.sizes ?? 0), 0) / 1024;
+    const resize = group.hints.reduce((sum, h) => sum + (h.bytes.resize ?? 0), 0) / 1024;
     const sharp = group.hints.reduce((sum, h) => sum + h.bytes.addedForSharpness, 0) / 1024;
     const targets = group.hints.map((h) => h.quality?.target).filter((t): t is number => t !== undefined);
     const quality = group.hints.find((h) => h.quality !== undefined)?.quality;
@@ -165,6 +171,7 @@ export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[
       current,
       proposed,
       basis: first.sizes.basis,
+      srcset: groupSrcsetOf(group),
       format: best !== undefined && best !== first.format?.current ? best : undefined,
       ...(quality !== undefined
         ? {
@@ -182,7 +189,8 @@ export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[
       savedKBSum: saved,
       savedKBPerPage: perPage(saved),
       sizesKBPerPage: perPage(sizes),
-      qualityKBPerPage: perPage(saved - sizes),
+      resizeKBPerPage: perPage(resize),
+      qualityKBPerPage: perPage(saved - sizes - resize),
       sharpnessKBPerPage: perPage(sharp),
     });
   }
@@ -192,7 +200,12 @@ export function fixGroupsOf(deep: PageResult[], qualities?: number[]): FixGroup[
 /** The line of one fix: where, the sizes and quality change, the saving per view and its pages. */
 function fixLines(fix: FixGroup, rank: number): string[] {
   const where = fix.located ? mdCode(fix.where) : `${mdCode(fix.where)} (not located)`;
-  const sizes = fix.current === fix.proposed ? "sizes unchanged" : `sizes ${mdCode(fix.current)} -> ${mdCode(fix.proposed)}${fix.basis ? ` (${mdText(fix.basis)})` : ""}`;
+  const sizes =
+    fix.srcset !== undefined
+      ? `no srcset -> serve ${srcsetWidthLabel(fix.srcset.widths)} + srcset/sizes`
+      : fix.current === fix.proposed
+        ? "sizes unchanged"
+        : `sizes ${mdCode(fix.current)} -> ${mdCode(fix.proposed)}${fix.basis ? ` (${mdText(fix.basis)})` : ""}`;
   const quality =
     fix.quality === undefined
       ? "quality -"
@@ -201,7 +214,8 @@ function fixLines(fix: FixGroup, rank: number): string[] {
         : fix.quality.void
           ? `quality ${fix.quality.current} -> ${fix.quality.target} (snapped: void, counted as 0)`
           : `quality ${fix.quality.current} -> ${fix.quality.target}${fix.quality.snapFrom !== undefined ? ` (snapped from ${fix.quality.snapFrom}${fix.quality.allowed ? `, allowed ${fix.quality.allowed.join(",")}` : ""})` : ""}`;
-  const saving = `saves ${kb(fix.savedKBPerPage)} KB/view per page (sizes ${kb(fix.sizesKBPerPage)} + quality ${kb(fix.qualityKBPerPage)})`;
+  const split = fix.resizeKBPerPage > 0 ? `sizes ${kb(fix.sizesKBPerPage)} + resize ${kb(fix.resizeKBPerPage)} + quality ${kb(fix.qualityKBPerPage)}` : `sizes ${kb(fix.sizesKBPerPage)} + quality ${kb(fix.qualityKBPerPage)}`;
+  const saving = `saves ${kb(fix.savedKBPerPage)} KB/view per page (${split})`;
   const source = fix.pattern !== undefined ? `, src ${mdCode(fix.pattern)}` : "";
   const where2 = `${fix.pages.length} page(s), ${fix.images} image(s), loader ${mdText(fix.loader)}${source}`;
   return [

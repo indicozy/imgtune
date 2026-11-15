@@ -29,6 +29,7 @@ import {
   isBlockedAddress,
   duplicatesOf,
   groupReports,
+  renderScan,
   makeFetcher,
   netSavings,
   neededWidth,
@@ -539,6 +540,17 @@ describe("mdText, mdCode and the Markdown summary", () => {
     // The image columns are unchanged by the resource findings.
     expect(md).toContain("| `shop.example/` | ok | 3235 |");
     expect(renderMarkdown([pageResult()], false)).not.toContain("resources:");
+  });
+
+  it("names a plain no-srcset group by its widths to serve, in the text and the Markdown, never set sizes", () => {
+    const groups = [{ key: "k", savedBytes: 2048, members: 1, samples: [], loader: "generic", srcset: { widths: [190, 270, 380] } }];
+    const md = renderMarkdown([pageResult({ groups })], false);
+    expect(md).toContain("no srcset");
+    expect(md).toContain("serve 190w, 270w, 380w + srcset/sizes");
+    expect(md).not.toContain("set sizes");
+    const text = renderScan([pageResult({ groups })], false);
+    expect(text).toContain("no srcset -> serve 190w, 270w, 380w + srcset/sizes  saves 2 KB/view");
+    expect(text).not.toContain("set sizes");
   });
 
   it("lists the top five groups as code spans, with hostile sizes escaped", () => {
@@ -1799,5 +1811,48 @@ describe("the AVIF search at the fast effort, confirmed at effort 4", () => {
         expect(await calibrateFast(fastSize, cdnSize, bytes)).toBe(expected);
       }
     }
+  });
+});
+
+describe("groupReports for plain images with no srcset", () => {
+  const phone = (name: string): Viewport => ({ name, width: 390, height: 844, dpr: 3, mobile: true });
+  const plainMember = (viewport: Viewport, needed: number, est: number): Instance => ({
+    viewport,
+    element: 0,
+    img: { index: 0, currentSrc: "https://cdn.example.net/a.jpg", renderedWidth: 88, renderedHeight: 60, srcset: "", classes: "", nextImage: false, inFirstViewport: false },
+    url: "https://cdn.example.net/a.jpg",
+    bytes: 90_000,
+    pixelWidth: 1200,
+    renderedWidth: 88,
+    needed,
+    kind: "plain",
+    exact: 0,
+    est,
+    estAggressive: est,
+    growth: 0,
+    group: "card",
+    loader: "cdn:cdn.example.net",
+    qualityParam: "none",
+  });
+
+  it("says no srcset and the widths to serve, not set sizes, and books the resize saving", () => {
+    const members = [plainMember(phone("iphone-15"), 264, 1000), plainMember(phone("pixel-7"), 231, 1000)];
+    const [report] = groupReports(members, 2);
+    expect(report.srcset?.widths).toEqual([240, 270]);
+    expect(report.hint).toBeUndefined();
+    expect(report.suggestedSizes).toBeUndefined();
+    expect(report.savedBytes).toBeCloseTo(1000, 10);
+  });
+
+  it("keeps the set-sizes advice when the image has a srcset", () => {
+    const members = [plainMember(phone("iphone-15"), 264, 0)].map((m) => ({ ...m, kind: "srcset" as const, img: { ...m.img, srcset: "a.jpg 320w" }, exact: 1000, est: 0 }));
+    const [report] = groupReports(members, 1);
+    expect(report.srcset).toBeUndefined();
+  });
+
+  it("keeps the old advice when the page is a detected Next.js page", () => {
+    const members = [plainMember(phone("iphone-15"), 264, 1000)];
+    const [report] = groupReports(members, 1, true);
+    expect(report.srcset).toBeUndefined();
   });
 });

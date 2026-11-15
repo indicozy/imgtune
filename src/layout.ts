@@ -1,3 +1,4 @@
+import { offsetPx, wholePx } from "./px.js";
 // Layout chains and the CSS `sizes` value derived from them. Pure: no DOM, no network. The browser side (remote.ts) records
 // a chain per image and viewport; this module walks the chain down from the viewport to the image and states the image's
 // width as a linear function of the viewport width (a * vw + b). The function is checked against the widths the browser
@@ -156,15 +157,17 @@ function shareOf(parent: LayoutNode, child: LayoutNode, parentContent: Linear): 
 export function formatLinear(l: Linear): string {
   const vwPercent = round(l.a * 100, 2);
   const px = round(l.b, 2);
-  if (vwPercent === 0) return `${Math.max(0, px)}px`;
+  if (vwPercent === 0) return `${Math.max(0, wholePx(px))}px`;
   if (px === 0) return `${vwPercent}vw`;
-  return `calc(${vwPercent}vw ${px < 0 ? "-" : "+"} ${Math.abs(px)}px)`;
+  const offset = offsetPx(px);
+  if (offset === 0) return `${vwPercent}vw`;
+  return `calc(${vwPercent}vw ${offset < 0 ? "-" : "+"} ${Math.abs(offset)}px)`;
 }
 
 /** A fitted line held outside the range it was measured in: the viewport is clamped to [lo, hi] (CSS clamp()). */
 export function formatHeldFit(l: Linear, lo: number, hi: number): string {
   if (Math.abs(l.a) < 1e-9) return formatLinear({ a: 0, b: l.b });
-  const b = round(l.b, 2);
+  const b = offsetPx(round(l.b, 2));
   return `calc(${round(l.a, 4)} * clamp(${Math.round(lo)}px, 100vw, ${Math.round(hi)}px) ${b < 0 ? "-" : "+"} ${Math.abs(b)}px)`;
 }
 

@@ -1,3 +1,4 @@
+import { offsetPx, wholePx } from "./px.js";
 /** A measured rendered image at one viewport width. */
 export interface SizePoint {
   viewportWidth: number;
@@ -47,15 +48,16 @@ function expressionFor(points: SizePoint[]): string | undefined {
     const { a, b } = line;
     const maxResidual = Math.max(...points.map((p) => Math.abs(p.renderedWidth - (a * p.viewportWidth + b))));
     if (maxResidual <= FIT_TOLERANCE_PX) {
-      if (a * 100 < 1) return `${Math.round(maxWidth)}px`;
+      if (a * 100 < 1) return `${wholePx(maxWidth)}px`;
       if (Math.abs(b) < 1) return `${Math.round(a * 100)}vw`;
-      return b < 0
-        ? `calc(${Math.round(a * 100)}vw - ${Math.round(-b)}px)`
-        : `calc(${Math.round(a * 100)}vw + ${Math.round(b)}px)`;
+      const offset = offsetPx(b);
+      return offset < 0
+        ? `calc(${Math.round(a * 100)}vw - ${-offset}px)`
+        : `calc(${Math.round(a * 100)}vw + ${offset}px)`;
     }
   }
 
-  return `${Math.ceil(maxWidth)}px`;
+  return `${wholePx(maxWidth)}px`;
 }
 
 /** The width expression of each media branch; a branch with no measured point is undefined. */

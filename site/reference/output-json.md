@@ -124,6 +124,7 @@ with no measured partner), `noOrder` (elements without `domIndex`) and `reasons`
 | `members` | the number of distinct elements in the group |
 | `samples` | up to two image URLs |
 | `hint` | a ready line, such as `set sizes="28px"`, when the suggestion differs from the current `sizes` |
+| `srcset` | present on a group of plain images with no `srcset` (see `images[].srcset`): `widths`, the variant widths to serve. Its `suggestedSizes` is absent |
 
 ## counts
 
@@ -259,10 +260,13 @@ Each node in `nodes`:
 | `format` | the best format for the image. `avif` for a JPEG or PNG that has a saving |
 | `bytes.saved` | the bytes the fix saves per page view, averaged over the viewports |
 | `bytes.addedForSharpness` | the bytes the fix adds on undersized images, per page view |
+| `bytes.resize` | the part of `saved` that is a smaller file at the same format (an estimate), for a plain image with no `srcset`. `sizes` is then 0 and `quality` 0. Absent for any other image |
+| `srcset` | a plain image with no `srcset` (`<img>` with no `srcset` attribute, from a same-origin file or an unknown CDN host, on a page without Next.js detected): `widths` (the device-pixel widths of the variants to serve, 1 to 3, each rounded up to 10 px and never above the file's width), `largest` (the largest device px any viewport needs) and `sizes` (the measured `sizes` value, when one passed the check) |
 | `cdnQuality` | present on a CDN's auto quality (`q_auto`): `handled` (`true` when the CDN's quality is left alone, because its estimated saving is below a tenth of the group's served bytes; that saving is then not counted), and `saved`, the group's estimated quality saving per view |
 | `formatHandled` | `true` on a jpeg or png whose format the CDN negotiates (`f_auto`, `auto=format`): no format saving is counted or proposed |
 
 `bytes.saved` and `bytes.addedForSharpness` are two numbers and are never netted. An undersized image adds bytes and saves none.
+`bytes.saved` = `bytes.sizes` + `bytes.resize` + `bytes.quality`.
 
 ### images[].evidence
 

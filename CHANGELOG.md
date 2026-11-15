@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A plain `<img>` with no `srcset`, served much wider than it is shown (from a same-origin file or a CDN host no adapter
+  knows), gets resized variants instead of a `sizes` change. `sizes` does nothing without `srcset`. The hint now says to serve
+  the variants at concrete widths (1 to 3, from the device pixels each viewport needs) and to add the `srcset` and `sizes`,
+  the summary's top group reads `no srcset -> serve <widths> + srcset/sizes`, and the saving is booked as `resize`, not
+  `quality`. Known loaders and pages with Next.js detected keep their advice. The JSON gains `bytes.resize` and `srcset`.
+  The same resize booking applies to CSS background layers.
 - Resource checks cost less. Each heavy step (brotli-11 sizes, SVGO and render, WOFF2 and subset encodes, lottie re-encodes,
   3D meshopt, audio sample encodes) is computed once per run per distinct content, not once per viewport and page. Icons are
   fetched once per run. `--resource-time <s>` (default 60) caps the heavy work of a run; a file over the budget keeps its cheap
