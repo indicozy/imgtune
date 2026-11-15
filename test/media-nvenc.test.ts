@@ -228,6 +228,13 @@ describe("hint labels of an NVENC candidate", () => {
     expect(estLabel(cpu)).toBe("est.");
   });
 
+  it("labels a search the time limit cut short as an estimate that stopped there, and leaves a finished one as it was", () => {
+    const cut = { ...cpu, timeLimited: true as const };
+    expect(estLabel(cut)).toBe("est., search stopped at the time limit");
+    expect(videoStatusOf({ estimate: cut } as unknown as VideoRecord)).toBe("av1 CRF 40, 640px, 2 KB est., search stopped at the time limit");
+    expect(estLabel(cpu)).toBe("est.");
+  });
+
   it("marks an NVENC quality as approximate, and a CPU quality not", () => {
     expect(qualityApprox(nvenc)).toBe(" (approx.)");
     expect(qualityApprox(cpu)).toBe("");

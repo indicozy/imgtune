@@ -865,7 +865,8 @@ const FORMAT_LABEL: Record<AnimatedFix["info"]["format"], string> = { gif: "GIF"
  * says so: performance before precision, but the number is never presented as a measured CPU encode.
  */
 export function estLabel(c: CandidateResult): string {
-  return c.encoder === "nvenc" ? "est. (GPU-encoded, scaled to a CPU encode ÷1.4)" : "est.";
+  const base = c.encoder === "nvenc" ? "est. (GPU-encoded, scaled to a CPU encode ÷1.4)" : "est.";
+  return c.timeLimited === true ? `${base}, search stopped at the time limit` : base;
 }
 
 /**

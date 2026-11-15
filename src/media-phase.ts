@@ -482,8 +482,10 @@ async function runJobs(
         workDir: join(dir, `${job.codec}-${job.width}`),
         signal: opts.signal,
       });
-      if (outcome.ok) await opts.cache?.putJson(cacheKey, { ok: true, best: outcome.best } satisfies CachedOutcome);
-      else if (outcome.reason === "no-passing-quality") await opts.cache?.putJson(cacheKey, { ok: false, reason: "no-passing-quality" } satisfies CachedOutcome);
+      // A search cut short by its deadline is not cached: a later run with more time may find a cheaper passing quality.
+      if (outcome.ok) {
+        if (outcome.best.timeLimited !== true) await opts.cache?.putJson(cacheKey, { ok: true, best: outcome.best } satisfies CachedOutcome);
+      } else if (outcome.reason === "no-passing-quality") await opts.cache?.putJson(cacheKey, { ok: false, reason: "no-passing-quality" } satisfies CachedOutcome);
     }
     if (outcome.ok) candidates.push(outcome.best);
     else {
