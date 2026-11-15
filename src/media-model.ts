@@ -315,16 +315,19 @@ export function sampleOffsets(durationS: number): number[] {
 }
 
 /**
- * Orders assets for the encode budget: heaviest per-view bytes first, then per-play bytes, then key. Duplicate keys
- * are dropped, keeping the first (heaviest) copy. The first `budget` assets are encoded; the rest are skipped and
- * still get their cheap hints. The input is not mutated.
+ * Orders assets for the encode budget: heaviest per-view bytes first, then per-play bytes, then key. The per-view bytes are
+ * `rankView` when the asset has one (the largest per-view bytes of one viewport), else `perView`: the claim is averaged over
+ * the viewports, and an average would rank a video shown at one viewport of two at half its weight. Duplicate keys are
+ * dropped, keeping the first (heaviest) copy. The first `budget` assets are encoded; the rest are skipped and still get
+ * their cheap hints. The input is not mutated.
  */
-export function rankForBudget<T extends { perView: number; perPlay: number; key: string }>(
+export function rankForBudget<T extends { perView: number; perPlay: number; key: string; rankView?: number }>(
   assets: T[],
   budget: number,
 ): { encode: T[]; skipped: T[] } {
+  const rank = (a: T): number => a.rankView ?? a.perView;
   const sorted = [...assets].sort(
-    (a, b) => b.perView - a.perView || b.perPlay - a.perPlay || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    (a, b) => rank(b) - rank(a) || b.perPlay - a.perPlay || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
   );
   const seen = new Set<string>();
   const unique: T[] = [];

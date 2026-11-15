@@ -334,6 +334,14 @@ describe("rankForBudget", () => {
     expect(ranked.skipped).toEqual([]);
   });
 
+  it("ranks a video by its heaviest viewport, not its averaged claim, so one shown at one viewport of two is not pushed out", () => {
+    // Shown at one viewport of two: the claim averages to 4, its one viewport loads 8.
+    const oneViewport = { key: "half", perView: 4, perPlay: 20, rankView: 8 };
+    const twoViewports = { key: "both", perView: 6, perPlay: 20 };
+    expect(rankForBudget([twoViewports, oneViewport], 1).encode.map((a) => a.key)).toEqual(["half"]);
+    expect(rankForBudget([twoViewports, oneViewport], 2).encode.map((a) => a.key)).toEqual(["half", "both"]);
+  });
+
   it("does not mutate its input", () => {
     const input = [asset("b", 1, 1), asset("a", 2, 2)];
     rankForBudget(input, 1);
