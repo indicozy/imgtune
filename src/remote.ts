@@ -1418,10 +1418,13 @@ function revealCappedOf(observations: ViewportObservation[]): number {
   return observations.reduce((sum, obs) => sum + (obs.revealCapped ?? 0), 0);
 }
 
-/** One read of the page as it stands: its images and whether it is a Next.js app. */
-async function readView(page: Page, light = false, withVideos = false): Promise<PageView> {
+/**
+ * One read of the page as it stands: its images and whether it is a Next.js app. `quick` takes no stability pass (see
+ * settledView): every hidden copy it finds is unverified.
+ */
+async function readView(page: Page, light = false, withVideos = false, quick = false): Promise<PageView> {
   const seen = await page.evaluate(
-    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait, revealSettle }) => {
+    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait, revealSettle, reveal }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1823,6 +1826,12 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         });
         // Videos first: they are the heavy copies, so the cap never leaves a video unverified while images are checked.
         candidates.sort((a, b) => Number(b.isVideo) - Number(a.isVideo));
+        // No candidate, or a quick read (a read taken after the page navigated during a full read): no stability pass, so no
+        // sleeps. A hidden copy the pass would have verified is unverified here (unstable: "unknown"), as past revealCap.
+        if (candidates.length === 0 || !reveal) {
+          for (const c of candidates) c.apply(c.snap, true);
+          return { nextjs, images, backgrounds, videos, revealCapped: 0 };
+        }
         const checked = candidates.slice(0, revealCap);
         revealCapped = candidates.length - checked.length;
         const x0 = window.scrollX;
@@ -1880,7 +1889,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
       }
       return { nextjs, images, backgrounds, videos, revealCapped };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_STABLE_MS, revealSettle: REVEAL_SETTLE_MS },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_STABLE_MS, revealSettle: REVEAL_SETTLE_MS, reveal: !quick },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -1985,6 +1994,10 @@ async function settledView(
   withVideos = false,
 ): Promise<PageView> {
   let last: PageView | undefined;
+  // Once a read was cut off by a navigation, the later reads are quick ones. A full read holds the page for its stability
+  // pass (about 1.8 s of waits and a scroll), and a page that reloads itself on a timer would cut every full read. The
+  // quick read's hidden copies are unverified, not claimed.
+  let quick = false;
   for (let repeat = 0; ; repeat++) {
     const start = navigations();
     let view: PageView | undefined;
@@ -2001,7 +2014,7 @@ async function settledView(
           : undefined,
       });
       if (afterSettle !== undefined) await afterSettle();
-      view = await measure("read view", () => readView(page, light, withVideos));
+      view = await measure("read view", () => readView(page, light, withVideos, quick));
       view.lcp = lcp;
     } catch (err) {
       if (!isNavigationError(err)) throw err;
@@ -2012,6 +2025,7 @@ async function settledView(
       if (last) return last;
       throw new Error(`the page kept navigating after load (${MAX_POST_LOAD_NAVIGATIONS + 1} attempts)`);
     }
+    quick = true;
     // The new document settles first: its load event, or the cap if it never comes.
     await waitForLoadWithin(page, loadCapMs).catch(() => false);
   }
