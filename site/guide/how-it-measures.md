@@ -52,6 +52,13 @@ Half size is used because the raster's antialiased edges are not the ground trut
 size it fails on the edges alone. For a very large image the pair is scaled further, to at most one megapixel, so the check
 stays fast. The SVG's size is its brotli size, the same at every pixel density.
 
+## Other page weight
+
+Video elements, fonts, compression, favicons, SVG, Lottie, 3D models and audio are measured too, each with its own guide:
+[video and animated images](/guide/video-and-gifs), [loaded but not shown](/guide/hidden-images), [fonts](/guide/fonts),
+[resources](/guide/resources), [vector art](/guide/vector-art). The estimated saving above is about images, and each of the other
+kinds has its own section and totals.
+
 ## Fix hints
 
 Every image with a saving, or with a `sizes` value that differs from the current one, gets a fix hint. The hint gives the

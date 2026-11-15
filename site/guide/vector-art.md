@@ -8,9 +8,9 @@ reports a saving.
 
 - Every still raster the page loads (PNG, WebP, JPEG, AVIF and static GIF) of at least 2 KB. Animated images are not
   checked here; see [Video and animated images](/guide/video-and-gifs).
-- An image is **flat** when its colours are few and in steps, not gradients: the 16 most common colours cover at least
-  97% of its pixels at a 256 px decode, the image has at most 300 colours, and at most 12% of its pixels sit in smooth
-  gradients. Images over 5 megapixels are not flagged flat.
+- An image is **flat** when its colours are few and change in sharp steps: at a 256 px decode, the 16 most common colours
+  cover at least 97% of its pixels, the image has at most 300 colours, and at most 12% of its neighbouring pixel pairs differ
+  by a small step (soft shading). Images over 5 megapixels are not flagged flat.
 - A flat image that is not traced gets a hint with no byte claim: "looks like vector art (flat colors); if a source SVG
   exists, serve it".
 
@@ -19,7 +19,7 @@ reports a saving.
 Flat images are traced within a budget: `--svg-budget <N>` (default 50, 0 to 1000; 0 traces none), heaviest first. Each
 trace is capped at 2 seconds.
 
-1. The served image is traced to SVG with vtracer, through `@neplex/vectorizer`. The trace input is downscaled to at most
+1. The served image is traced to SVG with vtracer (the Poster preset), through `@neplex/vectorizer`. The trace input is downscaled to at most
    1 megapixel, with a long side of 1024 px.
 2. The SVG is rendered back at the served size with sharp (librsvg).
 3. The render and the served image are both scaled to half size, and compared with SSIMULACRA2. The bar is 70, the same
