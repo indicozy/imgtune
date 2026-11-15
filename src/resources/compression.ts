@@ -12,6 +12,11 @@ export const SAMPLE_BYTES = 1024 * 1024;
 /** A group saves less than this in total: no finding. */
 const MIN_SAVED = 1024;
 const MAX_URLS = 10;
+/**
+ * The brotli size of a text body as a share of its size, for a file whose body the scan did not keep (a body still streaming at
+ * the settle, or over the refetch cap). A typical minified script, style sheet or document lands near this; it is an estimate.
+ */
+export const TYPICAL_BROTLI_RATIO = 0.3;
 
 const TEXT_APPLICATION = /^application\/(javascript|x-javascript|ecmascript|json|ld\+json|manifest\+json|xml|wasm|x-font-ttf|font-sfnt|x-font-opentype)$/;
 
@@ -75,7 +80,13 @@ export const analyzer: ResourceAnalyzer = {
       }
       const members: Member[] = [];
       for (const r of records) {
-        if (r.body === undefined || !wantsRecord(r)) continue;
+        if (!wantsRecord(r)) continue;
+        if (r.body === undefined) {
+          // No body: the headers and the size decide the finding, and the brotli size is estimated (never claimed as measured).
+          const brotli = Math.round(r.bytes * TYPICAL_BROTLI_RATIO);
+          members.push({ url: r.url, host: hostOf(r.url), contentType: r.contentType, bytes: r.bytes, saved: Math.max(0, r.bytes - brotli), brotli, estimate: true });
+          continue;
+        }
         const { bytes: brotli, estimate } = await brotliSizeOf(r.body);
         const bytes = r.body.length;
         members.push({ url: r.url, host: hostOf(r.url), contentType: r.contentType, bytes, saved: Math.max(0, bytes - brotli), brotli, estimate });

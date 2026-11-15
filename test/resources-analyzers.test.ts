@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import sharp from "sharp";
-import { analyzer as compression, MIN_BYTES, SAMPLE_BYTES } from "../src/resources/compression.js";
+import { analyzer as compression, MIN_BYTES, SAMPLE_BYTES, TYPICAL_BROTLI_RATIO } from "../src/resources/compression.js";
 import { analyzer as favicon, largestPngFrame } from "../src/resources/favicon.js";
 import { analyzeResources, labelFinding, REFETCH_MAX_BYTES, runPhaseWith } from "../src/resources/phase.js";
 import { completeFontFaces, fontFaceRulesOf } from "../src/resources/capture.js";
@@ -87,10 +87,17 @@ describe("compression analyzer", () => {
     expect(findings[0].details).toMatchObject({ files: 2, bytes: 70_000 });
   });
 
-  it("drops a group that saves less than 1 KB, and a record with no body", async () => {
+  it("drops a group that saves less than 1 KB", async () => {
     const noise = randomBytes(4096);
     expect(await compression.analyze([recordOf({ url: `${page}n.js`, body: noise, bytes: noise.length })], contextOf())).toEqual([]);
-    expect(await compression.analyze([recordOf({ url: `${page}x.js`, bytes: 90_000 })], contextOf())).toEqual([]);
+  });
+
+  it("a record with no body (streamed past the settle, or over the refetch cap) is estimated from its size, never called measured", async () => {
+    const [f] = await compression.analyze([recordOf({ url: `${page}big.js`, bytes: 900_000 })], contextOf());
+    expect(f).toBeDefined();
+    expect(f.estimate).toBe(true);
+    expect(f.savedBytes).toBe(900_000 - Math.round(900_000 * TYPICAL_BROTLI_RATIO));
+    expect(f.details?.brotliBytes).toBe(Math.round(900_000 * TYPICAL_BROTLI_RATIO));
   });
 
   it("encodes only a sample of a body over the sample size, and labels it an estimate", async () => {

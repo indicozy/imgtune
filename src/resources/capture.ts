@@ -27,9 +27,14 @@ export function anyAnalyzerWants(record: ResourceRecord): boolean {
   return ANALYZERS.some((analyzer) => analyzer.wants(record));
 }
 
-/** The record of a response, with its bytes still unknown (see readResourceBody). */
+/**
+ * The record of a response. Its bytes are the Content-Length header when the response has one, so a record whose body is still
+ * streaming at the settle keeps its size (and its analyses can use the size alone); readResourceBody replaces it with the
+ * measured size once the body is read.
+ */
 export function resourceRecordOf(response: Response, pageUrl: string, viewport: string, contentType: string | undefined): ResourceRecord {
   const headers = response.headers();
+  const declared = Number(headers["content-length"]);
   return {
     url: response.url(),
     pageUrl,
@@ -37,7 +42,7 @@ export function resourceRecordOf(response: Response, pageUrl: string, viewport: 
     resourceType: response.request().resourceType(),
     contentType: contentTypeOf(contentType),
     contentEncoding: contentEncodingOf(headers["content-encoding"]),
-    bytes: 0,
+    bytes: Number.isFinite(declared) && declared >= 0 ? declared : 0,
     status: response.status(),
     thirdParty: !isFirstParty(pageUrl, response.url()),
   };
@@ -65,7 +70,10 @@ export async function readResourceBody(record: ResourceRecord, response: Respons
   if (body === undefined) return;
   // Playwright's headers can lack a Content-Encoding the server sent (seen on an SVG served as br): a body that decodes
   // to more than the browser counted on the wire was encoded, so it is not a candidate for compression.
-  if (record.contentEncoding === undefined && encoded > 0 && body.length > encoded) record.contentEncoding = "unknown";
+  // A wire size under half the decoded body is a compressed response whose Content-Encoding Playwright did not report. A wire
+  // size near the body is an uncompressed one (the reported size of a replayed or cached response can differ a little, and
+  // must not turn it into "compressed": that dropped the findings of uncompressed JSON on two real sites).
+  if (record.contentEncoding === undefined && encoded > 0 && encoded * 2 < body.length) record.contentEncoding = "unknown";
   record.bytes = body.length;
   if (body.length <= RESOURCE_BODY_MAX) record.body = body;
 }
