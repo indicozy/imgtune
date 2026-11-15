@@ -1,69 +1,99 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (date TBD)
 
-- A plain `<img>` with no `srcset`, served much wider than it is shown (from a same-origin file or a CDN host no adapter
-  knows), gets resized variants instead of a `sizes` change. `sizes` does nothing without `srcset`. The hint now says to serve
-  the variants at concrete widths (1 to 3, from the device pixels each viewport needs) and to add the `srcset` and `sizes`,
-  the summary's top group reads `no srcset -> serve <widths> + srcset/sizes`, and the saving is booked as `resize`, not
-  `quality`. Known loaders and pages with Next.js detected keep their advice. The JSON gains `bytes.resize` and `srcset`.
-  The same resize booking applies to CSS background layers.
-- Resource checks cost less. Each heavy step (brotli-11 sizes, SVGO and render, WOFF2 and subset encodes, lottie re-encodes,
-  3D meshopt, audio sample encodes) is computed once per run per distinct content, not once per viewport and page. Icons are
-  fetched once per run. `--resource-time <s>` (default 60) caps the heavy work of a run; a file over the budget keeps its cheap
-  finding, marked estimate or not measured.
-- Resource findings are labelled by where they come from: a file on another site is "third-party (ask the vendor)" and is
-  totalled apart from first-party savings; a small saving of a weak-for-cost kind (SVG, Lottie, favicon) is a "lead" and sorts
-  after real savings. The 3D packages (`@gltf-transform/*`, `meshoptimizer`) are optional dependencies: without them a model is
-  reported as not measured, with one install note.
-- A hidden image that already has `loading="lazy"` is no longer advised to get it: the hint says it is within the browser's
-  lazy-load distance and to render it on activation.
-- Loaded but not shown: videos. `scan` checks each `<video>` at each viewport with the image rules (display, visibility,
-  opacity, zero size, clipped, closed details, tab panels). A copy the browser fetched bytes for while not shown is reported
-  apart from the claim: a responsive twin (one `<video>` with `<source media>`), a lazy copy (`preload="none"`), or a copy
-  never shown on load (remove it, or load it on demand). It is in the Video section, the summary, the check report and the
-  PR comment, and in the JSON as `videos[].hidden` and `videos[].perViewport[].hidden`. A video no viewport shows is not
-  encoded (`never-shown`). See the Hidden images guide.
-- Resources. `scan` records every non-image response of a page and reports two checks in a Resources section (after
-  Video, and in the JSON as `resources`): text served without compression (brotli-11 saving, grouped per host and content
-  type), and favicons or apple-touch-icons over 10 KB or 30 KB (the saving from a 32 px or 180 px re-encode). `--no-resources`
-  turns them off. Neither is in the image totals.
-- Measuring browser: `--disable-software-rasterizer` is no longer passed to Chromium (`--disable-gpu` stays). With it WebGL
-  was off, so a page with a 3D viewer never requested its model. Only WebGL pages pay the extra CPU.
+- Page weight, not only images. `scan` now reports what else a page downloads, each with its bytes per view and a fix an
+  agent can apply: images and video that are loaded but never shown, fonts, compression, favicons, vector art, SVG, Lottie
+  files, 3D models and audio. Images and video stay the headline. The positioning is in the README, the site and the skill.
+- Loaded but not shown: images and videos. `scan` reports the images and `<video>` elements the browser downloads but no
+  viewport shows: `display:none`, `visibility:hidden`, `opacity: 0`, a zero-size box, an offscreen slide of a track, a closed
+  `<details>`, `content-visibility: hidden`, a hover swap, a tab panel, and a CSS background layer whose file a hidden element
+  loaded. A copy counts as hidden only if it reads hidden on two reads at least 1 s apart and again after a scroll; anything
+  that toggles (a carousel, a crossfade, a reveal) counts as shown, and a copy seen visible at any step of the scroll pass is
+  shown. Each case gets its own fix: a `<picture>` with a media condition for a responsive twin, `loading="lazy"` or render on
+  activation for a carousel, tab or hover copy, and removal or an on-demand load for an image no viewport shows on load. A
+  hidden copy's bytes are kept apart from the savings, and it gets no sizes, quality or encode claim at the viewports that hide
+  it. An image that already has `loading="lazy"` is no longer advised to get it. The JSON gains `images[].hidden` and
+  `videos[].hidden`. See the Hidden images guide.
+- Video: the claim is per viewport. A `<video>`'s per-view bytes are counted at each viewport (what that viewport loads) and
+  averaged over the viewports, the same as images. A desktop and a mobile copy of one video count once. A video that only some
+  viewports load therefore claims less than it did in 0.2. A video no viewport shows is never encoded (`never-shown`).
+- `<source media>` support is stated as reported in the hints: Chrome and Edge 120 or later, Firefox 120 or later, Safari
+  (version not verified).
 - Fonts. `scan` reports each web font file's bytes per view and its savings: a re-encode to WOFF2 (measured for small files,
   estimated for large ones), a subset to the Unicode scripts the page's text uses (the subset keeps Basic Latin, Latin-1,
   punctuation and currency), and faces the browser downloaded but no rendered text uses. Icon fonts are not subset, and a
-  family of several static weights is noted as a candidate for one variable font. Each finding names the command and the
-  expected bytes. See the Fonts guide.
-- Lottie animations. `scan` reads each Lottie JSON and `.lottie` file the page loads: the size, layers, frame rate and duration,
-  and the savings: embedded rasters re-encoded to WebP at the display size, numbers rounded to three decimals, and a `.lottie`
-  repack (an estimate). A huge animation shown small gets a hint to export at the display size.
-- SVG files. Each SVG of 2 KB to 5 MB is optimised with SVGO (floatPrecision 2) and reported when the brotli size drops by at
-  least 20% and the render still scores 70 or more on SSIMULACRA2 at half size. SVGs with embedded `data:` rasters are listed.
-- 3D models. `scan` checks glTF and GLB files: the geometry saving with meshopt is measured (the file is repacked and
-  run through gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. Draco and
-  meshopt files are reported as compressed. USDZ, OBJ, FBX, KTX2, splats and PLY are informational.
-- Audio. `scan` probes each audio file with ffprobe. WAV and FLAC, lossy files above 128 kbps stereo (64 kbps mono), and
-  stereo files with identical channels get an Opus re-encode, measured on a 10 s sample. A file loaded on page load gets the
-  `preload="none"` fix. Without ffmpeg only the bytes are reported.
-
+  family of several static weights is noted as a candidate for one variable font, with no saving. Each finding names the
+  command and the expected bytes. See the Fonts guide.
+- Compression. Text served with no `Content-Encoding` (JavaScript, CSS, HTML, JSON, XML, SVG, WASM, TTF and OTF, at least 1 KB)
+  is reported with its brotli-11 saving, grouped per host and content type. The fix is the server or CDN setting. See the
+  Compression guide.
+- Favicons. A favicon over 10 KB, or an apple-touch-icon over 30 KB, is reported with the saving of a re-encode to 32 px or
+  180 px. Each icon is fetched once per run. See the Favicons guide.
 - Vector art. A still raster that is flat (a few colours cover most of it: logos, icons, flat illustrations) gets a vector
   check. `scan` traces the heaviest such images (`--svg-budget`, default 50, 0 to 1000; 0 traces none) with vtracer, through
   the optional `@neplex/vectorizer` dependency, and renders each SVG back at the served size. The fidelity is SSIMULACRA2 at
-  half size against the served image (bar 70). A passing SVG must be at least 30% smaller than the served file. Its saving is
-  the record's claim when it is the larger one, and the raster fix stays as the fallback. The traced file is written to
-  `svg/<id>.svg` in the scan folder. Without the vectorizer, a flat image gets one note and no byte claim. `check` and `run`
-  pass the flag through.
-- `fix.vector` in the scan JSON and a `vector` field on hints. The summary and the check report count the flat and traced
-  images.
-- Loaded but not shown. `scan` now reports the images the browser downloaded but no viewport shows: `display:none` or
-  `visibility:hidden` on the element or an ancestor, `opacity: 0`, a zero-size box, and an offscreen slide of an
-  `overflow:hidden` track. Each one gets its bytes per view and how many of the six viewports hide it, in a "Loaded but not
-  shown" line per page and in the hints, apart from the savings. Each case gets its own fix: a responsive twin (`<picture>`
-  with a media condition), a carousel, tab, closed-details or hover-swap copy (`loading="lazy"`, or load on demand), or an
-  image never shown on load (remove it, or load it on demand when the menu, modal or hover opens). CSS background layers
-  whose file was downloaded while hidden are reported too. Such an element gets no sizes, quality or animated-encode claim
-  at the viewports that hide it.
+  half size against the served image (bar 70). A passing SVG must be at least 30% smaller than the served file, and its saving
+  is the record's claim when it is the larger one; the raster fix stays as the fallback. The traced file is written to
+  `svg/<id>.svg` in the scan folder. Without the vectorizer, a flat image gets one note and no byte claim. `fix.vector` in the
+  JSON, a `vector` field on hints, and the summary and the check report count the flat and traced images. See the Vector art
+  guide.
+- SVG files. Each SVG of 2 KB to 5 MB is optimised with SVGO (floatPrecision 2) and reported when the brotli size drops by at
+  least 20% and the render still scores 70 or more on SSIMULACRA2 at half size. SVGs with embedded `data:` rasters are listed.
+  Inline `<svg>` is not checked.
+- Lottie animations. `scan` reads each Lottie JSON and `.lottie` file the page loads: the size, layers, frame rate and duration,
+  and the savings: embedded rasters re-encoded to WebP at the display size, numbers rounded to three decimals, and a `.lottie`
+  repack (an estimate). A huge animation shown small gets a hint to export at the display size. See the Lottie guide.
+- 3D models. `scan` checks glTF and GLB files: the geometry saving with meshopt is measured (the file is repacked with
+  gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. Draco and meshopt files are
+  reported as compressed. USDZ, OBJ, FBX, KTX2, splats and PLY are informational. See the 3D models guide.
+- Audio. `scan` probes each audio file with ffprobe. WAV and FLAC, lossy files above 128 kbps stereo (64 kbps mono), and stereo
+  files with identical channels get an Opus re-encode, measured on a 10 s sample. A file the page loads on page load gets the
+  `preload="none"` fix. Without ffmpeg only the bytes are reported. See the Audio guide.
+- Resources, as one group. The non-image checks above run on every response the page makes, and their findings are reported in
+  a Resources section (after Video), in the JSON as `resources`, and in a Resources block of the PR comment. They are not in
+  the image totals. A file on another site is labelled "third-party (ask the vendor)" and totalled apart from first-party
+  savings; a small saving of a kind that is weak for its cost (SVG, Lottie, favicons) is a "lead" and sorts after the real
+  savings. The heavy steps (brotli-11 sizes, SVGO and render, WOFF2 and subset encodes, Lottie re-encodes, 3D meshopt, audio
+  sample encodes) are computed once per run for each distinct content, not once per viewport and page. `--resource-time <s>`
+  (default 60) caps the heavy work of a run; a file over the budget keeps its cheap finding, marked as an estimate or not
+  measured. The resources overview is in the guide.
+- A plain `<img>` with no `srcset`, served much wider than it is shown (from a same-origin file or a CDN host no adapter knows),
+  gets resized variants instead of a `sizes` change. `sizes` does nothing without `srcset`. The hint says to serve the variants
+  at concrete widths (1 to 3, from the device pixels each viewport needs) and to add the `srcset` and `sizes`. The summary's top
+  group reads `no srcset -> serve <widths> + srcset/sizes`, and the saving is booked as `resize`, not `quality`. Known loaders and
+  pages with Next.js detected keep their advice. The same resize booking applies to CSS background layers. The JSON gains
+  `bytes.resize` and `srcset`.
+- Measuring browser: `--disable-software-rasterizer` is no longer passed to Chromium (`--disable-gpu` stays). With it WebGL was
+  off, so a page with a 3D viewer never requested its model. Only WebGL pages pay the extra CPU.
+- Flags. `--no-resources` skips the resource checks and their capture (`scan`, `check`, `run` and `audit`). A page scanned that
+  way is recorded with `resources: false`. `--resource-time <s>` (`scan`, `check`, `run`, `audit`; default 60, 0 to 3600) caps
+  the heavy resource work. `--svg-budget <N>` (`scan`, `check`, `run`, `audit`; default 50, 0 to 1000) sets how many flat images
+  are traced.
+- Optional dependencies. `@neplex/vectorizer` (0.1.0) is used for the vector trace. `@gltf-transform/core`,
+  `@gltf-transform/extensions`, `@gltf-transform/functions` and `meshoptimizer` are used for the 3D measurements. Each is loaded
+  when a check needs it. If one is missing, its check gives one note and no measured saving; the rest of the scan runs.
+- Smaller fixes: a hidden copy's hints carry its URL and its bytes per viewport (`revealCapped` marks candidates past the
+  per-viewport limit that were not re-read after a scroll); a `<details>` closed on load is not counted as shown.
+
+### Changed for 0.2 users
+
+- The JSON gains `resources` (a page file's findings, present unless the scan ran with `--no-resources`), `images[].hidden` and
+  `videos[].hidden`, `fix.vector` on a still raster that looks like vector art, and `bytes.resize` (with `srcset`) on a plain
+  image with no `srcset`. Existing fields keep their meaning, except as noted below.
+- Video numbers change: the per-view claim is averaged over the viewports (see above), so a video loaded at some viewports only
+  claims less than in 0.2. Compare the `videos[].bytes.perView` of a 0.2 run with a 0.3 run only with that in mind.
+- Plain images with no `srcset`: the saving moves from `quality` (and `sizes`) to `resize`, so the quality total of a page can
+  fall by the same amount. The hint asks for resized variants, not a `sizes` change.
+- Hidden images and videos used to be dropped silently. They are now reported, in their own lines and in the JSON, and kept out
+  of the savings, so a page's totals can differ from 0.2 even when no image changed.
+- The Chromium flags changed: WebGL is on for the scan (see above). A page with a WebGL viewer may now load more bytes than it
+  did in 0.2, and those bytes are reported.
+- The result cache: `CACHE_VERSION` is still 3, but the cache keys include the imgtune version, so 0.2 entries are not reused and
+  the first 0.3 scan is cold.
+- New flags: `--no-resources`, `--resource-time` and `--svg-budget`. See the CLI reference.
+- New optional dependencies: `@neplex/vectorizer`, `@gltf-transform/core`, `@gltf-transform/extensions`, `@gltf-transform/functions`
+  and `meshoptimizer`. They install with the package as optional dependencies; none is required.
 
 ## 0.2.0 (2026-11-14)
 
