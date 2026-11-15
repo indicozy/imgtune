@@ -139,7 +139,15 @@ export const MAX_PAGE_CONCURRENCY = 6;
 /** The longest --idle-timeout: ten minutes (a timer past 2^31 ms would fire at once). */
 export const MAX_IDLE_TIMEOUT_MS = 600_000;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
-const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha"];
+const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha", "just a moment", "captcha-delivery", "awswaf"];
+/**
+ * Response headers a WAF or CDN sends with its challenge page. They decide whatever the page has in it: a challenge page can
+ * carry a few images (S071 had 3 of a page's 148), so the image count does not clear them.
+ */
+const CHALLENGE_HEADERS: readonly { name: string; values: readonly string[] }[] = [
+  { name: "x-amzn-waf-action", values: ["challenge", "captcha"] },
+  { name: "cf-mitigated", values: ["challenge"] },
+];
 /** Quality assumed for an image whose URL does not say (next/image's default). */
 export const ASSUMED_QUALITY = 75;
 
@@ -428,7 +436,15 @@ export function groupKey(sizes: string | undefined, classes: string, refWidth: n
 }
 
 /** A page is a challenge when the document is refused or throttled, or it has no image and shows a challenge marker. */
-export function isChallenge(status: number | undefined, imageCount: number, html: string): boolean {
+export function isChallenge(
+  status: number | undefined,
+  imageCount: number,
+  html: string,
+  headers: Record<string, string | undefined> = {},
+): boolean {
+  for (const { name, values } of CHALLENGE_HEADERS) {
+    if (values.includes((headers[name] ?? "").toLowerCase())) return true;
+  }
   if (status !== undefined && CHALLENGE_STATUS.includes(status)) return true;
   if (imageCount > 0) return false;
   const lower = html.toLowerCase();
@@ -2513,7 +2529,7 @@ async function readGroup(
               finalUrl: page.url(),
               ...(step === 0 && loaded !== undefined ? { loadTimedOut: loaded.loadTimedOut } : {}),
               ...(lcp !== undefined ? { lcp } : {}),
-              blocked: isChallenge(status, seen.images.length, html),
+              blocked: isChallenge(status, seen.images.length, html, loaded?.response?.headers()),
               blockedRequests: blockedRequests - blockedBefore,
               thirdPartyBlocked: thirdPartyBlocked - thirdBefore,
               nextjs: seen.nextjs,
