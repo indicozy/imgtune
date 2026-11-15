@@ -6,7 +6,7 @@
 // For each URL in the list (one per line, # comments allowed) it opens the page in Chromium at 1440x900 (DPR 1), scrolls
 // to the bottom, captures the responses the way the scan does (resources/capture.ts), reads the page context, and runs
 // the registered analyzer of <kind> through the resource phase (resources/phase.ts, icons included). It prints the
-// findings as JSON. Needs a build first: `npm run build`. Keep the output under /mnt/ai_models/imgtune-work/030-<letter>/.
+// findings as JSON. Needs a build first: `npm run build`. Keep the output in a scratch folder outside the repo.
 import { chromium } from "playwright";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

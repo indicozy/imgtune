@@ -1,6 +1,6 @@
 # CI action
 
-`action.yml` at the root of the repository scans the pages of each pull request and comments the image waste on it. One comment
+`action.yml` at the root of the repository scans the pages of each pull request and comments the page weight on it, images first. One comment
 is created per pull request and updated on each push. It is identified by a hidden marker, `<!-- imgtune-scan -->`.
 
 ## Inputs

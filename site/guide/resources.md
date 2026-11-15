@@ -1,35 +1,39 @@
-# Resources: compression and favicons
+# Resources
 
-`scan` records every response a page makes, not only images, and runs the resource checks on them. These are reported in
-their own section, after the video section, with their own totals. They never change the image numbers.
+`scan` records every response a page makes, not only images, and runs seven checks on the non-image ones. They are reported
+in their own Resources section, after the video section, with their own totals. They never change the image numbers.
 
-## Compression
+| Check | What it finds | Guide |
+|---|---|---|
+| Compression | text served with no `Content-Encoding` | [Compression](/guide/compression) |
+| Favicons | a favicon over 10 KB, or an apple-touch-icon over 30 KB | [Favicons](/guide/favicons) |
+| Fonts | web fonts: WOFF2, subsetting, unused faces, static weights | [Fonts](/guide/fonts) |
+| SVG | an SVG that SVGO shrinks by at least 20% and still renders at 70 | [SVG files](/guide/svg) |
+| Lottie | embedded rasters, numbers, a `.lottie` repack | [Lottie animations](/guide/lottie) |
+| 3D models | glTF and GLB: meshopt, base64 buffers, textures | [3D models](/guide/3d-models) |
+| Audio | lossless and high-bitrate files, an Opus re-encode | [Audio](/guide/audio) |
 
-A text response with no `Content-Encoding` header is sent at full size. Typical: a stylesheet, a bundle, a JSON
-payload, an SVG or a font file that the server did not compress.
+Vector art is different: it is a check on still images, which could be SVG instead. It sits with the image hints, in
+[Vector art](/guide/vector-art).
 
-- **What is checked.** JavaScript, CSS, HTML, JSON, XML, SVG, WASM, TTF and OTF responses of at least 1 KB, with a 2xx
-  status, and no `Content-Encoding`.
-- **The saving.** The file's length minus its brotli-11 length. A body over 1 MB is encoded only in part and extrapolated,
-  and is labelled an estimate.
-- **The fix.** Enable brotli (or gzip) for that content type at the server or CDN. The nginx setting is named in the
-  finding. The findings are grouped per host and content type, because one setting covers the group.
+## Labels
 
-## Favicons
+- **third-party (ask the vendor)**: the file is served from another site. The saving belongs to that site's owner, so it is
+  totalled apart from the first-party savings.
+- **lead**: a small saving of a kind that is weak for its cost (SVG, Lottie, favicons). It is kept, and it sorts after the
+  real savings.
 
-A favicon is fetched once per site, on a first visit, so its bytes are paid by every new visitor once.
+## The budget and the flags
 
-- **What is checked.** The icons the page declares (`<link rel="icon">`, `apple-touch-icon`), and `/favicon.ico` when no
-  icon is declared. A favicon over 10 KB, or an apple-touch-icon over 30 KB, is flagged.
-- **The saving.** The icon is re-encoded to the size the browser uses: 32 px for a favicon, 180 px for an apple-touch-icon,
-  as a PNG (sharp). ICO files are read through their largest PNG frame. An ICO with no PNG frame is not decoded: its
-  finding has no saving.
-- **The fix.** The re-encode, or an SVG favicon when the logo is vector.
+- The heavy steps (brotli-11 sizes, SVGO and render, WOFF2 and subset encodes, Lottie re-encodes, 3D meshopt, audio sample
+  encodes) are computed once per run for each distinct content, not once per viewport and page. Icons are fetched once per
+  run.
+- `--resource-time <s>` (default 60, 0 to 3600) caps the heavy work of a run. A file over the budget keeps its cheap finding,
+  marked as an estimate or not measured.
+- `--no-resources` skips the capture and every check. A page scanned that way is recorded with `resources: false`, so
+  `--resume` measures it again for a scan with the checks. It is accepted by `scan`, `check`, `run` and `audit`.
 
-## Flags
-
-`--no-resources` skips the capture and the checks. A page scanned that way is recorded with `resources: false`, so
-`--resume` measures it again for a scan with the checks.
+The findings are in the JSON as `resources`, and in the Markdown PR comment of the [CI action](/guide/ci-action).
 
 ## Testing an analyzer on real pages
 

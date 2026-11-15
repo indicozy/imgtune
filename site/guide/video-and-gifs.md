@@ -37,9 +37,10 @@ Duration and frame rate are shown for information. They are not part of the clai
 
 Each video has two byte numbers:
 
-- **Per view** is what the first view fetches. An autoplay video counts its full file. `preload="auto"` counts the bytes the
-  scan saw, which depends on the browser. `preload="metadata"` or `"none"` counts 0. The claim and the priority order use this
-  number.
+- **Per view** is counted at each viewport (what that viewport loads) and averaged over the viewports, the same as images. An
+  autoplay video counts its full file. `preload="auto"` counts the bytes the scan saw, which depends on the browser.
+  `preload="metadata"` or `"none"` counts 0. A desktop and a mobile copy of one video count once. The claim and the priority
+  order use this number.
 - **Per play** is the full file. It is shown for every video, so a large click-to-play file is not missed.
 
 Animated images stay in the image totals. `<video>` has its own Video section in the report, with both numbers.

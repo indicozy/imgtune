@@ -42,7 +42,7 @@ The production check. It needs a browser and the URLs, and no source, dev server
    estimate, heaviest types first, up to `--deep <N>` (default 20). The types the cap leaves out are named in the report.
    A deep page the browser could not load is retried once: the next-heaviest measured page of its route type is scanned in
    its place, and the report names both. The failed page still counts as failed.
-   `--gpu`, `--gpu-device`, `--gpu-encode`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--no-resources`, `--ignore-robots`,
+   `--gpu`, `--gpu-device`, `--gpu-encode`, `--page-concurrency`, `--idle-timeout`, `--qualities`, `--no-cache`, `--no-resources`, `--resource-time`, `--svg-budget`, `--ignore-robots`,
    `--storage-state`, `--block-third-party` and `--allow-host` apply here.
 3. **report**: `report.md`, built from the two phases.
 
@@ -135,7 +135,7 @@ One command for the agent flow. It runs, in order:
    ordered by their total KB per view. `--deep <N>` (default 20) types are chosen; the summary names the types left out.
    Broken pages are not ranked.
 3. **deep**: a full scan of those pages (six viewports, exact and est.). `--gpu`, `--gpu-device`, `--gpu-encode`,
-   `--page-concurrency`, `--idle-timeout`, `--no-cache`, `--no-resources`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party`
+   `--page-concurrency`, `--idle-timeout`, `--no-cache`, `--no-resources`, `--resource-time`, `--svg-budget`, `--root`, `--storage-state`, `--ignore-robots`, `--block-third-party`
    and `--allow-host` pass through.
 4. **locate** (with `--dev <origin>`): each deep page at the same path on the dev server (`scan --locate-only`).
 5. **hints**: the fix hints of the deep pages (or of their located copies), grouped by call site, as `hints.json`.
@@ -199,7 +199,7 @@ Measure live pages by URL. Writes one JSON file per page to `--out`.
 | `--max-pages <N>` | stop after N pages (scanned or resumed); run again with `--resume` to continue |
 | `--no-cache` | do not read or write `.imgtune/cache`. The cache keeps the local encode sizes and scores, so a rescan or a second run reuses them; the numbers are the same either way |
 | `--resource-time <s>` | the heavy resource work of a run (3D, fonts, SVG, audio, Lottie re-encodes), in seconds, 0 to 3600 (default 60). A file over the budget keeps its cheap finding, marked estimate or not measured (see [Resources](/guide/resources)) |
-| `--no-resources` | skip the resource phase: no capture of the non-image responses and no compression or favicon findings (see [Resources](/guide/resources)). The page is recorded with `resources: false`, so `--resume` does not reuse it for a scan that has them |
+| `--no-resources` | skip the resource phase: no capture of the non-image responses and none of the resource findings (compression, favicons, fonts, SVG, Lottie, 3D, audio; see [Resources](/guide/resources)). The page is recorded with `resources: false`, so `--resume` does not reuse it for a scan that has them |
 | `--max-images <N>` | stop after the page that brings the images counted to N (checked between pages) |
 | `--max-qualities <N>` | the most values for `images.qualities` in `next.config`, 1 to 4 (default 2): the site-level line of the output, the Markdown report and the PR comment |
 | `--urls-from <file\|sitemap-url>` | scan the URLs of a text file (one per line, `#` comments), a local `sitemap.xml`, or a remote sitemap (same domain only) |

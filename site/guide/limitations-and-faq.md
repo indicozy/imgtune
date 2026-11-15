@@ -19,6 +19,12 @@
 - **Savings are for the pages and viewports scanned.** A usage that does not render on them is not measured.
 - **Quality targets follow the loader.** Only loaders with a quality parameter get quality proposals. See
   [Image loaders and CDNs](./loaders-and-cdns).
+- **Resource findings have no `file:line`.** Images and video are located in the source with a dev server. Resource findings name
+  the server setting, the file or the command instead.
+- **Heavy resource work has a budget.** `--resource-time` (default 60 seconds per run) caps it. A file over the budget keeps its cheap
+  finding and is marked not measured.
+- **Some checks need an optional install.** Vector traces need `@neplex/vectorizer`, 3D measurements need the gltf-transform packages and
+  meshoptimizer, and audio needs ffmpeg on `PATH`. Without them a check gives one note and no measured saving.
 - **Node.js 20.9 or later.**
 
 ## FAQ
