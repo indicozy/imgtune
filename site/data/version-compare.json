@@ -1,0 +1,43 @@
+{
+  "unit": "1,000-based: MB = 1,000,000 bytes, KB = 1,000 bytes. Per page view, the mean over the phone and desktop viewports.",
+  "note": "Anonymous totals only. 0.1.0 is from an earlier run on 195 of the same sites; 0.2.0 and 0.3.0 were run back to back, 197 sites ok in both.",
+  "tool": ["imgtune 0.1.0", "imgtune 0.2.0", "imgtune 0.3.0"],
+  "versions": [
+    {
+      "version": "0.1.0",
+      "sites": 195,
+      "savedMb": 195.4,
+      "medianKbPerSite": 177,
+      "imagesMb": 195.4,
+      "animatedMb": 0,
+      "videoMb": 0,
+      "otherMb": 0,
+      "notShownImagesMb": null,
+      "notShownVideoMb": null
+    },
+    {
+      "version": "0.2.0",
+      "sites": 197,
+      "savedMb": 586.0,
+      "medianKbPerSite": 412,
+      "imagesMb": 193.4,
+      "animatedMb": 71.8,
+      "videoMb": 320.8,
+      "otherMb": 0,
+      "notShownImagesMb": null,
+      "notShownVideoMb": null
+    },
+    {
+      "version": "0.3.0",
+      "sites": 197,
+      "savedMb": 525.3,
+      "medianKbPerSite": 629,
+      "imagesMb": 137.6,
+      "animatedMb": 81.8,
+      "videoMb": 233.2,
+      "otherMb": 72.7,
+      "notShownImagesMb": 143.8,
+      "notShownVideoMb": 102.7
+    }
+  ]
+}

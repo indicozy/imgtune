@@ -19,6 +19,7 @@ import CategoryBars from "../.vitepress/theme/components/survey/CategoryBars.vue
 import WeightVsSaving from "../.vitepress/theme/components/survey/WeightVsSaving.vue";
 import TechBars from "../.vitepress/theme/components/survey/TechBars.vue";
 import MediaBars from "../.vitepress/theme/components/survey/MediaBars.vue";
+import VersionBars from "../.vitepress/theme/components/survey/VersionBars.vue";
 import media from "../data/media-survey.json";
 
 const stacks = survey.summary.byTech.filter((t) => t.tech !== "Other / unknown");
@@ -190,6 +191,34 @@ as estimates. A file used by several elements counts once.
 </table>
 
 </details>
+
+## 0.1 vs 0.2 vs 0.3 on 200 homepages {#versions}
+
+Three versions of imgtune were run on the same production homepages, one visit each, at the phone and desktop viewports, with the
+same flags. The 0.1.0 column is from an earlier run on 195 of the sites. 0.2.0 and 0.3.0 were run back to back, and 197 sites
+scanned cleanly in both. The sites are anonymous.
+
+| | 0.1.0 | 0.2.0 | 0.3.0 |
+|---|---|---|---|
+| Savings found, total per view | 195 MB | 586 MB | 525 MB |
+| Savings found, median per site | 177 KB | 412 KB | 629 KB |
+| Images | 195 MB | 193 MB | 138 MB |
+| Animated images | n/a | 72 MB | 82 MB |
+| Video | n/a | 321 MB | 233 MB |
+| Fonts, compression and other | n/a | n/a | 73 MB |
+| Loaded but not shown (not in the savings) | n/a | n/a | 144 MB images, 103 MB video |
+
+The total is lower in 0.3.0 because it counts differently, not because it finds less:
+
+- 50 MB of 0.2.0's image savings sat on copies no viewport shows, such as carousel slides cut off by overflow. They are now
+  reported as "loaded but not shown", where the fix is not to load them at all.
+- 77 MB of video comes from averaging each video over the viewports that load it, the same as images. A desktop-only video no
+  longer counts in full on phones.
+
+On the same sites, 0.3.0 finds more than 0.2.0 on 147 of 197 sites, less on 47, and the same on 3. The median site rises from
+412 KB to 629 KB of savings per view.
+
+<VersionBars />
 
 ## Limits
 
