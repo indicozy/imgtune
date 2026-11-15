@@ -310,13 +310,20 @@ export function hiddenFixOf(members: Instance[], viewportCount: number): HiddenF
  * count and the cases are the same unit). Undefined when no record is hidden.
  */
 export function hiddenTotalsOf(records: ImageRecord[], viewportCount: number): HiddenPage | undefined {
-  const hidden = records.flatMap((r) => (r.hidden !== undefined ? [r.hidden] : []));
+  const hidden = records.flatMap((r) => (r.hidden !== undefined ? [r] : []));
   if (hidden.length === 0) return undefined;
   const cases: Record<HiddenAction, number> = { responsive: 0, lazy: 0, "never-shown-on-load": 0 };
-  for (const fix of hidden) cases[fix.action]++;
+  for (const r of hidden) cases[r.hidden!.action]++;
+  // A file several records share (background layers of one image, or a repeated element) is one file: its bytes count once,
+  // at the largest of its records. A record with no URL is its own file.
+  const perFile = new Map<string, number>();
+  hidden.forEach((r, index) => {
+    const key = r.current.src ?? `#${index}`;
+    perFile.set(key, Math.max(perFile.get(key) ?? 0, r.hidden!.perViewBytes));
+  });
   return {
     images: hidden.length,
-    bytesPerView: hidden.reduce((sum, fix) => sum + fix.perViewBytes, 0),
+    bytesPerView: [...perFile.values()].reduce((sum, bytes) => sum + bytes, 0),
     cases,
   };
 }
@@ -325,7 +332,7 @@ export function hiddenTotalsOf(records: ImageRecord[], viewportCount: number): H
 export interface HiddenPage {
   /** The records (elements and background layers) that are hidden at some viewport. Equals the sum of `cases`. */
   images: number;
-  /** Their files' bytes per view, summed over the records (not in the savings). */
+  /** Their files' bytes per view, each file counted once (records that share a URL share its bytes; not in the savings). */
   bytesPerView: number;
   cases: Record<HiddenAction, number>;
 }
