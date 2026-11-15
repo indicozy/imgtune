@@ -1286,6 +1286,8 @@ export interface ViewportObservation {
   stylesheetsFailed?: number;
   /** The hosts of those stylesheets (distinct, no paths or query strings). */
   stylesheetHosts?: string[];
+  /** Linked stylesheets the browser applied (answered below 400) in this view's scan: with stylesheetsFailed, a partly styled page is told from an unstyled one. */
+  stylesheetsLoaded?: number;
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
   /** Every other response of the page view (not media, not a light read): the resource analyzers' input (see resources/). */
@@ -2243,6 +2245,8 @@ async function readGroup(
   let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
   const failedSheets = new Set<string>();
+  // Stylesheet URLs the browser applied (answered below 400): with failedSheets, it tells a partly styled page from an unstyled one.
+  const loadedSheets = new Set<string>();
   // Requests the browser has not finished, by request id (a redirect keeps its id).
   const busy = new Set<string>();
   // The image URLs answered during the current step (see responsesOfStep).
@@ -2331,7 +2335,10 @@ async function readGroup(
       });
       context.on("response", (response) => {
         // A stylesheet the server refused is not applied (Chromium still makes an empty sheet for it): counted for the scan's warning.
-        if (response.request().resourceType() === "stylesheet" && response.status() >= 400) failedSheets.add(response.url());
+        if (response.request().resourceType() === "stylesheet") {
+          if (response.status() >= 400) failedSheets.add(response.url());
+          else loadedSheets.add(response.url());
+        }
         const contentType = response.headers()["content-type"];
         // A media response is sized once it has finished, from the browser's count of its body (sizes): the body is never
         // read, since a video can be far too big to buffer. Chunked answers have no Content-Length, so the headers are the
@@ -2518,6 +2525,7 @@ async function readGroup(
               media: new Map(media),
               stylesheetsFailed: failedSheets.size,
               stylesheetHosts: hostsOf(failedSheets),
+              stylesheetsLoaded: loadedSheets.size,
               responses,
               ...(captureResources && !light
                 ? { resources: [...others.values()].map((record) => ({ ...record, viewport: viewport.name })), ...(pageContext !== undefined ? { pageContext } : {}) }
@@ -3342,6 +3350,8 @@ export interface PageResult {
   stylesheetsFailed?: Record<string, number>;
   /** The hosts the failed stylesheets were loaded from (only when some failed): named in the broken reason. */
   stylesheetHosts?: string[];
+  /** The stylesheets the browser applied, the most in any view (only when some failed): none applied means the page is unstyled. */
+  stylesheetsLoaded?: number;
   /** The HTTP status of the document, per viewport, when it is an error (400 and up). */
   documentStatus?: Record<string, number>;
   /** Why the page is broken (status "broken"): the kind, the reason and the likely fix. */
@@ -4051,6 +4061,7 @@ async function scanPage(
   let loadTimedOut = false;
   const sheetsFailed: Record<string, number> = {};
   const failedHosts = new Set<string>();
+  let loadedSheets = 0;
   const documentStatus: Record<string, number> = {};
   try {
     for (const [index, outcome] of outcomes.entries()) {
@@ -4063,6 +4074,7 @@ async function scanPage(
       if (obs.loadTimedOut) loadTimedOut = true;
       if ((obs.stylesheetsFailed ?? 0) > 0) sheetsFailed[viewport.name] = obs.stylesheetsFailed as number;
       for (const host of obs.stylesheetHosts ?? []) failedHosts.add(host);
+      loadedSheets = Math.max(loadedSheets, obs.stylesheetsLoaded ?? 0);
       if (obs.status !== undefined && obs.status >= 400) documentStatus[viewport.name] = obs.status;
       if (obs.finalUrl !== undefined && new URL(obs.finalUrl).href !== url.href) {
         if (!(await landedOk(obs.finalUrl))) {
@@ -4082,6 +4094,7 @@ async function scanPage(
   if (Object.keys(documentStatus).length > 0) described.documentStatus = documentStatus;
   if (Object.keys(sheetsFailed).length > 0) {
     described.stylesheetsFailed = sheetsFailed;
+    described.stylesheetsLoaded = loadedSheets;
     run.log(
       `warning: ${safeText(pageUrl)}: a linked stylesheet did not load at ${Object.keys(sheetsFailed).map((name) => safeText(name)).join(", ")}; the page is not styled as the app is, so its widths and sizes verdicts are not valid (check the asset prefix the server was started with)`,
     );
