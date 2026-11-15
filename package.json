@@ -1,6 +1,6 @@
 {
   "name": "imgtune",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Finds the wasted bytes on live pages (images, video, hidden downloads, fonts, compression, 3D and audio) and gives the fix for each, checked with SSIMULACRA2 and VMAF. Image and video fixes name the file and line when they resolve.",
   "license": "MIT",
   "author": "indicozy",
