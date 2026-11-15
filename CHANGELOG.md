@@ -74,7 +74,10 @@
   `@gltf-transform/extensions`, `@gltf-transform/functions` and `meshoptimizer` are used for the 3D measurements. Each is loaded
   when a check needs it. If one is missing, its check gives one note and no measured saving; the rest of the scan runs.
 - Smaller fixes: a hidden copy's hints carry its URL and its bytes per viewport (`revealCapped` marks candidates past the
-  per-viewport limit that were not re-read after a scroll); a `<details>` closed on load is not counted as shown.
+  per-viewport limit that were not re-read after a scroll); a `<details>` closed on load is not counted as shown. A failed
+  linked stylesheet makes a page `broken` only when no linked stylesheet applied (otherwise it is a warning); a challenge page
+  (WAF or Cloudflare) is `blocked` whatever its images; a search the time limit cut short is labelled "est., search stopped at
+  the time limit"; a page that reloads itself is read between its reloads.
 
 ### Changed for 0.2 users
 
