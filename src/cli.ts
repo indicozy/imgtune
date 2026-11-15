@@ -23,7 +23,7 @@ const progress = (message: string) => {
 const OPTION_HELP = {
   out: ["--out <dir>", "directory for the JSON files (default: .imgtune/scan)"],
   noCache: ["--no-cache", "do not read or write the result cache in .imgtune/cache (the numbers are computed again)"],
-  noResources: ["--no-resources", "skip the resource phase: no capture of the non-image responses, so no compression or favicon findings"],
+  noResources: ["--no-resources", "skip the resource phase: no capture of the non-image responses, so none of the resource findings (compression, favicons, fonts, SVG, Lottie, 3D, audio)"],
   resourceTime: ["--resource-time <s>", "time limit of the heavy resource work (3D, fonts, SVG, audio, lottie re-encodes), in seconds, 0 to 3600 (default 60); items over it are reported as not measured"],
   gpuEncode: [
     "--gpu-encode",
@@ -236,7 +236,8 @@ Options:
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
   --allow-host <h1,h2>            with --block-third-party: keep the requests to these hosts
   --no-cache                      do not read or write the result cache
-  --no-resources                skip the resource phase (compression and favicon findings; no capture of the other responses)
+  --no-resources                  skip the resource phase (compression, favicons, fonts, SVG, Lottie, 3D and audio findings; no capture of the other responses)
+  --resource-time <s>             time limit of the heavy resource work (3D, fonts, SVG, audio, Lottie re-encodes), in seconds, 0 to 3600 (default 60)
   --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)
   --storage-state <file>          a logged-in session (holds cookies: never commit it)
   -h, --help                      show this help
@@ -271,10 +272,12 @@ Options:
   --gpu-encode                    EXPERIMENTAL: encode the deep pages' videos and animated images on the GPU (see scan --help)
   --page-concurrency <N>          pages at once in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait in the deep phase (default 10000)
+  --svg-budget <N>                trace at most N flat images of the deep pages to SVG (default 50; 0 traces none)
   --block-third-party             abort the requests to other sites (off by default; can drop images a page loads from its API)
   --allow-host <h1,h2>            with --block-third-party: keep the requests to these hosts
   --no-cache                      do not read or write the result cache
-  --no-resources                skip the resource phase (compression and favicon findings; no capture of the other responses)
+  --no-resources                  skip the resource phase (compression, favicons, fonts, SVG, Lottie, 3D and audio findings; no capture of the other responses)
+  --resource-time <s>             time limit of the heavy resource work (3D, fonts, SVG, audio, Lottie re-encodes), in seconds, 0 to 3600 (default 60)
   --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)
   --storage-state <file>          a logged-in session (holds cookies: never commit it)
   -h, --help                      show this help
@@ -304,8 +307,10 @@ Options:
   --gpu-encode                    EXPERIMENTAL: encode the deep pages' videos and animated images on the GPU (see scan --help)
   --page-concurrency <N>          pages at once in the survey (default 4) and in the deep phase (default 1)
   --idle-timeout <ms>             cap on the network-idle wait (default 3000 in the survey, 10000 in the deep phase)
+  --svg-budget <N>                trace at most N flat images of the deep pages to SVG (default 50; 0 traces none)
   --no-cache                      do not read or write the result cache
-  --no-resources                skip the resource phase (compression and favicon findings; no capture of the other responses)
+  --no-resources                  skip the resource phase (compression, favicons, fonts, SVG, Lottie, 3D and audio findings; no capture of the other responses)
+  --resource-time <s>             time limit of the heavy resource work (3D, fonts, SVG, audio, Lottie re-encodes), in seconds, 0 to 3600 (default 60)
   --root <dir>                    the source folder for --dev (a monorepo sub-folder)
   --storage-state <file>          a logged-in session (holds cookies: never commit it)
   --ignore-robots                 scan pages robots.txt disallows (owned or authorised sites only)
@@ -406,6 +411,8 @@ Options:
 `;
 
 const USAGE = `Usage: imgtune <command> [options]
+
+imgtune measures page weight on live pages (images, video, hidden downloads, fonts, compression, 3D, audio, Lottie, SVG) and prints the fix for each.
 
 Commands:
   scan      measure live pages by URL, with no source, config or dev server (writes JSON to --out)

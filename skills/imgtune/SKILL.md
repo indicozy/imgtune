@@ -1,6 +1,6 @@
 ---
 name: imgtune
-description: Reduce image weight and fix slow pages in any web framework. Use when asked to optimise or optimize images, cut page weight, improve LCP, fix image sizes, next/image sizes, the LCP image, images Lighthouse flags as oversized, badly encoded or old-format, or make a live page send fewer image bytes. imgtune measures each image on the live page at six viewports and gives per-image fix hints (sizes, quality, format) with the component and line that renders each one, which you apply in the source.
+description: Cut page weight and fix slow pages in any web framework. Use when asked to optimise or optimize images or video, cut page weight, improve LCP, fix image sizes or next/image sizes, shrink fonts or subset them, find files served without compression, lazy-load hidden images or videos, or shrink 3D models, audio, Lottie or SVG. imgtune measures the live page at six viewports and gives per-item fix hints with the expected bytes and the component and line that renders each one, which you apply in the source.
 ---
 
 # imgtune
@@ -11,8 +11,12 @@ format) with two byte numbers. Run `npx imgtune --help`, or `<command> --help` f
 ## When to use
 
 The user asks to cut image weight or improve LCP; Lighthouse flags images as oversized, badly encoded or old-format; or
-pages are heavy and the images are most of the bytes. Not for scripts, fonts or video. Do not use it on sites the user
+pages are heavy and the images are most of the bytes. It also covers video, hidden downloads, fonts, compression, 3D, audio, Lottie, SVG and favicons (below). It does not edit JavaScript or CSS: those get only the compression check. Do not use it on sites the user
 does not own or run, unless they say they are authorised.
+
+## Other page weight
+
+`resources` in each scan JSON lists the findings for compression, favicons, fonts, SVG, Lottie, 3D models and audio, with their own bytes; they are not in the image totals. Images and videos the browser downloads but no viewport shows are in the hidden group (`images[].hidden`, `videos[].hidden`): their fix is lazy loading, a responsive `<picture>`, or removal, not a size change. `npx imgtune hints <scan.json> --format json` gives the resource findings as a top-level `resources` array, each with its page.
 
 ## Fix the images
 

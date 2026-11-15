@@ -1,7 +1,7 @@
 ---
 layout: page
 title: ImgTune
-description: Get the exact sizes and quality for every image, located in your code and checked with SSIMULACRA2. Your coding agent applies the fix. Works with your image CDN. Also covers animated GIF, WebP and video.
+description: Finds the wasted bytes on live pages (images, video, hidden downloads, fonts, compression, 3D and audio) and gives the fix for each, checked with SSIMULACRA2 and VMAF. Image and video fixes name the file and line when they resolve.
 ---
 
 <ScanHome />

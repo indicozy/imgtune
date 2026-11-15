@@ -1,7 +1,7 @@
 {
   "name": "imgtune",
   "version": "0.2.0",
-  "description": "Finds the image waste on live pages: the sizes, quality and format for each image, checked with SSIMULACRA2, and the line of code that renders it.",
+  "description": "Finds the wasted bytes on live pages (images, video, hidden downloads, fonts, compression, 3D and audio) and gives the fix for each, checked with SSIMULACRA2 and VMAF. Image and video fixes name the file and line when they resolve.",
   "license": "MIT",
   "author": "indicozy",
   "keywords": [
@@ -18,7 +18,18 @@
     "cli",
     "next/image",
     "sizes",
-    "lcp"
+    "lcp",
+    "page-weight",
+    "web-performance",
+    "video",
+    "fonts",
+    "woff2",
+    "compression",
+    "brotli",
+    "lottie",
+    "svg",
+    "gltf",
+    "lazy-loading"
   ],
   "homepage": "https://indicozy.github.io/imgtune/",
   "repository": {

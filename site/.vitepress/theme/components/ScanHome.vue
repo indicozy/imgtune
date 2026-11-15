@@ -26,23 +26,17 @@ function copy() {
   <div class="home">
     <section class="hero">
       <div class="hero-copy">
-        <p class="kicker">scan · 6 viewports · 2 pages · SSIMULACRA2 delta 2</p>
-        <h1 class="scan-h1">Measure image waste on any live site.</h1>
+        <p class="kicker">scan · 6 viewports · 2 pages · images · video · fonts · more</p>
+        <h1 class="scan-h1">Measure page weight on any live site.</h1>
         <p class="lede">
-          Lighthouse tells you your images are too big. ImgTune measures every image on the live page at six viewports, gives the
-          <code>sizes</code>, quality and format to set, and checks each quality target with SSIMULACRA2. Run against your dev server,
-          it also points at the component, file and line that renders each image. Your coding agent applies the fix, and a rescan
-          checks it. Open source, MIT.
+          Lighthouse tells you your page is heavy. imgtune tells you which bytes to cut and how: the <code>sizes</code>, quality and format for each image, the codec and width for each video, images and videos that load but are never shown, fonts to subset or drop, files served without compression, and 3D models, audio, Lottie and SVG that could be smaller. Each fix comes with the expected bytes and, for images and video with your dev server running, the line of code to change. Your coding agent applies it, and a rescan checks it. Open source, MIT.
         </p>
         <p class="fine">
           Works with your image CDN. Cloudinary, imgix and <code>next/image</code> resize to whatever width <code>sizes</code> asks for,
           so a wrong <code>sizes</code> is waste no CDN removes.
         </p>
-        <p class="fine">Built for image-heavy sites: e-commerce catalogs, media, marketplaces.</p>
-        <p class="fine">
-          <strong>New in 0.2:</strong> animated GIF, animated WebP and APNG, and self-hosted <code>&lt;video&gt;</code> are measured
-          too, with the same kind of hints. See <a href="/imgtune/guide/video-and-gifs">Video and animated images</a>.
-        </p>
+        <p class="fine">Built for heavy sites: e-commerce catalogs, media, marketplaces, and marketing pages with video and 3D.</p>
+        <p class="fine"><strong>New in 0.3:</strong> hidden downloads, fonts, compression, 3D, audio, Lottie, SVG, vector art.</p>
         <div class="cmd">
           <span><span class="p">$</span> npx imgtune scan https://your-site</span>
           <button type="button" @click="copy">{{ copied ? "copied" : "copy" }}</button>

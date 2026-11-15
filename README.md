@@ -2,20 +2,32 @@
 
 [![npm version](https://img.shields.io/npm/v/imgtune.svg)](https://www.npmjs.com/package/imgtune)
 
-**ImgTune measures image waste on any live site.**
+**imgtune measures page weight on any live site: images first, and everything else the page downloads.**
 
 Website: https://indicozy.github.io/imgtune/ · [Try the demo](https://indicozy.github.io/imgtune/demo) · [Docs](https://indicozy.github.io/imgtune/guide/getting-started)
 
-Lighthouse tells you your images are too big. ImgTune tells you the `sizes`, quality and format to set for each image,
-points at the line of code that renders it (when your dev server is running), and checks each quality target with
-SSIMULACRA2. Your coding agent applies the change, and a rescan checks it.
+Lighthouse tells you your page is heavy. imgtune tells you which bytes to cut and how: the `sizes`, quality and format for each image, the codec and width for each video, images and videos that load but are never shown, fonts to subset or drop, files served without compression, and 3D models, audio, Lottie and SVG that could be smaller. Each fix comes with the expected bytes and, for images and video with your dev server running, the line of code to change. Your coding agent applies it, and a rescan checks it.
 
 **Works with your image CDN.** Cloudinary, imgix and `next/image` resize to whatever width `sizes` asks for, so a wrong
 `sizes` is waste that no CDN removes. ImgTune works on top of a CDN, not instead of one. Already on Cloudinary auto
 quality (`q_auto`)? ImgTune focuses on `sizes`, which no CDN can fix for you. A format the CDN picks per request
 (Cloudinary `f_auto`, imgix `auto=format`) is not proposed as a change.
 
-**Built for image-heavy sites:** e-commerce catalogs, media, marketplaces.
+**Built for heavy sites:** e-commerce catalogs, media, marketplaces, and marketing pages with video and 3D.
+
+**What it checks**, one guide each:
+
+- [Images](https://indicozy.github.io/imgtune/guide/how-it-measures)
+- [Video and animated images](https://indicozy.github.io/imgtune/guide/video-and-gifs)
+- [Loaded but not shown](https://indicozy.github.io/imgtune/guide/hidden-images)
+- [Fonts](https://indicozy.github.io/imgtune/guide/fonts)
+- [Compression](https://indicozy.github.io/imgtune/guide/compression)
+- [Vector art (raster to SVG)](https://indicozy.github.io/imgtune/guide/vector-art)
+- [SVG](https://indicozy.github.io/imgtune/guide/svg)
+- [Lottie](https://indicozy.github.io/imgtune/guide/lottie)
+- [3D models](https://indicozy.github.io/imgtune/guide/3d-models)
+- [Audio](https://indicozy.github.io/imgtune/guide/audio)
+- [Favicons](https://indicozy.github.io/imgtune/guide/favicons)
 
 ## Two ways to measure
 
@@ -129,19 +141,13 @@ desktop at 1x), scrolls it to the end, and records every image.
 - Production check: `imgtune check` (see [Two ways to measure](#two-ways-to-measure)) and `imgtune audit` do the same
   survey and deep scan for a whole site, with no source needed for `check`.
 
-## Resources (0.3)
+## Resources
 
-`scan` also reads the page's other responses (not images). Two checks run by default and are reported on their own, not
-in the image totals:
-
-- **Compression.** Text served with no `Content-Encoding` (JavaScript, CSS, HTML, JSON, SVG, XML, WASM, TTF and OTF). The
-  saving is the brotli-11 size taken away from the file, measured on the bytes the page got. The fix is the server or CDN
-  setting, grouped per host and content type.
-- **Favicons.** A favicon over 10 KB, or an apple-touch-icon over 30 KB. The fix is a 32 px (favicon) or 180 px
-  (apple-touch) PNG, or an SVG favicon, with its size from a real re-encode. Favicons are fetched once per site, so these
-  bytes are paid on a first visit.
-
-`--no-resources` turns both off. See the [resources guide](https://indicozy.github.io/imgtune/guide/resources).
+`scan` also reads the page's other responses (not images) and runs seven checks on them: compression, favicons, fonts,
+SVG, Lottie, 3D models and audio. They are reported on their own, not in the image totals. Guides:
+[compression](https://indicozy.github.io/imgtune/guide/compression), [favicons](https://indicozy.github.io/imgtune/guide/favicons), [fonts](https://indicozy.github.io/imgtune/guide/fonts), [SVG](https://indicozy.github.io/imgtune/guide/svg), [Lottie](https://indicozy.github.io/imgtune/guide/lottie),
+[3D models](https://indicozy.github.io/imgtune/guide/3d-models) and [audio](https://indicozy.github.io/imgtune/guide/audio). The [resources overview](https://indicozy.github.io/imgtune/guide/resources) covers the labels, the budget
+and the flags: `--no-resources` turns all seven off, and `--resource-time` caps the heavy work.
 
 ## The evidence ladder
 
@@ -162,19 +168,22 @@ the browser resolved, not from a guess.
 `scan` also reads the Lottie animations and the SVG files a page loads. A Lottie report gives the size, layers, frame rate and
 duration, and its savings: embedded rasters re-encoded to WebP at the display size, a `.lottie` repack (an estimate), and
 numbers rounded to three decimals. An SVG is optimised with SVGO and reported when the brotli size drops by 20% or more and
-the render still scores 70 or more on SSIMULACRA2 at half size. Guides: `site/guide/lottie.md` and `site/guide/svg.md`.
+the render still scores 70 or more on SSIMULACRA2 at half size. Guides: [Lottie](https://indicozy.github.io/imgtune/guide/lottie) and [SVG](https://indicozy.github.io/imgtune/guide/svg).
+
 ## 3D models and audio
 
 `scan` also reads the 3D models and audio files a page loads. A glTF or GLB gets a measured meshopt saving (the file is
 repacked with gltf-transform), base64 buffers get the GLB repack, and PNG or JPEG textures get a WebP estimate. An audio
 file that is lossless, above 128 kbps stereo, or stereo with identical channels gets an Opus re-encode, measured on a 10 s
-sample with ffmpeg. See the [guide](site/guide/model-and-audio.md).
+sample with ffmpeg. Guides: [3D models](https://indicozy.github.io/imgtune/guide/3d-models) and [audio](https://indicozy.github.io/imgtune/guide/audio).
+
 ## Vector art
 
 A flat logo, icon or illustration served as PNG, WebP or JPEG can often be an SVG: smaller, and sharp at every density.
 `scan` traces the heaviest flat images (`--svg-budget`, default 50) with an optional dependency, `@neplex/vectorizer`,
 renders each SVG back, and keeps it only when it scores at least 70 at half size and is at least 30% smaller. A passing
-trace is written to `svg/` in the scan folder. Without the dependency, a flat image gets one note and no byte claim.
+trace is written to `svg/` in the scan folder. Without the dependency, a flat image gets one note and no byte claim. See [the guide](https://indicozy.github.io/imgtune/guide/vector-art).
+
 ## Loaded but not shown
 
 `scan` also finds the images the browser downloads without showing: a desktop image hidden on phones (or the reverse), an
@@ -205,7 +214,8 @@ self-hosted `<video>` elements with a plain file source. Static GIFs get the nor
   the animated-image alternative with its size. A small `<img>` GIF or a CSS background gets an animated AVIF or WebP. A
   `<video>` hint names each lever: the width per breakpoint (`<source media>`), the CRF, the codec, the audio track of a
   muted video, and `preload`. A poster is audited as an image. Duration and frame rate are informational only.
-- **Bytes: per view and per play.** Per view is what the first view fetches. An autoplay video counts its full file,
+- **Bytes: per view and per play.** Per view is counted at each viewport and averaged over the viewports, as for images. An
+  autoplay video counts its full file,
   `preload="auto"` counts the bytes the scan saw (browser-dependent), and `preload="metadata"` or `"none"` counts 0. Per
   play is the full file. Both are shown for every video, so a large click-to-play file is not missed. Animated images stay
   in the image totals; `<video>` has its own Video section, and posters count as images.

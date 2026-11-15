@@ -1,5 +1,5 @@
 name: "imgtune scan"
-description: "Scan the images of live pages and comment their image waste on the pull request"
+description: "Scan live pages and comment their wasted bytes (images, video, fonts and more) on the pull request"
 inputs:
   urls:
     description: "Page URLs to scan, separated by newlines or spaces"
