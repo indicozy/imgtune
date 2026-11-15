@@ -383,6 +383,13 @@ describe("isChallenge", () => {
     expect(isChallenge(200, 0, "<form>Solve the CAPTCHA</form>")).toBe(true);
     expect(isChallenge(200, 4, "captcha in an article about captchas")).toBe(false);
   });
+
+  it("is a challenge when the WAF or CDN marks the document, whatever the image count", () => {
+    expect(isChallenge(202, 3, "", { "x-amzn-waf-action": "challenge" })).toBe(true);
+    expect(isChallenge(200, 3, "", { "cf-mitigated": "challenge" })).toBe(true);
+    expect(isChallenge(200, 148, "", { "x-amzn-waf-action": "captcha" })).toBe(true);
+    expect(isChallenge(200, 148, "<p>a normal page</p>", { "x-amzn-waf-action": undefined })).toBe(false);
+  });
 });
 
 describe("pageFileName", () => {

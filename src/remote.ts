@@ -139,7 +139,15 @@ export const MAX_PAGE_CONCURRENCY = 6;
 /** The longest --idle-timeout: ten minutes (a timer past 2^31 ms would fire at once). */
 export const MAX_IDLE_TIMEOUT_MS = 600_000;
 const CHALLENGE_STATUS: readonly number[] = [403, 429, 503];
-const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha"];
+const CHALLENGE_MARKERS: readonly string[] = ["cf-chl", "captcha", "just a moment", "captcha-delivery", "awswaf"];
+/**
+ * Response headers a WAF or CDN sends with its challenge page. They decide whatever the page has in it: a challenge page can
+ * carry a few images (S071 had 3 of a page's 148), so the image count does not clear them.
+ */
+const CHALLENGE_HEADERS: readonly { name: string; values: readonly string[] }[] = [
+  { name: "x-amzn-waf-action", values: ["challenge", "captcha"] },
+  { name: "cf-mitigated", values: ["challenge"] },
+];
 /** Quality assumed for an image whose URL does not say (next/image's default). */
 export const ASSUMED_QUALITY = 75;
 
@@ -428,7 +436,15 @@ export function groupKey(sizes: string | undefined, classes: string, refWidth: n
 }
 
 /** A page is a challenge when the document is refused or throttled, or it has no image and shows a challenge marker. */
-export function isChallenge(status: number | undefined, imageCount: number, html: string): boolean {
+export function isChallenge(
+  status: number | undefined,
+  imageCount: number,
+  html: string,
+  headers: Record<string, string | undefined> = {},
+): boolean {
+  for (const { name, values } of CHALLENGE_HEADERS) {
+    if (values.includes((headers[name] ?? "").toLowerCase())) return true;
+  }
   if (status !== undefined && CHALLENGE_STATUS.includes(status)) return true;
   if (imageCount > 0) return false;
   const lower = html.toLowerCase();
@@ -1286,6 +1302,8 @@ export interface ViewportObservation {
   stylesheetsFailed?: number;
   /** The hosts of those stylesheets (distinct, no paths or query strings). */
   stylesheetHosts?: string[];
+  /** Linked stylesheets the browser applied (answered below 400) in this view's scan: with stylesheetsFailed, a partly styled page is told from an unstyled one. */
+  stylesheetsLoaded?: number;
   /** Every image response of the page view, by URL. */
   responses: Map<string, ResponseRecord>;
   /** Every other response of the page view (not media, not a light read): the resource analyzers' input (see resources/). */
@@ -1418,10 +1436,13 @@ function revealCappedOf(observations: ViewportObservation[]): number {
   return observations.reduce((sum, obs) => sum + (obs.revealCapped ?? 0), 0);
 }
 
-/** One read of the page as it stands: its images and whether it is a Next.js app. */
-async function readView(page: Page, light = false, withVideos = false): Promise<PageView> {
+/**
+ * One read of the page as it stands: its images and whether it is a Next.js app. `quick` takes no stability pass (see
+ * settledView): every hidden copy it finds is unverified.
+ */
+async function readView(page: Page, light = false, withVideos = false, quick = false): Promise<PageView> {
   const seen = await page.evaluate(
-    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait, revealSettle }) => {
+    async ({ depth, maxOwners, maxBackgrounds, maxValue, light, withVideos, revealCap, revealWait, revealSettle, reveal }) => {
       const num = (value: string): number => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
@@ -1823,6 +1844,12 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
         });
         // Videos first: they are the heavy copies, so the cap never leaves a video unverified while images are checked.
         candidates.sort((a, b) => Number(b.isVideo) - Number(a.isVideo));
+        // No candidate, or a quick read (a read taken after the page navigated during a full read): no stability pass, so no
+        // sleeps. A hidden copy the pass would have verified is unverified here (unstable: "unknown"), as past revealCap.
+        if (candidates.length === 0 || !reveal) {
+          for (const c of candidates) c.apply(c.snap, true);
+          return { nextjs, images, backgrounds, videos, revealCapped: 0 };
+        }
         const checked = candidates.slice(0, revealCap);
         revealCapped = candidates.length - checked.length;
         const x0 = window.scrollX;
@@ -1880,7 +1907,7 @@ async function readView(page: Page, light = false, withVideos = false): Promise<
       }
       return { nextjs, images, backgrounds, videos, revealCapped };
     },
-    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_STABLE_MS, revealSettle: REVEAL_SETTLE_MS },
+    { depth: LAYOUT_DEPTH, maxOwners: MAX_OWNERS, maxBackgrounds: MAX_BACKGROUND_ELEMENTS, maxValue: MAX_BACKGROUND_VALUE, light, withVideos, revealCap: REVEAL_CAP, revealWait: REVEAL_STABLE_MS, revealSettle: REVEAL_SETTLE_MS, reveal: !quick },
   );
   const html = seen.images.length === 0 ? await page.content() : "";
   return { seen, html };
@@ -1985,6 +2012,10 @@ async function settledView(
   withVideos = false,
 ): Promise<PageView> {
   let last: PageView | undefined;
+  // Once a read was cut off by a navigation, the later reads are quick ones. A full read holds the page for its stability
+  // pass (about 1.8 s of waits and a scroll), and a page that reloads itself on a timer would cut every full read. The
+  // quick read's hidden copies are unverified, not claimed.
+  let quick = false;
   for (let repeat = 0; ; repeat++) {
     const start = navigations();
     let view: PageView | undefined;
@@ -2001,7 +2032,7 @@ async function settledView(
           : undefined,
       });
       if (afterSettle !== undefined) await afterSettle();
-      view = await measure("read view", () => readView(page, light, withVideos));
+      view = await measure("read view", () => readView(page, light, withVideos, quick));
       view.lcp = lcp;
     } catch (err) {
       if (!isNavigationError(err)) throw err;
@@ -2012,6 +2043,7 @@ async function settledView(
       if (last) return last;
       throw new Error(`the page kept navigating after load (${MAX_POST_LOAD_NAVIGATIONS + 1} attempts)`);
     }
+    quick = true;
     // The new document settles first: its load event, or the cap if it never comes.
     await waitForLoadWithin(page, loadCapMs).catch(() => false);
   }
@@ -2229,6 +2261,8 @@ async function readGroup(
   let thirdPartyBlocked = 0;
   // Stylesheet URLs the browser could not apply (refused, failed or blocked): one entry per URL.
   const failedSheets = new Set<string>();
+  // Stylesheet URLs the browser applied (answered below 400): with failedSheets, it tells a partly styled page from an unstyled one.
+  const loadedSheets = new Set<string>();
   // Requests the browser has not finished, by request id (a redirect keeps its id).
   const busy = new Set<string>();
   // The image URLs answered during the current step (see responsesOfStep).
@@ -2317,7 +2351,10 @@ async function readGroup(
       });
       context.on("response", (response) => {
         // A stylesheet the server refused is not applied (Chromium still makes an empty sheet for it): counted for the scan's warning.
-        if (response.request().resourceType() === "stylesheet" && response.status() >= 400) failedSheets.add(response.url());
+        if (response.request().resourceType() === "stylesheet") {
+          if (response.status() >= 400) failedSheets.add(response.url());
+          else loadedSheets.add(response.url());
+        }
         const contentType = response.headers()["content-type"];
         // A media response is sized once it has finished, from the browser's count of its body (sizes): the body is never
         // read, since a video can be far too big to buffer. Chunked answers have no Content-Length, so the headers are the
@@ -2492,7 +2529,7 @@ async function readGroup(
               finalUrl: page.url(),
               ...(step === 0 && loaded !== undefined ? { loadTimedOut: loaded.loadTimedOut } : {}),
               ...(lcp !== undefined ? { lcp } : {}),
-              blocked: isChallenge(status, seen.images.length, html),
+              blocked: isChallenge(status, seen.images.length, html, loaded?.response?.headers()),
               blockedRequests: blockedRequests - blockedBefore,
               thirdPartyBlocked: thirdPartyBlocked - thirdBefore,
               nextjs: seen.nextjs,
@@ -2504,6 +2541,7 @@ async function readGroup(
               media: new Map(media),
               stylesheetsFailed: failedSheets.size,
               stylesheetHosts: hostsOf(failedSheets),
+              stylesheetsLoaded: loadedSheets.size,
               responses,
               ...(captureResources && !light
                 ? { resources: [...others.values()].map((record) => ({ ...record, viewport: viewport.name })), ...(pageContext !== undefined ? { pageContext } : {}) }
@@ -3328,6 +3366,8 @@ export interface PageResult {
   stylesheetsFailed?: Record<string, number>;
   /** The hosts the failed stylesheets were loaded from (only when some failed): named in the broken reason. */
   stylesheetHosts?: string[];
+  /** The stylesheets the browser applied, the most in any view (only when some failed): none applied means the page is unstyled. */
+  stylesheetsLoaded?: number;
   /** The HTTP status of the document, per viewport, when it is an error (400 and up). */
   documentStatus?: Record<string, number>;
   /** Why the page is broken (status "broken"): the kind, the reason and the likely fix. */
@@ -4037,6 +4077,7 @@ async function scanPage(
   let loadTimedOut = false;
   const sheetsFailed: Record<string, number> = {};
   const failedHosts = new Set<string>();
+  let loadedSheets = 0;
   const documentStatus: Record<string, number> = {};
   try {
     for (const [index, outcome] of outcomes.entries()) {
@@ -4049,6 +4090,7 @@ async function scanPage(
       if (obs.loadTimedOut) loadTimedOut = true;
       if ((obs.stylesheetsFailed ?? 0) > 0) sheetsFailed[viewport.name] = obs.stylesheetsFailed as number;
       for (const host of obs.stylesheetHosts ?? []) failedHosts.add(host);
+      loadedSheets = Math.max(loadedSheets, obs.stylesheetsLoaded ?? 0);
       if (obs.status !== undefined && obs.status >= 400) documentStatus[viewport.name] = obs.status;
       if (obs.finalUrl !== undefined && new URL(obs.finalUrl).href !== url.href) {
         if (!(await landedOk(obs.finalUrl))) {
@@ -4068,6 +4110,7 @@ async function scanPage(
   if (Object.keys(documentStatus).length > 0) described.documentStatus = documentStatus;
   if (Object.keys(sheetsFailed).length > 0) {
     described.stylesheetsFailed = sheetsFailed;
+    described.stylesheetsLoaded = loadedSheets;
     run.log(
       `warning: ${safeText(pageUrl)}: a linked stylesheet did not load at ${Object.keys(sheetsFailed).map((name) => safeText(name)).join(", ")}; the page is not styled as the app is, so its widths and sizes verdicts are not valid (check the asset prefix the server was started with)`,
     );

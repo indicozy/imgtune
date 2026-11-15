@@ -40,7 +40,11 @@ export function brokenOf(result: PageResult, expectedImages?: number): BrokenInf
       fix: "the URL does not serve this page: check the path, and that the server being scanned serves this route",
     };
   }
-  if (result.stylesheetsFailed !== undefined && Object.keys(result.stylesheetsFailed).length > 0) {
+  // A failed stylesheet breaks the page only when the page is unstyled (no linked stylesheet applied) or empty (no images).
+  // A partly styled page with a failed sheet, usually a third-party CDN's, is measured and warned about (the scan prints it).
+  const unstyled = (result.stylesheetsLoaded ?? 0) === 0;
+  const empty = result.counts.images === 0;
+  if (result.stylesheetsFailed !== undefined && Object.keys(result.stylesheetsFailed).length > 0 && (unstyled || empty)) {
     const hosts = result.stylesheetHosts ?? [];
     // The most failed in any one view: the same sheet at two viewports is one sheet, not two.
     const count = Math.max(...Object.values(result.stylesheetsFailed));

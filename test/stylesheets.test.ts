@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runScan } from "../src/remote.js";
 import type { Viewport } from "../src/types.js";
 
+// A page that links one stylesheet from its own origin (it applies) and one from a second origin that refuses it (a CDN that
+// fails for a while): the page is styled, so the failure is a warning and the page keeps its numbers.
 const PAGE = (sheet: string) =>
   `<!doctype html><html><head><meta charset="utf-8">${sheet}<style>img{display:block}</style></head>` +
   `<body><img alt="x" width="160" height="160" sizes="33vw" src="/img.svg"></body></html>`;
@@ -27,6 +29,10 @@ describe("a stylesheet that did not load", () => {
       } else if (req.url === "/sound.html") {
         res.writeHead(200, { "content-type": "text/html" });
         res.end(PAGE('<link rel="stylesheet" href="/ok.css">'));
+      } else if (req.url === "/partial.html") {
+        const other = `http://localhost:${(server?.address() as AddressInfo).port}`;
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end(PAGE(`<link rel="stylesheet" href="${other}/missing.css"><link rel="stylesheet" href="/ok.css">`));
       } else if (req.url === "/ok.css") {
         res.writeHead(200, { "content-type": "text/css" });
         res.end("body{margin:0}");
@@ -71,6 +77,16 @@ describe("a stylesheet that did not load", () => {
     expect(result.stylesheetsFailed).toEqual({ desktop: 1 });
     const warning = logs.find((line) => line.includes("a linked stylesheet did not load"));
     expect(warning?.includes("at desktop;")).toBe(true);
+  }, 90_000);
+
+  it("a failed sheet from a second origin beside one that applies is a warning: the page stays ok and keeps its numbers", async () => {
+    const { result, logs } = await scan("/partial.html");
+    expect(result.status).toBe("ok");
+    expect(result).toHaveProperty("page");
+    expect(result.broken).toBeUndefined();
+    expect(result.stylesheetsFailed).toEqual({ desktop: 1 });
+    expect(result.stylesheetsLoaded).toBe(1);
+    expect(logs.some((line) => line.includes("a linked stylesheet did not load"))).toBe(true);
   }, 90_000);
 
   it("keeps a sound page as it was: no stylesheetsFailed key and no warning", async () => {

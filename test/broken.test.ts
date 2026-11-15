@@ -34,6 +34,30 @@ describe("brokenOf", () => {
     expect(info?.fix).toMatch(/"cdn\.unreachable\.example" is unreachable/);
   });
 
+  it("a failed stylesheet beside one that applied is a warning, not a broken page (the page is styled)", () => {
+    const partly = okPage(URL_A, 100, 20, {
+      stylesheetsFailed: { desktop: 1 },
+      stylesheetHosts: ["cdn.unreachable.example"],
+      stylesheetsLoaded: 2,
+    });
+    expect(brokenOf(partly)).toBeUndefined();
+  });
+
+  it("a failed stylesheet on an unstyled page (none applied) is broken", () => {
+    const unstyled = okPage(URL_A, 0, 0, { stylesheetsFailed: { desktop: 1 }, stylesheetHosts: ["cdn.unreachable.example"], stylesheetsLoaded: 0 });
+    expect(brokenOf(unstyled)).toMatchObject({ kind: "stylesheet" });
+  });
+
+  it("a failed stylesheet on an empty page (no images) is broken even when another sheet applied", () => {
+    const empty = okPage(URL_A, 0, 0, {
+      stylesheetsFailed: { desktop: 1 },
+      stylesheetHosts: ["cdn.unreachable.example"],
+      stylesheetsLoaded: 1,
+      counts: { images: 0, qualityNA: 0, skipped: 0, blockedRequests: 0, byLoader: {} },
+    });
+    expect(brokenOf(empty)).toMatchObject({ kind: "stylesheet" });
+  });
+
   it("gives the asset-prefix fix when the failed stylesheets have no host on record", () => {
     const info = brokenOf(okPage(URL_A, 0, 0, { stylesheetsFailed: { desktop: 1 } }));
     expect(info?.fix).toMatch(/asset prefix/);

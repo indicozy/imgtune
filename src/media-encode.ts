@@ -67,6 +67,11 @@ export interface CandidateResult {
   /** The VMAF bar this result was judged against (the requested bar; VMAF is not relativised). */
   vmafBar: number;
   estimate: true;
+  /**
+   * Set when the search ended at its deadline with this as its best passing quality so far: a result of a search cut short,
+   * not of a finished one. Reports label it (estLabel); it is not cached as a finished search.
+   */
+  timeLimited?: true;
   /** Always false: the encodes drop audio, and the audio saving is attributed separately. */
   audio: boolean;
   /**
@@ -1262,7 +1267,11 @@ export async function searchQuality(
     if (isTooLarge(err)) return { ok: false, reason: "too-large" };
     // A broken scorer is reported even when an earlier quality passed: the passes before it were not checked by it.
     if (err instanceof StageError && err.reason === "score-failed") return { ok: false, reason: "score-failed" };
-    if (best) return { ok: true, best, tried: ctx.cache.size };
+    if (best) {
+      // A search the deadline ended keeps its best passing quality, labelled as cut short (never silently a finished search).
+      if (isDeadline(err)) return { ok: true, best: { ...best, timeLimited: true }, tried: ctx.cache.size };
+      return { ok: true, best, tried: ctx.cache.size };
+    }
     if (err instanceof StageError) return { ok: false, reason: err.reason };
     return { ok: false, reason: isDeadline(err) ? "time-limit" : "probe-failed" };
   }

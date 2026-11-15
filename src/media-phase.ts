@@ -67,6 +67,8 @@ export interface MediaAsset {
   perPlay: number;
   /** How perView was counted (a video's; see VideoBytes). Needed to refine it once the file length is known. */
   perViewBasis?: VideoBytes["perViewBasis"];
+  /** The budget's rank: the largest per-view bytes of one viewport (perView is averaged over the viewports). See rankForBudget. */
+  rankView?: number;
   /** The bytes already read, when the caller has them. Otherwise the phase fetches them (see MediaDeps.fetch). */
   buffer?: Buffer;
   /** A video no viewport shows on load: its bytes are a loaded-but-not-shown fix, so it is never encoded (see splitNeverShown). */
@@ -224,6 +226,11 @@ export function videoAssetOf(record: VideoRecord): MediaAsset {
     perView: record.bytes.perView,
     perPlay: record.bytes.perPlay,
     perViewBasis: record.bytes.perViewBasis,
+    // A video shown at one viewport of two has half the averaged perView, but its one viewport loads it in full: the budget
+    // ranks it by that, so the averaging does not push it out of the encode budget.
+    ...(record.perViewport !== undefined && record.perViewport.length > 0
+      ? { rankView: Math.max(...record.perViewport.map((p) => p.bytes)) }
+      : {}),
     ...(neverShown ? { neverShown: true as const } : {}),
   };
 }
@@ -475,8 +482,10 @@ async function runJobs(
         workDir: join(dir, `${job.codec}-${job.width}`),
         signal: opts.signal,
       });
-      if (outcome.ok) await opts.cache?.putJson(cacheKey, { ok: true, best: outcome.best } satisfies CachedOutcome);
-      else if (outcome.reason === "no-passing-quality") await opts.cache?.putJson(cacheKey, { ok: false, reason: "no-passing-quality" } satisfies CachedOutcome);
+      // A search cut short by its deadline is not cached: a later run with more time may find a cheaper passing quality.
+      if (outcome.ok) {
+        if (outcome.best.timeLimited !== true) await opts.cache?.putJson(cacheKey, { ok: true, best: outcome.best } satisfies CachedOutcome);
+      } else if (outcome.reason === "no-passing-quality") await opts.cache?.putJson(cacheKey, { ok: false, reason: "no-passing-quality" } satisfies CachedOutcome);
     }
     if (outcome.ok) candidates.push(outcome.best);
     else {

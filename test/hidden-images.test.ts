@@ -89,6 +89,13 @@ describe("hiddenTotalsOf", () => {
     expect(hiddenTotalsOf([{ ...recordOf(fixOf("lazy", 1)), hidden: undefined } as ImageRecord], 2)).toBeUndefined();
   });
 
+  it("counts a file several records share once: eight background layers of one image are one file's bytes", () => {
+    const shared = (fix: HiddenFix): ImageRecord => ({ ...recordOf(fix), current: { src: "https://cdn.example/bg.png", srcsetCandidates: [] } } as unknown as ImageRecord);
+    const layers = Array.from({ length: 8 }, () => shared(fixOf("lazy", 1000)));
+    const totals = hiddenTotalsOf([...layers, recordOf(fixOf("lazy", 300))], 2);
+    expect(totals).toEqual({ images: 9, bytesPerView: 1300, cases: { responsive: 0, lazy: 9, "never-shown-on-load": 0 } });
+  });
+
   it("prints the summary line with the cases, and the PR-comment line over the pages", () => {
     const hidden = { images: 3, bytesPerView: 2048, cases: { responsive: 1, lazy: 1, "never-shown-on-load": 1 } };
     expect(hiddenSummaryLine(hidden)).toBe("loaded but not shown: 3 image(s), 2 KB/view (responsive 1, lazy 1, never shown on load 1); not in the savings");
