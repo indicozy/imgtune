@@ -112,4 +112,16 @@ describe("the totals and summary lines of hidden videos", () => {
     expect(hiddenVideoPagesLine([page, page])).toMatch(/^loaded but not shown: 4 video\(s\), 23 KB\/view/);
   });
 
+  it("counts a file several hidden videos share once: three elements playing one file are one file's bytes", () => {
+    const records = recordsOf([
+      observation(
+        desktop,
+        [video("c1", "/c.mp4", { hiddenReason: "clipped" }), video("c2", "/c.mp4", { hiddenReason: "clipped" }), video("c3", "/c.mp4", { hiddenReason: "clipped" })],
+        { "/c.mp4": 9_000 },
+      ),
+    ]);
+    expect(records.filter((r) => r.hidden !== undefined)).toHaveLength(3);
+    expect(hiddenVideoSummaryLine(records)).toBe("loaded but not shown: 3 video(s), 9 KB/view (responsive 0, lazy 3, never shown on load 0); not in the savings");
+  });
+
 });

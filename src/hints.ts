@@ -1085,13 +1085,20 @@ export function videoTotalsLine(videos: VideoRecord[]): string | undefined {
   return `video: ${kb(sum(files.map((v) => v.bytes.perView)))}/view, ${kb(sum(files.map((v) => v.bytes.perPlay)))}/play, saveable ${kb(sum(savings.map((s) => s.view)))}/view (${kb(sum(savings.map((s) => s.play)))}/play)${est}${loaded}`;
 }
 
-/** The loaded-but-not-shown total of some videos: the records that have a hidden fix, their count and bytes per view. */
+/**
+ * The loaded-but-not-shown total of some videos: the records that have a hidden fix, their count and bytes per view. A file
+ * several hidden records share (the same src) counts its bytes once, at its largest record, as the images do (hiddenTotalsOf).
+ */
 function hiddenVideoTotalOf(videos: VideoRecord[]): { count: number; bytes: number; cases: Record<HiddenAction, number> } | undefined {
-  const hidden = videos.flatMap((v) => (v.hidden !== undefined ? [v.hidden] : []));
+  const hidden = videos.flatMap((v, index) => (v.hidden !== undefined ? [{ key: v.src || `#${index}`, fix: v.hidden }] : []));
   if (hidden.length === 0) return undefined;
   const cases: Record<HiddenAction, number> = { responsive: 0, lazy: 0, "never-shown-on-load": 0 };
-  for (const fix of hidden) cases[fix.action]++;
-  return { count: hidden.length, bytes: hidden.reduce((sum, fix) => sum + fix.perViewBytes, 0), cases };
+  const perFile = new Map<string, number>();
+  for (const { key, fix } of hidden) {
+    cases[fix.action]++;
+    perFile.set(key, Math.max(perFile.get(key) ?? 0, fix.perViewBytes));
+  }
+  return { count: hidden.length, bytes: [...perFile.values()].reduce((sum, bytes) => sum + bytes, 0), cases };
 }
 
 /**
@@ -1100,14 +1107,35 @@ function hiddenVideoTotalOf(videos: VideoRecord[]): { count: number; bytes: numb
  */
 export function hiddenVideoSummaryLine(videos: VideoRecord[]): string | undefined {
   const total = hiddenVideoTotalOf(videos);
-  if (total === undefined) return undefined;
+  return total === undefined ? undefined : hiddenVideoLine(total);
+}
+
+/** The one-line text of a video total (the page's line, or the PR comment's over all pages). */
+function hiddenVideoLine(total: { count: number; bytes: number; cases: Record<HiddenAction, number> }): string {
   const { responsive, lazy, "never-shown-on-load": never } = total.cases;
   return `loaded but not shown: ${total.count} video(s), ${kb(total.bytes)}/view (responsive ${responsive}, lazy ${lazy}, never shown on load ${never}); not in the savings`;
 }
 
-/** The loaded-but-not-shown line of the PR comment for videos: all ok pages together. */
+/**
+ * The loaded-but-not-shown line of the PR comment for videos: all ok pages together. Each page counts its own files (a file
+ * shared between two pages is two files' bytes), as hiddenPagesLine does for images.
+ */
 export function hiddenVideoPagesLine(results: PageResult[]): string | undefined {
-  return hiddenVideoSummaryLine(results.filter((r) => r.status === "ok").flatMap((r) => r.videos ?? []));
+  const totals: { count: number; bytes: number; cases: Record<HiddenAction, number> } = {
+    count: 0,
+    bytes: 0,
+    cases: { responsive: 0, lazy: 0, "never-shown-on-load": 0 },
+  };
+  for (const page of results) {
+    if (page.status !== "ok") continue;
+    const total = hiddenVideoTotalOf(page.videos ?? []);
+    if (total === undefined) continue;
+    totals.count += total.count;
+    totals.bytes += total.bytes;
+    for (const key of Object.keys(totals.cases) as (keyof typeof totals.cases)[]) totals.cases[key] += total.cases[key];
+  }
+  if (totals.count === 0) return undefined;
+  return hiddenVideoLine(totals);
 }
 
 /** A video's encode in one phrase: the encode at its width with its bytes, or why it was not encoded. */
